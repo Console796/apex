@@ -1,0 +1,9 @@
+/build/
+/corpus/
+/.cache/
+/.vscode/
+/.idea/
+compile_commands.json
+*.user
+CMakeUserPresets.json
+__pycache__/

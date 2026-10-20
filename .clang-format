@@ -1,0 +1,22 @@
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: c++20
+IndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+BreakBeforeBraces: Attach
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^"(core|document|geometry|assets|render|viewport|ui|app|apex)/'
+    Priority: 1
+  - Regex: '^<Q'
+    Priority: 2
+  - Regex: '^<[a-z_]+(\.h)?>$'
+    Priority: 4
+  - Regex: '^<'
+    Priority: 3
+NamespaceIndentation: None
+SortIncludes: CaseSensitive
