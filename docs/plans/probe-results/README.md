@@ -19,4 +19,9 @@ Strata Hammer (build 10773); CRLF. Findings feed D10, D11 and D18 in `../0.2.md`
 - `render_map_nested_groups_saved.vmf`: a group of two solids, grouped again with a third. Groups
   stay flat: `group { id, editor }` blocks at world level, membership in `editor.groupid`, nesting
   as `groupid` on the inner group's own `editor` block.
-- Pending: user-visgroup hide, clipboard formats, the 17-digit open/save diff, keybinding export.
+- `render_map_hidden_user_visgroup.vmf`: a user visgroup (id 11) containing solids, hidden. Members
+  are wrapped in `hidden` and carry `visgroupid "11"` and `visgroupshown "0"` in `editor`.
+- `f_17_digits_saved.vmf`: `probe/f_17_digits.vmf` opened and saved unmodified. Hammer re-writes
+  planes and `point_data` with 6 significant digits and drops the leading comment.
+- Pending: clipboard formats (Wine's clipboard is not visible to `wl-paste`; needs a tool run in
+  Hammer's Wine prefix), keybinding export.
