@@ -39,6 +39,9 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
     { "name": "linux-asan", "inherits": "linux-gcc", "displayName": "Linux GCC ASan+UBSan",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "APEX_SANITIZE": "address;undefined" } },
+    { "name": "linux-fuzz", "inherits": "linux-clang", "displayName": "Linux Clang libFuzzer",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "APEX_BUILD_APP": "OFF",
+                          "APEX_BUILD_TESTS": "OFF", "APEX_BUILD_FUZZ": "ON" } },
     { "name": "windows-msvc-debug", "inherits": "windows-msvc", "displayName": "Windows MSVC Debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
     { "name": "windows-msvc-release", "inherits": "windows-msvc", "displayName": "Windows MSVC Release",
@@ -50,6 +53,7 @@
     { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
     { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },
     { "name": "linux-asan", "configurePreset": "linux-asan" },
+    { "name": "linux-fuzz", "configurePreset": "linux-fuzz" },
     { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug" },
     { "name": "windows-msvc-release", "configurePreset": "windows-msvc-release" }
   ],

@@ -2,10 +2,12 @@
 """Apex local CI gate (plan 0.1, D22/D23).
 
     tools/ci.py [--fast] [--windows {auto,always,never}] [--fixtures-only]
+                [--fuzz-seconds N]
 
-Stages: preflight, BUILD counter, Linux presets (build + unit tests), corpus / srctools / fuzz / GPU
-(wired up but empty until their sub-milestones), Windows VM, licence + layer checks. Writes
-build/ci/<build>/report.md and exits non-zero on any failure.
+Stages: preflight, BUILD counter, Linux presets (build + unit tests), KV1 corpus and fuzz,
+srctools / GPU (pending until their sub-milestones), Windows VM, licence + layer checks. Writes
+build/ci/<build>/report.md and exits non-zero on any failure. Fuzzing defaults to 600 seconds;
+use --fuzz-seconds 20 while iterating, or 0 to disable it explicitly.
 
 The Windows VM stage is the slow one, so --windows defaults to "auto": it runs only when build
 files or platform-sensitive code (WIN_TRIGGERS) changed since the last passing Windows run.
@@ -27,9 +29,12 @@ Environment:
 import argparse
 import datetime
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -121,6 +126,122 @@ def linux_stage(preset, build, report):
     run(["ctest", "--preset", preset], report, f"{preset}:test")
 
 
+def corpus_stage(corpus, fixtures_only, report):
+    t = time.time()
+    if not corpus or not Path(corpus).is_dir():
+        reason = ("APEX_P2CE_DIR is unset" if not corpus else
+                  f"APEX_P2CE_DIR is not a directory: {corpus}")
+        report.add("corpus", "skipped" if fixtures_only else "FAIL", time.time() - t, reason)
+        return
+
+    log = report.dir / "corpus.log"
+    executable = ROOT / "build" / "linux-gcc-release" / "tests" / "apex_tests"
+    env = os.environ.copy()
+    env["APEX_P2CE_DIR"] = corpus
+    cmd = [str(executable), "-tc=*corpus*"]
+    try:
+        with open(log, "w", encoding="utf-8") as f:
+            f.write("$ " + shlex.join(cmd) + "\n")
+            f.flush()
+            result = subprocess.run(cmd, cwd=ROOT, env=env, stdout=f, stderr=subprocess.STDOUT)
+        output = log.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        report.add("corpus", "FAIL", time.time() - t, f"could not run corpus test: {error}")
+        return
+
+    counts = re.search(
+        r"^KV1 corpus: scanned=(\d+), parsed Strata=(\d+), parsed Legacy=(\d+), "
+        r"skipped=(\d+), expected failures=(\d+)$", output, re.MULTILINE)
+    if result.returncode != 0:
+        report.add("corpus", "FAIL", time.time() - t, f"corpus test failed; see {log}")
+    elif not counts:
+        report.add("corpus", "FAIL", time.time() - t,
+                   f"test did not print KV1 corpus counts (possible doctest skip); see {log}")
+    else:
+        labels = ["scanned", "parsed Strata", "parsed Legacy", "skipped", "expected failures"]
+        note = ", ".join(f"{label}={value}" for label, value in zip(labels, counts.groups()))
+        report.add("corpus", "ok", time.time() - t, note)
+
+
+def fuzzer_unavailable_reason(report):
+    compiler = shutil.which("clang++")
+    if not compiler:
+        return "clang++ is not available"
+    log = report.dir / "fuzz-probe.log"
+    with tempfile.TemporaryDirectory(prefix="fuzz-probe-", dir=ROOT / "build") as directory:
+        executable = Path(directory) / "probe"
+        cmd = [compiler, "-std=c++23", "-fsanitize=fuzzer,address,undefined", "-x", "c++", "-",
+               "-o", str(executable)]
+        source = ('#include <cstddef>\n#include <cstdint>\n'
+                  'extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t*, std::size_t) { '
+                  'return 0; }\n')
+        try:
+            result = subprocess.run(cmd, cwd=ROOT, input=source, text=True, capture_output=True)
+        except OSError as error:
+            log.write_text(str(error) + "\n", encoding="utf-8")
+            return f"could not run clang++: {error}"
+        log.write_text("$ " + shlex.join(cmd) + "\n" + result.stdout + result.stderr,
+                       encoding="utf-8")
+    if result.returncode != 0:
+        return f"clang++ cannot link libFuzzer with ASan/UBSan; see {log}"
+    return ""
+
+
+def fuzz_stage(build, seconds, report):
+    if seconds == 0:
+        report.add("fuzz", "skipped", 0, "disabled")
+        return
+    t = time.time()
+    reason = fuzzer_unavailable_reason(report)
+    if reason:
+        report.add("fuzz", "skipped", time.time() - t, reason)
+        return
+
+    log = report.dir / "fuzz.log"
+    configure = ["cmake", "--preset", "linux-fuzz", f"-DAPEX_BUILD_NUMBER={build}"]
+    build_cmd = ["cmake", "--build", "--preset", "linux-fuzz", "--target", "kv1_fuzz"]
+    try:
+        with open(log, "w", encoding="utf-8") as f:
+            for cmd in (configure, build_cmd):
+                f.write("$ " + shlex.join(cmd) + "\n")
+                f.flush()
+                result = subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+                if result.returncode != 0:
+                    report.add("fuzz", "FAIL", time.time() - t,
+                               f"configure/build failed; see {log}")
+                    return
+
+            persistent = ROOT / "build" / "fuzz-corpus" / "kv1"
+            persistent.mkdir(parents=True, exist_ok=True)
+            artifact_dir = Path(tempfile.mkdtemp(prefix="fuzz-artifacts-", dir=report.dir))
+            with tempfile.TemporaryDirectory(prefix="kv1-seeds-", dir=ROOT / "build") as seeds:
+                seed_dir = Path(seeds)
+                fixtures = ROOT / "tests" / "fixtures" / "kv1"
+                for source in fixtures.rglob("*"):
+                    if source.is_file():
+                        destination = seed_dir / source.relative_to(fixtures)
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(source, destination)
+                fuzz = [str(ROOT / "build" / "linux-fuzz" / "kv1_fuzz"), str(persistent),
+                        str(seed_dir), f"-max_total_time={seconds}",
+                        f"-artifact_prefix={artifact_dir}{os.sep}"]
+                f.write("$ " + shlex.join(fuzz) + "\n")
+                f.flush()
+                result = subprocess.run(fuzz, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+    except OSError as error:
+        report.add("fuzz", "FAIL", time.time() - t, f"could not run fuzz stage: {error}")
+        return
+
+    artifacts = sorted(path for path in artifact_dir.rglob("*") if path.is_file())
+    if artifacts:
+        paths = ", ".join(str(path) for path in artifacts)
+        report.add("fuzz", "FAIL", time.time() - t, f"artifact: {paths}; see {log}")
+    elif result.returncode != 0:
+        report.add("fuzz", "FAIL", time.time() - t, f"libFuzzer exited {result.returncode}; see {log}")
+    else:
+        report.add("fuzz", "ok", time.time() - t, f"{seconds}s, warm corpus: {persistent}")
+
+
 def windows_stage(build, report):
     ssh = os.environ.get("APEX_WIN_SSH")
     if not ssh:
@@ -195,14 +316,13 @@ def main():
                     help="Windows VM stage: auto (only after platform-sensitive changes), always, never")
     ap.add_argument("--skip-windows", action="store_true", help="same as --windows never")
     ap.add_argument("--fixtures-only", action="store_true", help="do not require the P2CE corpus")
+    ap.add_argument("--fuzz-seconds", type=int, default=600,
+                    help="libFuzzer run time (default: 600; 0 disables the stage)")
     a = ap.parse_args()
+    if a.fuzz_seconds < 0:
+        ap.error("--fuzz-seconds must be non-negative")
 
     corpus = os.environ.get("APEX_P2CE_DIR")
-    if not a.fast and not a.fixtures_only and not (corpus and Path(corpus).is_dir()):
-        print("APEX_P2CE_DIR must point at a P2CE install (D20); use --fixtures-only to bypass.",
-              file=sys.stderr)
-        return 2
-
     build = 0 if a.fast else next_build_number()
     rep = Report(build if build else "fast")
 
@@ -210,10 +330,14 @@ def main():
     for p in presets:
         linux_stage(p, build, rep)
 
-    if not a.fast:
+    if a.fast:
+        rep.add("fuzz", "skipped", 0, "--fast")
+    else:
+        corpus_stage(corpus, a.fixtures_only, rep)
+        fuzz_stage(build, a.fuzz_seconds, rep)
         # Wired up, empty until their sub-milestones land.
-        for stage, since in [("corpus", "0.1.3"), ("srctools-crosscheck", "0.1.4"),
-                             ("fuzz", "0.1.3"), ("gpu-lavapipe", "0.1.9"), ("gpu-radv", "0.1.9")]:
+        for stage, since in [("srctools-crosscheck", "0.1.4"),
+                             ("gpu-lavapipe", "0.1.9"), ("gpu-radv", "0.1.9")]:
             rep.add(stage, "pending", 0, f"not implemented until {since}")
         mode = "never" if a.skip_windows else a.windows
         run_win, why = (True, "--windows always") if mode == "always" else (False, "--windows never")
