@@ -1,0 +1,12 @@
+// Apex-authored fixture (MIT); synthetic test data.
+// Synthetic material
+LightmappedGeneric
+{
+	"$basetexture" "brick/wall"
+	"$color" "[1 0.5 0.25]"
+	"$surfaceprop" "brick"
+	Proxies
+	{
+		Sine { resultVar "$alpha" }
+	}
+}
