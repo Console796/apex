@@ -5,6 +5,7 @@ Writes tests/fixtures/probe/*.vmf: a control plus four variants of one tiny map 
 and an info_player_start). Each variant changes exactly one thing. Output is CRLF, as Strata writes.
 """
 import itertools
+import math
 import pathlib
 
 OUT = pathlib.Path(__file__).resolve().parent.parent / "tests/fixtures/probe"
@@ -14,6 +15,13 @@ LO, HI = (-64, -64, -64), (64, 64, 0)
 def sub(a, b): return tuple(x - y for x, y in zip(a, b))
 def cross(a, b): return (a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0])
 def fmt(v): return " ".join(f"{x:g}" for x in v)
+def fmt17(v): return " ".join(f"{x:.17g}" for x in v)
+
+
+def rotated(p, deg=30.0, cx=12345.0):
+    """Rotate about z by deg, then move to x = cx: gives coordinates with 17 significant digits."""
+    a = math.radians(deg)
+    return (cx + math.cos(a) * p[0] - math.sin(a) * p[1], math.sin(a) * p[0] + math.cos(a) * p[1], p[2])
 
 
 def faces():
@@ -45,7 +53,7 @@ def uv(n):
     return "[1 0 0 0] 0.25", "[0 0 -1 0] 0.25"
 
 
-def vmf(marker="strata", extra_versioninfo="", extra_block="", skew_top=False):
+def vmf(marker="strata", extra_versioninfo="", extra_block="", skew_top=False, digits17=False):
     L = ["// Apex-authored probe fixture (MIT). Plan 0.1.1 P0.",
          "versioninfo", "{", f'\t"editorextension" "{marker}"', '\t"editorversion" "400"',
          '\t"editorbuild" "10773"', '\t"mapversion" "1"', '\t"formatversion" "100"', '\t"prefab" "0"']
@@ -60,14 +68,17 @@ def vmf(marker="strata", extra_versioninfo="", extra_block="", skew_top=False):
     L += ["\t}", "}", "world", "{", '\t"id" "1"', '\t"mapversion" "1"', '\t"classname" "worldspawn"',
           '\t"skyname" "sky_black_nofog"', "\tsolid", "\t{", '\t\t"id" "2"']
     for sid, (n, q) in enumerate(faces(), 1):
-        plane = " ".join(f"({fmt(p)})" for p in q[:3])
+        if digits17:
+            q = [rotated(p) for p in q]
+        f = fmt17 if digits17 else fmt
+        plane = " ".join(f"({f(p)})" for p in q[:3])
         pts = [list(p) for p in q]
         if skew_top and n == (0, 0, 1):
             pts[3][2] += 0.5          # 4th point, not part of `plane`: now 0.5 off the plane
         u, v = uv(n)
         L += ["\t\tside", "\t\t{", f'\t\t\t"id" "{sid}"', f'\t\t\t"plane" "{plane}"', "\t\t\tpoint_data",
               "\t\t\t{", '\t\t\t\t"numpts" "4"']
-        L += [f'\t\t\t\t"point" "{i} {fmt(p)}"' for i, p in enumerate(pts)]
+        L += [f'\t\t\t\t"point" "{i} {f(p)}"' for i, p in enumerate(pts)]
         L += ["\t\t\t}", '\t\t\t"material" "TOOLS/TOOLSNODRAW"', f'\t\t\t"uaxis" "{u}"', f'\t\t\t"vaxis" "{v}"',
               '\t\t\t"rotation" "0"', '\t\t\t"lightmapscale" "16"', '\t\t\t"smoothing_groups" "0"', "\t\t}"]
     L += ["\t\teditor", "\t\t{", '\t\t\t"color" "0 180 200"', '\t\t\t"visgroupshown" "1"',
@@ -85,6 +96,7 @@ CASES = {
     "a_editorext_apex.vmf": {"marker": "apex"},
     "b_unknown_key.vmf": {"extra_versioninfo": '"apexversion" "0.1.3.1"'},
     "c_point_data_mismatch.vmf": {"skew_top": True},
+    "f_17_digits.vmf": {"digits17": True},
     "d_unknown_block.vmf": {"extra_block": 'apexblock\n{\n\t"foo" "bar"\n}'},
 }
 
