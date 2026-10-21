@@ -30,10 +30,12 @@ CPMAddPackage(
   OPTIONS "SPDLOG_INSTALL OFF" "SPDLOG_BUILD_EXAMPLE OFF" "SPDLOG_BUILD_TESTS OFF"
 )
 
-# SourcePP v2026.9.11: only the libraries 0.1 needs (vpkpp for VPK, steampp for install detection).
+# SourcePP v2026.9.11: only the libraries 0.1 needs (vpkpp, steampp, vtfpp, toolpp).
 set(SOURCEPP_LIBS_START_ENABLED OFF CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_VPKPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_STEAMPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_VTFPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_TOOLPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 CPMAddPackage(
   NAME sourcepp

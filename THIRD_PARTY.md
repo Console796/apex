@@ -13,4 +13,4 @@ The row's first column is the exact name used in `deps.cmake` (CPM) or `find_pac
 | Qt6 | LGPL-3.0 | system package, dynamically linked | ui, app |
 | glm | MIT | CPM, pinned commit | core |
 | spdlog | MIT | CPM, pinned commit | core |
-| sourcepp | MIT | CPM, pinned commit (v2026.9.11; vpkpp, steampp) | assets |
+| sourcepp | MIT | CPM, pinned commit (v2026.9.11; vpkpp, steampp, vtfpp, toolpp) | assets |
