@@ -75,8 +75,11 @@ target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_matching.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
-apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp DEPS apex_core)
-target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp)
+apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
+                         src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp
+                         src/assets/material_cache.cpp DEPS apex_core)
+target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
+                                          sourcepp::vtfpp sourcepp::toolpp)
 apex_layer(render DEPS apex_document apex_assets)
 apex_layer(viewport DEPS apex_render apex_document)
 
