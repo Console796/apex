@@ -70,7 +70,8 @@ apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths
                        src/core/log.cpp src/core/job_pool.cpp
            DEPS glm::glm spdlog::spdlog)
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
-apex_layer(geometry DEPS apex_core)
+apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_matching.cpp
+           DEPS apex_core)
 apex_layer(document DEPS apex_geometry apex_core)
 apex_layer(assets DEPS apex_core)
 apex_layer(render DEPS apex_document apex_assets)
