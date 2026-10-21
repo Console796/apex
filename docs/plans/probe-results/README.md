@@ -23,8 +23,10 @@ Strata Hammer (build 10773); CRLF. Findings feed D10, D11 and D18 in `../0.2.md`
   are wrapped in `hidden` and carry `visgroupid "11"` and `visgroupshown "0"` in `editor`.
 - `f_17_digits_saved.vmf`: `probe/f_17_digits.vmf` opened and saved unmodified. Hammer re-writes
   planes and `point_data` with 6 significant digits and drops the leading comment.
-- Pending: clipboard formats (Wine's clipboard is not visible to `wl-paste`; read the X11 side
-  with a Tk script), nothing else.
+- Clipboard (solid copied in Hammer, read from a second Win32 process in the same Wine prefix):
+  formats CF_TEXT, CF_UNICODETEXT, CF_OEMTEXT, CF_LOCALE and registered ids 49215/49216. Bytes
+  were unreadable cross-process (null `GetClipboardData`, OLE `DV_E_FORMATETC`). A paste inside
+  Hammer works. `wl-paste` sees nothing. Entity copy not probed.
 - `hammer_default_keybindings.md`: Strata's shipped default bindings (110 actions in four window
   contexts), derived from `hammer/cfg/HammerKeyConfig_default.cfg` in the install. Only the table is
   committed. Bindings that are hard-coded in Hammer (camera movement, mouse modifiers) are not in the
