@@ -94,6 +94,8 @@ if(APEX_BUILD_TESTS)
 endif()
 
 if(APEX_BUILD_TESTS)
+  add_executable(apex_replane tools/replane/main.cpp)
+  target_link_libraries(apex_replane PRIVATE apex_document apex_geometry apex_core apex_warnings)
   add_executable(apex_vmf_dump tools/vmf_dump/main.cpp)
   target_link_libraries(apex_vmf_dump PRIVATE apex_document apex_geometry apex_core apex_warnings)
 endif()
