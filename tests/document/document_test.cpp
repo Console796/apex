@@ -125,6 +125,34 @@ TEST_CASE("Document typed arenas preserve hierarchy, IDs and byte spelling") {
     CHECK(camera); CHECK(cordon); CHECK(unknown);
 }
 
+TEST_CASE("P0 red: adding a second entity visgroup preserves the first membership (D5)") {
+    Document doc(parsed(read(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf/p0_brush.vmf")));
+    std::optional<NodeHandle> editor;
+    for (const auto h : nodes(doc)) {
+        const auto* node = doc.get(h);
+        if (node->block->key() == "editor" && node->block->find("visgroupid") &&
+            std::holds_alternative<Handle<Entity>>(*doc.handle(node->parent))) editor = h;
+    }
+    REQUIRE(editor);
+    REQUIRE(doc.get(*editor)->block->findAll("visgroupid").size() == 1);
+    REQUIRE(*doc.get(*editor)->block->find("visgroupid")->decodedValue() == "1");
+    auto tx = doc.begin("add second visgroup");
+    tx.setKeyValue(*editor, "visgroupid", "2");
+    tx.commit();
+    auto reloaded = parsed(saved(doc));
+    REQUIRE(reloaded.entities.size() == 1);
+    REQUIRE(reloaded.entities[0].editor);
+    std::vector<std::string> memberships;
+    for (const auto* value : reloaded.entities[0].editor->findAll("visgroupid")) {
+        auto text = value->text();
+        REQUIRE(text);
+        memberships.push_back(*text);
+    }
+    const std::vector<std::string> expected{"1", "2"};
+    CHECK_MESSAGE(memberships == expected,
+                  "D5 bug: adding visgroup 2 overwrites the entity's existing visgroup 1 membership");
+}
+
 TEST_CASE("Document SideId index follows solid create destroy undo redo") {
     Document doc(parsed("world { id 1 solid { id 90 side { id 40 } side { id 80 } } }\n"));
     REQUIRE(doc.side(40));
