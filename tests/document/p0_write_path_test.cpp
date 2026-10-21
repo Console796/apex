@@ -118,7 +118,7 @@ TEST_CASE("P0 red: rotated brush point_data stays within its saved plane trust t
         for (std::size_t i = 0; i < values.size(); ++i) {
             // There is no transaction API for nested point_data yet. Use the existing VMF
             // setter to format xyz, then restore the point index required by the codec.
-            REQUIRE(values[i]->set(rotate((*points)[i])));
+            REQUIRE(values[i]->setGeometry(rotate((*points)[i])));
             auto xyz = values[i]->text();
             REQUIRE(xyz);
             REQUIRE(values[i]->set(std::to_string(i) + " " + *xyz));

@@ -48,6 +48,10 @@ public:
     Result<void> set(Vec3 value);
     Result<void> set(PlanePoints value);
     Result<void> set(UvAxis value);
+    // Positions, origins and angles need round-trip precision; colors keep set(Vec3).
+    Result<void> setGeometry(Vec3 value);
+    // Only the axis components use geometry precision; shift/scale keep six digits.
+    Result<void> setGeometry(UvAxis value);
 
 private:
     kv1::Node* node_ = nullptr;

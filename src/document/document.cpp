@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -43,6 +44,32 @@ void set(kv1::Node& block, const std::string& key, const std::optional<std::stri
 std::string folded(std::string key) {
     for (auto& c : key) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
     return key;
+}
+bool sameUv(const geometry::FaceUv& a, const geometry::FaceUv& b) {
+    return a.uaxis == b.uaxis && a.vaxis == b.vaxis && a.shiftU == b.shiftU &&
+           a.shiftV == b.shiftV && a.scaleU == b.scaleU && a.scaleV == b.scaleV;
+}
+bool samePolygon(const geometry::ConvexPolyhedron& a, const geometry::Face& fa,
+                 const geometry::ConvexPolyhedron& b, const geometry::Face& fb) {
+    if (fa.vertices.size() != fb.vertices.size()) return false;
+    const auto count = fa.vertices.size();
+    for (std::size_t start = 0; start < count; ++start) {
+        bool equal = true;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (a.vertices[fa.vertices[i]] != b.vertices[fb.vertices[(start + i) % count]]) {
+                equal = false;
+                break;
+            }
+        }
+        if (equal) return true;
+    }
+    return false;
+}
+vmf::Vec3 vector(DVec3 value) { return {value.x, value.y, value.z}; }
+template <typename T> std::string geometryText(T value) {
+    auto node = kv1::Node::value("", "");
+    vmf::Value(&node).setGeometry(value).value();
+    return node.decodedValue().value();
 }
 bool identity(std::string_view key, const kv1::Node& block) {
     return ciEquals(key, "id") ||
@@ -645,6 +672,77 @@ void Transaction::setSideKeyValue(SideId sideId, std::string key, std::string te
         return;
     }
     throw std::invalid_argument("side index out of range");
+}
+void Transaction::setSolidGeometry(Handle<Solid> h, const geometry::SolidGeometry& geometry) {
+    const auto id = checked(h);
+    const auto& original = *doc_->node(id)->block;
+    auto before = geometry::solidGeometry(original);
+    if (!before) throw std::invalid_argument(before.error().what());
+    const auto sideIds = [](const auto& sides) {
+        std::set<std::uint32_t> ids;
+        for (const auto& side : sides) {
+            if (!ids.insert(side.sideId).second)
+                throw std::invalid_argument("geometry requires unique side IDs");
+        }
+        return ids;
+    };
+    if (sideIds(before->sides) != sideIds(geometry.sides) ||
+        sideIds(before->poly.faces) != sideIds(geometry.poly.faces))
+        throw std::invalid_argument("geometry side IDs do not match solid");
+    if (!geometry.poly.isValid()) throw std::invalid_argument("invalid solid geometry");
+
+    std::map<std::uint32_t, const geometry::Face*> oldFaces, newFaces;
+    for (const auto& face : before->poly.faces) oldFaces.emplace(face.sideId, &face);
+    for (const auto& face : geometry.poly.faces) newFaces.emplace(face.sideId, &face);
+    auto block = original;
+    bool changed = false;
+    for (auto* side : block.findAll("side")) {
+        const auto sideId = static_cast<std::uint32_t>(side->find("id")->asInt().value());
+        const auto found = newFaces.find(sideId);
+        // Redundant input planes have no boundary face; leave those source sides intact.
+        if (found == newFaces.end()) continue;
+        const auto& face = *found->second;
+        const auto& old = *oldFaces.at(sideId);
+        const bool polygonChanged = !samePolygon(before->poly, old, geometry.poly, face);
+        const bool uvChanged = !sameUv(old.uv, face.uv);
+        if (!polygonChanged && !uvChanged) continue;
+        if (polygonChanged) {
+            // A redundant source side has no vertices to transform. Identity is safe,
+            // but retaining its old plane during a move could clip the edited brush.
+            if (newFaces.size() != before->sides.size())
+                throw std::invalid_argument("geometry side IDs have no matching boundary faces");
+            const auto points = geometry.poly.sourcePlanePoints(face);
+            if (!points) throw std::invalid_argument("face has no Source plane points");
+            vmf::PlanePoints plane;
+            for (std::size_t i = 0; i < plane.points.size(); ++i) plane.points[i] = vector((*points)[i]);
+            vmf::Value(side->find("plane")).set(plane).value();
+            auto data = kv1::Node::block("point_data");
+            data.append(kv1::Node::value("numpts", std::to_string(face.vertices.size()))).value();
+            // The kernel loop is counter-clockwise; Source point_data is clockwise.
+            std::size_t index = 0;
+            for (auto vertex = face.vertices.rbegin(); vertex != face.vertices.rend(); ++vertex) {
+                data.append(kv1::Node::value("point", std::to_string(index++) + " " +
+                    geometryText(vector(geometry.poly.vertices[*vertex])))).value();
+            }
+            if (auto* existing = side->find("point_data")) *existing = std::move(data);
+            else side->append(std::move(data)).value();
+        }
+        if (old.uv.uaxis != face.uv.uaxis || old.uv.shiftU != face.uv.shiftU ||
+            old.uv.scaleU != face.uv.scaleU) {
+            set(*side, "uaxis", geometryText(vmf::UvAxis{vector(face.uv.uaxis), face.uv.shiftU,
+                                                        face.uv.scaleU}));
+        }
+        if (old.uv.vaxis != face.uv.vaxis || old.uv.shiftV != face.uv.shiftV ||
+            old.uv.scaleV != face.uv.scaleV) {
+            set(*side, "vaxis", geometryText(vmf::UvAxis{vector(face.uv.vaxis), face.uv.shiftV,
+                                                        face.uv.scaleV}));
+        }
+        changed = true;
+    }
+    if (!changed) return;
+    touch(id, Dirty::Geometry);
+    doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
+    ++operations_;
 }
 ChangeSet Transaction::commit() {
     if (!doc_) throw std::logic_error("transaction already finished");

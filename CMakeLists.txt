@@ -77,6 +77,7 @@ apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths
            DEPS glm::glm spdlog::spdlog)
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_matching.cpp
+                           src/geometry/solid_geometry.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp

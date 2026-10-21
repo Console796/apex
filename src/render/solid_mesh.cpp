@@ -1,7 +1,6 @@
 #include "render/solid_mesh.hpp"
 
-#include "document/vmf.hpp"
-#include "geometry/convex_polyhedron.hpp"
+#include "geometry/solid_geometry.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -35,48 +34,9 @@ std::vector<std::string> solidMaterials(const kv1::Node& solidBlock) {
 
 Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
                             const std::function<TextureSize(std::string_view)>& sizeOf) {
-    kv1::Node copy = solidBlock; // vmf::Value wraps mutable nodes; this is a private copy.
-    std::vector<geometry::PlaneSide> sides;
-    for (kv1::Node* side : copy.findAll("side")) {
-        geometry::PlaneSide value;
-        vmf::Value plane(side->find("plane"));
-        if (!plane) return fail("side without plane");
-        auto points = plane.asPlane();
-        if (!points) return std::unexpected(points.error());
-        const auto vec = [](vmf::Vec3 v) { return DVec3{v[0], v[1], v[2]}; };
-        const auto derived = geometry::planePointsFromSource(vec(points->points[0]), vec(points->points[1]),
-                                                             vec(points->points[2]));
-        if (!derived) return fail("side with degenerate plane");
-        value.plane = *derived;
-        if (vmf::Value id(side->find("id")); id) {
-            if (auto v = id.asInt()) value.sideId = static_cast<std::uint32_t>(*v);
-        }
-        if (vmf::Value material(side->find("material")); material) {
-            if (auto v = material.text()) value.material = lower(*v);
-        }
-        if (vmf::Value u(side->find("uaxis")); u) {
-            if (auto v = u.asUvAxis()) {
-                value.uv.uaxis = vec(v->axis);
-                value.uv.shiftU = v->shift;
-                value.uv.scaleU = v->scale;
-            }
-        }
-        if (vmf::Value v(side->find("vaxis")); v) {
-            if (auto a = v.asUvAxis()) {
-                value.uv.vaxis = vec(a->axis);
-                value.uv.shiftV = a->shift;
-                value.uv.scaleV = a->scale;
-            }
-        }
-        sides.push_back(std::move(value));
-    }
-    if (sides.size() < 4) return fail("solid with fewer than four sides");
-    auto polyhedron = geometry::ConvexPolyhedron::fromPlanes(sides);
-    if (!polyhedron) {
-        std::string message = "solid is not a valid convex polyhedron";
-        if (!polyhedron.error().empty()) message += ": " + polyhedron.error().front().message;
-        return fail(std::move(message));
-    }
+    auto geometry = geometry::solidGeometry(solidBlock);
+    if (!geometry) return std::unexpected(geometry.error());
+    const auto* polyhedron = &geometry->poly;
 
     SolidMesh mesh;
     mesh.bounds = polyhedron->bounds();
@@ -85,10 +45,10 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
     try {
     for (const geometry::Face& face : polyhedron->faces) {
         if (face.vertices.size() < 3) continue;
-        const auto [it, inserted] = batchIndex.try_emplace(face.material, mesh.batches.size());
-        if (inserted) mesh.batches.push_back({face.material, {}, {}, {}});
+        const auto [it, inserted] = batchIndex.try_emplace(lower(face.material), mesh.batches.size());
+        if (inserted) mesh.batches.push_back({it->first, {}, {}, {}});
         BatchMesh& batch = mesh.batches[it->second];
-        const TextureSize size = sizeOf(face.material);
+        const TextureSize size = sizeOf(it->first);
         const auto base = static_cast<std::uint32_t>(batch.vertices.size());
         for (const std::size_t index : face.vertices) {
             const DVec3 p = polyhedron->vertices[index];

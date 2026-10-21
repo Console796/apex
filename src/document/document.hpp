@@ -2,6 +2,7 @@
 
 #include "core/handle.hpp"
 #include "document/vmf.hpp"
+#include "geometry/solid_geometry.hpp"
 
 #include <cstdint>
 #include <deque>
@@ -188,6 +189,8 @@ public:
     void setEditor(NodeHandle handle, EditorEdit edit);
     // Side identity is stable; the face index is resolved internally for each write.
     void setSideKeyValue(SideId side, std::string key, std::string value);
+    // The polyhedron supplies vertices and UVs. Input side IDs must remain unchanged.
+    void setSolidGeometry(Handle<Solid> solid, const geometry::SolidGeometry& geometry);
     ChangeSet commit(); // Consecutive single edits of the same node/key coalesce.
 
 private:

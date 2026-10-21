@@ -118,12 +118,30 @@ std::string real(double value) {
     return {buffer, end};
 }
 
-std::string vectorText(const Vec3& value, char open = '\0', char close = '\0') {
+std::string geometryReal(double value) {
+    const double integer = std::round(value);
+    if (std::abs(value - integer) <= 1e-9) value = integer;
+    // Suppress near-zero transform residue, including the D18 example 1e-7.
+    if (std::abs(value) <= 1e-7) value = 0.0;
+    char buffer[512]{};
+    const auto [end, error] =
+        std::to_chars(buffer, buffer + sizeof(buffer), value, std::chars_format::fixed);
+    if (error != std::errc{}) return "0";
+    return {buffer, end};
+}
+
+bool finite(const Vec3& value) {
+    return std::ranges::all_of(value, [](double component) { return std::isfinite(component); });
+}
+
+std::string vectorText(const Vec3& value, char open = '\0', char close = '\0',
+                       bool geometry = false) {
     std::string result;
     if (open != '\0') {
         result += open;
     }
-    result += real(value[0]) + " " + real(value[1]) + " " + real(value[2]);
+    const auto format = geometry ? geometryReal : real;
+    result += format(value[0]) + " " + format(value[1]) + " " + format(value[2]);
     if (close != '\0') {
         result += close;
     }
@@ -431,16 +449,28 @@ Result<void> Value::set(Vec3 value) {
 Result<void> Value::set(PlanePoints value) {
     std::string result;
     for (std::size_t i = 0; i < value.points.size(); ++i) {
+        if (!finite(value.points[i])) return std::unexpected(invalid("non-finite geometry"));
         if (i != 0) {
             result += ' ';
         }
-        result += vectorText(value.points[i], '(', ')');
+        result += vectorText(value.points[i], '(', ')', true);
     }
     return set(std::move(result));
 }
 
 Result<void> Value::set(UvAxis value) {
     return set("[" + vectorText(value.axis) + " " + real(value.shift) + "] " +
+               real(value.scale));
+}
+
+Result<void> Value::setGeometry(Vec3 value) {
+    if (!finite(value)) return std::unexpected(invalid("non-finite geometry"));
+    return set(vectorText(value, '\0', '\0', true));
+}
+
+Result<void> Value::setGeometry(UvAxis value) {
+    if (!finite(value.axis)) return std::unexpected(invalid("non-finite geometry"));
+    return set("[" + vectorText(value.axis, '\0', '\0', true) + " " + real(value.shift) + "] " +
                real(value.scale));
 }
 
