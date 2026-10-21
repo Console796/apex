@@ -19,6 +19,10 @@ The version names the **last completed sub-milestone**. When 0.1.10 lands, 0.1 i
 next landed work is 0.2.1. Git tags (`v0.1.3`) mark completed sub-milestones and carry no build
 number.
 
+**Status:** 0.1.1–0.1.9 have landed (`version.txt` reads 0.1.9). 0.1.10 (viewports, shell,
+packaging, spec amendments) is in progress: the spec amendments and packaging are done, and the
+version bump and `v0.1.10` tag follow the owner's UI review, which closes 0.1.
+
 ## Principles that hold across every milestone
 
 1. **Every task is doable in a 3D viewport.** Users can open any number of viewports and switch
@@ -57,6 +61,11 @@ select, gizmos (translate/rotate/scale, local/global, pivot) with snapping, surf
 and work planes, undo history panel, clipboard/duplicate/paste-special, groups, visgroups,
 hide/isolate, outliner (editable), FGD-driven entity property inspector, point-entity placement on
 surfaces, autosave + crash recovery.
+Scope adjustments after 0.1 (plan 0.1.10): the viewport split tree, per-viewport header menus,
+`ViewContext`/`WorkPlane` types, the log console, status bar, theme tokens and a **read-only**
+outliner are already in 0.1. 0.2 therefore starts from them: it wires tools to `ViewContext`,
+makes the outliner editable, and builds the inspector. Face selection uses `SideId` (plan 0.1
+D21), never a face index. Nothing else from 0.2 slipped into 0.1.
 **Exit:** an existing map can be rearranged and its entity keyvalues edited entirely in 3D, and
 the result opens in Strata Hammer unchanged except for the edits.
 

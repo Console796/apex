@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
+
 file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/version.txt APEX_VERSION_TXT LIMIT_COUNT 1)
 string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ "${APEX_VERSION_TXT}")
 set(APEX_VERSION_MAJOR ${CMAKE_MATCH_1})
@@ -8,6 +9,8 @@ set(APEX_VERSION_SUB ${CMAKE_MATCH_3})
 
 project(Apex VERSION ${APEX_VERSION_MAJOR}.${APEX_VERSION_MILESTONE}.${APEX_VERSION_SUB}
         LANGUAGES CXX)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,15 +94,31 @@ apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp sr
 # GLSL in src/render/shaders is compiled to SPIR-V and embedded in gen/render/shaders_spv.hpp (D14).
 apex_compile_shaders(TARGET apex_render DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders
                      HEADER render/shaders_spv.hpp)
-apex_layer(viewport DEPS apex_render apex_document)
+apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
+                         src/viewport/controllers.cpp src/viewport/view_context.cpp
+                         src/viewport/layout.cpp src/viewport/map_views.cpp
+           DEPS apex_render apex_document)
 
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
-  apex_layer(ui SOURCES src/ui/main_window.cpp DEPS apex_viewport Qt6::Widgets)
+  apex_layer(ui SOURCES src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
+                        src/ui/outliner_panel.cpp src/ui/log_panel.cpp
+             DEPS apex_viewport Qt6::Widgets ads::qtadvanceddocking-qt6)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
   add_executable(apex src/app/main.cpp)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
+  if(APEX_BUILD_TESTS)
+    # Headless shell tests (QT_QPA_PLATFORM=offscreen).
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp)
+    target_link_libraries(apex_ui_tests PRIVATE apex_ui apex_warnings doctest::doctest)
+    target_compile_definitions(apex_ui_tests PRIVATE
+                               APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
+    add_test(NAME apex_ui_tests COMMAND apex_ui_tests)
+    set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0")
+  endif()
 endif()
+
+include(Packaging)
 
 if(APEX_BUILD_TESTS)
   enable_testing()

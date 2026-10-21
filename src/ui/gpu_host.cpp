@@ -1,0 +1,163 @@
+#include "render/vk.hpp"  // volk first: Qt's Vulkan header must not bring in prototypes.
+
+#include "ui/gpu_host.hpp"
+
+#include <QFile>
+#include <QGuiApplication>
+#include <QVulkanInstance>
+
+#include "assets/material_cache.hpp"
+#include "assets/vfs.hpp"
+#include "core/job_pool.hpp"
+#include "core/log.hpp"
+#include "document/document.hpp"
+
+namespace apex::ui {
+
+GpuHost::GpuHost(QObject* parent) : QObject(parent) {}
+
+GpuHost::~GpuHost() {
+    unbind();
+    if (context_) context_->waitIdle();
+    // Members die in reverse order: mirror, caches, renderers, heap, jobs, Qt wrapper, context.
+}
+
+bool GpuHost::ensure() {
+    if (context_) return true;
+    if (tried_) return false;
+    tried_ = true;
+
+    const QString platform = QGuiApplication::platformName();
+    render::ContextOptions options;
+    std::vector<const char*> wanted = {VK_KHR_SURFACE_EXTENSION_NAME};
+    if (platform.startsWith(QLatin1String("wayland"))) {
+        wanted.push_back("VK_KHR_wayland_surface");
+    } else if (platform == QLatin1String("xcb")) {
+        wanted.push_back("VK_KHR_xcb_surface");
+        wanted.push_back("VK_KHR_xlib_surface");
+    } else {
+        error_ = tr("The \"%1\" Qt platform has no Vulkan surfaces.").arg(platform);
+        log::warn("viewports: {}", error_.toStdString());
+        return false;
+    }
+    for (const char* name : wanted) {
+        if (render::Context::instanceExtensionSupported(name)) options.instanceExtensions.emplace_back(name);
+        else if (std::string_view(name) == VK_KHR_SURFACE_EXTENSION_NAME ||
+                 std::string_view(name) == "VK_KHR_wayland_surface" ||
+                 std::string_view(name) == "VK_KHR_xcb_surface") {
+            error_ = tr("Vulkan instance extension %1 is missing.").arg(QString::fromLatin1(name));
+            log::warn("viewports: {}", error_.toStdString());
+            return false;
+        }
+    }
+
+    auto created = render::Context::create(options);
+    if (!created) {
+        error_ = tr("No usable Vulkan device: %1").arg(QString::fromStdString(created.error().what()));
+        log::warn("viewports: {}", error_.toStdString());
+        return false;
+    }
+    auto context = std::move(*created);
+
+    auto qt = std::make_unique<QVulkanInstance>();
+    qt->setVkInstance(context->instance());
+    if (!qt->create()) {
+        error_ = tr("Qt could not wrap the Vulkan instance (error %1).").arg(static_cast<int>(qt->errorCode()));
+        log::warn("viewports: {}", error_.toStdString());
+        return false;
+    }
+
+    auto heap = render::TextureHeap::create(*context);
+    if (!heap) {
+        error_ = tr("Texture heap: %1").arg(QString::fromStdString(heap.error().what()));
+        log::warn("viewports: {}", error_.toStdString());
+        return false;
+    }
+
+    jobs_ = std::make_unique<JobPool>(2);
+    context_ = std::move(context);
+    qtInstance_ = std::move(qt);
+    heap_ = std::move(*heap);
+    log::info("viewports: GPU {}{}", context_->info().name, context_->info().validation ? " (validation on)" : "");
+    emit gpuNameChanged(gpuName());
+    return true;
+}
+
+QString GpuHost::gpuName() const {
+    return context_ ? QString::fromStdString(context_->info().name) : QString();
+}
+
+render::Renderer* GpuHost::renderer(VkFormat colorFormat) {
+    if (!context_) return nullptr;
+    if (auto it = renderers_.find(colorFormat); it != renderers_.end()) return it->second.get();
+    auto created = render::Renderer::create(*context_, *heap_, colorFormat, render::SwapchainDepth::kFormat);
+    if (!created) {
+        log::error("viewports: renderer for format {}: {}", static_cast<int>(colorFormat), created.error().what());
+        renderers_[colorFormat] = nullptr;
+        return nullptr;
+    }
+    return (renderers_[colorFormat] = std::move(*created)).get();
+}
+
+void GpuHost::unbind() {
+    if (document_ && observerToken_) document_->unobserve(observerToken_);
+    observerToken_ = 0;
+    if (context_) context_->waitIdle();
+    mirror_.reset();
+    classes_.reset();
+    materials_.reset();
+    vfs_.reset();
+    document_ = nullptr;
+}
+
+void GpuHost::setDocument(document::Document* document, const assets::GameProfile* profile) {
+    unbind();
+    document_ = document;
+    if (!document || !context_) return;
+
+    assets::GameProfile effective;
+    if (profile) effective = *profile;
+    auto loadVfs = [&](const assets::GameProfile& p) { return assets::Vfs::load(p, *jobs_); };
+    auto vfs = profile ? loadVfs(effective) : Result<assets::Vfs>(std::unexpected(Error{ErrorCode::NotFound, "no profile"}));
+    if (!vfs) {
+        if (profile) log::warn("viewports: game files unavailable ({}); using placeholder textures", vfs.error().what());
+        const QString info = emptyGame_.filePath(QStringLiteral("gameinfo.txt"));
+        if (!QFile::exists(info)) {
+            QFile f(info);
+            if (f.open(QIODevice::WriteOnly)) {
+                f.write("GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+            }
+        }
+        assets::GameProfile empty;
+        empty.gameDirectory = emptyGame_.path().toStdString();
+        vfs = loadVfs(empty);
+    }
+    if (!vfs) {
+        log::error("viewports: cannot create a file system: {}", vfs.error().what());
+        document_ = nullptr;
+        return;
+    }
+    vfs_ = std::make_unique<assets::Vfs>(std::move(*vfs));
+    materials_ = std::make_unique<assets::MaterialCache>(*vfs_, *jobs_, 256ull * 1024 * 1024,
+                                                         effective.escapeMode);
+    if (profile && !profile->fgds.empty()) {
+        if (auto table = assets::loadEntityClasses(profile->fgds)) {
+            classes_ = std::make_unique<assets::EntityClassTable>(std::move(*table));
+        } else {
+            log::warn("viewports: FGD load failed: {}", table.error().what());
+        }
+    }
+    mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get());
+    mirror_->rebuild(*document);
+    observerToken_ = document->observe([this](const document::ChangeSet& changes) {
+        if (mirror_ && document_) mirror_->apply(*document_, changes);
+    });
+}
+
+bool GpuHost::pump() {
+    if (!mirror_) return false;
+    mirror_->pump();
+    return mirror_->needsRedraw();
+}
+
+}  // namespace apex::ui

@@ -77,3 +77,20 @@ CPMAddPackage(
 # Third-party headers: keep the project's warning flags out of VMA's header.
 target_include_directories(VulkanMemoryAllocator SYSTEM INTERFACE
                            "${VulkanMemoryAllocator_SOURCE_DIR}/include")
+
+if(APEX_BUILD_APP)
+  # Qt Advanced Docking System 4.4.1 (LGPL-2.1; plan 0.1, D16), static. Needs Qt6 (found by the
+  # caller) and qt6-base-private-dev. Side panels only: never host native Vulkan windows (D15).
+  set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(BUILD_STATIC ON CACHE BOOL "" FORCE)
+  set(QT_NO_PRIVATE_MODULE_WARNING ON)
+  CPMAddPackage(
+    NAME qtads
+    GITHUB_REPOSITORY githubuser0xFFFF/Qt-Advanced-Docking-System
+    GIT_TAG 258340842056271ec207f9b112ac5efc45d9b5f5
+    DOWNLOAD_ONLY YES
+  )
+  if(qtads_ADDED)
+    add_subdirectory(${qtads_SOURCE_DIR} ${qtads_BINARY_DIR} EXCLUDE_FROM_ALL SYSTEM)
+  endif()
+endif()

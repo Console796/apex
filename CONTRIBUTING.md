@@ -23,6 +23,14 @@ ctest --preset linux-gcc-debug
 Presets: `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan`,
 `windows-msvc-{debug,release}`.
 
+## Packaging
+
+`tools/package.py` builds release archives from an existing release build tree (build the `apex`
+target first): a Linux `.tar.gz` (executable, Qt runtime libraries and platform plugins, and a
+launcher script) or, on Windows, a `.zip` (`apex.exe` plus `windeployqt` output). Archives go to
+`dist/`. Install rules live in `cmake/Packaging.cmake`. Use `--no-bundle-qt` to skip the Qt
+runtime. There is no AppImage yet. The Vulkan loader and GPU drivers always come from the host.
+
 ## The CI gate
 
 CI runs locally (plan 0.1, D22): `tools/ci.py`. It needs `APEX_P2CE_DIR` pointing at a P2CE install
