@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <ostream>
 #include <string_view>
 
 TEST_CASE("Source path normalization handles separators roots and dot components") {

@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <array>
+#include <ostream>
 #include <string>
 #include <string_view>
 
