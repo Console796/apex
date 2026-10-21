@@ -92,6 +92,11 @@ if(APEX_BUILD_TESTS)
   add_subdirectory(tests)
 endif()
 
+if(APEX_BUILD_TESTS)
+  add_executable(apex_vmf_dump tools/vmf_dump/main.cpp)
+  target_link_libraries(apex_vmf_dump PRIVATE apex_document apex_geometry apex_core apex_warnings)
+endif()
+
 if(APEX_BUILD_FUZZ)
   if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # Compile the codec itself with coverage and sanitizers, independently of apex_core.

@@ -309,6 +309,21 @@ def windows_stage(build, report):
             subprocess.run([str(ROOT / "tools" / "winvm.sh"), "stop"])
 
 
+def crosscheck_stage(corpus, fixtures_only, report):
+    """VMF parse vs srctools (0.1.4 case 3). Needs .venv-tools with srctools installed."""
+    py = ROOT / ".venv-tools" / "bin" / "python"
+    dump = ROOT / "build" / "linux-gcc-release" / "apex_vmf_dump"
+    if not (corpus and Path(corpus).is_dir()):
+        report.add("srctools-crosscheck", "skipped" if fixtures_only else "FAIL", 0,
+                   "APEX_P2CE_DIR is unset or invalid")
+    elif not py.exists() or not dump.exists():
+        report.add("srctools-crosscheck", "skipped", 0,
+                   "needs .venv-tools (python3 -m venv .venv-tools && .venv-tools/bin/pip install srctools)")
+    else:
+        run([str(py), "-W", "ignore", str(ROOT / "tools" / "srctools_crosscheck.py"), str(dump), corpus],
+            report, "srctools-crosscheck")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fast", action="store_true", help="debug build + tests + checks only (pre-push)")
@@ -336,8 +351,8 @@ def main():
         corpus_stage(corpus, a.fixtures_only, rep)
         fuzz_stage(build, a.fuzz_seconds, rep)
         # Wired up, empty until their sub-milestones land.
-        for stage, since in [("srctools-crosscheck", "0.1.4"),
-                             ("gpu-lavapipe", "0.1.9"), ("gpu-radv", "0.1.9")]:
+        crosscheck_stage(corpus, a.fixtures_only, rep)
+        for stage, since in [("gpu-lavapipe", "0.1.9"), ("gpu-radv", "0.1.9")]:
             rep.add(stage, "pending", 0, f"not implemented until {since}")
         mode = "never" if a.skip_windows else a.windows
         run_win, why = (True, "--windows always") if mode == "always" else (False, "--windows never")
