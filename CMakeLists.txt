@@ -23,6 +23,7 @@ set(APEX_BUILD_NUMBER 0 CACHE STRING "CI run counter")
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(Layers)
+include(Shaders)
 
 # Git hash and dirty flag for apex/version.hpp.
 find_package(Git QUIET)
@@ -80,7 +81,16 @@ apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
                          src/assets/material_cache.cpp DEPS apex_core)
 target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
                                           sourcepp::vtfpp sourcepp::toolpp)
-apex_layer(render DEPS apex_document apex_assets)
+apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp src/render/vk.cpp
+                         src/render/context.cpp src/render/resources.cpp
+                         src/render/upload_ring.cpp src/render/texture_heap.cpp
+                         src/render/render_target.cpp src/render/swapchain.cpp
+                         src/render/renderer.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
+           DEPS apex_document apex_assets volk::volk GPUOpen::VulkanMemoryAllocator
+                Vulkan::Headers)
+# GLSL in src/render/shaders is compiled to SPIR-V and embedded in gen/render/shaders_spv.hpp (D14).
+apex_compile_shaders(TARGET apex_render DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders
+                     HEADER render/shaders_spv.hpp)
 apex_layer(viewport DEPS apex_render apex_document)
 
 if(APEX_BUILD_APP)

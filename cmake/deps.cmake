@@ -46,3 +46,34 @@ CPMAddPackage(
   GITHUB_REPOSITORY craftablescience/sourcepp
   GIT_TAG ffb7a52d27c0d83a2fb99bf10d3ef46bd545c431
 )
+
+# Vulkan-Headers vulkan-sdk-1.4.357.0, the same headers as the installed SDK (plan 0.1, D13).
+CPMAddPackage(
+  NAME Vulkan-Headers
+  GITHUB_REPOSITORY KhronosGroup/Vulkan-Headers
+  GIT_TAG e3b1eec08173d6b825cd3ac88c885a63b621504a
+  OPTIONS "VULKAN_HEADERS_ENABLE_TESTS OFF" "VULKAN_HEADERS_ENABLE_INSTALL OFF"
+          "VULKAN_HEADERS_ENABLE_MODULE OFF"
+)
+
+# volk vulkan-sdk-1.4.357.0 (Vulkan 1.4.357 loader, plan 0.1, D13). It takes its headers from the
+# Vulkan-Headers pin above, not from a system Vulkan installation.
+set(VOLK_PULL_IN_VULKAN OFF)
+CPMAddPackage(
+  NAME volk
+  GITHUB_REPOSITORY zeux/volk
+  GIT_TAG 776893306c5d3b22b6185b5d4a258b81d94572bf
+  OPTIONS "VOLK_INSTALL OFF"
+)
+target_link_libraries(volk PUBLIC Vulkan::Headers)
+
+# VulkanMemoryAllocator v3.3.0 (plan 0.1, D13). Header-only: exactly one translation unit defines
+# VMA_IMPLEMENTATION (src/render/vma_impl.cpp).
+CPMAddPackage(
+  NAME VulkanMemoryAllocator
+  GITHUB_REPOSITORY GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+  GIT_TAG 1d8f600fd424278486eade7ed3e877c99f0846b1
+)
+# Third-party headers: keep the project's warning flags out of VMA's header.
+target_include_directories(VulkanMemoryAllocator SYSTEM INTERFACE
+                           "${VulkanMemoryAllocator_SOURCE_DIR}/include")

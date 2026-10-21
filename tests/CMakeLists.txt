@@ -8,11 +8,13 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/material_corpus_test.cpp core/json_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
-               geometry/face_matching_test.cpp)
-target_link_libraries(apex_tests PRIVATE apex_assets sourcepp::vpkpp sourcepp::steampp
+               geometry/face_matching_test.cpp
+               render/view_math_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp)
+target_link_libraries(apex_tests PRIVATE apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
                                          sourcepp::vtfpp sourcepp::toolpp
                                          apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
 doctest_discover_tests(apex_tests)
 
-target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+                                              APEX_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/golden")

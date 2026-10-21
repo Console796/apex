@@ -1,0 +1,315 @@
+// Apex-authored render fixture VMF (MIT): floor, two brushes, a brush entity and two point entities.
+versioninfo
+{
+	"editorextension" "strata"
+}
+world
+{
+	"id" "1"
+	"classname" "worldspawn"
+	solid
+	{
+		"id" "2"
+		side
+		{
+			"id" "1"
+			"plane" "(-128 -128 0) (128 128 0) (128 -128 0)"
+			"material" "test/floor"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "2"
+			"plane" "(-128 128 -16) (128 -128 -16) (128 128 -16)"
+			"material" "test/floor"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "3"
+			"plane" "(-128 -128 -16) (128 -128 0) (128 -128 -16)"
+			"material" "test/floor"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "4"
+			"plane" "(128 128 -16) (-128 128 0) (-128 128 -16)"
+			"material" "test/floor"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "5"
+			"plane" "(-128 128 -16) (-128 -128 0) (-128 -128 -16)"
+			"material" "test/floor"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "6"
+			"plane" "(128 -128 -16) (128 128 0) (128 128 -16)"
+			"material" "test/floor"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+	}
+	solid
+	{
+		"id" "3"
+		side
+		{
+			"id" "7"
+			"plane" "(-48 -48 48) (0 0 48) (0 -48 48)"
+			"material" "test/red"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "8"
+			"plane" "(-48 0 0) (0 -48 0) (0 0 0)"
+			"material" "test/red"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "9"
+			"plane" "(-48 -48 0) (0 -48 48) (0 -48 0)"
+			"material" "test/red"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "10"
+			"plane" "(0 0 0) (-48 0 48) (-48 0 0)"
+			"material" "test/red"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "11"
+			"plane" "(-48 0 0) (-48 -48 48) (-48 -48 0)"
+			"material" "test/red"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "12"
+			"plane" "(0 -48 0) (0 0 48) (0 0 0)"
+			"material" "test/red"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+	}
+	solid
+	{
+		"id" "4"
+		side
+		{
+			"id" "13"
+			"plane" "(16 0 32) (64 48 32) (64 0 32)"
+			"material" "test/blue"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "14"
+			"plane" "(16 48 0) (64 0 0) (64 48 0)"
+			"material" "test/blue"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "15"
+			"plane" "(16 0 0) (64 0 32) (64 0 0)"
+			"material" "test/blue"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "16"
+			"plane" "(64 48 0) (16 48 32) (16 48 0)"
+			"material" "test/blue"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "17"
+			"plane" "(16 48 0) (16 0 32) (16 0 0)"
+			"material" "test/blue"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "18"
+			"plane" "(64 0 0) (64 48 32) (64 48 0)"
+			"material" "test/blue"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+	}
+}
+entity
+{
+	"id" "5"
+	"classname" "func_detail"
+	solid
+	{
+		"id" "6"
+		side
+		{
+			"id" "19"
+			"plane" "(-100 40 24) (-70 80 24) (-70 40 24)"
+			"material" "test/green"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "20"
+			"plane" "(-100 80 0) (-70 40 0) (-70 80 0)"
+			"material" "test/green"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 -1 0 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "21"
+			"plane" "(-100 40 0) (-70 40 24) (-70 40 0)"
+			"material" "test/green"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "22"
+			"plane" "(-70 80 0) (-100 80 24) (-100 80 0)"
+			"material" "test/green"
+			"uaxis" "[1 0 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "23"
+			"plane" "(-100 80 0) (-100 40 24) (-100 40 0)"
+			"material" "test/green"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "24"
+			"plane" "(-70 40 0) (-70 80 24) (-70 80 0)"
+			"material" "test/green"
+			"uaxis" "[0 1 0 0] 4"
+			"vaxis" "[0 0 -1 0] 4"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+	}
+}
+entity
+{
+	"id" "7"
+	"classname" "light"
+	"origin" "0 0 96"
+}
+entity
+{
+	"id" "8"
+	"classname" "info_target"
+	"origin" "60 -60 24"
+}
+cameras
+{
+	"activecamera" "-1"
+}
+cordons
+{
+	"active" "0"
+}

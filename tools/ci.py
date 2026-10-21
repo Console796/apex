@@ -5,7 +5,8 @@
                 [--fuzz-seconds N]
 
 Stages: preflight, BUILD counter, Linux presets (build + unit tests), KV1 corpus and fuzz,
-srctools / GPU (pending until their sub-milestones), Windows VM, licence + layer checks. Writes
+srctools crosscheck, GPU render tests on lavapipe (required) and RADV (skipped without a device),
+Windows VM, licence + layer checks. Writes
 build/ci/<build>/report.md and exits non-zero on any failure. Fuzzing defaults to 600 seconds;
 use --fuzz-seconds 20 while iterating, or 0 to disable it explicitly.
 
@@ -74,8 +75,12 @@ class Report:
         print(f"report: {self.dir / 'report.md'}")
 
 
-def run(cmd, report, name, log=None, **kw):
-    """Run a command, tee output to a log file, record the stage."""
+def run(cmd, report, name, log=None, classify=None, **kw):
+    """Run a command, tee output to a log file, record the stage.
+
+    classify(ok, log) -> (status, note) overrides the default ok/FAIL status when a stage needs to
+    read its own output (for example to report "skipped" for a missing device).
+    """
     t = time.time()
     log = log or report.dir / f"{name}.log"
     with open(log, "w", encoding="utf-8") as f:
@@ -83,8 +88,12 @@ def run(cmd, report, name, log=None, **kw):
         f.flush()
         p = subprocess.run(cmd, cwd=kw.pop("cwd", ROOT), stdout=f, stderr=subprocess.STDOUT, **kw)
     ok = p.returncode == 0
-    report.add(name, "ok" if ok else "FAIL", time.time() - t, "" if ok else f"see {log}")
-    return ok
+    if classify:
+        status, note = classify(ok, log)
+    else:
+        status, note = ("ok" if ok else "FAIL"), ("" if ok else f"see {log}")
+    report.add(name, status, time.time() - t, note)
+    return status != "FAIL"
 
 
 def next_build_number():
@@ -242,6 +251,38 @@ def fuzz_stage(build, seconds, report):
         report.add("fuzz", "ok", time.time() - t, f"{seconds}s, warm corpus: {persistent}")
 
 
+def gpu_stage(name, device_filter, report):
+    """Render tests (tests/render/) on one Vulkan device picked by APEX_VK_DEVICE (0.1.9).
+
+    The render tests skip (MESSAGE only, so doctest still passes) when Context::create finds no
+    matching device, and print "no Vulkan device" to the log. Lavapipe is the required software
+    device, so a missing one fails the gate; RADV exists only on some hosts, so it is skipped.
+    """
+    t = time.time()
+    executable = ROOT / "build" / "linux-gcc-release" / "tests" / "apex_tests"
+    if not executable.exists():
+        report.add(name, "FAIL", time.time() - t, f"{executable} is missing; build linux-gcc-release")
+        return
+    env = os.environ.copy()
+    env["APEX_VK_DEVICE"] = device_filter
+    env["APEX_VK_VALIDATION"] = "1"
+    required = device_filter == "llvmpipe"
+    cmd = [str(executable), "-sf=*/tests/render/*"]
+
+    def classify(ok, log):
+        text = log.read_text(encoding="utf-8", errors="replace")
+        if "no Vulkan device" in text:
+            if required:
+                return "FAIL", f"no {device_filter} device; see {log}"
+            return "skipped", f"no {device_filter} device on this host; GPU render tests skipped"
+        if not ok:
+            return "FAIL", f"see {log}"
+        counts = re.search(r"test cases:\s+(\d+) \|\s+(\d+) passed", text)
+        return "ok", (f"{counts.group(2)}/{counts.group(1)} test cases passed" if counts else "")
+
+    run(cmd, report, name, classify=classify, env=env)
+
+
 def windows_stage(build, report):
     ssh = os.environ.get("APEX_WIN_SSH")
     if not ssh:
@@ -350,10 +391,9 @@ def main():
     else:
         corpus_stage(corpus, a.fixtures_only, rep)
         fuzz_stage(build, a.fuzz_seconds, rep)
-        # Wired up, empty until their sub-milestones land.
         crosscheck_stage(corpus, a.fixtures_only, rep)
-        for stage, since in [("gpu-lavapipe", "0.1.9"), ("gpu-radv", "0.1.9")]:
-            rep.add(stage, "pending", 0, f"not implemented until {since}")
+        gpu_stage("gpu-lavapipe", "llvmpipe", rep)
+        gpu_stage("gpu-radv", "radv", rep)
         mode = "never" if a.skip_windows else a.windows
         run_win, why = (True, "--windows always") if mode == "always" else (False, "--windows never")
         if mode == "auto":

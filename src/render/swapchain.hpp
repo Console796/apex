@@ -1,0 +1,79 @@
+#pragma once
+
+// One swapchain per VkSurfaceKHR with on-demand presentation (plan 0.1, D13 and the 0.1.1 spike).
+// The surface comes from ui/ (QVulkanInstance::surfaceForWindow) and stays owned there; destroy
+// the Swapchain before the window/surface. Never rely on Qt's SurfaceAboutToBeDestroyed, and do
+// not reparent viewport windows after creation (see D13 spike result).
+//
+// Frames are rendered only when asked: renderFrame() acquires an image, runs the callback to
+// record commands, submits, and presents. A size change or VK_ERROR_OUT_OF_DATE_KHR /
+// VK_SUBOPTIMAL_KHR recreates the swapchain transparently. One frame in flight.
+
+#include "core/result.hpp"
+#include "render/context.hpp"
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <vector>
+
+namespace apex::render {
+
+struct SwapchainFrame {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent{};
+    std::uint32_t index = 0;
+};
+
+enum class FrameStatus {
+    Presented,
+    Skipped, // Zero-sized surface, or the swapchain was out of date and has been recreated:
+             // nothing was drawn, retry on the next expose/update.
+};
+
+class Swapchain {
+  public:
+    // The callback records into `commands` with the image in COLOR_ATTACHMENT_OPTIMAL and must
+    // leave it in that layout. Pipelines should target frame.format (B8G8R8A8_UNORM or
+    // R8G8B8A8_UNORM when the surface offers it; no sRGB encoding is applied by hardware).
+    using RecordFn = std::function<void(VkCommandBuffer commands, const SwapchainFrame& frame)>;
+
+    // Fails with Unsupported if the device has no swapchain support or the graphics queue cannot
+    // present to the surface. `pixelSize` is used when the surface does not dictate an extent.
+    static Result<std::unique_ptr<Swapchain>> create(Context& context, VkSurfaceKHR surface,
+                                                     VkExtent2D pixelSize);
+    ~Swapchain();
+    Swapchain(const Swapchain&) = delete;
+    Swapchain& operator=(const Swapchain&) = delete;
+
+    // Draws and presents one frame at the window's current pixel size.
+    Result<FrameStatus> renderFrame(VkExtent2D pixelSize, const RecordFn& record);
+
+    VkFormat format() const { return format_; }
+    VkExtent2D extent() const { return extent_; }
+    std::uint32_t imageCount() const { return static_cast<std::uint32_t>(images_.size()); }
+    std::uint32_t recreateCount() const { return recreates_; } // For tests and diagnostics.
+
+  private:
+    Swapchain() = default;
+    Result<bool> recreate(VkExtent2D pixelSize); // false: surface has zero size.
+    void destroyImages();
+
+    Context* context_ = nullptr;
+    VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+    VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
+    VkFormat format_ = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent_{};
+    std::vector<VkImage> images_;
+    std::vector<VkImageView> views_;
+    std::vector<VkSemaphore> renderDone_; // One per image: presentation holds them past the frame.
+    VkSemaphore imageAvailable_ = VK_NULL_HANDLE;
+    VkFence inFlight_ = VK_NULL_HANDLE;
+    VkCommandBuffer commands_ = VK_NULL_HANDLE;
+    bool needsRecreate_ = true;
+    std::uint32_t recreates_ = 0;
+};
+
+} // namespace apex::render
