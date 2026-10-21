@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -118,7 +119,7 @@ TEST_CASE("setSolidGeometry identity preserves every P2CE corpus byte") {
     std::istringstream inventory(read(fs::path(APEX_FIXTURE_DIR) / "geometry/expected_invalid.txt"));
     for (std::string line; std::getline(inventory, line);) {
         const auto reason = line.find("\treconciled:");
-        if (reason != std::string::npos)
+        if (reason != std::string::npos && line.find(";planes:", reason) != std::string::npos)
             invalid.insert(root.generic_string() + "/" + line.substr(0, reason));
     }
     std::size_t count = 0;
@@ -297,4 +298,44 @@ TEST_CASE("setSolidGeometry retains redundant sides on identity and rejects unsa
     CHECK_THROWS_AS(move.setSolidGeometry(handle, geometry), std::invalid_argument);
     CHECK(move.commit().empty());
     CHECK(saved(doc) == bytes);
+}
+
+TEST_CASE("setSolidGeometry rewrites fallback geometry with consistent point_data") {
+    auto file = parse(read(fs::path(APEX_FIXTURE_DIR) / "vmf/p0_brush.vmf"));
+    auto values = file.world->solids[0].sides[0].pointData->findAll("point");
+    REQUIRE(values.size() >= 2);
+    const auto first = values[0]->text().value();
+    REQUIRE(values[1]->set("1" + first.substr(first.find(' '))));
+    Document doc(file);
+    const auto original = saved(doc);
+    const auto handle = solids(doc)[0];
+    auto geometry = geometry::solidGeometry(*doc.get(handle)->block).value();
+    REQUIRE(geometry.usedPlaneFallback);
+    for (auto& point : geometry.poly.vertices) point += DVec3{128.25, -64.5, 3.125};
+    for (auto& face : geometry.poly.faces) face.plane = geometry.poly.derivePlane(face).value();
+    auto tx = doc.begin("translate fallback brush");
+    tx.setSolidGeometry(handle, geometry);
+    REQUIRE(tx.commit().modified.size() == 1);
+    auto written = parse(saved(doc));
+    const auto rebuilt = geometry::solidGeometry(*written.world->solids[0].node);
+    REQUIRE(rebuilt);
+    CHECK_FALSE(rebuilt->usedPlaneFallback);
+    for (const auto& side : rebuilt->sides) CHECK_FALSE(side.points.empty());
+    sameVertices(rebuilt->poly, geometry.poly);
+    CHECK(doc.undo());
+    CHECK(saved(doc) == original);
+}
+
+TEST_CASE("setSolidGeometry rejects non-finite UV shift without changing the document") {
+    const auto bytes = read(fs::path(APEX_FIXTURE_DIR) / "vmf/p0_brush.vmf");
+    Document doc(parse(bytes));
+    const auto handle = solids(doc)[0];
+    auto geometry = geometry::solidGeometry(*doc.get(handle)->block).value();
+    geometry.poly.faces[0].uv.shiftU = std::numeric_limits<double>::quiet_NaN();
+    auto tx = doc.begin("invalid UV shift");
+    CHECK_THROWS_AS(tx.setSolidGeometry(handle, geometry), std::invalid_argument);
+    CHECK(tx.commit().empty());
+    CHECK(saved(doc) == bytes);
+    CHECK(doc.dirtyNodes().empty());
+    CHECK(doc.undoCount() == 0);
 }

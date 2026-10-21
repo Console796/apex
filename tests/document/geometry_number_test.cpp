@@ -53,4 +53,13 @@ TEST_CASE("VMF non-geometry numbers retain six significant digits") {
     CHECK(value.text() == "[0.123457 -0.987654 1.1e-07 12345.7] 0.123457");
     REQUIRE(value.setGeometry(axis));
     CHECK(value.text() == "[0.123456789012345 -0.987654321098765 0.00000011 12345.7] 0.123457");
+    const auto unchanged = value.text().value();
+    auto invalid = axis;
+    invalid.shift = std::numeric_limits<double>::infinity();
+    CHECK_FALSE(value.setGeometry(invalid));
+    CHECK(value.text() == unchanged);
+    invalid = axis;
+    invalid.scale = std::numeric_limits<double>::quiet_NaN();
+    CHECK_FALSE(value.setGeometry(invalid));
+    CHECK(value.text() == unchanged);
 }

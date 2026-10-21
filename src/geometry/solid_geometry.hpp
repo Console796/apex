@@ -8,6 +8,7 @@ namespace apex::geometry {
 struct SolidGeometry {
     ConvexPolyhedron poly;
     std::vector<PointDataSide> sides; // Original inputs, in source side order.
+    bool usedPlaneFallback = false;
 };
 
 // Reconcile point_data against the saved planes using the D8 trust rule.

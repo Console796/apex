@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -68,8 +69,16 @@ bool samePolygon(const geometry::ConvexPolyhedron& a, const geometry::Face& fa,
 vmf::Vec3 vector(DVec3 value) { return {value.x, value.y, value.z}; }
 template <typename T> std::string geometryText(T value) {
     auto node = kv1::Node::value("", "");
-    vmf::Value(&node).setGeometry(value).value();
+    auto formatted = vmf::Value(&node).setGeometry(value);
+    if (!formatted) throw std::invalid_argument(formatted.error().what());
     return node.decodedValue().value();
+}
+bool finiteUv(const geometry::FaceUv& uv) {
+    const auto finite = [](DVec3 value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    return finite(uv.uaxis) && finite(uv.vaxis) && std::isfinite(uv.shiftU) &&
+           std::isfinite(uv.shiftV) && std::isfinite(uv.scaleU) && std::isfinite(uv.scaleV);
 }
 bool identity(std::string_view key, const kv1::Node& block) {
     return ciEquals(key, "id") ||
@@ -697,6 +706,9 @@ void Transaction::setSolidGeometry(Handle<Solid> h, const geometry::SolidGeometr
         sideIds(before->poly.faces) != sideIds(geometry.poly.faces))
         throw std::invalid_argument("geometry side IDs do not match solid");
     if (!geometry.poly.isValid()) throw std::invalid_argument("invalid solid geometry");
+    if (std::ranges::any_of(geometry.poly.faces,
+                           [](const auto& face) { return !finiteUv(face.uv); }))
+        throw std::invalid_argument("non-finite UV geometry");
 
     std::map<std::uint32_t, const geometry::Face*> oldFaces, newFaces;
     for (const auto& face : before->poly.faces) oldFaces.emplace(face.sideId, &face);

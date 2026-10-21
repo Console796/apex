@@ -469,7 +469,8 @@ Result<void> Value::setGeometry(Vec3 value) {
 }
 
 Result<void> Value::setGeometry(UvAxis value) {
-    if (!finite(value.axis)) return std::unexpected(invalid("non-finite geometry"));
+    if (!finite(value.axis) || !std::isfinite(value.shift) || !std::isfinite(value.scale))
+        return std::unexpected(invalid("non-finite geometry"));
     return set("[" + vectorText(value.axis, '\0', '\0', true) + " " + real(value.shift) + "] " +
                real(value.scale));
 }
