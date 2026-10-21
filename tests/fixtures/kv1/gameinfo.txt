@@ -1,0 +1,17 @@
+// Apex-authored fixture (MIT); synthetic test data.
+"GameInfo"
+{
+	game "Apex fixture"
+	FileSystem
+	{
+		SearchPaths
+		{
+			Game "|gameinfo_path|." [$WIN32]
+			Game "platform" [!$WIN32]
+		}
+	}
+	WindowsOnly [$WIN32]
+	{
+		"enabled" "1"
+	}
+}

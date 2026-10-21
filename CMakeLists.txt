@@ -15,6 +15,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(APEX_BUILD_TESTS "Build tests" ON)
+option(APEX_BUILD_FUZZ "Build the Clang libFuzzer KV1 target" OFF)
 option(APEX_BUILD_APP "Build the Qt application (needs Qt 6)" ON)
 set(APEX_SANITIZE "" CACHE STRING "Sanitizers, e.g. address;undefined")
 # BUILD field of the version (plan 0.1, D1): injected by tools/ci.py, 0 for ad-hoc builds.
@@ -67,6 +68,7 @@ include(deps)
 
 # Layer graph, plan 0.1 section 2. tools/check_layers.py enforces the same edges on #includes.
 apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths.cpp
+           src/core/kv1.cpp src/core/kv1_parse.cpp src/core/kv1_write.cpp
            DEPS glm::glm spdlog::spdlog)
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(geometry DEPS apex_core)
@@ -86,4 +88,19 @@ endif()
 if(APEX_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(APEX_BUILD_FUZZ)
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # Compile the codec itself with coverage and sanitizers, independently of apex_core.
+    add_executable(kv1_fuzz tests/fuzz/kv1_fuzz.cpp src/core/kv1.cpp src/core/kv1_parse.cpp
+                   src/core/kv1_write.cpp src/core/strings.cpp src/core/paths.cpp)
+    target_include_directories(kv1_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(kv1_fuzz PRIVATE apex_warnings)
+    target_compile_options(kv1_fuzz PRIVATE -fsanitize=fuzzer,address,undefined
+                           -fno-omit-frame-pointer)
+    target_link_options(kv1_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+  else()
+    message(STATUS "APEX_BUILD_FUZZ requires Clang; skipping kv1_fuzz")
+  endif()
 endif()
