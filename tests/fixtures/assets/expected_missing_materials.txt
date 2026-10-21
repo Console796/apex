@@ -1,0 +1,23 @@
+# Apex-authored material availability baseline for the P2CE 512-VMF corpus.
+# 209 unique side materials; 193 resolve to a shader and an on-disk base VTF.
+# 13 missing VMTs: optional/custom content (anim_wp, bee2, pbr), older metal
+# variants, and toolsinvisibleladder. These are content gaps, not parser errors.
+# _rt_camera is a runtime render target. Refract and Water intentionally use
+# shader-specific inputs instead of $basetexture; all three use the placeholder
+# until their rendering features are implemented. No proprietary files copied.
+anim_wp/framework/squarebeams_dark | VMT: Asset missing: materials/anim_wp/framework/squarebeams_dark.vmt
+bee2/black_fade | VMT: Asset missing: materials/bee2/black_fade.vmt
+dev/dev_tvmonitor1a | VTF missing: materials/_rt_camera.vtf
+glass/glassbreak001 | no $basetexture (shader Refract)
+metal/black_wall_metal_pinger_blue | VMT: Asset missing: materials/metal/black_wall_metal_pinger_blue.vmt
+metal/black_wall_metal_pinger_orange | VMT: Asset missing: materials/metal/black_wall_metal_pinger_orange.vmt
+metal/metalwall048b_nopaint | VMT: Asset missing: materials/metal/metalwall048b_nopaint.vmt
+nature/water_bts_01 | no $basetexture (shader Water)
+pbr/aperturevr/dirtfloor/pbr_dirtfloor_004c | VMT: Asset missing: materials/pbr/aperturevr/dirtfloor/pbr_dirtfloor_004c.vmt
+pbr/metal/black_tile_32 | VMT: Asset missing: materials/pbr/metal/black_tile_32.vmt
+pbr/metal/black_tile_64 | VMT: Asset missing: materials/pbr/metal/black_tile_64.vmt
+pbr/metal/black_tile_floor | VMT: Asset missing: materials/pbr/metal/black_tile_floor.vmt
+pbr/tiles/dirt/white_tile_32_dirt_01 | VMT: Asset missing: materials/pbr/tiles/dirt/white_tile_32_dirt_01.vmt
+pbr/tiles/dirt/white_tile_64_dirt_02 | VMT: Asset missing: materials/pbr/tiles/dirt/white_tile_64_dirt_02.vmt
+pbr/tiles/dirt/white_tile_64x128_dirt_01 | VMT: Asset missing: materials/pbr/tiles/dirt/white_tile_64x128_dirt_01.vmt
+tools/toolsinvisibleladder | VMT: Asset missing: materials/tools/toolsinvisibleladder.vmt
