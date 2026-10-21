@@ -316,8 +316,9 @@ def windows_stage(build, report):
                                check=True, capture_output=True).stdout
         subprocess.run(["tar", "--null", "-T", "-", "-cf", str(archive)], cwd=ROOT, input=files,
                        check=True)
-        # The guest tree persists between runs (build/ and the CPM cache survive), so tar's
-        # preserved mtimes keep Ninja incremental. Only files deleted on the host need removing.
+        # The guest tree persists between runs (build/ and the CPM cache survive). Extract with -m
+        # (mtime = now): bsdtar on Windows lands preserved mtimes about an hour early, so Ninja
+        # treated stale objects as newer than edited sources. Only files deleted on the host need removing.
         names = files.decode().split("\0")[:-1]
         listf = state_dir() / "windows_files"
         prev = listf.read_text().split("\n") if listf.exists() else []
@@ -327,7 +328,7 @@ def windows_stage(build, report):
         subprocess.run(scpc + [str(archive), f"{ssh}:{wdir}/"], check=True)
         steps = [
             f"cd /d {wwin}",
-            "tar -xf src.tar -C src", "cd /d src",
+            "tar -xmf src.tar -C src", "cd /d src",
         ] + [f'(if exist "{n.replace("/", chr(92))}" del /q "{n.replace("/", chr(92))}")' for n in stale] + [
             envcmd,
             f'set "CMAKE_PREFIX_PATH={qt}"', f'set "CPM_SOURCE_CACHE={wwin}\\cpm-cache"',
