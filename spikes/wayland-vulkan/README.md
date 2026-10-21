@@ -120,6 +120,56 @@ For an existing local checkout of that tag, also pass
   diagnostics) for `QT_QPA_PLATFORM=wayland` and `xcb` (XWayland), each with
   `--layout=splitter` and `--layout=dock`, on RADV (AMD RX 6600, Mesa 26.0.8).
   Also passes on lavapipe/llvmpipe under XWayland and under `xvfb-run`.
-- Not yet done: the manual checklist above (focus, keyboard routing, mouse, fly-cam
-  capture, HiDPI, dock float/redock). The Wayland grab limitation is from reading Qt
-  source, not yet measured. ADS `ON` is unverified.
+- **Pointer grab, measured** (`--probe-grab`, no input needed): on `wayland`, Qt logs
+  "This plugin supports grabbing the mouse only for popup windows" and
+  `setMouseGrabEnabled(true)` returns false for both viewports even though they are
+  active. On `xcb` (XWayland) it returns true for both. So Qt's public API cannot lock the
+  pointer for a fly-cam on Wayland. The host compositor does advertise
+  `zwp_pointer_constraints_v1` and `zwp_relative_pointer_manager_v1` (`wayland-info`), so
+  a native integration (lock pointer + relative motion on the viewport's `wl_surface`) is
+  possible; that is the route D13/D15 should assume.
+- **Wayland, splitter, manual run (logs of 2026-10-20):**
+  - Resize and splitter drags: both viewports track every step, swapchains are recreated
+    each time, and presentation continues with no validation errors.
+  - Pointer: enter/leave/move/press/release arrive with the correct viewport id. A right
+    button press never gets an implicit grab across the two child windows: dragging from
+    viewport 2 into viewport 1 sends viewport 2 a `mouse-leave` and delivers the release to
+    viewport 1. The spike used to leave viewport 2 "captured" with a blank cursor; a
+    right-button release anywhere now ends all captures (`InputProbe`).
+  - Keyboard: **keys never reach the embedded `QWindow`.** `FocusIn` goes to the
+    `QWindowContainer`, and key events go `QWidgetWindow` -> `QWindowContainer` ->
+    `QSplitter` -> `QMainWindow`; the viewports log no `focus-in` or `key-` lines.
+    Wayland keeps keyboard focus on the top-level surface. The containers therefore have to
+    forward keys (`KeyForwarder`), which makes the shell, not the window, the input router.
+    Verified on Wayland splitter: with the forwarder plus `setFocus` on the container when a
+    viewport is clicked, `a`, held `w` (auto-repeat) and `b` reach the correct viewport. Without the
+    click-to-focus, all keys stay with the first container. Right-drag capture (grab rejected,
+    local-position-difference fallback) works and ends cleanly across viewports.
+  - xcb (XWayland) splitter, measured: keys route correctly through the same forwarder
+    (`a`, held `w` to viewport 1, `b` to viewport 2). Right-drag capture reports `grab=1`
+    with `centre-warp`: 473 deltas summing to 567 px of continuous motion while the pointer
+    stayed pinned at the viewport centre (x 249/250, y 300), so the warp fly-cam works under
+    XWayland where Wayland rejects the grab.
+  - Qt-ADS 4.4.1 dock on Wayland (`/tmp/wv-wayland-ads.log`): docked, keys route correctly
+    (`a` to viewport 1, `b` to viewport 2). Then a dock rearrangement made viewport 2 resize to
+    1000x574 and viewport 1 re-show at 490x562, and the compositor killed the connection:
+    `wl_subsurface#156: error 0: no parent` / "The Wayland connection experienced a fatal error".
+    The embedded viewports are wl_subsurfaces; ADS re-parents the container on float/redock/tab
+    and Qt Wayland re-shows the child before its parent surface exists. Which gesture triggered it
+    is still to be isolated.
+  - ADS 4.4.1, floating enabled (`/tmp/wv-wayland-ads-float.log`): same `no parent` fatal error as
+    soon as a dock was pulled out. With `--no-float` (`/tmp/wv-wayland-ads-nofloat.log`) the
+    protocol error is avoided, but dragging a tab shows the drag-to-dock overlay and releasing
+    never completes the drop; the UI stops responding while frames keep presenting.
+  - Plain `QDockWidget` float/redock on Wayland (`/tmp/wv-wayland-qtdock*.log`): Qt recreates the
+    native window and destroys the VkSurfaceKHR and its wl_display queue without delivering
+    `SurfaceAboutToBeDestroyed` to the QWindow (only `SurfaceCreated` is ever seen). Validation:
+    `VUID-vkDestroySurfaceKHR-surface-01266`. Destroying the swapchain afterwards segfaults in
+    `wl_display_flush`; abandoning (leaking) it instead survives one float but the compositor
+    then aborts the process ("Tried to add event to destroyed queue") when another dock is
+    dragged. The float drag is also very jittery and docking targets are hard to hit.
+    Conclusion: an embedded native Vulkan window cannot be reparented/floated safely on Wayland.
+- Not yet done: ADS on xcb, HiDPI (all runs so far were dpr 1).
+- ADS `ON` (4.4.1, needs `qt6-base-private-dev`): builds, and `--layout=dock --smoke`
+  passes on `wayland` and `xcb`. Run it with
+  `LD_LIBRARY_PATH=build/spike-wv-ads/_deps/qtads-build/x64/lib`.

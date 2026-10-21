@@ -1,4 +1,5 @@
 // Include Vulkan first: Qt's Vulkan headers otherwise define VK_NO_PROTOTYPES.
+#include <functional>
 #include <vulkan/vulkan.h>
 #include <syncstream> // Before Qt's emit macro.
 
@@ -9,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QKeyEvent>
 #include <QMainWindow>
+#include <QMetaEnum>
 #include <QMouseEvent>
 #include <QPlatformSurfaceEvent>
 #include <QScreen>
@@ -106,7 +108,7 @@ protected:
             log(id_, QString("mouse-%1 button=%2 x=%3 y=%4")
                 .arg(press ? "press" : release ? "release" : "move")
                 .arg(static_cast<int>(mouse->button())).arg(mouse->position().x()).arg(mouse->position().y()));
-            if (press) requestActivate();
+            if (press) { requestActivate(); if (onPress_) onPress_(); }
             if (press && mouse->button() == Qt::RightButton) {
                 captured_ = true;
                 last_ = mouse->position();
@@ -130,6 +132,7 @@ protected:
             return true;
         }
         case QEvent::PlatformSurface:
+            log(id_, QString("platform-surface type=%1").arg(static_cast<int>(static_cast<QPlatformSurfaceEvent *>(event)->surfaceEventType())));
             if (static_cast<QPlatformSurfaceEvent *>(event)->surfaceEventType()
                 == QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
                 releaseCapture();
@@ -141,6 +144,9 @@ protected:
         return QWindow::event(event);
     }
 
+public:
+    int id() const { return id_; }
+    void setOnPress(std::function<void()> fn) { onPress_ = std::move(fn); }
 private:
     QSize pixelSize() const { return QSize(qRound(width() * devicePixelRatio()), qRound(height() * devicePixelRatio())); }
     bool warping() const { return QGuiApplication::platformName() == "xcb"; }
@@ -149,6 +155,7 @@ private:
         last_ = QPointF(width() / 2, height() / 2);
         QCursor::setPos(mapToGlobal(last_.toPoint()));
     }
+public:
     void releaseCapture()
     {
         if (!captured_) return;
@@ -248,7 +255,9 @@ private:
         for (auto semaphore : finished_) vkDestroySemaphore(device_, semaphore, nullptr);
         finished_.clear();
         images_.clear();
-        if (swapchain_) vkDestroySwapchainKHR(device_, swapchain_, nullptr);
+        // After Qt silently destroyed the surface (and its wl_display queue) the swapchain
+        // cannot be destroyed without crashing in libwayland; abandon it.
+        if (swapchain_ && !surfaceLost_) vkDestroySwapchainKHR(device_, swapchain_, nullptr);
         swapchain_ = VK_NULL_HANDLE;
     }
     void destroyDevice()
@@ -332,6 +341,16 @@ private:
 
     void render()
     {
+        // Reparenting recreates the native window; a changed or missing VkSurfaceKHR means
+        // everything built on the old one must go before the new one is used.
+        const VkSurfaceKHR current = QVulkanInstance::surfaceForWindow(this);
+        if (device_ && current != surface_) {
+            log(id_, "surface-changed (no SurfaceAboutToBeDestroyed was delivered)");
+            surfaceLost_ = true;
+            destroyDevice();
+            surfaceLost_ = false;
+        }
+        if (!current) return;
         if (!device_) createDevice();
         if (dirty_ && !recreate()) return;
         // Intentionally one submission at a time. Present semaphores are per image:
@@ -397,7 +416,9 @@ private:
         if (frames_ == 1 || frames_ % 60 == 0) log(id_, QString("presented frames=%1").arg(frames_));
     }
 
+private:
     int id_;
+    std::function<void()> onPress_;
     QVulkanInstance &instance_;
     QTimer timer_;
     QElapsedTimer elapsed_;
@@ -408,6 +429,7 @@ private:
     QPointF last_;
     uint64_t frames_ = 0;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
+    bool surfaceLost_ = false;
     VkPhysicalDevice physical_ = VK_NULL_HANDLE;
     uint32_t family_ = 0;
     VkDevice device_ = VK_NULL_HANDLE;
@@ -421,6 +443,63 @@ private:
     std::vector<VkSemaphore> finished_;
 };
 
+// Logs focus and keyboard events seen by anything else in the app (main window, containers),
+// so key routing can be told apart from "keys never reached the viewport". A right-button
+// release delivered to a different window than the press still ends every capture.
+class InputProbe final : public QObject {
+public:
+    explicit InputProbe(std::vector<Viewport *> viewports) : viewports_(std::move(viewports)) {}
+
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        switch (event->type()) {
+        case QEvent::FocusIn:
+        case QEvent::FocusOut:
+        case QEvent::WindowActivate:
+        case QEvent::WindowDeactivate:
+        case QEvent::KeyPress:
+        case QEvent::KeyRelease:
+            if (!dynamic_cast<Viewport *>(object))
+                log(0, QString("app-event %1 target=%2 name=%3")
+                    .arg(QMetaEnum::fromType<QEvent::Type>().valueToKey(event->type()), object->metaObject()->className(), object->objectName()));
+            break;
+        case QEvent::MouseButtonRelease:
+            if (static_cast<QMouseEvent *>(event)->button() == Qt::RightButton)
+                for (auto *viewport : viewports_) viewport->releaseCapture();
+            break;
+        default: break;
+        }
+        return false;
+    }
+
+private:
+    std::vector<Viewport *> viewports_;
+};
+
+// On Wayland, keyboard focus stays on the top-level surface and the embedded native window
+// never sees a key. Forward the container's keys to its Viewport so routing can be judged.
+class KeyForwarder final : public QObject {
+public:
+    KeyForwarder(QWidget *container, Viewport *viewport) : QObject(container), viewport_(viewport)
+    {
+        container->installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject *, QEvent *event) override
+    {
+        if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) return false;
+        const auto *key = static_cast<QKeyEvent *>(event);
+        QKeyEvent copy(key->type(), key->key(), key->modifiers(), key->text(), key->isAutoRepeat());
+        QCoreApplication::sendEvent(viewport_, &copy);
+        return true;
+    }
+
+private:
+    Viewport *viewport_;
+};
+
 int main(int argc, char **argv)
 {
     qInstallMessageHandler([](QtMsgType type, const QMessageLogContext &, const QString &message) {
@@ -432,6 +511,8 @@ int main(int argc, char **argv)
     parser.setApplicationDescription("Two native Vulkan windows inside Qt Widgets; right mouse holds capture.");
     parser.addHelpOption();
     parser.addOption({"layout", "splitter or dock", "layout", "splitter"});
+    parser.addOption({"probe-grab", "After show, try QWindow::setMouseGrabEnabled on each viewport, log the result and exit."});
+    parser.addOption({"no-float", "Dock layout: make dock widgets non-floatable."});
     parser.addOption({"smoke", "Resize once and exit after 2 seconds; require 10 presents per viewport."});
     parser.process(app);
     const auto layout = parser.value("layout");
@@ -473,8 +554,14 @@ int main(int argc, char **argv)
         window.setWindowTitle("Wayland / Vulkan spike — right mouse captures");
         auto *first = new Viewport(1, instance);
         auto *second = new Viewport(2, instance);
+        InputProbe probe({first, second});
+        app.installEventFilter(&probe);
         auto *left = QWidget::createWindowContainer(first);
         auto *right = QWidget::createWindowContainer(second);
+        new KeyForwarder(left, first);
+        new KeyForwarder(right, second);
+        first->setOnPress([left] { left->setFocus(Qt::MouseFocusReason); });
+        second->setOnPress([right] { right->setFocus(Qt::MouseFocusReason); });
         for (auto *container : {left, right}) {
             container->setFocusPolicy(Qt::StrongFocus);
             container->setMinimumSize(160, 120);
@@ -487,10 +574,14 @@ int main(int argc, char **argv)
         } else {
 #ifdef SPIKE_ADS
             auto *manager = new ads::CDockManager(&window);
-            auto *a = new ads::CDockWidget("Viewport 1");
-            auto *b = new ads::CDockWidget("Viewport 2");
+            auto *a = new ads::CDockWidget(manager, "Viewport 1");
+            auto *b = new ads::CDockWidget(manager, "Viewport 2");
             a->setWidget(left);
             b->setWidget(right);
+            if (parser.isSet("no-float")) {
+                a->setFeature(ads::CDockWidget::DockWidgetFloatable, false);
+                b->setFeature(ads::CDockWidget::DockWidgetFloatable, false);
+            }
             auto *area = manager->addDockWidget(ads::LeftDockWidgetArea, a);
             manager->addDockWidget(ads::RightDockWidgetArea, b, area);
             log(0, "docks=qt-ads");
@@ -510,6 +601,19 @@ int main(int argc, char **argv)
         if (parser.isSet("smoke")) {
             QTimer::singleShot(700, &window, [&window] { window.resize(1080, 640); });
             QTimer::singleShot(2000, &window, [&app] { app.exit(0); });
+        }
+        if (parser.isSet("probe-grab")) {
+            QTimer::singleShot(800, &window, [&] {
+                for (auto *viewport : {first, second}) {
+                    viewport->requestActivate();
+                    const bool granted = viewport->setMouseGrabEnabled(true);
+                    log(viewport->id(), QString("probe-grab active=%1 granted=%2 focused=%3")
+                        .arg(viewport->isActive()).arg(granted)
+                        .arg(QGuiApplication::focusWindow() == viewport));
+                    viewport->setMouseGrabEnabled(false);
+                }
+                app.exit(0);
+            });
         }
         const int status = app.exec();
         if (parser.isSet("smoke")) {
