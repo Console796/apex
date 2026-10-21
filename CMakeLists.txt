@@ -67,6 +67,7 @@ include(deps)
 
 # Layer graph, plan 0.1 section 2. tools/check_layers.py enforces the same edges on #includes.
 apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths.cpp
+                       src/core/log.cpp src/core/job_pool.cpp
            DEPS glm::glm spdlog::spdlog)
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(geometry DEPS apex_core)
