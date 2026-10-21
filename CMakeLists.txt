@@ -15,7 +15,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(APEX_BUILD_TESTS "Build tests" ON)
-option(APEX_BUILD_FUZZ "Build the Clang libFuzzer KV1 target" OFF)
+option(APEX_BUILD_FUZZ "Build the Clang libFuzzer codec targets" OFF)
 option(APEX_BUILD_APP "Build the Qt application (needs Qt 6)" ON)
 set(APEX_SANITIZE "" CACHE STRING "Sanitizers, e.g. address;undefined")
 # BUILD field of the version (plan 0.1, D1): injected by tools/ci.py, 0 for ad-hoc builds.
@@ -74,7 +74,7 @@ apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_matching.cpp
            DEPS apex_core)
-apex_layer(document DEPS apex_geometry apex_core)
+apex_layer(document SOURCES src/document/vmf.cpp DEPS apex_geometry apex_core)
 apex_layer(assets DEPS apex_core)
 apex_layer(render DEPS apex_document apex_assets)
 apex_layer(viewport DEPS apex_render apex_document)
@@ -102,7 +102,15 @@ if(APEX_BUILD_FUZZ)
     target_compile_options(kv1_fuzz PRIVATE -fsanitize=fuzzer,address,undefined
                            -fno-omit-frame-pointer)
     target_link_options(kv1_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(vmf_fuzz tests/fuzz/vmf_fuzz.cpp src/document/vmf.cpp src/core/kv1.cpp
+                   src/core/kv1_parse.cpp src/core/kv1_write.cpp src/core/strings.cpp
+                   src/core/paths.cpp)
+    target_include_directories(vmf_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(vmf_fuzz PRIVATE apex_warnings)
+    target_compile_options(vmf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined
+                           -fno-omit-frame-pointer)
+    target_link_options(vmf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
   else()
-    message(STATUS "APEX_BUILD_FUZZ requires Clang; skipping kv1_fuzz")
+    message(STATUS "APEX_BUILD_FUZZ requires Clang; skipping fuzz targets")
   endif()
 endif()

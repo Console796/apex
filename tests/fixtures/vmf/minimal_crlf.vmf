@@ -1,0 +1,18 @@
+// Apex-authored CRLF VMF fixture (MIT).
+versioninfo
+{
+	"editorextension" "strata"
+}
+world
+{
+	"id" "1"
+	"classname" "worldspawn"
+}
+cameras
+{
+	"activecamera" "-1"
+}
+cordons
+{
+	"active" "0"
+}

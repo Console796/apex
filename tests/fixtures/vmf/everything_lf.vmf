@@ -1,0 +1,158 @@
+// Apex-authored VMF schema fixture (MIT).
+versioninfo
+{
+	"editorversion" "400"
+	"editorextension" "strata"
+	"unknown_version_key" "keep me"
+}
+visgroups
+{
+	visgroup
+	{
+		"name" "Parent"
+		"visgroupid" "1"
+		visgroup
+		{
+			"name" "Child"
+			"visgroupid" "2"
+		}
+	}
+}
+viewsettings
+{
+	"nInstanceVisibility" "2"
+	views
+	{
+		v0
+		{
+			"position" "(1 2 3)"
+		}
+	}
+}
+world
+{
+	"id" "1"
+	"classname" "worldspawn"
+	"unknown_world_key" "odd\\value"
+	solid
+	{
+		"id" "2"
+		side
+		{
+			"id" "10"
+			"plane" "(0 0 0) (0 64 0) (64 64 0)"
+			"material" "TOOLS/TOOLSNODRAW"
+			"uaxis" "[1 0 0 8] 0.25"
+			"vaxis" "[0 -1 0 16] 0.5"
+			"rotation" "15.9999"
+			"lightmapscale" "16"
+			"smoothing_groups" "3"
+			point_data
+			{
+				"numpts" "3"
+				"point" "0 0 0 0"
+				"point" "1 0 64 0"
+				"point" "2 64 64 0"
+			}
+			vertices_plus
+			{
+				"v" "0 0 0"
+				"v" "0 64 0"
+				"v" "64 64 0"
+			}
+			dispinfo
+			{
+				"power" "2"
+				unknown_disp_child
+				{
+					"x" "y"
+				}
+			}
+			unknown_side_block
+			{
+				"raw" "preserved"
+			}
+		}
+		editor
+		{
+			"visgroupid" "1"
+			"visgroupid" "2"
+		}
+	}
+	group
+	{
+		"id" "not-an-object-id"
+		editor
+		{
+			"color" "1 2 3"
+		}
+	}
+	hidden
+	{
+		entity
+		{
+			"id" "3"
+			"classname" "info_target"
+		}
+	}
+	editor
+	{
+		"color" "255 255 255"
+	}
+}
+entity
+{
+	"id" "4"
+	"classname" "logic_relay"
+	"targetname" "relay"
+	"targetname" "duplicate-kept"
+	connections
+	{
+		"OnTrigger" "target,Trigger,,0,-1"
+	}
+	solid
+	{
+		"id" "5"
+		side
+		{
+			"id" "11"
+			"plane" "(1 2 3) (4 5 6) (7 8 10)"
+			"material" "brick/test"
+			"uaxis" "[1 0 0 0] 1"
+			"vaxis" "[0 1 0 0] 1"
+			"rotation" "0"
+			"lightmapscale" "32"
+			"smoothing_groups" "0"
+		}
+	}
+	editor
+	{
+		"logicalpos" "[0 0]"
+	}
+}
+cameras
+{
+	"activecamera" "0"
+	camera
+	{
+		"position" "[1 2 3]"
+		"look" "[4 5 6]"
+	}
+}
+cordons
+{
+	"active" "1"
+	cordon
+	{
+		"name" "Cordon A"
+		box
+		{
+			"mins" "(-64 -64 -64)"
+			"maxs" "(64 64 64)"
+		}
+	}
+}
+apex_unknown_top_level
+{
+	"unknown" "stays exactly here"
+}
