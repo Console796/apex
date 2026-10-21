@@ -83,6 +83,11 @@ if(APEX_BUILD_APP)
   # caller) and qt6-base-private-dev. Side panels only: never host native Vulkan windows (D15).
   set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(BUILD_STATIC ON CACHE BOOL "" FORCE)
+  # Done in a function so Qt's directory-scope flag changes (it drops /EHsc on MSVC) don't leak.
+  function(apex_find_qt_private)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets GuiPrivate)
+  endfunction()
+  apex_find_qt_private()
   set(QT_NO_PRIVATE_MODULE_WARNING ON)
   CPMAddPackage(
     NAME qtads

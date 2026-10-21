@@ -115,6 +115,11 @@ if(APEX_BUILD_APP)
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME apex_ui_tests COMMAND apex_ui_tests)
     set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0")
+    if(WIN32)
+      # Shared Qt DLLs are not on the guest's PATH.
+      set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT_MODIFICATION
+                           "PATH=path_list_prepend:${Qt6_DIR}/../../../bin")
+    endif()
   endif()
 endif()
 
