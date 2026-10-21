@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <tuple>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -67,6 +68,25 @@ struct ChangeSet {
     }
 };
 
+// One editor operation; membership edits preserve all other entries and their order.
+struct EditorEdit {
+    enum class Kind { Group, AddVisgroup, RemoveVisgroup, Color, VisgroupShown,
+                      VisgroupAutoShown, Comments };
+    Kind kind;
+    std::optional<std::string> value;
+    static EditorEdit setGroup(std::optional<int> id) {
+        return {Kind::Group, id ? std::optional(std::to_string(*id)) : std::nullopt};
+    }
+    static EditorEdit addVisgroup(int id) { return {Kind::AddVisgroup, std::to_string(id)}; }
+    static EditorEdit removeVisgroup(int id) { return {Kind::RemoveVisgroup, std::to_string(id)}; }
+    static EditorEdit setColor(std::string color) { return {Kind::Color, std::move(color)}; }
+    static EditorEdit setVisgroupShown(bool shown) { return {Kind::VisgroupShown, shown ? "1" : "0"}; }
+    static EditorEdit setVisgroupAutoShown(bool shown) {
+        return {Kind::VisgroupAutoShown, shown ? "1" : "0"};
+    }
+    static EditorEdit setComments(std::string text) { return {Kind::Comments, std::move(text)}; }
+};
+
 class Transaction;
 // Single writer thread, including synchronous observers; no locking. Only one transaction
 // may be active. Observers may read the completed state but must not mutate the document.
@@ -121,6 +141,7 @@ private:
     std::map<NodeId, NodeHandle> handles_;
     std::vector<NodeId> roots_, originalRoots_;
     std::map<SideId, SideLocation> sides_;
+    std::map<SideId, std::vector<SideLocation>> sideCandidates_;
     std::int64_t nextObject_ = 1, nextSide_ = 1, nextGroup_ = 1, nextVisgroup_ = 1;
     NodeId nextNode_ = 1;
     std::deque<Entry> undo_, redo_;
@@ -136,6 +157,9 @@ private:
     void exportChildren(kv1::Node& block, const std::vector<NodeId>& children,
                         const std::vector<std::pair<std::size_t, NodeId>>& slots) const;
     void indexSides();
+    void updateSolidSides(NodeId id, bool add);
+    void refreshSide(SideId id);
+    void checkSideIndex();
     void notify(const ChangeSet& changes);
     ChangeSet restore(const Entry& entry, bool after);
     void evict();
@@ -159,7 +183,9 @@ public:
     void destroy(NodeHandle handle); // Recursive, preserving sibling order on undo.
     void reparent(NodeHandle handle, std::optional<NodeHandle> parent,
                   std::size_t position = static_cast<std::size_t>(-1));
+    // Throws std::invalid_argument if the key occurs more than once (case insensitive).
     void setKeyValue(NodeHandle handle, std::string key, std::optional<std::string> value);
+    void setEditor(NodeHandle handle, EditorEdit edit);
     // Side identity is stable; the face index is resolved internally for each write.
     void setSideKeyValue(SideId side, std::string key, std::string value);
     ChangeSet commit(); // Consecutive single edits of the same node/key coalesce.
@@ -169,6 +195,7 @@ private:
     explicit Transaction(Document& document, std::string label);
     Document* doc_;
     Document::Entry entry_;
+    std::unordered_map<NodeId, std::size_t> deltaIndex_;
     std::optional<std::pair<NodeId, std::string>> key_;
     std::size_t operations_ = 0;
     NodeId checked(NodeHandle handle) const;

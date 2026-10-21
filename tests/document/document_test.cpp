@@ -54,7 +54,7 @@ void randomRoundTrip(const std::string& bytes, std::uint32_t seed, int count) {
         CAPTURE(step);
         auto all = nodes(doc);
         auto tx = doc.begin("random operation");
-        const auto operation = random() % 4;
+        const auto operation = random() % 5;
         if (all.empty() || operation == 0) {
             std::optional<NodeHandle> parent;
             if (!all.empty() && random() % 2) {
@@ -78,6 +78,19 @@ void randomRoundTrip(const std::string& bytes, std::uint32_t seed, int count) {
                 if (!cycle && !std::holds_alternative<Handle<Solid>>(candidate)) parent = candidate;
             }
             tx.reparent(h, parent, random() % 3);
+        } else if (operation == 4) {
+            const auto h = all[random() % all.size()];
+            if (std::holds_alternative<Handle<Solid>>(h) ||
+                std::holds_alternative<Handle<Entity>>(h) || std::holds_alternative<Handle<Group>>(h)) {
+                const int membership = static_cast<int>(random() % 4);
+                switch (random() % 5) {
+                case 0: tx.setEditor(h, EditorEdit::setGroup(membership)); break;
+                case 1: tx.setEditor(h, EditorEdit::setGroup({})); break;
+                case 2: tx.setEditor(h, EditorEdit::addVisgroup(membership)); break;
+                case 3: tx.setEditor(h, EditorEdit::removeVisgroup(membership)); break;
+                case 4: tx.setEditor(h, EditorEdit::setComments(std::to_string(random()))); break;
+                }
+            }
         } else {
             const auto h = all[random() % all.size()];
             if (random() % 3 == 0) {
@@ -137,7 +150,7 @@ TEST_CASE("P0 red: adding a second entity visgroup preserves the first membershi
     REQUIRE(doc.get(*editor)->block->findAll("visgroupid").size() == 1);
     REQUIRE(*doc.get(*editor)->block->find("visgroupid")->decodedValue() == "1");
     auto tx = doc.begin("add second visgroup");
-    tx.setKeyValue(*editor, "visgroupid", "2");
+    tx.setEditor(*doc.handle(doc.get(*editor)->parent), EditorEdit::addVisgroup(2));
     tx.commit();
     auto reloaded = parsed(saved(doc));
     REQUIRE(reloaded.entities.size() == 1);
@@ -405,20 +418,25 @@ TEST_CASE("Document optional corpus property sequences undo byte-identically") {
 
 TEST_CASE("Document deleting keys before hierarchy slots preserves children and duplicate keys") {
     const std::string bytes =
-        "entity { id 5 targetname first group { id 8 } targetname second\n"
+        "entity { id 5 removable value targetname first group { id 8 } targetname second\n"
         "solid { id 9 side { id 20 } } editor { visgroupid 6 } }\n";
     Document doc(parsed(bytes));
     const auto entity = *doc.handle(doc.roots()[0]);
-    auto tx = doc.begin("remove first duplicate");
-    tx.setKeyValue(entity, "targetname", {});
+    auto tx = doc.begin("remove key before hierarchy slots");
+    CHECK_THROWS_AS(tx.setKeyValue(entity, "TARGETNAME", {}), std::invalid_argument);
+    CHECK_THROWS_AS(tx.setKeyValue(entity, "targetname", "first"), std::invalid_argument);
+    CHECK_THROWS_AS(tx.setKeyValue(entity, "targetname", "changed"), std::invalid_argument);
+    tx.setKeyValue(entity, "removable", {});
     tx.commit();
     auto output = doc.toVmf();
     REQUIRE(output);
     REQUIRE(output->entities.size() == 1);
     CHECK(output->entities[0].groups.size() == 1);
     CHECK(output->entities[0].solids.size() == 1);
-    REQUIRE(output->entities[0].findAll("targetname").size() == 1);
-    CHECK(*output->entities[0].find("targetname")->text() == "second");
+    REQUIRE(output->entities[0].findAll("targetname").size() == 2);
+    CHECK(*output->entities[0].findAll("targetname")[0]->text() == "first");
+    CHECK(*output->entities[0].findAll("targetname")[1]->text() == "second");
+    CHECK(output->entities[0].find("removable") == nullptr);
     REQUIRE(doc.side(20));
     REQUIRE(doc.undo());
     CHECK(saved(doc) == bytes);
@@ -541,4 +559,171 @@ TEST_CASE("Document object IDs ignore the world's separate ID") {
     CHECK(*doc.get(entity)->block->find("id")->asInt() == 13);
     CHECK(*doc.get(solid)->block->find("id")->asInt() == 14);
     tx.commit();
+}
+
+TEST_CASE("Document setEditor preserves membership order and restores exact bytes for every object") {
+    for (const auto* type : {"solid", "entity", "group"}) {
+        CAPTURE(type);
+        const std::string bytes = std::string(type) +
+            " { id 7 editor { color \"1 2 3\" groupid 4 VisgroupID 1 visgroupid 2 "
+            "visgroupid 1 comments old custom untouched } }\n";
+        Document doc(parsed(bytes));
+        const auto object = *doc.handle(doc.roots()[0]);
+        const auto editorBlock = [&]() -> const kv1::Node& {
+            if (std::holds_alternative<Handle<Solid>>(object))
+                return *doc.get(object)->block->find("editor");
+            return *doc.get(*doc.handle(doc.get(object)->children[0]))->block;
+        };
+        const auto memberships = [&]() {
+            std::vector<int> result;
+            for (const auto* entry : editorBlock().findAll("visgroupid"))
+                result.push_back(*entry->asInt());
+            return result;
+        };
+        const auto edit = [&](EditorEdit operation, Dirty flags) {
+            auto tx = doc.begin("editor edit");
+            tx.setEditor(object, std::move(operation));
+            const auto changes = tx.commit();
+            REQUIRE(changes.modified.size() == 1);
+            CHECK(changes.modified[0].handle == object);
+            CHECK(changes.modified[0].flags == flags);
+        };
+        edit(EditorEdit::setGroup(9), Dirty::Hierarchy);
+        CHECK(editorBlock().find("groupid")->asInt() == 9);
+        edit(EditorEdit::setGroup({}), Dirty::Hierarchy);
+        CHECK(editorBlock().find("groupid") == nullptr);
+        edit(EditorEdit::addVisgroup(3), Dirty::Visibility);
+        CHECK(memberships() == std::vector<int>{1, 2, 1, 3});
+        edit(EditorEdit::addVisgroup(1), Dirty::Visibility);
+        CHECK(memberships() == std::vector<int>{1, 2, 1, 3, 1});
+        edit(EditorEdit::removeVisgroup(1), Dirty::Visibility);
+        CHECK(memberships() == std::vector<int>{2, 1, 3, 1});
+        edit(EditorEdit::setColor("20 30 40"), Dirty::KeyValues);
+        edit(EditorEdit::setVisgroupShown(false), Dirty::Visibility);
+        edit(EditorEdit::setVisgroupAutoShown(true), Dirty::Visibility);
+        edit(EditorEdit::setComments("new comments"), Dirty::KeyValues);
+        CHECK(editorBlock().find("color")->decodedValue() == "20 30 40");
+        CHECK(editorBlock().find("visgroupshown")->asInt() == 0);
+        CHECK(editorBlock().find("visgroupautoshown")->asInt() == 1);
+        CHECK(editorBlock().find("comments")->decodedValue() == "new comments");
+        CHECK(editorBlock().find("custom")->decodedValue() == "untouched");
+        {
+            auto tx = doc.begin("missing membership");
+            tx.setEditor(object, EditorEdit::removeVisgroup(999));
+            tx.setEditor(object, EditorEdit::setGroup({}));
+            CHECK(tx.commit().empty());
+        }
+        const auto edited = saved(doc);
+        while (doc.undo()) {}
+        CHECK(saved(doc) == bytes);
+        CHECK(doc.dirtyNodes().empty());
+        while (doc.redo()) {}
+        CHECK(saved(doc) == edited);
+    }
+}
+
+TEST_CASE("Document setEditor creates missing editor blocks and rolls back silently") {
+    for (const auto* type : {"solid", "entity", "group"}) {
+        CAPTURE(type);
+        const std::string bytes = std::string(type) + " { id 7 }\n";
+        Document doc(parsed(bytes));
+        const auto object = *doc.handle(doc.roots()[0]);
+        {
+            auto tx = doc.begin("cancel editor creation");
+            tx.setEditor(object, EditorEdit::addVisgroup(8));
+            tx.setEditor(object, EditorEdit::setComments("cancel"));
+        }
+        CHECK(saved(doc) == bytes);
+        {
+            auto tx = doc.begin("create editor");
+            tx.setEditor(object, EditorEdit::addVisgroup(8));
+            tx.setEditor(object, EditorEdit::setGroup(2));
+            const auto changes = tx.commit();
+            REQUIRE(changes.modified.size() == 1);
+            CHECK(changes.modified[0].handle == object);
+            CHECK(changes.modified[0].flags == (Dirty::Visibility | Dirty::Hierarchy));
+        }
+        const auto edited = saved(doc);
+        CHECK(edited.find("visgroupid") != std::string::npos);
+        REQUIRE(doc.undo());
+        CHECK(saved(doc) == bytes);
+        REQUIRE(doc.redo());
+        CHECK(saved(doc) == edited);
+    }
+}
+
+TEST_CASE("Document duplicate side index follows subtree ordering and deletion") {
+    const std::string bytes = "world { id 1 group { id 2 solid { id 3 side { id 10 } } } "
+                              "solid { id 4 side { id 10 } side { id 10 } } }";
+    Document doc(parsed(bytes));
+    const auto world = *doc.handle(doc.roots()[0]);
+    const auto group = *doc.handle(doc.get(world)->children[0]);
+    const auto first = doc.side(10)->solid;
+    const auto second = std::get<Handle<Solid>>(*doc.handle(doc.get(world)->children[1]));
+    {
+        auto tx = doc.begin("move duplicate subtree");
+        tx.reparent(group, {}, 1);
+        CHECK(doc.side(10)->solid == second);
+        CHECK(doc.side(10)->faceIndex == 0);
+        tx.commit();
+    }
+    {
+        auto tx = doc.begin("destroy duplicate winner");
+        tx.destroy(second);
+        CHECK(doc.side(10)->solid == first);
+        CHECK(tx.commit().vanishedSides.empty());
+    }
+    REQUIRE(doc.undo());
+    CHECK(doc.side(10)->solid != first);
+    REQUIRE(doc.undo());
+    CHECK(doc.side(10)->solid == first);
+    CHECK(saved(doc) == bytes);
+}
+
+TEST_CASE("Document editor removals retain nested unknown blocks and object undo flags") {
+    const std::string bytes = "entity { id 1 editor { groupid 4 custom { odd raw } "
+                              "visgroupid 2 tail { key value } visgroupid 3 } }\n";
+    Document doc(parsed(bytes));
+    const auto object = *doc.handle(doc.roots()[0]);
+    ChangeSet observed;
+    doc.observe([&](const ChangeSet& changes) { observed = changes; });
+    {
+        auto tx = doc.begin("remove editor keys");
+        tx.setEditor(object, EditorEdit::setGroup({}));
+        tx.setEditor(object, EditorEdit::removeVisgroup(2));
+        tx.commit();
+    }
+    const auto edited = saved(doc);
+    auto output = doc.toVmf();
+    REQUIRE(output);
+    REQUIRE(output->entities[0].editor);
+    const auto& editor = *output->entities[0].editor;
+    CHECK(editor.find("groupid") == nullptr);
+    CHECK(editor.findAll("visgroupid").size() == 1);
+    CHECK(editor.node->find("custom")->find("odd")->decodedValue() == "raw");
+    CHECK(editor.node->find("tail")->find("key")->decodedValue() == "value");
+    REQUIRE(doc.undo());
+    REQUIRE(observed.modified.size() == 1);
+    CHECK(observed.modified[0].handle == object);
+    CHECK(observed.modified[0].flags == (Dirty::Hierarchy | Dirty::Visibility));
+    CHECK(saved(doc) == bytes);
+    REQUIRE(doc.redo());
+    REQUIRE(observed.modified.size() == 1);
+    CHECK(observed.modified[0].handle == object);
+    CHECK(observed.modified[0].flags == (Dirty::Hierarchy | Dirty::Visibility));
+    CHECK(saved(doc) == edited);
+}
+
+TEST_CASE("Document setKeyValue rejects duplicate keys before no-op or removal") {
+    const std::string bytes = "entity { id 1 editor { VisgroupID 2 visgroupid 3 } }\n";
+    Document doc(parsed(bytes));
+    const auto object = *doc.handle(doc.roots()[0]);
+    const auto editor = *doc.handle(doc.get(object)->children[0]);
+    auto tx = doc.begin("ambiguous key edits");
+    CHECK_THROWS_AS(tx.setKeyValue(editor, "visgroupid", "4"), std::invalid_argument);
+    CHECK_THROWS_AS(tx.setKeyValue(editor, "VISGROUPID", "2"), std::invalid_argument);
+    CHECK_THROWS_AS(tx.setKeyValue(editor, "visgroupid", {}), std::invalid_argument);
+    CHECK(tx.commit().empty());
+    CHECK(doc.undoCount() == 0);
+    CHECK(saved(doc) == bytes);
 }

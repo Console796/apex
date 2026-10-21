@@ -3,6 +3,7 @@
 #include "core/strings.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <stdexcept>
 #include <utility>
@@ -203,26 +204,98 @@ std::vector<NodeHandle> Document::dirtyNodes() const {
 }
 void Document::indexSides() {
     sides_.clear();
+    sideCandidates_.clear();
     const auto walk = [&](const auto& self, NodeId id) -> void {
-        const auto h = handles_.at(id);
-        const auto* n = get(h);
+        const auto h = *handle(id);
         if (const auto* solid = std::get_if<Handle<Solid>>(&h)) {
             std::size_t face = 0;
-            for (const auto& child : n->block->children()) {
-                if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) {
-                    continue;
-                }
-                const auto* key = child.find("id");
-                if (key) {
-                    const auto number = key->asInt();
-                    if (number) sides_.try_emplace(*number, SideLocation{*solid, face});
+            for (const auto& child : get(h)->block->children()) {
+                if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+                if (const auto* key = child.find("id")) {
+                    if (const auto number = key->asInt()) {
+                        const SideLocation location{*solid, face};
+                        sides_.try_emplace(*number, location);
+                        sideCandidates_[*number].push_back(location);
+                    }
                 }
                 ++face;
             }
         }
-        for (const auto child : n->children) self(self, child);
+        for (const auto child : get(h)->children) self(self, child);
     };
     for (const auto id : roots_) walk(walk, id);
+}
+void Document::refreshSide(SideId id) {
+    const auto found = sideCandidates_.find(id);
+    if (found == sideCandidates_.end()) {
+        sides_.erase(id);
+        return;
+    }
+    // Only malformed, duplicate IDs need hierarchy comparisons. Unique IDs take the fast path.
+    const auto path = [&](Handle<Solid> solid) {
+        std::vector<std::size_t> result;
+        for (auto nodeId = get(solid)->id; nodeId; nodeId = node(nodeId)->parent) {
+            const auto parent = node(nodeId)->parent;
+            const auto& siblings = parent ? node(parent)->children : roots_;
+            result.push_back(std::find(siblings.begin(), siblings.end(), nodeId) - siblings.begin());
+        }
+        std::reverse(result.begin(), result.end());
+        return result;
+    };
+    const auto& candidates = found->second;
+    auto first = candidates.front();
+    for (std::size_t i = 1; i < candidates.size(); ++i) {
+        const auto& candidate = candidates[i];
+        if (candidate.solid == first.solid ? candidate.faceIndex < first.faceIndex :
+            path(candidate.solid) < path(first.solid)) first = candidate;
+    }
+    sides_.insert_or_assign(id, first);
+}
+void Document::updateSolidSides(NodeId id, bool add) {
+    const auto h = *handle(id);
+    const auto* solid = std::get_if<Handle<Solid>>(&h);
+    if (!solid) return;
+    std::size_t face = 0;
+    for (const auto& child : get(h)->block->children()) {
+        if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+        if (const auto* key = child.find("id")) {
+            if (const auto number = key->asInt()) {
+                const SideLocation location{*solid, face};
+                if (add) sideCandidates_[*number].push_back(location);
+                else {
+                    auto found = sideCandidates_.find(*number);
+                    if (found != sideCandidates_.end()) {
+                        std::erase(found->second, location);
+                        if (found->second.empty()) sideCandidates_.erase(found);
+                    }
+                }
+                refreshSide(*number);
+            }
+        }
+        ++face;
+    }
+}
+void Document::checkSideIndex() {
+#ifndef NDEBUG
+    std::map<SideId, SideLocation> rebuilt;
+    const auto walk = [&](const auto& self, NodeId id) -> void {
+        const auto h = *handle(id);
+        if (const auto* solid = std::get_if<Handle<Solid>>(&h)) {
+            std::size_t face = 0;
+            for (const auto& child : get(h)->block->children()) {
+                if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+                if (const auto* key = child.find("id")) {
+                    if (const auto number = key->asInt())
+                        rebuilt.try_emplace(*number, SideLocation{*solid, face});
+                }
+                ++face;
+            }
+        }
+        for (const auto child : get(h)->children) self(self, child);
+    };
+    for (const auto id : roots_) walk(walk, id);
+    assert(sides_ == rebuilt);
+#endif
 }
 std::optional<SideLocation> Document::side(SideId id) const {
     const auto found = sides_.find(id);
@@ -256,10 +329,12 @@ ChangeSet Document::restore(const Entry& entry, bool after) {
         const auto current = handle(delta.id);
         if (!old && current) changes.created.push_back(*current);
         else if (old && !current) changes.destroyed.push_back(*old);
-        else if (old && current) changes.modified.push_back({*current, delta.flags});
+        else if (old && current && delta.flags != Dirty::None)
+            changes.modified.push_back({*current, delta.flags});
     }
     roots_ = after ? entry.rootsAfter : entry.rootsBefore;
     indexSides();
+    checkSideIndex();
     for (const auto& [id, location] : oldSides) {
         (void)location;
         if (!sides_.contains(id)) changes.vanishedSides.push_back(id);
@@ -322,6 +397,7 @@ Transaction::Transaction(Document& doc, std::string label) : doc_(&doc) {
 }
 Transaction::Transaction(Transaction&& other) noexcept
     : doc_(std::exchange(other.doc_, nullptr)), entry_(std::move(other.entry_)),
+      deltaIndex_(std::move(other.deltaIndex_)),
       key_(std::move(other.key_)), operations_(other.operations_) {}
 Transaction::~Transaction() {
     if (doc_) {
@@ -336,11 +412,13 @@ NodeId Transaction::checked(NodeHandle h) const {
     return n->id;
 }
 void Transaction::touch(NodeId id, Dirty flags) {
-    auto found = std::find_if(entry_.deltas.begin(), entry_.deltas.end(),
-                              [id](const auto& d) { return d.id == id; });
-    if (found == entry_.deltas.end()) {
+    const auto [found, inserted] = deltaIndex_.try_emplace(id, entry_.deltas.size());
+    if (inserted) {
         entry_.deltas.push_back({id, doc_->value(id), {}, flags, doc_->handle(id)});
-    } else found->flags = found->flags | flags;
+    } else {
+        auto& delta = entry_.deltas[found->second];
+        delta.flags = delta.flags | flags;
+    }
     doc_->node(id)->dirty = doc_->node(id)->dirty | flags;
 }
 void Transaction::detach(NodeId id) {
@@ -375,18 +453,21 @@ NodeHandle Transaction::create(kv1::Node block, std::optional<NodeHandle> parent
     const auto id = doc_->import(block, parentId);
     for (auto created = first; created < doc_->nextNode_; ++created) {
         doc_->node(created)->dirty = Dirty::Hierarchy;
+        deltaIndex_.emplace(created, entry_.deltas.size());
         entry_.deltas.push_back({created, {}, {}, Dirty::Hierarchy, {}});
     }
     auto& children = parentId ? doc_->node(parentId)->children : doc_->roots_;
     children.push_back(id);
     ++operations_;
-    doc_->indexSides();
+    for (auto created = first; created < doc_->nextNode_; ++created)
+        doc_->updateSolidSides(created, true);
     return *doc_->handle(id);
 }
 void Transaction::destroyId(NodeId id) {
     const auto children = doc_->node(id)->children;
     for (const auto child : children) destroyId(child);
     touch(id, Dirty::Hierarchy);
+    doc_->updateSolidSides(id, false);
     doc_->put(id, {});
 }
 void Transaction::destroy(NodeHandle h) {
@@ -394,7 +475,6 @@ void Transaction::destroy(NodeHandle h) {
     detach(id);
     destroyId(id);
     ++operations_;
-    doc_->indexSides();
 }
 void Transaction::reparent(NodeHandle h, std::optional<NodeHandle> parent, std::size_t position) {
     const auto id = checked(h);
@@ -411,7 +491,12 @@ void Transaction::reparent(NodeHandle h, std::optional<NodeHandle> parent, std::
     children.insert(children.begin() + static_cast<std::ptrdiff_t>(position), id);
     doc_->node(id)->parent = parentId;
     ++operations_;
-    doc_->indexSides();
+    const auto refresh = [&](const auto& self, NodeId moved) -> void {
+        doc_->updateSolidSides(moved, false);
+        doc_->updateSolidSides(moved, true);
+        for (const auto child : doc_->node(moved)->children) self(self, child);
+    };
+    refresh(refresh, id);
 }
 void Transaction::setKeyValue(NodeHandle h, std::string key, std::optional<std::string> text) {
     const auto id = checked(h);
@@ -419,6 +504,8 @@ void Transaction::setKeyValue(NodeHandle h, std::string key, std::optional<std::
     if (identity(key, original)) {
         throw std::invalid_argument("identity keys are allocated by Document");
     }
+    if (original.findAll(key).size() > 1)
+        throw std::invalid_argument("setKeyValue requires a unique key");
     std::optional<std::size_t> removed;
     bool found = false;
     for (std::size_t i = 0; i < original.children().size(); ++i) {
@@ -443,6 +530,96 @@ void Transaction::setKeyValue(NodeHandle h, std::string key, std::optional<std::
     }
     doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
     key_ = {id, folded(std::move(key))};
+    ++operations_;
+}
+void Transaction::setEditor(NodeHandle h, EditorEdit edit) {
+    const auto id = checked(h);
+    const bool solid = std::holds_alternative<Handle<Solid>>(h);
+    if (!solid && !std::holds_alternative<Handle<Entity>>(h) &&
+        !std::holds_alternative<Handle<Group>>(h))
+        throw std::invalid_argument("setEditor needs a solid, entity or group");
+    NodeId editorId = 0;
+    std::optional<std::size_t> inlineIndex;
+    auto editor = kv1::Node::block("editor");
+    if (solid) {
+        const auto& children = doc_->node(id)->block->children();
+        for (std::size_t i = 0; i < children.size(); ++i) {
+            if (children[i].kind() == kv1::NodeKind::Block && ciEquals(children[i].key(), "editor")) {
+                inlineIndex = i;
+                editor = children[i];
+                break;
+            }
+        }
+    } else {
+        for (const auto child : doc_->node(id)->children) {
+            if (ciEquals(doc_->node(child)->block->key(), "editor")) {
+                editorId = child;
+                editor = *doc_->node(child)->block;
+                break;
+            }
+        }
+    }
+    std::optional<std::size_t> removedIndex;
+    std::string key;
+    Dirty flags = Dirty::KeyValues;
+    switch (edit.kind) {
+    case EditorEdit::Kind::Group: key = "groupid"; flags = Dirty::Hierarchy; break;
+    case EditorEdit::Kind::AddVisgroup:
+    case EditorEdit::Kind::RemoveVisgroup: key = "visgroupid"; flags = Dirty::Visibility; break;
+    case EditorEdit::Kind::Color: key = "color"; break;
+    case EditorEdit::Kind::VisgroupShown: key = "visgroupshown"; flags = Dirty::Visibility; break;
+    case EditorEdit::Kind::VisgroupAutoShown:
+        key = "visgroupautoshown"; flags = Dirty::Visibility; break;
+    case EditorEdit::Kind::Comments: key = "comments"; break;
+    }
+    if (edit.kind == EditorEdit::Kind::AddVisgroup) {
+        editor.append(kv1::Node::value(key, *edit.value)).value();
+    } else if (edit.kind == EditorEdit::Kind::RemoveVisgroup) {
+        bool removed = false;
+        for (std::size_t i = 0; i < editor.children().size(); ++i) {
+            const auto& child = editor.children()[i];
+            if (child.kind() == kv1::NodeKind::Value && ciEquals(child.key(), key) &&
+                child.asInt() == std::stoi(*edit.value)) {
+                removedIndex = i;
+                editor.remove(i).value();
+                removed = true;
+                break;
+            }
+        }
+        if (!removed) return;
+    } else {
+        const auto* previous = editor.find(key);
+        if ((!previous && !edit.value) ||
+            (previous && edit.value && previous->decodedValue() == *edit.value)) return;
+        if (!edit.value) {
+            for (std::size_t i = 0; i < editor.children().size(); ++i) {
+                if (&editor.children()[i] == previous) removedIndex = i;
+            }
+        }
+        set(editor, key, edit.value);
+    }
+    touch(id, flags);
+    if (solid) {
+        auto block = *doc_->node(id)->block;
+        if (inlineIndex) block.children()[*inlineIndex] = std::move(editor);
+        else block.append(std::move(editor)).value();
+        doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
+    } else if (editorId) {
+        // The child snapshot is needed for exact undo; observers consume the object's flags.
+        touch(editorId, Dirty::None);
+        if (removedIndex) {
+            for (auto& [index, child] : doc_->node(editorId)->sourceChildren) {
+                (void)child;
+                if (index > *removedIndex) --index;
+            }
+        }
+        doc_->node(editorId)->block = std::make_shared<const kv1::Node>(std::move(editor));
+    } else {
+        editorId = doc_->import(editor, id);
+        deltaIndex_.emplace(editorId, entry_.deltas.size());
+        entry_.deltas.push_back({editorId, {}, {}, Dirty::None, {}});
+        doc_->node(id)->children.push_back(editorId);
+    }
     ++operations_;
 }
 void Transaction::setSideKeyValue(SideId sideId, std::string key, std::string text) {
@@ -483,8 +660,9 @@ ChangeSet Transaction::commit() {
     for (const auto& delta : entry_.deltas) {
         const auto h = doc_->handle(delta.id);
         if (!delta.before && h) changes.created.push_back(*h);
-        else if (delta.before && h) changes.modified.push_back({*h, delta.flags});
-        else if (delta.before) {
+        else if (delta.before && h && delta.flags != Dirty::None)
+            changes.modified.push_back({*h, delta.flags});
+        else if (delta.before && !h) {
             changes.destroyed.push_back(*delta.beforeHandle);
         }
         if (delta.before && std::holds_alternative<Solid>(*delta.before)) {
@@ -519,6 +697,7 @@ ChangeSet Transaction::commit() {
         doc_->coalesceAllowed_ = true;
         doc_->evict();
     }
+    doc_->checkSideIndex();
     auto* doc = std::exchange(doc_, nullptr);
     doc->active_ = false;
     if (!changes.empty()) doc->notify(changes);
