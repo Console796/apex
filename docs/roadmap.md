@@ -19,8 +19,8 @@ The version names the **last completed sub-milestone**. When 0.1.10 lands, 0.1 i
 next landed work is 0.2.1. Git tags (`v0.1.3`) mark completed sub-milestones and carry no build
 number.
 
-**Status:** 0.1 is complete: 0.1.1–0.1.10 have landed (`version.txt` reads 0.1.10). The next
-landed work is 0.2.1 (see `plans/0.2.md`).
+**Status:** 0.1 is complete and 0.2.1 has landed (`version.txt` reads 0.2.1). The next landed
+work is 0.2.2 (see `plans/0.2.md`).
 
 ## Principles that hold across every milestone
 
