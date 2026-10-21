@@ -21,6 +21,7 @@ namespace apex::document {
 
 using NodeId = std::uint64_t;
 using SideId = int;
+using SelectionBlob = std::vector<std::uint64_t>;
 enum class Dirty : unsigned {
     None = 0, Geometry = 1, Material = 2, KeyValues = 4, Visibility = 8, Hierarchy = 16
 };
@@ -111,6 +112,7 @@ public:
 
     bool undo();
     bool redo();
+    const std::optional<SelectionBlob>& restoredSelection() const { return restoredSelection_; }
     std::size_t undoCount() const { return undo_.size(); }
     std::size_t redoCount() const { return redo_.size(); }
     std::size_t historyBytes() const { return historyBytes_; }
@@ -135,6 +137,7 @@ private:
         std::vector<Delta> deltas;
         std::vector<NodeId> rootsBefore, rootsAfter;
         std::optional<std::pair<NodeId, std::string>> coalesce;
+        std::optional<SelectionBlob> selectionBefore, selectionAfter;
         std::size_t bytes = 0;
     };
     Pools pools_;
@@ -146,6 +149,7 @@ private:
     std::int64_t nextObject_ = 1, nextSide_ = 1, nextGroup_ = 1, nextVisgroup_ = 1;
     NodeId nextNode_ = 1;
     std::deque<Entry> undo_, redo_;
+    std::optional<SelectionBlob> restoredSelection_;
     std::size_t cap_, historyBytes_ = 0, nextObserver_ = 1;
     std::map<std::size_t, Observer> observers_;
     bool active_ = false, notifying_ = false, coalesceAllowed_ = false;
@@ -191,6 +195,8 @@ public:
     void setSideKeyValue(SideId side, std::string key, std::string value);
     // The polyhedron supplies vertices and UVs. Input side IDs must remain unchanged.
     void setSolidGeometry(Handle<Solid> solid, const geometry::SolidGeometry& geometry);
+    // Opaque caller state; metadata alone does not create an undo entry.
+    void setSelection(SelectionBlob before, SelectionBlob after);
     ChangeSet commit(); // Consecutive single edits of the same node/key coalesce.
 
 private:

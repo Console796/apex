@@ -54,6 +54,8 @@ void randomRoundTrip(const std::string& bytes, std::uint32_t seed, int count) {
         CAPTURE(step);
         auto all = nodes(doc);
         auto tx = doc.begin("random operation");
+        tx.setSelection({seed, static_cast<std::uint64_t>(step)},
+                        {seed, static_cast<std::uint64_t>(step + 1)});
         const auto operation = random() % 5;
         if (all.empty() || operation == 0) {
             std::optional<NodeHandle> parent;
@@ -346,6 +348,182 @@ TEST_CASE("Document memory cap evicts oldest snapshots and clears redo on a bran
     CHECK_FALSE(doc.redo());
     create();
     CHECK(doc.undoCount() == 0);
+}
+
+TEST_CASE("Document selection metadata round trips and clears on history calls and commits") {
+    Document doc(parsed("entity { id 1 targetname original }"));
+    const auto entity = *doc.handle(doc.roots()[0]);
+    CHECK_FALSE(doc.restoredSelection());
+    {
+        auto tx = doc.begin("selected edit");
+        tx.setSelection({99}, {100});
+        tx.setKeyValue(entity, "targetname", "changed");
+        tx.setSelection({1, 2}, {3, 4, 5}); // Last call wins.
+        tx.commit();
+        CHECK_THROWS_AS(tx.setSelection({}, {}), std::logic_error);
+    }
+    REQUIRE(doc.undo());
+    CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{{1, 2}});
+    CHECK_FALSE(doc.undo());
+    CHECK_FALSE(doc.restoredSelection());
+    REQUIRE(doc.redo());
+    CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{{3, 4, 5}});
+    CHECK_FALSE(doc.redo());
+    CHECK_FALSE(doc.restoredSelection());
+    REQUIRE(doc.undo());
+    {
+        auto tx = doc.begin("plain edit");
+        tx.setKeyValue(entity, "origin", "0 0 0");
+        tx.commit();
+    }
+    CHECK_FALSE(doc.restoredSelection());
+    REQUIRE(doc.undo());
+    CHECK_FALSE(doc.restoredSelection());
+    REQUIRE(doc.redo());
+    CHECK_FALSE(doc.restoredSelection());
+}
+
+TEST_CASE("Document selection blobs survive repeated undo and redo across entries") {
+    Document doc(parsed("entity { id 1 }"));
+    const auto entity = *doc.handle(doc.roots()[0]);
+    {
+        auto tx = doc.begin("name");
+        tx.setKeyValue(entity, "targetname", "named");
+        tx.setSelection({1}, {2});
+        tx.commit();
+    }
+    {
+        auto tx = doc.begin("origin");
+        tx.setKeyValue(entity, "origin", "0 0 0");
+        tx.setSelection({}, {});
+        tx.commit();
+    }
+    for (int repeat = 0; repeat < 2; ++repeat) {
+        REQUIRE(doc.undo());
+        CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{SelectionBlob{}});
+        REQUIRE(doc.undo());
+        CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{{1}});
+        REQUIRE(doc.redo());
+        CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{{2}});
+        REQUIRE(doc.redo());
+        CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{SelectionBlob{}});
+    }
+}
+
+TEST_CASE("Document coalescing keeps first before and latest after selection metadata") {
+    for (const auto recorded : {0U, 1U, 2U, 3U, 5U, 7U}) {
+        CAPTURE(recorded);
+        Document doc(parsed("entity { id 1 targetname original }"));
+        const auto entity = *doc.handle(doc.roots()[0]);
+        for (unsigned edit = 0; edit < 3; ++edit) {
+            auto tx = doc.begin("typing");
+            tx.setKeyValue(entity, "targetname", std::to_string(edit));
+            if (recorded & (1U << edit)) tx.setSelection({edit}, {edit + 10});
+            tx.commit();
+        }
+        CHECK(doc.undoCount() == 1);
+        REQUIRE(doc.undo());
+        if (recorded) {
+            const std::uint64_t first = recorded & 1U ? 0 : 1;
+            CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{{first}});
+        } else CHECK_FALSE(doc.restoredSelection());
+        REQUIRE(doc.redo());
+        if (recorded) {
+            const std::uint64_t last = recorded & 4U ? 12 : recorded & 2U ? 11 : 10;
+            CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{{last}});
+        } else CHECK_FALSE(doc.restoredSelection());
+    }
+}
+
+TEST_CASE("Document selection metadata counts toward history memory and eviction") {
+    Document plain(parsed("entity { id 1 }"));
+    Document selected(parsed("entity { id 1 }"));
+    const auto edit = [](Document& doc, bool selection, const char* key) {
+        auto tx = doc.begin("edit");
+        tx.setKeyValue(*doc.handle(doc.roots()[0]), key, "value");
+        if (selection) tx.setSelection(SelectionBlob(16, 1), SelectionBlob(32, 2));
+        tx.commit();
+    };
+    edit(plain, false, "targetname");
+    edit(selected, true, "targetname");
+    const auto plainBytes = plain.historyBytes();
+    const auto selectedBytes = selected.historyBytes();
+    CHECK(selectedBytes == plainBytes + 48 * sizeof(std::uint64_t));
+    edit(selected, true, "origin");
+    selected.setUndoCap(selected.historyBytes() - selectedBytes);
+    CHECK(selected.undoCount() == 1);
+    REQUIRE(selected.undo());
+    CHECK(selected.restoredSelection() == std::optional<SelectionBlob>{SelectionBlob(16, 1)});
+    CHECK_FALSE(selected.undo());
+    selected.setUndoCap(plainBytes);
+    CHECK(selected.historyBytes() == 0);
+    CHECK_FALSE(selected.redo());
+}
+
+TEST_CASE("Document coalesced selection memory is recalculated before eviction") {
+    Document doc(parsed("entity { id 1 targetname original }"));
+    const auto entity = *doc.handle(doc.roots()[0]);
+    const auto edit = [&](const char* value, SelectionBlob before, SelectionBlob after) {
+        auto tx = doc.begin("typing");
+        tx.setKeyValue(entity, "targetname", value);
+        tx.setSelection(std::move(before), std::move(after));
+        tx.commit();
+    };
+    edit("a", {1}, {2});
+    const auto initial = doc.historyBytes();
+    edit("b", SelectionBlob(50, 3), SelectionBlob(10, 4));
+    CHECK(doc.undoCount() == 1);
+    CHECK(doc.historyBytes() == initial + 9 * sizeof(std::uint64_t));
+    doc.setUndoCap(doc.historyBytes());
+    edit("c", {5}, SelectionBlob(11, 6));
+    CHECK(doc.undoCount() == 0);
+    CHECK(doc.historyBytes() == 0);
+}
+
+TEST_CASE("Document selection-only commits stay silent and preserve history behavior") {
+    const std::string bytes = "entity { id 1 targetname original }";
+    Document doc(parsed(bytes));
+    const auto entity = *doc.handle(doc.roots()[0]);
+    std::size_t notifications = 0;
+    doc.observe([&](const ChangeSet&) { ++notifications; });
+    const auto selectionOnly = [&] {
+        const auto history = doc.historyBytes();
+        const auto undo = doc.undoCount(), redo = doc.redoCount();
+        const auto observed = notifications;
+        auto tx = doc.begin("selection only");
+        tx.setSelection({1}, {2});
+        CHECK(tx.commit().empty());
+        CHECK(doc.historyBytes() == history);
+        CHECK(doc.undoCount() == undo);
+        CHECK(doc.redoCount() == redo);
+        CHECK(notifications == observed);
+        CHECK_FALSE(doc.restoredSelection());
+    };
+    selectionOnly();
+    CHECK(saved(doc) == bytes);
+    CHECK(doc.dirtyNodes().empty());
+    {
+        auto tx = doc.begin("edit");
+        tx.setKeyValue(entity, "targetname", "a");
+        tx.setSelection({3}, {4});
+        tx.commit();
+    }
+    selectionOnly();
+    {
+        auto tx = doc.begin("coalesced edit");
+        tx.setKeyValue(entity, "targetname", "b");
+        tx.commit();
+    }
+    CHECK(doc.undoCount() == 1);
+    REQUIRE(doc.undo());
+    REQUIRE(doc.restoredSelection());
+    selectionOnly();
+    CHECK(saved(doc) == bytes);
+    CHECK(doc.dirtyNodes().empty());
+    REQUIRE(doc.redo());
+    CHECK(doc.restoredSelection() == std::optional<SelectionBlob>{{4}});
+    doc.begin("empty").commit();
+    CHECK_FALSE(doc.restoredSelection());
 }
 
 TEST_CASE("Document selective serialization preserves all bytes outside an edited solid") {

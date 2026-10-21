@@ -372,6 +372,9 @@ std::size_t Document::memory(const Entry& entry) {
     std::size_t bytes = sizeof(Entry) + entry.label.size() +
                         (entry.rootsBefore.size() + entry.rootsAfter.size()) * sizeof(NodeId);
     if (entry.coalesce) bytes += entry.coalesce->second.size();
+    for (const auto* selection : {&entry.selectionBefore, &entry.selectionAfter}) {
+        if (*selection) bytes += (*selection)->size() * sizeof(SelectionBlob::value_type);
+    }
     for (const auto& delta : entry.deltas) {
         bytes += sizeof(Delta);
         for (const auto* v : {&delta.before, &delta.after}) {
@@ -397,20 +400,24 @@ void Document::evict() {
 void Document::setUndoCap(std::size_t bytes) { cap_ = bytes; evict(); }
 bool Document::undo() {
     if (active_ || notifying_) throw std::logic_error("undo during a transaction/notification");
+    restoredSelection_.reset();
     if (undo_.empty()) return false;
     coalesceAllowed_ = false;
     auto entry = std::move(undo_.back()); undo_.pop_back();
     auto changes = restore(entry, false);
+    restoredSelection_ = entry.selectionBefore;
     redo_.push_back(std::move(entry));
     notify(changes);
     return true;
 }
 bool Document::redo() {
     if (active_ || notifying_) throw std::logic_error("redo during a transaction/notification");
+    restoredSelection_.reset();
     if (redo_.empty()) return false;
     coalesceAllowed_ = false;
     auto entry = std::move(redo_.back()); redo_.pop_back();
     auto changes = restore(entry, true);
+    restoredSelection_ = entry.selectionAfter;
     undo_.push_back(std::move(entry));
     notify(changes);
     return true;
@@ -744,8 +751,14 @@ void Transaction::setSolidGeometry(Handle<Solid> h, const geometry::SolidGeometr
     doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
     ++operations_;
 }
+void Transaction::setSelection(SelectionBlob before, SelectionBlob after) {
+    if (!doc_) throw std::logic_error("transaction already finished");
+    entry_.selectionBefore = std::move(before);
+    entry_.selectionAfter = std::move(after);
+}
 ChangeSet Transaction::commit() {
     if (!doc_) throw std::logic_error("transaction already finished");
+    doc_->restoredSelection_.reset();
     for (auto& delta : entry_.deltas) {
         if (doc_->handle(delta.id)) delta.after = doc_->value(delta.id);
     }
@@ -785,6 +798,10 @@ ChangeSet Transaction::commit() {
             doc_->historyBytes_ -= previous.bytes;
             previous.deltas.front().after = entry_.deltas.front().after;
             previous.rootsAfter = entry_.rootsAfter;
+            if (!previous.selectionBefore)
+                previous.selectionBefore = std::move(entry_.selectionBefore);
+            if (entry_.selectionAfter)
+                previous.selectionAfter = std::move(entry_.selectionAfter);
             previous.bytes = Document::memory(previous);
             doc_->historyBytes_ += previous.bytes;
         } else {
