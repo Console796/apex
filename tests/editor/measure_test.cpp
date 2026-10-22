@@ -72,14 +72,14 @@ void select(EditorSession& session, std::span<const NodeId> ids) {
 
 } // namespace
 
-TEST_CASE("[measure] 0.2.10 undo memory and frame costs") {
+TEST_CASE("[measure] 0.2 release undo memory and frame costs") {
     const char* enabled = std::getenv("APEX_MEASURE");
     if (!enabled || std::string_view(enabled) != "1") {
         std::cout << "APEX_MEASURE=1 is required; skipping measurements\n";
         return;
     }
     std::cout << std::fixed << std::setprecision(3)
-              << "0.2.10 measurements (steady_clock; memory = Document::historyBytes, MiB)\n"
+              << "0.2 release measurements (steady_clock; memory = Document::historyBytes, MiB)\n"
               << "workload | ms | history MiB | retained undo entries\n";
     {
         Document doc(synthetic(10000));

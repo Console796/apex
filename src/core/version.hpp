@@ -4,12 +4,14 @@
 
 namespace apex {
 
-// MAJOR.MILESTONE.SUB.BUILD (plan 0.1, D1). BUILD is 0 outside tools/ci.py.
+// MAJOR.MILESTONE.SUB.BUILD (plan 0.1, D1), with a "-release" suffix on a milestone's release
+// (roadmap, Versioning). BUILD is 0 outside tools/ci.py.
 struct Version {
     int major;
     int milestone;
     int sub;
     int build;
+    bool release;
     std::string_view string;
     std::string_view gitHash;
     bool gitDirty;

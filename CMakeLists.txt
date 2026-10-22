@@ -2,10 +2,19 @@ cmake_minimum_required(VERSION 3.25)
 
 
 file(STRINGS ${CMAKE_CURRENT_SOURCE_DIR}/version.txt APEX_VERSION_TXT LIMIT_COUNT 1)
-string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" _ "${APEX_VERSION_TXT}")
+# MAJOR.MILESTONE.SUB, or MAJOR.MILESTONE.SUB-release for a milestone's release (roadmap, Versioning).
+if(NOT APEX_VERSION_TXT MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(-release)?$")
+  message(FATAL_ERROR "version.txt: expected MAJOR.MILESTONE.SUB[-release], got '${APEX_VERSION_TXT}'")
+endif()
 set(APEX_VERSION_MAJOR ${CMAKE_MATCH_1})
 set(APEX_VERSION_MILESTONE ${CMAKE_MATCH_2})
 set(APEX_VERSION_SUB ${CMAKE_MATCH_3})
+set(APEX_VERSION_SUFFIX "${CMAKE_MATCH_4}")
+if(APEX_VERSION_SUFFIX)
+  set(APEX_VERSION_RELEASE 1)
+else()
+  set(APEX_VERSION_RELEASE 0)
+endif()
 
 project(Apex VERSION ${APEX_VERSION_MAJOR}.${APEX_VERSION_MILESTONE}.${APEX_VERSION_SUB}
         LANGUAGES CXX)

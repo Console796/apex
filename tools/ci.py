@@ -12,7 +12,7 @@ use --fuzz-seconds 20 while iterating, or 0 to disable it explicitly.
 
 The Windows VM stage is the slow one, so --windows defaults to "auto": it runs only when build
 files or platform-sensitive code (WIN_TRIGGERS) changed since the last passing Windows run.
-Use "always" before tagging a sub-milestone (the release gate, D22/D23), "never" to skip.
+Use "always" before tagging a sub-milestone or a release (the gate, D22/D23), "never" to skip.
 The guest keeps its build tree between runs, so a run after a small change is incremental.
 
 Environment:

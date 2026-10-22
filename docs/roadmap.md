@@ -6,7 +6,8 @@ its own plan in `docs/plans/` before work on it starts. The first is [plans/0.1.
 
 ## Versioning
 
-`MAJOR.MILESTONE.SUB.BUILD`, starting at **0.0.0.0**.
+`MAJOR.MILESTONE.SUB.BUILD`, starting at **0.0.0.0**, with a `-release` suffix on a milestone's
+release (`0.2.11-release`).
 
 | Field | Meaning |
 |---|---|
@@ -14,13 +15,24 @@ its own plan in `docs/plans/` before work on it starts. The first is [plans/0.1.
 | MILESTONE | Feature milestone, 1–10 in this plan. |
 | SUB | Sub-milestone within it. `SUB = 0` means "milestone planned, nothing landed yet". Each sub-milestone is a reviewable, mergeable unit with its own exit criteria. |
 | BUILD | Monotonic run counter of the local CI runner `tools/ci.py` (0.1 plan, D1/D22). Ad-hoc builds report `0`. |
+| `-release` | Marks the milestone's release: its exit test, measurements and spec amendments have passed. |
 
-The version names the **last completed sub-milestone**. When 0.1.10 lands, 0.1 is done, and the
-next landed work is 0.2.1. Git tags (`v0.1.3`) mark completed sub-milestones and carry no build
-number.
+The version names the **last completed sub-milestone**. Sub-milestones are numbered in the order
+they land, so versions only ever go up. A milestone's release is **not** a numbered sub-milestone
+and is never given a number in advance: it is the milestone's closing step, planned as
+"0.M release", and when it lands it takes the number of the last sub-milestone that landed before
+it, plus `-release`. If 0.2.11 is the last sub-milestone, the release is **0.2.11-release**; if
+0.2.12 lands first, the release becomes 0.2.12-release. Nothing of 0.M lands after its release;
+the next landed work is 0.(M+1).1.
 
-**Status:** 0.1 is complete and 0.2.11 has landed (`version.txt` reads 0.2.11; 0.2.11 viewport input polish landed ahead of 0.2.10, which has its automated parts done, manual acceptance pending). The next landed
-work is 0.2.10 completion and the 0.2 release (see `plans/0.2.md`).
+`version.txt` holds `MAJOR.MILESTONE.SUB` or `MAJOR.MILESTONE.SUB-release`; the full version
+string puts the suffix last (`0.2.11.42-release`). Git tags mark completed sub-milestones
+(`v0.1.3`) and releases (`v0.2.11-release`) and carry no build number. 0.1 predates this policy:
+its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
+
+**Status:** 0.1 is complete and 0.2.11 has landed (`version.txt` reads 0.2.11). The 0.2 release
+has its automated parts done (exit test and measurements); Hammer acceptance and the manual 3D
+session are pending. When it lands it is 0.2.11-release (see `plans/0.2.md`).
 
 ## Principles that hold across every milestone
 

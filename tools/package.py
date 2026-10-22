@@ -55,6 +55,7 @@ def run(cmd, **kw):
 
 def version(build_dir: Path) -> str:
     base = (ROOT / "version.txt").read_text().split()[0]
+    base, sep, suffix = base.partition("-")  # "0.2.11-release" -> suffix "release"
     n = "0"
     cache = build_dir / "CMakeCache.txt"
     if cache.exists():
@@ -64,7 +65,7 @@ def version(build_dir: Path) -> str:
     parts = base.split(".")
     while len(parts) < 3:
         parts.append("0")
-    return ".".join(parts[:3] + [n])
+    return ".".join(parts[:3] + [n]) + (f"-{suffix}" if sep else "")
 
 
 def qt_prefix_from_cache(build_dir: Path):
