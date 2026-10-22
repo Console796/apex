@@ -31,7 +31,7 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 34);
+    REQUIRE(registry.entries().size() == 38);
     CHECK(registry.entries().front().id == "edit.undo");
     CHECK(registry.entries().back().id == "transform.modal.scale");
     std::set<ActionId> ids;
@@ -107,6 +107,7 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
         {"Ctrl+G", "edit.group"}, {"Ctrl+U", "edit.ungroup"},
         {"Ctrl+W", "selection.ignore_groups"}, {"H", "view.hide"},
         {"Ctrl+M", "transform.dialog"}, {"[", "grid.smaller"}, {"]", "grid.larger"},
+        {"Alt+P", "workplane.pin"},
         {"Ctrl+Z", "edit.undo"}, {"Ctrl+Y", "edit.redo"}, {"Alt", "snap.suspend"},
     });
     checkBindings(hammerPreset(), {
@@ -119,7 +120,7 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
     for (const auto& [id, binding] : hammerPreset().bindings) {
         const bool provisional = id == "selection.all" || id == "selection.none" ||
                                  id == "edit.delete" || id == "edit.duplicate" ||
-                                 id == "view.unhide" || id == "view.isolate";
+                                 id == "view.unhide" || id == "view.isolate" || id == "workplane.pin";
         CHECK(binding.provisional == provisional);
     }
 }
@@ -127,6 +128,7 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
 TEST_CASE("Blender preset follows D15 including alternatives and held snap modifier") {
     checkBindings(blenderPreset(), {
         {"A", "selection.all"}, {"Alt+A", "selection.none"}, {"B", "selection.box"},
+        {"Escape", "selection.none"},
         {"H", "view.hide"}, {"Alt+H", "view.unhide"}, {"Shift+H", "view.hide_unselected"},
         {"Shift+D", "edit.duplicate"}, {"X", "edit.delete"}, {"Delete", "edit.delete"},
         {"Ctrl+G", "edit.group"}, {"G", "transform.modal.grab"},

@@ -61,6 +61,7 @@ private slots:
 private:
     void buildMenus();
     void updateEditorActions();
+    void updateGridStatus();
     void applyPreset(const editor::Preset& preset);
     void buildDocks();
     void buildStatusBar();
@@ -91,6 +92,7 @@ private:
     QAction* darkAction_ = nullptr;
     QAction* lightAction_ = nullptr;
     QLabel* gridLabel_ = nullptr;
+    QLabel* planeLabel_ = nullptr;
     QLabel* cameraLabel_ = nullptr;
     QLabel* frameLabel_ = nullptr;
     QLabel* gpuLabel_ = nullptr;

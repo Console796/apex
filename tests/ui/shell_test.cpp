@@ -5,6 +5,7 @@
 #include <QAction>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
@@ -12,6 +13,7 @@
 #include <QTemporaryDir>
 
 #include "core/log.hpp"
+#include "../editor/fixtures.hpp"
 #include "document/document.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
@@ -287,4 +289,114 @@ TEST_CASE("UI key chord conversion round trips preset shortcuts") {
             }
         }
     }
+}
+
+TEST_CASE("grid shortcuts and work plane session changes update shell status") {
+    app();
+    QSettings().setValue("editor/preset", "Hammer");
+    apex::ui::MainWindow window;
+    window.show();
+    REQUIRE(window.openFile(QStringLiteral(APEX_FIXTURE_DIR "/probe/e_control.vmf")));
+    window.activateWindow();
+    window.setFocus();
+    QCoreApplication::processEvents();
+    auto* grid = window.findChild<QLabel*>("statusGrid");
+    auto* plane = window.findChild<QLabel*>("statusPlane");
+    REQUIRE(grid);
+    REQUIRE(plane);
+    CHECK(grid->text() == "Grid: 64");
+    CHECK(plane->text() == "Plane: ground");
+    const auto press = [&](int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+        QKeyEvent event(QEvent::KeyPress, key, modifiers);
+        QCoreApplication::sendEvent(&window, &event);
+        QCoreApplication::processEvents();
+    };
+    press(Qt::Key_BracketRight);
+    CHECK(grid->text() == "Grid: 128");
+    press(Qt::Key_BracketLeft);
+    CHECK(grid->text() == "Grid: 64");
+    auto& session = window.editorSession();
+    session.setGridSize(0.125);
+    CHECK(grid->text() == "Grid: 0.125");
+    // Drive CPU hover directly: the offscreen platform has no Vulkan pane.
+    editor_test::addBox(*window.document(), {200000, 199990, 199990}, {200010, 200010, 200010});
+    session.pointerHover({{199900, 200000, 200000}, {1, 0, 0}});
+    CHECK(plane->text() == "Plane: face (hover)");
+    press(Qt::Key_P, Qt::AltModifier);
+    CHECK(plane->text() == "Plane: pinned");
+    session.clearHover();
+    CHECK(plane->text() == "Plane: pinned");
+    press(Qt::Key_Escape);
+    CHECK(plane->text() == "Plane: ground");
+    session.pointerHover({{199900, 200000, 200000}, {1, 0, 0}});
+    session.pinWorkPlane();
+    session.unpinWorkPlane();
+    CHECK(plane->text() == "Plane: face (hover)");
+    session.clearHover();
+    CHECK(plane->text() == "Plane: ground");
+    auto* menu = window.findChild<QMenu*>("menuGrid");
+    REQUIRE(menu);
+    for (const auto* id : {"grid.larger", "grid.smaller", "workplane.pin",
+                           "workplane.axis_x", "workplane.axis_y", "workplane.axis_z"}) {
+        auto* action = window.findChild<QAction*>(id);
+        REQUIRE(action);
+        CHECK(menu->actions().contains(action));
+    }
+}
+
+TEST_CASE("pane grids use surface bounds pinned precedence and every axis fallback") {
+    using namespace editor_test;
+    Document doc(parsed());
+    addBox(doc, {0, 0, 0}, {10, 20, 30});
+    EditorSession session;
+    session.attach(doc);
+    session.setGridSize(0.5);
+    auto perspective = viewport::makePreset(viewport::Preset::Camera);
+    auto grid = ui::makeGridSettings(perspective, &session);
+    CHECK(grid.enabled);
+    CHECK(grid.spacing == 0.5f);
+    CHECK(grid.origin == DVec3{0});
+    CHECK(grid.normal == DVec3{0, 0, 1});
+    CHECK(grid.uAxis == DVec3{1, 0, 0});
+    CHECK(grid.vAxis == DVec3{0, 1, 0});
+    CHECK_FALSE(grid.bounds);
+    session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+    grid = ui::makeGridSettings(perspective, &session);
+    CHECK(grid.normal == DVec3{-1, 0, 0});
+    CHECK(grid.origin == DVec3{0, 10, 15});
+    const auto plane = session.resolvedWorkPlane()->plane;
+    REQUIRE(grid.bounds);
+    CHECK(grid.bounds->uMin == plane.bounds->min.x);
+    CHECK(grid.bounds->uMax == plane.bounds->max.x);
+    CHECK(grid.bounds->vMin == plane.bounds->min.y);
+    CHECK(grid.bounds->vMax == plane.bounds->max.y);
+    for (const auto axis : {viewport::ViewAxis::PosX, viewport::ViewAxis::NegX,
+                            viewport::ViewAxis::PosY, viewport::ViewAxis::NegY,
+                            viewport::ViewAxis::PosZ, viewport::ViewAxis::NegZ}) {
+        CAPTURE(axis);
+        auto view = viewport::makePreset(viewport::Preset::Top);
+        view.camera.axis = axis;
+        const auto basis = view.camera.basis();
+        grid = ui::makeGridSettings(view, &session);
+        CHECK(grid.enabled);
+        CHECK_FALSE(grid.bounds);
+        checkPoint(grid.normal, -basis.forward);
+        checkPoint(grid.uAxis, basis.right);
+        checkPoint(grid.vAxis, basis.up);
+        session.pinWorkPlane();
+        grid = ui::makeGridSettings(view, &session);
+        checkPoint(grid.normal, plane.normal);
+        checkPoint(grid.origin, plane.origin);
+        REQUIRE(grid.bounds);
+        view.overlays.grid = false;
+        CHECK_FALSE(ui::makeGridSettings(view, &session).enabled);
+        session.unpinWorkPlane();
+    }
+    session.clearHover();
+    auto freeOrtho = viewport::makePreset(viewport::Preset::Camera);
+    freeOrtho.camera.projection = viewport::ProjectionKind::Orthographic;
+    grid = ui::makeGridSettings(freeOrtho, &session);
+    CHECK(grid.origin == DVec3{0});
+    CHECK(grid.normal == DVec3{0, 0, 1});
+    CHECK_FALSE(grid.bounds);
 }

@@ -2,6 +2,7 @@
 
 #include "editor/actions.hpp"
 #include "editor/selection_ops.hpp"
+#include "editor/work_plane.hpp"
 
 #include <memory>
 
@@ -30,6 +31,13 @@ public:
     std::optional<NodeId> hoverDrawable() const { return hoverDrawable_; }
     void clearHover();
     void pointerHover(Ray ray);
+    const WorkPlaneState& workPlane() const { return workPlane_; }
+    std::optional<WorkPlaneState::Resolved> resolvedWorkPlane() const { return workPlane_.resolve(); }
+    void pinWorkPlane();
+    void pinAxisWorkPlane(Axis axis, DVec3 through);
+    void unpinWorkPlane();
+    double gridSize() const { return gridSize_; }
+    void setGridSize(double units);
     void pointerClick(Ray ray, Modifiers modifiers = {}, bool sameSpot = false);
     void marquee(std::span<const Plane> planes, Modifiers modifiers = {});
     void selectNode(NodeId node, Modifiers modifiers = {});
@@ -58,6 +66,9 @@ private:
     ViewState view_;
     std::optional<Target> hover_;
     std::optional<NodeId> hoverDrawable_;
+    std::optional<std::pair<NodeId, SideId>> hoverFace_;
+    WorkPlaneState workPlane_;
+    double gridSize_ = GridLadder::kDefault;
     MarqueeMode marqueeMode_ = MarqueeMode::Enclosed;
     Preset preset_;
     Keymap keymap_;

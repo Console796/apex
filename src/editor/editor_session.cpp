@@ -22,6 +22,8 @@ void EditorSession::attach(document::Document& doc) {
         cycle_ = {};
         hover_.reset();
         hoverDrawable_.reset();
+        hoverFace_.reset();
+        workPlane_.setHovered(std::nullopt);
         selection_.prune(*document_);
         notify();
     });
@@ -36,6 +38,8 @@ void EditorSession::detach() {
     view_ = {};
     hover_.reset();
     hoverDrawable_.reset();
+    hoverFace_.reset();
+    workPlane_ = {};
     selection_.clear();
     notify();
 }
@@ -45,26 +49,57 @@ void EditorSession::setViewState(ViewState view) {
     cycle_ = {};
     hover_.reset();
     hoverDrawable_.reset();
+    hoverFace_.reset();
+    workPlane_.setHovered(std::nullopt);
     notify();
 }
 void EditorSession::clearHover() {
-    if (!hover_) return;
+    if (!hover_ && !hoverDrawable_ && !hoverFace_) return;
     hover_.reset();
     hoverDrawable_.reset();
+    hoverFace_.reset();
+    workPlane_.setHovered(std::nullopt);
     notify();
 }
 void EditorSession::pointerHover(Ray ray) {
     std::optional<Target> target;
     std::optional<NodeId> drawable;
+    std::optional<std::pair<NodeId, SideId>> face;
     if (picks_) {
+        if (const auto hit = picks_->first(ray); hit && hit->side) face = {{hit->node, *hit->side}};
         for (const auto& hit : picks_->pick(ray)) {
             target = resolveClick(hit, selection_.mode(), *groups_, selection_.ignoreGroups());
             if (target) { drawable = hit.node; break; }
         }
     }
-    if (target == hover_ && drawable == hoverDrawable_) return;
+    const bool faceChanged = face != hoverFace_;
+    if (target == hover_ && drawable == hoverDrawable_ && !faceChanged) return;
     hover_ = target;
     hoverDrawable_ = drawable;
+    if (faceChanged) {
+        hoverFace_ = face;
+        workPlane_.setHovered(face ? planeFromFace(*document_, face->first, face->second) : std::nullopt);
+    }
+    notify();
+}
+void EditorSession::pinWorkPlane() {
+    if (!hoverFace_) return;
+    workPlane_.pinHovered();
+    notify();
+}
+void EditorSession::pinAxisWorkPlane(Axis axis, DVec3 through) {
+    workPlane_.pinAxisPlane(axis, through);
+    notify();
+}
+void EditorSession::unpinWorkPlane() {
+    if (!workPlane_.pinned()) return;
+    workPlane_.unpin();
+    notify();
+}
+void EditorSession::setGridSize(double units) {
+    units = GridLadder::clamp(units);
+    if (units == gridSize_) return;
+    gridSize_ = units;
     notify();
 }
 void EditorSession::pointerClick(Ray ray, Modifiers modifiers, bool sameSpot) {
@@ -121,6 +156,33 @@ void EditorSession::setPreset(const Preset& preset) {
 }
 bool EditorSession::perform(const ActionId& action) {
     if (!document_) return false;
+    if (action == "grid.larger" || action == "grid.smaller") {
+        setGridSize(action == "grid.larger" ? GridLadder::larger(gridSize_) : GridLadder::smaller(gridSize_));
+        return true;
+    }
+    if (action == "workplane.pin") {
+        pinWorkPlane();
+        return true;
+    }
+    if (action == "workplane.axis_x" || action == "workplane.axis_y" || action == "workplane.axis_z") {
+        const auto expanded = expandSelection(*document_, *groups_, selection_);
+        AABB bounds;
+        for (const auto node : expanded.solidsAndEntities) {
+            if (const auto box = picks_->bounds(node)) bounds.expand(*box);
+        }
+        for (const auto side : expanded.sides) {
+            if (const auto location = document_->side(side)) {
+                if (const auto box = picks_->bounds(document_->get(location->solid)->id, side)) bounds.expand(*box);
+            }
+        }
+        const auto axis = action == "workplane.axis_x" ? Axis::X : action == "workplane.axis_y" ? Axis::Y : Axis::Z;
+        pinAxisWorkPlane(axis, bounds.empty() ? DVec3{0.0} : bounds.center());
+        return true;
+    }
+    if (action == "selection.none" && workPlane_.pinned()) {
+        unpinWorkPlane();
+        return true;
+    }
     if (action == "edit.undo" || action == "edit.redo") {
         const bool changed = action == "edit.undo" ? document_->undo() : document_->redo();
         if (changed) restoreFromUndo(*document_, selection_);

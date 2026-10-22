@@ -57,7 +57,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     buildDocks();
     viewport_->setEditorSession(&session_);
     outliner_->setEditorSession(&session_);
-    sessionObserver_ = session_.observe([this] { updateEditorActions(); });
+    sessionObserver_ = session_.observe([this] {
+        updateEditorActions();
+        updateGridStatus();
+    });
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
     const bool touching = QSettings().value(QStringLiteral("editor/marqueeTouching"), false).toBool();
     session_.setMarqueeMode(touching ? editor::MarqueeMode::Touching : editor::MarqueeMode::Enclosed);
@@ -132,6 +135,16 @@ void MainWindow::buildMenus() {
 
     viewMenu_ = menuBar()->addMenu(tr("&View"));
     viewMenu_->setObjectName(QStringLiteral("menuView"));
+    auto* grid = viewMenu_->addMenu(tr("Grid"));
+    grid->setObjectName(QStringLiteral("menuGrid"));
+    for (const auto& entry : editor::actionRegistry().entries()) {
+        if (entry.category != "Grid") continue;
+        auto* action = grid->addAction(fromStd(entry.name));
+        action->setObjectName(fromStd(entry.id));
+        action->setToolTip(fromStd(entry.description));
+        editorActions_.emplace(entry.id, action);
+        connect(action, &QAction::triggered, this, [this, id = entry.id] { session_.perform(id); });
+    }
 
     auto* help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About Apex"), this, [this] {
@@ -276,8 +289,6 @@ void MainWindow::buildDocks() {
     viewMenu_->addAction(tr("Reset cameras"), viewport_, &ViewportArea::resetCameras);
     viewMenu_->addAction(tr("Reset viewport layout"), viewport_, &ViewportArea::resetLayout);
 
-    connect(viewport_, &ViewportArea::gridSizeChanged, this,
-            [this](int g) { gridLabel_->setText(tr("Grid: %1").arg(g)); });
     connect(viewport_, &ViewportArea::cameraPositionChanged, this, [this](double x, double y, double z) {
         cameraLabel_->setText(tr("Cam: %1 %2 %3").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1).arg(z, 0, 'f', 1));
     });
@@ -285,15 +296,27 @@ void MainWindow::buildDocks() {
             [this](double ms) { frameLabel_->setText(tr("%1 ms").arg(ms, 0, 'f', 1)); });
     connect(viewport_, &ViewportArea::gpuNameChanged, this,
             [this](const QString& n) { gpuLabel_->setText(tr("GPU: %1").arg(n)); });
-    gridLabel_->setText(tr("Grid: %1").arg(viewport_->gridSize()));
+}
+
+void MainWindow::updateGridStatus() {
+    const auto grid = tr("Grid: %1").arg(session_.gridSize(), 0, 'g', 12);
+    const auto resolved = session_.resolvedWorkPlane();
+    const auto plane = !resolved ? tr("Plane: ground")
+        : resolved->source == editor::WorkPlaneSource::Pinned ? tr("Plane: pinned") : tr("Plane: face (hover)");
+    if (gridLabel_->text() != grid) gridLabel_->setText(grid);
+    if (planeLabel_->text() != plane) planeLabel_->setText(plane);
 }
 
 void MainWindow::buildStatusBar() {
     gridLabel_ = new QLabel;
+    gridLabel_->setObjectName(QStringLiteral("statusGrid"));
+    planeLabel_ = new QLabel;
+    planeLabel_->setObjectName(QStringLiteral("statusPlane"));
     cameraLabel_ = new QLabel(tr("Cam: -"));
     frameLabel_ = new QLabel(tr("- ms"));
     gpuLabel_ = new QLabel(tr("GPU: -"));
-    for (auto* l : {gridLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
+    for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
+    updateGridStatus();
     statusBar()->showMessage(tr("Ready"));
 }
 

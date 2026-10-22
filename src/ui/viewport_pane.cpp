@@ -24,6 +24,7 @@
 #include "ui/gpu_host.hpp"
 #include "ui/key_chord.hpp"
 #include "viewport/pick_math.hpp"
+#include "viewport/view_context.hpp"
 #include "ui/theme.hpp"
 
 namespace apex::ui {
@@ -96,6 +97,34 @@ private:
 };
 
 }  // namespace
+
+render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session) {
+    render::GridSettings grid;
+    grid.enabled = view.overlays.grid;
+    grid.spacing = static_cast<float>(session ? session->gridSize() : editor::GridLadder::kDefault);
+    const auto resolved = session ? session->resolvedWorkPlane() : std::nullopt;
+    const bool axisOrtho = view.camera.isOrtho() && view.camera.axisLocked();
+    // Hover anchoring is a perspective-view concept. Axis-locked ortho panes keep
+    // their screen-aligned grid unless the shared session plane is pinned.
+    if (resolved && (!axisOrtho || resolved->source == editor::WorkPlaneSource::Pinned)) {
+        const auto& plane = resolved->plane;
+        grid.origin = plane.origin;
+        grid.normal = plane.normal;
+        grid.uAxis = plane.uAxis;
+        grid.vAxis = plane.vAxis;
+        if (plane.bounds) {
+            grid.bounds = render::GridRect{plane.bounds->min.x, plane.bounds->max.x,
+                                          plane.bounds->min.y, plane.bounds->max.y};
+        }
+    } else if (axisOrtho) {
+        const auto plane = viewport::makeWorkPlane(view.camera);
+        grid.origin = plane.origin;
+        grid.normal = plane.normal;
+        grid.uAxis = plane.uAxis;
+        grid.vAxis = plane.vAxis;
+    }
+    return grid;
+}
 
 // ---- PaneWindow ----
 
@@ -408,10 +437,7 @@ double PaneWindow::draw() {
     options.edgeColour = Vec4(0.0f, 0.0f, 0.0f, 1.0f);
     options.edgeOverlay = vp->mode == viewport::DisplayMode::Flat;
     options.showEntities = vp->overlays.entityHelpers;
-    const bool flatOnZ = !camera.axisLocked() || camera.axis == viewport::ViewAxis::PosZ ||
-                         camera.axis == viewport::ViewAxis::NegZ;
-    options.grid.enabled = vp->overlays.grid && flatOnZ;
-    options.grid.spacing = gridSpacing_;
+    options.grid = makeGridSettings(*vp, session_);
     if (lightBackground) options.grid.colour = Vec4(0.25f, 0.25f, 0.3f, 0.8f);
 
     render::DrawList list;

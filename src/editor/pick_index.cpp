@@ -125,6 +125,20 @@ bool hitLess(const Hit& a, const Hit& b) {
 
 } // namespace
 
+std::optional<AABB> PickIndex::bounds(NodeId node, std::optional<SideId> side) const {
+    const auto item = items_.find(node);
+    if (item == items_.end()) return std::nullopt;
+    const auto& poly = item->second.poly;
+    if (!side) return poly.bounds();
+    for (const auto& face : poly.faces) {
+        if (static_cast<SideId>(face.sideId) != *side) continue;
+        AABB result;
+        for (const auto vertex : face.vertices) result.expand(poly.vertices[vertex]);
+        return result;
+    }
+    return std::nullopt;
+}
+
 PickIndex::PickIndex(const document::Document& doc, EntityBoundsProvider bounds)
     : doc_(doc), bounds_(std::move(bounds)) {
     rebuild();

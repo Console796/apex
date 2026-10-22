@@ -162,7 +162,6 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
         float clear[4];
         clearColourFor(currentTokens(), clear);
         window->setClearColour(clear);
-        window->setGridSpacing(static_cast<float>(gridSize_));
     }
     auto* frame = new PaneFrame(pane, accessor, window, gpuReason_, maximized, canClose);
     frames_[pane] = frame;
@@ -223,14 +222,6 @@ void ViewportArea::tick() {
         if (ms >= 0.0 && id == layout_.active()) emit frameTimeChanged(ms);
     }
     emitCamera();
-}
-
-void ViewportArea::setGridSize(int units) {
-    if (units < 1 || units == gridSize_) return;
-    gridSize_ = units;
-    for (auto& [id, f] : frames_)
-        if (f && f->window()) f->window()->setGridSpacing(static_cast<float>(units));
-    emit gridSizeChanged(units);
 }
 
 void ViewportArea::resetCameras() {

@@ -21,6 +21,8 @@ namespace apex::ui {
 
 class GpuHost;
 
+render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session);
+
 // The native Vulkan child window of one pane (plan 0.1, D15; pattern from spikes/wayland-vulkan).
 // Renders on demand into its own swapchain through the shared Renderer and RenderMirror, and turns
 // mouse and key input into viewport::NavInput for viewport::navigate.
@@ -37,7 +39,6 @@ public:
 
     viewport::NodeId paneId() const { return pane_; }
     void requestRedraw() { dirty_ = true; }
-    void setGridSpacing(float spacing) { gridSpacing_ = spacing; dirty_ = true; }
     void setClearColour(const float rgba[4]);
     // One timer tick: applies queued navigation input, then draws when dirty (or `forceDraw`).
     // Returns the milliseconds a draw took, or a negative value when nothing was drawn.
@@ -81,7 +82,6 @@ private:
     std::unique_ptr<render::Swapchain> swapchain_;
     render::SwapchainDepth depth_;
     float clear_[4] = {0.1f, 0.1f, 0.1f, 1.0f};
-    float gridSpacing_ = 64.0f;
     bool dirty_ = true;
     bool failed_ = false;
     std::uint64_t frames_ = 0;

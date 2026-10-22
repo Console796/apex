@@ -109,6 +109,167 @@ TEST_CASE("EditorSession actions attachment and edit metadata preserve selection
     session.detach();
 }
 
+TEST_CASE("EditorSession surface hover is independent of selection mode and cached by face") {
+    Document doc(parsed());
+    const auto box = addBox(doc, {0, 0, 0}, {10, 20, 30});
+    addBlock(doc, R"(entity { "classname" "info_target" "origin" "100 0 0" })");
+    EditorSession session;
+    session.attach(doc);
+    int notifications = 0;
+    session.observe([&] { ++notifications; });
+    for (const auto mode : {SelectionMode::Groups, SelectionMode::Objects, SelectionMode::Solids,
+                           SelectionMode::Faces}) {
+        session.selection().setMode(mode);
+        session.clearHover();
+        session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+        auto plane = session.resolvedWorkPlane();
+        REQUIRE(plane);
+        CHECK(plane->source == WorkPlaneSource::Hovered);
+        checkPoint(plane->plane.normal, {-1, 0, 0});
+        checkPoint(plane->plane.origin, {0, 10, 15});
+        REQUIRE(plane->plane.bounds);
+        const auto before = notifications;
+        session.pointerHover({{-100, 6, 6}, {1, 0, 0}});
+        CHECK(notifications == before);
+        // Same drawable and (except in Faces mode) same target, different face.
+        session.pointerHover({{5, 5, 100}, {0, 0, -1}});
+        plane = session.resolvedWorkPlane();
+        REQUIRE(plane);
+        checkPoint(plane->plane.normal, {0, 0, 1});
+        CHECK(notifications == before + 1);
+        session.pointerHover({{100, 0, 100}, {0, 0, -1}});
+        CHECK_FALSE(session.resolvedWorkPlane());
+        session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+        session.pointerHover({{-100, 500, 500}, {1, 0, 0}});
+        CHECK_FALSE(session.resolvedWorkPlane());
+    }
+    session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+    session.clearHover();
+    CHECK_FALSE(session.resolvedWorkPlane());
+    session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+    session.setViewState({});
+    CHECK_FALSE(session.resolvedWorkPlane());
+    // Geometry edits invalidate the node/side cache, even if the IDs survive.
+    session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+    auto tx = doc.begin("Move box");
+    auto geometry = geometry::solidGeometry(*doc.get(box)->block);
+    REQUIRE(geometry);
+    translate(*geometry, {2, 0, 0});
+    tx.setSolidGeometry(std::get<Handle<Solid>>(box), *geometry);
+    tx.commit();
+    CHECK_FALSE(session.resolvedWorkPlane());
+    session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+    REQUIRE(session.resolvedWorkPlane());
+    checkPoint(session.resolvedWorkPlane()->plane.origin, {2, 10, 15});
+}
+
+TEST_CASE("EditorSession pinned planes survive hover and Esc unpins before clearing selection") {
+    Document doc(parsed());
+    const auto box = addBox(doc, {0, 0, 0}, {10, 20, 30});
+    EditorSession session;
+    session.attach(doc);
+    session.selectNode(id(doc, box));
+    const auto history = doc.undoCount();
+    const auto written = doc.write().value();
+    session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
+    CHECK(session.perform("workplane.pin"));
+    session.pointerHover({{5, 5, 100}, {0, 0, -1}});
+    auto plane = session.resolvedWorkPlane();
+    REQUIRE(plane);
+    CHECK(plane->source == WorkPlaneSource::Pinned);
+    checkPoint(plane->plane.normal, {-1, 0, 0});
+    session.clearHover();
+    CHECK(session.workPlane().pinned());
+    const auto escape = session.keymap().lookup(KeyChord::parse("Escape").value());
+    REQUIRE(escape);
+    CHECK(session.perform(*escape));
+    CHECK_FALSE(session.workPlane().pinned());
+    CHECK_FALSE(session.resolvedWorkPlane());
+    CHECK_FALSE(session.selection().ordered().empty());
+    CHECK(session.perform(*escape));
+    CHECK(session.selection().ordered().empty());
+    CHECK(doc.undoCount() == history);
+    CHECK(doc.write().value() == written);
+}
+
+TEST_CASE("EditorSession grid actions walk the ladder clamp and notify only for changed sizes") {
+    Document doc(parsed());
+    EditorSession session;
+    session.attach(doc);
+    CHECK(session.gridSize() == 64.0);
+    int notifications = 0;
+    session.observe([&] { ++notifications; });
+    const auto smaller = session.keymap().lookup(KeyChord::parse("[").value());
+    const auto larger = session.keymap().lookup(KeyChord::parse("]").value());
+    REQUIRE(smaller);
+    REQUIRE(larger);
+    for (double value = 32; value >= 0.125; value *= 0.5) {
+        CHECK(session.perform(*smaller));
+        CHECK(session.gridSize() == value);
+    }
+    CHECK(notifications == 9);
+    session.perform(*smaller);
+    CHECK(notifications == 9);
+    for (double value = 0.25; value <= 1024; value *= 2) {
+        CHECK(session.perform(*larger));
+        CHECK(session.gridSize() == value);
+    }
+    CHECK(notifications == 22);
+    session.perform(*larger);
+    CHECK(notifications == 22);
+    session.setGridSize(0.01);
+    CHECK(session.gridSize() == 0.125);
+    session.setGridSize(48);
+    CHECK(session.gridSize() == 64);
+    session.setGridSize(5000);
+    CHECK(session.gridSize() == 1024);
+    CHECK(doc.undoCount() == 0);
+}
+
+TEST_CASE("EditorSession axis planes use selection bounds and survive undo redo") {
+    Document doc(parsed());
+    const auto group = addBlock(doc, "group {}");
+    const auto box = addBox(doc, {10, 20, 30}, {30, 60, 90});
+    const auto entity = addBlock(doc, R"(entity { "origin" "100 120 140" })");
+    auto tx = doc.begin("Group box");
+    tx.setEditor(box, EditorEdit::setGroup(doc.get(group)->block->find("id")->asInt().value()));
+    tx.commit();
+    EditorSession session;
+    session.attach(doc);
+    session.selectNode(id(doc, group));
+    for (const auto& [action, normal] : {
+             std::pair{"workplane.axis_x", DVec3{1, 0, 0}},
+             std::pair{"workplane.axis_y", DVec3{0, 1, 0}},
+             std::pair{"workplane.axis_z", DVec3{0, 0, 1}}}) {
+        CHECK(session.perform(action));
+        const auto plane = session.resolvedWorkPlane();
+        REQUIRE(plane);
+        CHECK(plane->source == WorkPlaneSource::Pinned);
+        CHECK_FALSE(plane->plane.bounds);
+        checkPoint(plane->plane.normal, normal);
+        checkPoint(plane->plane.origin, {20, 40, 60});
+    }
+    session.setGridSize(0.25);
+    session.edit("Delete box", [&](Transaction& edit) { edit.destroy(box); });
+    for (const auto* action : {"edit.undo", "edit.redo"}) {
+        CHECK(session.perform(action));
+        REQUIRE(session.resolvedWorkPlane());
+        checkPoint(session.resolvedWorkPlane()->plane.origin, {20, 40, 60});
+        CHECK(session.workPlane().pinned());
+        CHECK(session.gridSize() == 0.25);
+    }
+    session.selectNode(id(doc, entity));
+    session.perform("workplane.axis_x");
+    checkPoint(session.resolvedWorkPlane()->plane.origin, {100, 120, 140});
+    session.selection().clear();
+    session.perform("workplane.axis_y");
+    checkPoint(session.resolvedWorkPlane()->plane.origin, {0, 0, 0});
+    session.pinAxisWorkPlane(Axis::Z, {1, 2, 3});
+    checkPoint(session.resolvedWorkPlane()->plane.origin, {1, 2, 3});
+    session.detach();
+    CHECK_FALSE(session.resolvedWorkPlane());
+}
+
 TEST_CASE("EditorSession P2CE corpus scripted camera replay") {
     namespace fs = std::filesystem;
     const char* install = std::getenv("APEX_P2CE_DIR");

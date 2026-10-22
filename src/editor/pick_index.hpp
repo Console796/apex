@@ -58,6 +58,7 @@ public:
     // is the exit face. Edge/corner ties choose SideId. t follows the unnormalized Ray.
     std::vector<Hit> pick(Ray ray, double tMax = std::numeric_limits<double>::infinity()) const;
     std::optional<Hit> first(Ray ray) const;
+    std::optional<AABB> bounds(NodeId node, std::optional<SideId> side = std::nullopt) const;
     // Inside means signedDistance <= 0. Touching clips face polygons; a frustum entirely
     // inside a solid is intentionally not reported. Entity boxes use volume intersection.
     std::vector<NodeId> frustum(std::span<const Plane> outwardPlanes, Mode mode) const;

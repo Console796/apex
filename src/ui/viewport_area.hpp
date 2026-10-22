@@ -44,7 +44,6 @@ public:
     document::Document* document() const { return document_; }
     void setEditorSession(editor::EditorSession* session);
     void updateHighlight();
-    int gridSize() const { return gridSize_; }
 
     const viewport::ViewportLayout& viewportLayout() const { return layout_; }
     viewport::ViewportLayout& mutableLayout() { return layout_; }
@@ -67,13 +66,11 @@ public:
     void flush();
 
 public slots:
-    void setGridSize(int units);
     void resetCameras();   // Every pane back to the preset of its slot, centred on the origin.
     void resetLayout();    // Back to the quad layout.
     void setThemeChanged();
 
 signals:
-    void gridSizeChanged(int units);
     // Status bar feeds: world-space camera position of the active viewport, frame time in
     // milliseconds, and the GPU name once a device is chosen.
     void cameraPositionChanged(double x, double y, double z);
@@ -94,7 +91,6 @@ private:
     editor::EditorSession* session_ = nullptr;
     std::size_t sessionObserver_ = 0;
     document::Document* document_ = nullptr;
-    int gridSize_ = 64;
     viewport::ViewportLayout layout_ = viewport::ViewportLayout::quad();
     GpuHost* host_ = nullptr;
     QWidget* root_ = nullptr;
