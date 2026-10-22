@@ -219,6 +219,12 @@ bool EditorSession::perform(const ActionId& action) {
         unpinWorkPlane();
         return true;
     }
+    if (action == "edit.delete") return deleteSelection().has_value();
+    if (action == "edit.duplicate") return duplicateSelection().has_value();
+    if (action == "edit.group") return groupSelection().has_value();
+    if (action == "edit.ungroup") return ungroupSelection().has_value();
+    if (action == "edit.tie_to_entity") return tieToEntity().has_value();
+    if (action == "edit.move_to_world") return moveToWorld().has_value();
     if (action == "edit.undo" || action == "edit.redo") {
         const bool changed = action == "edit.undo" ? document_->undo() : document_->redo();
         if (changed) restoreFromUndo(*document_, selection_);
@@ -451,6 +457,90 @@ void EditorSession::edit(std::string label, const std::function<void(document::T
     after.prune(*document_);
     recordSelection(transaction, before, after);
     transaction.commit();
+}
+Result<void> EditorSession::runEdit(std::string label, AfterEdit policy,
+                                    const std::function<Result<EditedObjects>(document::Transaction&)>& stage) {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    if (transformActive()) return std::unexpected(Error{ErrorCode::InvalidArgument, "a transform is active"});
+    const Selection before(selection_);
+    try {
+        auto transaction = document_->begin(std::move(label));
+        auto staged = stage(transaction); // An error returns with the transaction dropped: rolled back.
+        if (!staged) return std::unexpected(staged.error());
+        Selection after(selection_);
+        if (policy == AfterEdit::Computed) after = selectionFor(selection_, *staged);
+        else if (policy == AfterEdit::Clear) after.clear();
+        after.prune(*document_);
+        recordSelection(transaction, before, after);
+        transaction.commit(false);
+        selection_ = after;
+        notify();
+    } catch (const std::exception& error) {
+        return std::unexpected(Error{ErrorCode::Internal, error.what()});
+    }
+    return {};
+}
+Result<std::string> EditorSession::copyText() const {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    return serializeSelection(*document_, *groups_, selection_);
+}
+Result<std::string> EditorSession::cutText() {
+    auto text = copyText();
+    if (!text) return text;
+    if (auto done = runEdit("Cut", AfterEdit::Clear, [&](document::Transaction& tx) {
+            return stageDelete(*document_, *groups_, selection_, tx);
+        }); !done)
+        return std::unexpected(done.error());
+    return text;
+}
+Result<void> EditorSession::pasteText(std::string_view text, PasteOptions options) {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    if (!options.plane) {
+        const auto resolved = workPlane_.resolve();
+        options.plane = resolved ? resolved->plane : fallbackPlane_;
+    }
+    if (!options.snap) options.snap = snap_;
+    if (!options.textureLock) options.textureLock = textureLock_;
+    return runEdit(options.special ? "Paste special" : "Paste", AfterEdit::Computed, [&](document::Transaction& tx) {
+        return stagePaste(*document_, tx, text, options);
+    });
+}
+Result<void> EditorSession::duplicateSelection() {
+    auto text = copyText(); // Not the system clipboard: duplicate never touches it.
+    if (!text) return std::unexpected(text.error());
+    PasteOptions options;
+    options.inPlace = true;
+    options.textureLock = textureLock_;
+    return runEdit("Duplicate", AfterEdit::Computed, [&](document::Transaction& tx) {
+        return stagePaste(*document_, tx, *text, options);
+    });
+}
+Result<void> EditorSession::deleteSelection() {
+    return runEdit("Delete", AfterEdit::Clear, [&](document::Transaction& tx) {
+        return stageDelete(*document_, *groups_, selection_, tx);
+    });
+}
+Result<void> EditorSession::groupSelection() {
+    const bool grouped = selection_.mode() == SelectionMode::Groups && !selection_.ignoreGroups();
+    return runEdit("Group", grouped ? AfterEdit::Computed : AfterEdit::Keep, [&](document::Transaction& tx) {
+        return stageGroup(*document_, *groups_, selection_, tx);
+    });
+}
+Result<void> EditorSession::ungroupSelection() {
+    const bool grouped = selection_.mode() == SelectionMode::Groups && !selection_.ignoreGroups();
+    return runEdit("Ungroup", grouped ? AfterEdit::Computed : AfterEdit::Keep, [&](document::Transaction& tx) {
+        return stageUngroup(*document_, *groups_, selection_, tx);
+    });
+}
+Result<void> EditorSession::tieToEntity(const TieParams& params) {
+    return runEdit("Tie to entity", AfterEdit::Computed, [&](document::Transaction& tx) {
+        return stageTieToEntity(*document_, *groups_, selection_, params, tx);
+    });
+}
+Result<void> EditorSession::moveToWorld() {
+    return runEdit("Move to world", AfterEdit::Computed, [&](document::Transaction& tx) {
+        return stageMoveToWorld(*document_, *groups_, selection_, tx);
+    });
 }
 std::size_t EditorSession::observe(Observer observer) {
     const auto token = nextObserver_++;

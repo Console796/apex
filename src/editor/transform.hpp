@@ -67,6 +67,12 @@ struct TransformOptions {
 };
 // The transform is already snapped by the drag/modal caller, shared with preview.
 // Expand entity/group descendants and deduplicate overlapping selection nodes.
+// Applies the transform inside the caller's open transaction (reads see its pending writes).
+// Nothing is written when the result is an error from validation; a thrown write failure is
+// also reported as an error, and the caller should then let the transaction roll back.
+Result<void> stageTransform(const document::Document& doc, document::Transaction& tx,
+                            std::span<const NodeId> selection, const Transform& transform,
+                            TransformOptions options);
 Result<void> commitTransform(document::Document& doc, std::span<const NodeId> selection,
                               const Transform& transform, TransformOptions options,
                               std::string label);

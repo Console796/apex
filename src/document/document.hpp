@@ -107,6 +107,9 @@ public:
     std::optional<SideLocation> side(SideId id) const;
     // Duplicate side IDs are preserved on load; side() returns the first hierarchy occurrence.
     std::vector<NodeHandle> dirtyNodes() const;
+    // The node and its descendants as one KV1 block, children in place. Throws out_of_range
+    // for an unknown ID.
+    kv1::Node exportSubtree(NodeId id) const { return exportNode(id); }
     Result<vmf::VmfFile> toVmf() const;
     Result<std::string> write() const;
 

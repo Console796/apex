@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/clipboard.hpp"
 #include "editor/modal_transform.hpp"
 #include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
@@ -92,6 +93,23 @@ public:
     bool flipSelection(Axis axis);
     bool nudgeSelection(bool alongV, int direction);
 
+    // Clipboard, duplicate, delete and groups (0.2.6). Each mutating call is one undoable
+    // transaction that also records the selection before and after. On failure (empty
+    // selection, bad clipboard text, an invalid transform) the document is left untouched.
+    // The system clipboard belongs to the UI: copyText()/cutText() produce the VMF fragment
+    // and pasteText() consumes one, so edit.copy/cut/paste* are not handled by perform().
+    // Paste fills unset options from the session (work plane, snap settings, texture lock)
+    // and selects the pasted objects.
+    Result<std::string> copyText() const;
+    Result<std::string> cutText();
+    Result<void> pasteText(std::string_view text, PasteOptions options = {});
+    Result<void> duplicateSelection();
+    Result<void> deleteSelection();
+    Result<void> groupSelection();
+    Result<void> ungroupSelection();
+    Result<void> tieToEntity(const TieParams& params = {});
+    Result<void> moveToWorld();
+
     const Preset& preset() const { return preset_; }
     const Keymap& keymap() const { return keymap_; }
     void setPreset(const Preset& preset);
@@ -136,6 +154,9 @@ private:
     std::map<std::size_t, Observer> observers_;
     std::size_t nextObserver_ = 1;
     void notify();
+    enum class AfterEdit { Computed, Keep, Clear };
+    Result<void> runEdit(std::string label, AfterEdit after,
+                         const std::function<Result<EditedObjects>(document::Transaction&)>& stage);
     std::vector<NodeId> transformNodes() const;
     void publishPreview(const Transform& transform);
     bool commitActive(const Transform& transform, GizmoMode mode);

@@ -236,8 +236,9 @@ Result<EntityTransform> applyToEntity(const document::Document& doc, NodeId enti
     return result;
 }
 
-Result<void> commitTransform(document::Document& doc, std::span<const NodeId> selection,
-                              const Transform& transform, TransformOptions options, std::string label) {
+Result<void> stageTransform(const document::Document& doc, document::Transaction& tx,
+                            std::span<const NodeId> selection, const Transform& transform,
+                            TransformOptions options) {
     std::set<NodeId> nodes;
     const auto walk = [&](const auto& self, NodeId id) -> bool {
         if (!nodes.insert(id).second) return true;
@@ -270,7 +271,6 @@ Result<void> commitTransform(document::Document& doc, std::span<const NodeId> se
         solids.emplace(id, std::move(*solid));
     }
     try {
-        auto tx = doc.begin(std::move(label));
         for (const auto& [id, solid] : solids)
             tx.setSolidGeometry(std::get<Handle<document::Solid>>(*doc.handle(id)), solid);
         for (const auto& [id, entity] : entities) {
@@ -278,6 +278,18 @@ Result<void> commitTransform(document::Document& doc, std::span<const NodeId> se
             if (entity.origin) tx.setKeyValue(h, "origin", vectorText(*entity.origin));
             if (entity.angles) tx.setKeyValue(h, "angles", vectorText(*entity.angles));
         }
+    } catch (const std::invalid_argument& error) {
+        return std::unexpected(invalid(error.what()));
+    }
+    return {};
+}
+
+Result<void> commitTransform(document::Document& doc, std::span<const NodeId> selection,
+                              const Transform& transform, TransformOptions options, std::string label) {
+    try {
+        auto tx = doc.begin(std::move(label));
+        const auto staged = stageTransform(doc, tx, selection, transform, options);
+        if (!staged) return staged;
         tx.commit(false);
     } catch (const std::invalid_argument& error) {
         return std::unexpected(invalid(error.what()));

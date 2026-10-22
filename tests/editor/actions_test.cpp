@@ -31,7 +31,7 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 49);
+    REQUIRE(registry.entries().size() == 54);
     CHECK(registry.entries().front().id == "edit.undo");
     CHECK(registry.entries().back().id == "nudge.down");
     std::set<ActionId> ids;
@@ -105,6 +105,8 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
         {"Shift+S", "tool.select"}, {"Shift+E", "tool.entity"},
         {"Ctrl+T", "edit.tie_to_entity"}, {"Ctrl+Shift+W", "edit.move_to_world"},
         {"Ctrl+G", "edit.group"}, {"Ctrl+U", "edit.ungroup"},
+        {"Ctrl+C", "edit.copy"}, {"Ctrl+X", "edit.cut"}, {"Ctrl+V", "edit.paste"},
+        {"Ctrl+Shift+V", "edit.paste_in_place"}, {"Ctrl+Alt+V", "edit.paste_special"},
         {"Ctrl+W", "selection.ignore_groups"}, {"H", "view.hide"},
         {"Ctrl+M", "transform.dialog"}, {"[", "grid.smaller"}, {"]", "grid.larger"},
         {"Alt+P", "workplane.pin"},
@@ -127,6 +129,7 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
     for (const auto& [id, binding] : hammerPreset().bindings) {
         const bool provisional = id == "selection.all" || id == "selection.none" ||
                                  id == "edit.delete" || id == "edit.duplicate" ||
+                                 id == "edit.paste_in_place" || id == "edit.paste_special" ||
                                  id == "view.unhide" || id == "view.isolate" || id == "workplane.pin" ||
                                  id == "transform.texture_lock.toggle" || id == "edit.flip.x" ||
                                  id == "edit.flip.y" || id.starts_with("nudge.");

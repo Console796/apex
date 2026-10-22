@@ -83,7 +83,7 @@ apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS 
 apex_layer(editor SOURCES src/editor/editor_session.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
                           src/editor/group_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
-                          src/editor/work_plane.cpp
+                          src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/clipboard.cpp
                           src/editor/transform.cpp src/editor/preview.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
            DEPS apex_document apex_geometry apex_core)
