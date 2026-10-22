@@ -2,6 +2,8 @@
 
 #include "editor/actions.hpp"
 #include "editor/clipboard.hpp"
+#include "editor/inspector_model.hpp"
+#include "editor/placement.hpp"
 #include "editor/modal_transform.hpp"
 #include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
@@ -94,6 +96,19 @@ public:
     bool flipSelection(Axis axis);
     bool nudgeSelection(bool alongV, int direction);
 
+    void setEntityClasses(assets::EntityClassTable classes);
+    const assets::EntityClassTable& entityClasses() const { return entityClasses_; }
+    InspectorModel inspectorModel(bool raw = false) const;
+    // Supply a unique nonempty token for each field focus to coalesce typing. Rebuild the
+    // model after each commit; raw selects occurrence-aware rows. Empty means one undo step.
+    Result<void> editProperty(std::size_t row, std::string text, std::string focusKey = {}, bool raw = false);
+    Result<void> toggleFlag(std::size_t row, std::uint64_t bit, bool enabled);
+    Result<void> setChoice(std::size_t row, std::string value);
+    Result<void> setClass(std::string classname);
+    // With no normal, hit is projected onto the resolved work plane and snapped in-plane.
+    Result<void> placeEntity(std::string classname, DVec3 hit, std::optional<DVec3> normal, bool align = false);
+    Result<void> placeEntity(std::string classname, Ray ray, bool align = false);
+
     // Clipboard, duplicate, delete and groups (0.2.6). Each mutating call is one undoable
     // transaction that also records the selection before and after. On failure (empty
     // selection, bad clipboard text, an invalid transform) the document is left untouched.
@@ -151,6 +166,7 @@ private:
     std::unique_ptr<PickIndex> picks_;
     std::unique_ptr<GroupIndex> groups_;
     Selection selection_;
+    assets::EntityClassTable entityClasses_;
     CycleState cycle_;
     ViewState view_;
     std::optional<Target> hover_;
@@ -184,7 +200,8 @@ private:
         bool pruneHidden = false);
     enum class AfterEdit { Computed, Keep, Clear, Visible };
     Result<void> runEdit(std::string label, AfterEdit after,
-                         const std::function<Result<EditedObjects>(document::Transaction&)>& stage);
+                         const std::function<Result<EditedObjects>(document::Transaction&)>& stage,
+                         std::string coalesceKey = {});
     std::vector<NodeId> transformNodes() const;
     void publishPreview(const Transform& transform);
     bool commitActive(const Transform& transform, GizmoMode mode);

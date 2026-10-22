@@ -55,3 +55,50 @@ TEST_CASE("FGD real P2CE entity table has no unresolved bases") {
     for (const auto& base : table->unresolvedBases) { INFO(base); CHECK(false); }
     REQUIRE(table->find("info_player_start"));
 }
+
+TEST_CASE("FGD property order spans kinds includes bases and overrides") {
+    GameTree tree;
+    tree.put("base.fgd", R"(@BaseClass = First [
+        z(string) : "Z" : "base" : "Description"
+        mode(choices) : "Mode" : 2 = [ 1 : "One" 2 : "Two" ]
+        bits(flags) = [ 1 : "Enabled" : 1 4 : "Other" : 0 ]
+        input Enable(void) : "Enable it"
+        output OnDone(void) : "Done"
+    ]
+    @BaseClass = Second [ z(string) : "Other" : "second" a(integer) : "A" : 3 ]
+    )");
+    tree.put("main.fgd", R"(@include "base.fgd"
+        @PointClass base(First, Second) bbox(-2 -3 -4, 5 6 7) = test [
+            z(string) readonly : "Override" : "direct"
+            last(float) : "Last" : "1.5" : "Contains fake(string), [ and //"
+        ]
+        @ExtendClass base(First, Second) bbox(-2 -3 -4, 5 6 7) = test [ extra(string) : "Extra" : "" ]
+        @PointClass base(First, Second) = inherited []
+    )");
+    const auto table = loadEntityClasses(tree.root / "main.fgd");
+    REQUIRE_MESSAGE(table, (table ? "" : table.error().what()));
+    const auto* cls = table->find("test");
+    REQUIRE(cls);
+    std::vector<std::string> names;
+    for (const auto& prop : cls->properties) names.push_back(prop.name);
+    REQUIRE(names == std::vector<std::string>{"z", "mode", "bits", "a", "last", "extra"});
+    REQUIRE(cls->properties[1].choices.size() == 2);
+    REQUIRE(cls->properties[2].flags.size() == 2);
+    CHECK(cls->properties[0].defaultValue == "direct");
+    CHECK(cls->properties[0].displayName == "Override");
+    CHECK(cls->properties[0].readOnly);
+    CHECK(cls->properties[1].choices[1].value == "2");
+    CHECK(cls->properties[1].choices[1].label == "Two");
+    CHECK(cls->properties[2].flags[0].bit == 1);
+    CHECK(cls->properties[2].flags[0].defaultValue);
+    CHECK(cls->properties[2].defaultValue == "1");
+    REQUIRE(cls->inputs.size() == 1);
+    CHECK(cls->inputs[0].name == "Enable");
+    REQUIRE(cls->outputs.size() == 1);
+    CHECK(cls->outputs[0].description == "Done");
+    CHECK(cls->mins == std::array<double, 3>{-2, -3, -4});
+    CHECK(cls->maxs == std::array<double, 3>{5, 6, 7});
+    CHECK(table->find("Second")->properties[0].defaultValue == "second");
+    REQUIRE(table->find("inherited"));
+    CHECK(table->find("inherited")->properties[0].defaultValue == "base");
+}
