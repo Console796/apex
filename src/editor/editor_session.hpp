@@ -126,6 +126,9 @@ public:
     Result<void> setVisgroupShown(int id, bool shown);
     Result<void> setAutoVisgroupShown(std::string_view id, bool shown);
 
+    bool autoVisgroupShown(std::string_view id) const { return !visgroupVisibility_.automatic.contains(id); }
+    bool jumpHistory(std::size_t undoCount);
+
     const Preset& preset() const { return preset_; }
     const Keymap& keymap() const { return keymap_; }
     void setPreset(const Preset& preset);

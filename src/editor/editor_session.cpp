@@ -684,6 +684,14 @@ Result<void> EditorSession::setAutoVisgroupShown(std::string_view id, bool shown
     }, !shown);
 }
 
+bool EditorSession::jumpHistory(std::size_t undoCount) {
+    if (!document_) return false;
+    if (undoCount == document_->undoCount()) return true;
+    if (!document_->jumpTo(undoCount)) return false;
+    restoreFromUndo(*document_, selection_);
+    return true;
+}
+
 bool EditorSession::toggleIsolate() {
     if (!document_ || transformActive()) return false;
     if (view_.isolate) {

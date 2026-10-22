@@ -27,6 +27,9 @@
 #include <QToolBar>
 #include <QToolButton>
 
+#include <algorithm>
+#include <tuple>
+
 #include "assets/fgd.hpp"
 #include "core/kv1.hpp"
 #include "core/log.hpp"
@@ -37,6 +40,8 @@
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/outliner_panel.hpp"
+#include "ui/visgroup_panel.hpp"
+#include "ui/history_panel.hpp"
 #include "ui/paste_special_dialog.hpp"
 #include "ui/tie_dialog.hpp"
 #include "ui/transform_dialog.hpp"
@@ -57,9 +62,9 @@ bool isTransformAction(const editor::ActionId& id) {
            id == "transform.dialog" || id == "transform.texture_lock.toggle" || id == "snap.mode.toggle";
 }
 
-// Edit actions whose plain (unmodified) default keys belong to the focused pane.
+// Actions whose plain (unmodified) default keys belong to the focused pane.
 bool isPaneKeyAction(const editor::ActionId& id) {
-    return isTransformAction(id) || id == "edit.delete" || id == "edit.duplicate";
+    return isTransformAction(id) || id.starts_with("view.") || id == "edit.delete" || id == "edit.duplicate";
 }
 
 bool looksLikeFragment(std::string_view text) {
@@ -90,6 +95,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     buildDocks();
     viewport_->setEditorSession(&session_);
     outliner_->setEditorSession(&session_);
+    visgroups_->setEditorSession(&session_);
+    history_->setEditorSession(&session_);
     sessionObserver_ = session_.observe([this] {
         updateEditorActions();
         updateGridStatus();
@@ -107,10 +114,14 @@ MainWindow::~MainWindow() {
     session_.unobserve(sessionObserver_);
     viewport_->setEditorSession(nullptr);
     outliner_->setEditorSession(nullptr);
+    visgroups_->setEditorSession(nullptr);
+    history_->setEditorSession(nullptr);
     session_.detach();
     // The viewport area holds a raw pointer to the document.
     if (viewport_) viewport_->setDocument(nullptr);
     if (outliner_) outliner_->setDocument(nullptr);
+    if (visgroups_) visgroups_->setDocument(nullptr);
+    if (history_) history_->setDocument(nullptr);
 }
 
 void MainWindow::buildMenus() {
@@ -250,6 +261,11 @@ void MainWindow::updateEditorActions() {
             if (id == "edit.paste" || id == "edit.paste_in_place" || id == "edit.paste_special")
                 action->setEnabled(have && clipboardHasFragment_);
         }
+        if (id == "view.hide" || id == "view.hide_unselected" || id == "view.isolate") {
+            const bool objects = session_.document() && !editor::selectedNodes(session_.selection()).empty();
+            action->setEnabled(objects || (id == "view.isolate" && session_.viewState().isolate.has_value()));
+        }
+        if (id == "view.isolate") action->setChecked(session_.viewState().isolate.has_value());
         if (id == "edit.undo") action->setEnabled(document_ && document_->undoCount() != 0);
         if (id == "edit.redo") action->setEnabled(document_ && document_->redoCount() != 0);
         if (id == "selection.ignore_groups") action->setChecked(session_.selection().ignoreGroups());
@@ -298,8 +314,8 @@ void MainWindow::buildDocks() {
     CDockManager::setConfigFlag(CDockManager::HideSingleCentralWidgetTitleBar, true);
     CDockManager::setConfigFlag(CDockManager::FloatingContainerForceNativeTitleBar, true);
 
-    // The central widget is a plain splitter: [outliner | viewports] over [log]. Each side panel
-    // is its own ADS manager holding one dock widget; the viewports are never inside ADS.
+    // The central widget is a plain splitter: [panels | viewports] over [log]. The left
+    // panels share an ADS manager; the viewports are never inside ADS.
     auto* vertical = new QSplitter(Qt::Vertical);
     vertical->setObjectName(QStringLiteral("splitMain"));
     auto* horizontal = new QSplitter(Qt::Horizontal);
@@ -331,8 +347,26 @@ void MainWindow::buildDocks() {
     outlinerDock->setWidget(outliner_);
     outlinerDock->setFeature(ads::CDockWidget::DockWidgetFloatable, false);
     outlinerDock->setFeature(ads::CDockWidget::DockWidgetClosable, true);
-    dockManager_->addDockWidget(ads::CenterDockWidgetArea, outlinerDock);
-    connect(outlinerDock, &ads::CDockWidget::viewToggled, dockManager_, &QWidget::setVisible);
+    auto* leftArea = dockManager_->addDockWidget(ads::CenterDockWidgetArea, outlinerDock);
+    visgroups_ = new VisgroupPanel;
+    history_ = new HistoryPanel;
+    std::vector<ads::CDockWidget*> leftDocks{outlinerDock};
+    for (const auto& [name, title, panel] : std::vector<std::tuple<const char*, QString, QWidget*>>{
+             {"dockVisgroups", tr("Visgroups"), visgroups_}, {"dockHistory", tr("Undo History"), history_}}) {
+        auto* dock = new ads::CDockWidget(dockManager_, title);
+        dock->setObjectName(QString::fromLatin1(name));
+        dock->setWidget(panel);
+        dock->setFeature(ads::CDockWidget::DockWidgetFloatable, false);
+        dockManager_->addDockWidget(ads::CenterDockWidgetArea, dock, leftArea);
+        leftDocks.push_back(dock);
+        viewMenu_->addAction(dock->toggleViewAction());
+    }
+    for (auto* dock : leftDocks) {
+        connect(dock, &ads::CDockWidget::viewToggled, this, [this, leftDocks] {
+            const bool open = std::any_of(leftDocks.begin(), leftDocks.end(), [](auto* d) { return !d->isClosed(); });
+            dockManager_->setVisible(open);
+        });
+    }
 
     log_ = new LogPanel;
     auto* logDock = new ads::CDockWidget(logDockManager_, tr("Log"));
@@ -410,6 +444,11 @@ void MainWindow::buildTransformUi() {
         });
         return action;
     };
+
+    viewMenu_->addSeparator();
+    for (const char* id : {"view.hide", "view.unhide", "view.isolate", "view.hide_unselected"})
+        make(id, viewMenu_, std::string_view(id) == "view.isolate");
+    viewMenu_->addSeparator();
 
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
     auto* transform = edit->addMenu(tr("Transform"));
@@ -710,6 +749,8 @@ bool MainWindow::openFile(const QString& path) {
     auto doc = std::make_unique<document::Document>(*parsed);
     viewport_->setDocument(nullptr);
     outliner_->setDocument(nullptr);
+    visgroups_->setDocument(nullptr);
+    history_->setDocument(nullptr);
     session_.detach();
     document_ = std::move(doc);
     session_.attach(*document_);
@@ -717,6 +758,8 @@ bool MainWindow::openFile(const QString& path) {
     viewport_->setDocument(document_.get(), currentProfile());
     viewport_->applyMapViews(viewport::readMapViews(*parsed));
     outliner_->setDocument(document_.get());
+    visgroups_->setDocument(document_.get());
+    history_->setDocument(document_.get());
     saveAction_->setEnabled(true);
     saveAsAction_->setEnabled(true);
     addRecent(path);

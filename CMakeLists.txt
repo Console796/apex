@@ -110,7 +110,7 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
   apex_layer(ui SOURCES src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
-                        src/ui/key_chord.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/log_panel.cpp
+                        src/ui/key_chord.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/log_panel.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets ads::qtadvanceddocking-qt6)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
   add_executable(apex src/app/main.cpp)

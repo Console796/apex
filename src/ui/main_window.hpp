@@ -27,6 +27,8 @@ namespace apex::ui {
 
 class LogPanel;
 class OutlinerPanel;
+class VisgroupPanel;
+class HistoryPanel;
 class ViewportArea;
 
 class MainWindow : public QMainWindow {
@@ -105,6 +107,8 @@ private:
     ads::CDockManager* logDockManager_ = nullptr;  // Bottom: log.
     ViewportArea* viewport_ = nullptr;
     OutlinerPanel* outliner_ = nullptr;
+    VisgroupPanel* visgroups_ = nullptr;
+    HistoryPanel* history_ = nullptr;
     LogPanel* log_ = nullptr;
     QComboBox* profileCombo_ = nullptr;
     QMenu* recentMenu_ = nullptr;

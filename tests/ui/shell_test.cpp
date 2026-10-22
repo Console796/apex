@@ -1133,3 +1133,275 @@ TEST_CASE("quad splitter bars stay aligned and the crossing drags both axes") {
     CHECK(std::abs(ratio(rows[0]) - ratio(rows[1])) < 0.01);
     CHECK(area.viewportLayout().tree().ratio == doctest::Approx(ratio(root)).epsilon(0.01));
 }
+
+#include <DockManager.h>
+#include <DockWidget.h>
+#include "ui/visgroup_panel.hpp"
+#include "ui/history_panel.hpp"
+#include "editor/visibility.hpp"
+#include <QListWidget>
+#include <QTreeWidgetItemIterator>
+#include <QDrag>
+#include <QDropEvent>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QMimeData>
+
+namespace {
+QTreeWidgetItem* visgroupItem(ui::VisgroupPanel& panel, int id) {
+    for (QTreeWidgetItemIterator it(&panel); *it; ++it)
+        if ((*it)->data(0, Qt::UserRole).isValid() && (*it)->data(0, Qt::UserRole).toInt() == id) return *it;
+    return nullptr;
+}
+void panelAction(ui::VisgroupPanel& panel, const char* id) {
+    auto* action = panel.findChild<QAction*>(QString::fromLatin1(id));
+    REQUIRE(action);
+    REQUIRE(action->isEnabled());
+    action->trigger();
+    QCoreApplication::processEvents();
+}
+}
+
+TEST_CASE("visgroup panel edits nested groups membership and visibility") {
+    app();
+    document::Document doc(editor_test::parsed(R"(visgroups {
+        visgroup { name Parent visgroupid 10 color "12 34 56"
+            visgroup { name Child visgroupid 11 color "56 34 12" } }
+    } world { id 1 } entity { id 2 classname light editor { visgroupid 11 } })"));
+    editor::EditorSession session;
+    session.attach(doc);
+    ui::VisgroupPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 500);
+    panel.show();
+    QCoreApplication::processEvents();
+    REQUIRE(panel.topLevelItemCount() == 2);
+    CHECK(panel.topLevelItem(0)->text(0) == "User");
+    CHECK(panel.topLevelItem(1)->text(0) == "Auto");
+    CHECK(panel.topLevelItem(1)->childCount() == static_cast<int>(editor::autoVisgroups().size()));
+    auto* child = visgroupItem(panel, 11);
+    REQUIRE(child);
+    CHECK(child->parent() == visgroupItem(panel, 10));
+    CHECK_FALSE(child->icon(0).isNull());
+    CHECK(child->checkState(0) == Qt::Checked);
+    const auto member = editor::autoMembers(doc, "lights").front();
+    const auto before = doc.write().value();
+    child->setCheckState(0, Qt::Unchecked);
+    CHECK_FALSE(editor::isVisible(doc, member));
+    QCoreApplication::processEvents();
+    CHECK(visgroupItem(panel, 11)->checkState(0) == Qt::Unchecked);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(doc.write().value() == before);
+    QCoreApplication::processEvents();
+    CHECK(visgroupItem(panel, 11)->checkState(0) == Qt::Checked);
+
+    // Auto check state follows the session, including undo and overlapping groups.
+    const auto autoItem = [&](std::string_view id) {
+        const auto groups = editor::autoVisgroups();
+        for (std::size_t i = 0; i < groups.size(); ++i)
+            if (groups[i].id == id) return panel.topLevelItem(1)->child(static_cast<int>(i));
+        return static_cast<QTreeWidgetItem*>(nullptr);
+    };
+    autoItem("lights")->setCheckState(0, Qt::Unchecked);
+    CHECK_FALSE(editor::isVisible(doc, member));
+    REQUIRE(session.setAutoVisgroupShown("point-entities", false));
+    QCoreApplication::processEvents();
+    autoItem("lights")->setCheckState(0, Qt::Checked);
+    QCoreApplication::processEvents();
+    CHECK_FALSE(editor::isVisible(doc, member));
+    CHECK(autoItem("lights")->checkState(0) == Qt::Checked);
+    REQUIRE(session.perform("edit.undo"));
+    QCoreApplication::processEvents();
+    CHECK(autoItem("lights")->checkState(0) == Qt::Unchecked);
+    REQUIRE(session.unhideAll());
+    QCoreApplication::processEvents();
+
+    panel.setCurrentItem(visgroupItem(panel, 10));
+    visgroupItem(panel, 10)->setExpanded(false);
+    REQUIRE(session.renameVisgroup(11, "Child renamed"));
+    QCoreApplication::processEvents();
+    CHECK(panel.currentVisgroup() == 10);
+    CHECK_FALSE(visgroupItem(panel, 10)->isExpanded());
+    panelAction(panel, "visgroup.new_child");
+    const int created = panel.currentVisgroup().value();
+    CHECK(visgroupItem(panel, created)->parent() == visgroupItem(panel, 10));
+    REQUIRE(panel.findChild<QLineEdit*>());
+    panelAction(panel, "visgroup.rename");
+    // Complete the same inline edit used by Rename.
+    panel.currentItem()->setText(0, "New name");
+    QCoreApplication::processEvents();
+    CHECK(editor::buildVisgroupTree(doc).find(created)->name == "New name");
+    session.selectNode(member);
+    panelAction(panel, "visgroup.add");
+    CHECK(editor::buildVisgroupTree(doc).members(created) == std::vector<document::NodeId>{member});
+    session.perform("selection.none");
+    panelAction(panel, "visgroup.select");
+    CHECK(session.selection().contains(member));
+    panelAction(panel, "visgroup.remove");
+    CHECK(editor::buildVisgroupTree(doc).members(created).empty());
+    // Deliver a drop to the tree viewport, through the same MIME path as a drag.
+    visgroupItem(panel, 10)->setExpanded(true);
+    QCoreApplication::processEvents();
+    const auto drop = [&](int id, QPoint pos) {
+        QMimeData mime;
+        mime.setData("application/x-apex-visgroup", QByteArray::number(id));
+        QDragEnterEvent enter(pos, Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.viewport(), &enter);
+        QDragMoveEvent move(pos, Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.viewport(), &move);
+        QDropEvent event(QPointF(pos), Qt::MoveAction, &mime, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(panel.viewport(), &event);
+        CHECK(event.isAccepted());
+        QCoreApplication::processEvents();
+    };
+    drop(created, panel.visualItemRect(visgroupItem(panel, 11)).center());
+    QCoreApplication::processEvents();
+    CHECK(visgroupItem(panel, created)->parent() == visgroupItem(panel, 11));
+    CHECK_FALSE(panel.moveVisgroup(10, created));
+    drop(created, QPoint(5, panel.viewport()->height() - 5));
+    QCoreApplication::processEvents();
+    CHECK(visgroupItem(panel, created)->parent() == panel.topLevelItem(0));
+    panelAction(panel, "visgroup.delete");
+    CHECK_FALSE(editor::buildVisgroupTree(doc).find(created));
+    REQUIRE(session.perform("edit.undo"));
+    QCoreApplication::processEvents();
+    CHECK(visgroupItem(panel, created));
+    panelAction(panel, "visgroup.new");
+    const auto top = panel.currentVisgroup().value();
+    CHECK(visgroupItem(panel, top)->parent() == panel.topLevelItem(0));
+    panel.setEditorSession(nullptr);
+    panel.setDocument(nullptr);
+    CHECK(panel.topLevelItemCount() == 0);
+}
+
+TEST_CASE("history panel lists chronological entries and jumps through undo and redo") {
+    app();
+    document::Document doc(editor_test::parsed("world { id 1 }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    ui::HistoryPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    const auto initialMemory = panel.memoryLabel()->text();
+    REQUIRE(session.createVisgroup("A"));
+    REQUIRE(session.renameVisgroup(1, "B"));
+    REQUIRE(session.createVisgroup("C"));
+    const auto final = doc.write().value();
+    const auto labels = doc.undoLabels();
+    REQUIRE(panel.list()->count() == 5);
+    for (int i = 0; i < 3; ++i) CHECK(panel.list()->item(i + 1)->text().toStdString() == labels[static_cast<std::size_t>(i)]);
+    CHECK(panel.list()->item(4)->font().bold());
+    CHECK(panel.list()->item(4)->text().contains("Current state"));
+    CHECK(panel.memoryLabel()->text().startsWith("3 entries"));
+    CHECK(panel.memoryLabel()->text().contains("KiB"));
+    CHECK(panel.memoryLabel()->text() != initialMemory);
+    REQUIRE(session.perform("edit.undo"));
+    REQUIRE(session.perform("edit.undo"));
+    const auto earlier = doc.write().value();
+    REQUIRE(session.jumpHistory(3));
+    panel.list()->itemClicked(panel.list()->item(1));
+    CHECK(doc.undoCount() == 1);
+    CHECK(doc.write().value() == earlier);
+    CHECK(panel.list()->item(2)->font().bold());
+    CHECK(panel.list()->item(3)->text().toStdString() == labels[1]);
+    CHECK(panel.list()->item(4)->text().toStdString() == labels[2]);
+    panel.list()->itemClicked(panel.list()->item(4));
+    CHECK(doc.write().value() == final);
+    panel.list()->itemClicked(panel.list()->item(0));
+    CHECK(doc.undoCount() == 0);
+    CHECK(editor::buildVisgroupTree(doc).nodes.empty());
+    panel.setEditorSession(nullptr);
+    panel.setDocument(nullptr);
+    CHECK(panel.list()->count() == 0);
+    CHECK(panel.memoryLabel()->text().startsWith("0 entries"));
+}
+
+TEST_CASE("view actions hide unhide isolate and track selection") {
+    TransformScene scene;
+    auto& session = scene.session();
+    auto& doc = *scene.window.document();
+    const auto* menu = scene.window.findChild<QMenu*>("menuView");
+    REQUIRE(menu);
+    for (const char* id : {"view.hide", "view.unhide", "view.isolate", "view.hide_unselected"}) {
+        CHECK(menu->actions().contains(scene.action(id)));
+        CHECK(scene.action(id)->isEnabled());
+    }
+    CHECK(scene.action("view.hide")->shortcut() == QKeySequence("H"));
+    CHECK(scene.action("view.isolate")->isCheckable());
+    const auto before = doc.write().value();
+    const auto count = doc.undoCount();
+    scene.action("view.isolate")->trigger();
+    CHECK(session.viewState().isolate.has_value());
+    CHECK(scene.action("view.isolate")->isChecked());
+    CHECK(doc.write().value() == before);
+    CHECK(doc.undoCount() == count);
+    session.perform("selection.none");
+    CHECK_FALSE(scene.action("view.hide")->isEnabled());
+    CHECK_FALSE(scene.action("view.hide_unselected")->isEnabled());
+    CHECK(scene.action("view.isolate")->isEnabled());
+    scene.action("view.isolate")->trigger();
+    CHECK_FALSE(scene.action("view.isolate")->isChecked());
+    CHECK_FALSE(scene.action("view.isolate")->isEnabled());
+    CHECK(scene.action("view.hide")->shortcutContext() == Qt::WidgetShortcut);
+    session.selectNode(scene.boxId);
+    scene.action("view.hide")->trigger();
+    CHECK_FALSE(editor::isVisible(doc, scene.boxId));
+    CHECK_FALSE(scene.action("view.hide")->isEnabled());
+    scene.action("view.unhide")->trigger();
+    CHECK(editor::isVisible(doc, scene.boxId));
+    session.selectNode(scene.boxId);
+    scene.action("view.hide_unselected")->trigger();
+    CHECK(editor::isVisible(doc, scene.boxId));
+    CHECK(doc.undoCount() > count);
+    for (const auto& title : {QStringLiteral("Visgroups"), QStringLiteral("Undo History")}) {
+        QAction* toggle = nullptr;
+        for (auto* action : menu->actions()) if (action->text() == title) toggle = action;
+        REQUIRE(toggle);
+        CHECK(toggle->isCheckable());
+        CHECK(toggle->isChecked());
+        toggle->trigger();
+        CHECK_FALSE(toggle->isChecked());
+        toggle->trigger();
+        CHECK(toggle->isChecked());
+    }
+}
+
+TEST_CASE("new docks restore their saved visibility and empty view actions are disabled") {
+    app();
+    QSettings settings;
+    const auto saved = settings.value("ui/docks");
+    {
+        ui::MainWindow window;
+        window.show();
+        const auto* menu = window.findChild<QMenu*>("menuView");
+        REQUIRE(menu);
+        for (const char* id : {"view.hide", "view.unhide", "view.isolate", "view.hide_unselected"}) {
+            auto* action = window.findChild<QAction*>(id);
+            REQUIRE(action);
+            CHECK_FALSE(action->isEnabled());
+        }
+        for (auto* action : menu->actions()) if (action->text() == "Undo History") action->trigger();
+        window.close();
+    }
+    {
+        ui::MainWindow window;
+        window.show();
+        const auto* menu = window.findChild<QMenu*>("menuView");
+        REQUIRE(menu);
+        for (auto* action : menu->actions()) {
+            if (action->text() == "Undo History") CHECK_FALSE(action->isChecked());
+            if (action->text() == "Visgroups") CHECK(action->isChecked());
+        }
+        ads::CDockManager* manager = nullptr;
+        for (auto* candidate : window.findChildren<ads::CDockManager*>())
+            if (candidate->findDockWidget("dockHistory")) manager = candidate;
+        REQUIRE(manager);
+        REQUIRE(manager->findDockWidget("dockHistory"));
+        REQUIRE(manager->findDockWidget("dockVisgroups"));
+        CHECK(qobject_cast<ui::HistoryPanel*>(manager->findDockWidget("dockHistory")->widget()));
+        CHECK(qobject_cast<ui::VisgroupPanel*>(manager->findDockWidget("dockVisgroups")->widget()));
+    }
+    if (saved.isValid()) settings.setValue("ui/docks", saved);
+    else settings.remove("ui/docks");
+}

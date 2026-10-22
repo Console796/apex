@@ -367,3 +367,33 @@ TEST_CASE("EditorSession group hover retains the actual drawable and clears on v
     session.selectNode(id(doc, group));
     CHECK(session.selection().ordered().size() == 12);
 }
+
+TEST_CASE("EditorSession history jumps restore selection like undo and redo") {
+    Document doc(parsed());
+    const auto box = addBox(doc, {0, 0, 0}, {16, 16, 16});
+    const auto boxId = id(doc, box);
+    EditorSession session;
+    CHECK_FALSE(session.jumpHistory(0));
+    session.attach(doc);
+    session.selectNode(boxId);
+    const auto start = doc.undoCount();
+    const auto before = doc.write().value();
+    REQUIRE(session.duplicateSelection());
+    const auto duplicate = session.selection().ordered();
+    const auto middle = doc.write().value();
+    REQUIRE(session.deleteSelection());
+    const auto after = doc.write().value();
+    REQUIRE(session.jumpHistory(start));
+    CHECK(doc.write().value() == before);
+    CHECK(session.selection().ordered() == std::vector<Target>{boxId});
+    REQUIRE(session.jumpHistory(start + 1));
+    CHECK(doc.write().value() == middle);
+    CHECK(session.selection().ordered() == duplicate);
+    REQUIRE(session.jumpHistory(start + 2));
+    CHECK(doc.write().value() == after);
+    CHECK(session.selection().ordered().empty());
+    CHECK_FALSE(session.jumpHistory(start + 3));
+    session.selectNode(boxId);
+    REQUIRE(session.jumpHistory(start + 2));
+    CHECK(session.selection().ordered() == std::vector<Target>{boxId});
+}
