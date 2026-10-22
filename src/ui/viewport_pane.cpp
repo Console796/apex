@@ -84,6 +84,7 @@ protected:
             event->type() != QEvent::ShortcutOverride) return false;
         const auto* key = static_cast<QKeyEvent*>(event);
         QKeyEvent copy(key->type(), key->key(), key->modifiers(), key->text(), key->isAutoRepeat());
+        copy.ignore(); // A fresh QKeyEvent starts accepted; only an explicit accept may claim the key.
         QCoreApplication::sendEvent(window_, &copy);
         if (event->type() == QEvent::ShortcutOverride) {
             if (copy.isAccepted()) event->accept();
@@ -252,6 +253,22 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
     const bool release = e->type() == QEvent::MouseButtonRelease;
     cursor_ = e->position();
     pointerInside_ = true;
+    if (!press && !release && buttons_ != Qt::NoButton && (buttons_ & ~e->buttons()) != Qt::NoButton) {
+        // A release outside the window is never delivered here: follow the real button state, or
+        // the view would keep navigating when the pointer comes back.
+        const auto lost = buttons_ & ~e->buttons();
+        buttons_ &= e->buttons();
+        if (lost.testFlag(Qt::RightButton) && captured_) {
+            captured_ = false;
+            unsetCursor();
+        }
+        if (lost.testFlag(Qt::LeftButton)) cancelSelectionGesture();
+        if (buttons_ == Qt::NoButton && grabbed_) {
+            setMouseGrabEnabled(false);
+            grabbed_ = false;
+        }
+        last_ = e->position();
+    }
     bool consumed = false;
     if (const auto* vp = accessor_(); vp && session_)
         consumed = transform_.mouse(*e, vp->camera, QSizeF(width(), height()));
@@ -382,8 +399,11 @@ bool PaneWindow::handleKey(QKeyEvent* e) {
     if (!navigating) {
         if (session_ && down && !e->isAutoRepeat()) {
             if (const auto chord = keyChord(*e)) {
-                if (const auto action = session_->keymap().lookup(*chord, editor::BindingContext::SelectToolActive))
-                    return session_->perform(*action);
+                if (const auto action = session_->keymap().lookup(*chord, editor::BindingContext::SelectToolActive)) {
+                    if (session_->perform(*action)) return true;
+                    e->ignore(); // Window-level actions (cut, copy, paste) still get their shortcut.
+                    return false;
+                }
             }
         }
         forward_ = back_ = left_ = right_ = up_ = down_ = false;
@@ -527,6 +547,7 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     row->setContentsMargins(8, 2, 2, 2);
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("PaneTitle"));
+    title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);  // A long title must not set the pane's minimum width.
     row->addWidget(title_, 1);
     menuButton_ = new QToolButton;
     menuButton_->setObjectName(QStringLiteral("PaneMenuButton"));

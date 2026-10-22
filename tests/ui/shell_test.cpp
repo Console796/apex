@@ -1080,3 +1080,56 @@ TEST_CASE("edit menu enabled states follow selection and clipboard") {
     CHECK(scene.action("edit.copy")->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_C));
     CHECK(scene.action("edit.paste")->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_V));
 }
+
+TEST_CASE("quad splitter bars stay aligned and the crossing drags both axes") {
+    auto& a = app();
+    apex::ui::applyTheme(a, apex::ui::Theme::Dark);
+    using namespace apex;
+    ui::ViewportArea area;
+    area.resize(800, 600);
+    area.show();
+    area.flush();
+    QSplitter* root = nullptr;
+    std::vector<QSplitter*> rows;
+    for (auto* s : area.findChildren<QSplitter*>()) {
+        if (qobject_cast<QSplitter*>(s->parentWidget())) rows.push_back(s);
+        else root = s;
+    }
+    REQUIRE(root);
+    REQUIRE(rows.size() == 2);
+
+    const auto drag = [&](QSplitter* s, QPoint localStart, QPoint delta, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        auto* h = s->handle(1);
+        const QPointF start = h->mapToGlobal(QPointF(localStart));
+        QMouseEvent press(QEvent::MouseButtonPress, QPointF(localStart), start, Qt::LeftButton, Qt::LeftButton, mods);
+        QCoreApplication::sendEvent(h, &press);
+        for (int step = 1; step <= 4; ++step) {
+            const QPointF at = start + QPointF(delta) * (step / 4.0);
+            QMouseEvent move(QEvent::MouseMove, h->mapFromGlobal(at), at, Qt::NoButton, Qt::LeftButton, mods);
+            QCoreApplication::sendEvent(h, &move);
+        }
+        const QPointF end = start + QPointF(delta);
+        QMouseEvent release(QEvent::MouseButtonRelease, h->mapFromGlobal(end), end, Qt::LeftButton, Qt::NoButton, mods);
+        QCoreApplication::sendEvent(h, &release);
+    };
+    const auto ratio = [](QSplitter* s) {
+        const auto sizes = s->sizes();
+        return static_cast<double>(sizes[0]) / (sizes[0] + sizes[1]);
+    };
+
+    CHECK(std::abs(ratio(rows[0]) - ratio(rows[1])) < 0.01);
+    // A bar of one row drags its sibling's bar with it.
+    drag(rows[0], rows[0]->handle(1)->rect().center(), QPoint(80, 0));
+    CHECK(ratio(rows[0]) > 0.55);
+    CHECK(std::abs(ratio(rows[0]) - ratio(rows[1])) < 0.01);
+    // Shift drags the one bar alone.
+    drag(rows[0], rows[0]->handle(1)->rect().center(), QPoint(-120, 0), Qt::ShiftModifier);
+    CHECK(ratio(rows[0]) < ratio(rows[1]) - 0.1);
+    // Dropping the crossing: both axes move and every bar ends up aligned again.
+    const double vertical = ratio(root);
+    const auto crossing = root->handle(1)->mapFromGlobal(rows[0]->mapToGlobal(rows[0]->handle(1)->geometry().center()));
+    drag(root, crossing, QPoint(50, 60));
+    CHECK(ratio(root) > vertical);
+    CHECK(std::abs(ratio(rows[0]) - ratio(rows[1])) < 0.01);
+    CHECK(area.viewportLayout().tree().ratio == doctest::Approx(ratio(root)).epsilon(0.01));
+}

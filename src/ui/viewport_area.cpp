@@ -2,7 +2,10 @@
 
 #include "ui/viewport_area.hpp"
 
+#include <QApplication>
+#include <QMouseEvent>
 #include <QSplitter>
+#include <QSplitterHandle>
 #include <QVBoxLayout>
 #include <algorithm>
 
@@ -23,6 +26,50 @@ void clearColourFor(const Tokens& t, float out[4]) {
 }
 
 }  // namespace
+
+class AreaSplitter final : public QSplitter {
+public:
+    AreaSplitter(Qt::Orientation orientation, ViewportArea* area) : QSplitter(orientation), area_(area) {}
+    using QSplitter::moveSplitter;
+    ViewportArea* area() const { return area_; }
+    viewport::NodeId node = 0;
+
+protected:
+    QSplitterHandle* createHandle() override;
+
+private:
+    ViewportArea* area_;
+};
+
+class SplitHandle final : public QSplitterHandle {
+public:
+    SplitHandle(Qt::Orientation orientation, AreaSplitter* splitter) : QSplitterHandle(orientation, splitter), splitter_(splitter) {
+        setMouseTracking(true);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* e) override {
+        if (e->button() == Qt::LeftButton &&
+            splitter_->area()->beginHandleDrag(splitter_, this, e->position(), e->globalPosition(), e->modifiers())) {
+            e->accept();
+            return;
+        }
+        QSplitterHandle::mousePressEvent(e);
+    }
+    void mouseMoveEvent(QMouseEvent* e) override {
+        if (splitter_->area()->handleDragging()) return;
+        if (e->buttons() == Qt::NoButton) {
+            const bool junction = !splitter_->area()->junctionAt(splitter_, this, e->position()).empty();
+            setCursor(junction ? Qt::SizeAllCursor : orientation() == Qt::Horizontal ? Qt::SplitHCursor : Qt::SplitVCursor);
+        }
+        QSplitterHandle::mouseMoveEvent(e);
+    }
+
+private:
+    AreaSplitter* splitter_;
+};
+
+QSplitterHandle* AreaSplitter::createHandle() { return new SplitHandle(orientation(), this); }
 
 ViewportArea::ViewportArea(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("ViewportArea"));
@@ -167,7 +214,8 @@ void ViewportArea::rebuild() {
 
 QWidget* ViewportArea::build(const viewport::LayoutNode& node, bool canClose) {
     if (node.leaf) return makeFrame(node.id, false, canClose);
-    auto* splitter = new QSplitter(node.orientation == viewport::Orientation::Horizontal ? Qt::Horizontal : Qt::Vertical);
+    auto* splitter = new AreaSplitter(node.orientation == viewport::Orientation::Horizontal ? Qt::Horizontal : Qt::Vertical, this);
+    splitter->node = node.id;
     splitter->setChildrenCollapsible(false);
     splitter->setHandleWidth(currentTokens().splitterWidth);
     const viewport::NodeId id = node.id;
@@ -183,6 +231,129 @@ QWidget* ViewportArea::build(const viewport::LayoutNode& node, bool canClose) {
         forceDraw_ = true;
     });
     return splitter;
+}
+
+namespace {
+int along(const QSplitter* s, QPointF p) { return qRound(s->orientation() == Qt::Horizontal ? p.x() : p.y()); }
+int handleStart(const QSplitter* s, int index) {
+    const auto* h = s->handle(index);
+    return s->orientation() == Qt::Horizontal ? h->x() : h->y();
+}
+}  // namespace
+
+std::vector<AreaSplitter*> ViewportArea::junctionAt(AreaSplitter* splitter, QSplitterHandle* handle, QPointF local) const {
+    constexpr int kReach = 8;
+    std::vector<AreaSplitter*> out, others;
+    // The bar of `splitter` runs across its stacking axis; a child bar crosses it where the child's
+    // own handle sits, measured along the bar.
+    const bool useX = splitter->orientation() == Qt::Vertical;
+    const QPoint pointer = handle->mapTo(splitter, local.toPoint());
+    for (int i = 0; i < splitter->count(); ++i) {
+        auto* child = dynamic_cast<AreaSplitter*>(splitter->widget(i));
+        if (!child || child->orientation() == splitter->orientation() || child->count() < 2) continue;
+        const QPoint bar = child->mapTo(splitter, child->handle(1)->geometry().center());
+        const bool near = std::abs((useX ? pointer.x() : pointer.y()) - (useX ? bar.x() : bar.y())) <= kReach;
+        if (near && out.empty()) out.push_back(child);
+        else if (near) out.insert(out.begin(), child);
+        else others.push_back(child);
+    }
+    // Grabbing one crossing takes every bar across this one: they all end up aligned.
+    if (!out.empty()) out.insert(out.end(), others.begin(), others.end());
+    return out;
+}
+
+bool ViewportArea::beginHandleDrag(AreaSplitter* splitter, QSplitterHandle* handle, QPointF local, QPointF global,
+                                   Qt::KeyboardModifiers modifiers) {
+    if (drag_ || !splitter || splitter->count() != 2) return false;
+    HandleDrag drag;
+    drag.splitter = splitter;
+    drag.index = splitter->indexOf(handle);
+    if (drag.index <= 0) return false;
+    drag.startPos = handleStart(splitter, drag.index);
+    drag.startGlobal = global;
+    for (auto* cross : junctionAt(splitter, handle, local)) {
+        drag.crossers.push_back(cross);
+        drag.crosserStart.push_back(handleStart(cross, 1));
+    }
+    if (drag.crossers.empty() && !modifiers.testFlag(Qt::ShiftModifier)) {
+        // Bars of opposed splits stay aligned, as in a Hammer quad.
+        if (auto* parent = dynamic_cast<AreaSplitter*>(splitter->parentWidget());
+            parent && parent->orientation() != splitter->orientation()) {
+            for (int i = 0; i < parent->count(); ++i) {
+                auto* sibling = dynamic_cast<AreaSplitter*>(parent->widget(i));
+                if (sibling && sibling != splitter && sibling->orientation() == splitter->orientation() && sibling->count() == 2)
+                    drag.partner = sibling;
+            }
+        }
+    }
+    drag_ = std::move(drag);
+    qApp->installEventFilter(this);
+    return true;
+}
+
+void ViewportArea::syncRatio(AreaSplitter* splitter) {
+    const auto sizes = splitter->sizes();
+    if (sizes.size() != 2 || sizes[0] + sizes[1] <= 0) return;
+    if (layout_.setRatio(splitter->node, static_cast<double>(sizes[0]) / (sizes[0] + sizes[1]))) emit layoutChanged();
+    forceDraw_ = true;
+}
+
+void ViewportArea::alignRatio(AreaSplitter* splitter, double ratio) {
+    const int total = 10000;
+    const int first = std::clamp(static_cast<int>(ratio * total), 1, total - 1);
+    splitter->setSizes({first, total - first});
+    syncRatio(splitter);
+}
+
+void ViewportArea::applyHandleDrag(QPointF global) {
+    auto& drag = *drag_;
+    if (!drag.splitter) return;
+    const QPointF delta = global - drag.startGlobal;
+    drag.splitter->moveSplitter(drag.startPos + along(drag.splitter, delta), drag.index);
+    syncRatio(drag.splitter);
+    for (std::size_t i = 0; i < drag.crossers.size(); ++i) {
+        auto* cross = drag.crossers[i].data();
+        if (!cross) continue;
+        cross->moveSplitter(drag.crosserStart[i] + along(cross, delta), 1);
+        syncRatio(cross);
+        if (i != 0 && drag.crossers[0]) {
+            const auto sizes = drag.crossers[0]->sizes();
+            if (sizes.size() == 2 && sizes[0] + sizes[1] > 0)
+                alignRatio(cross, static_cast<double>(sizes[0]) / (sizes[0] + sizes[1]));
+        }
+    }
+    if (drag.partner) {
+        const auto sizes = drag.splitter->sizes();
+        if (sizes.size() == 2 && sizes[0] + sizes[1] > 0)
+            alignRatio(drag.partner, static_cast<double>(sizes[0]) / (sizes[0] + sizes[1]));
+    }
+}
+
+void ViewportArea::endHandleDrag() {
+    if (!drag_) return;
+    drag_.reset();
+    qApp->removeEventFilter(this);
+    emit layoutChanged();
+}
+
+bool ViewportArea::eventFilter(QObject* watched, QEvent* event) {
+    if (!drag_) return QWidget::eventFilter(watched, event);
+    switch (event->type()) {
+    case QEvent::MouseMove: {
+        const auto* move = static_cast<QMouseEvent*>(event);
+        if (!move->buttons().testFlag(Qt::LeftButton)) {  // The release was lost: stop following.
+            endHandleDrag();
+            return false;
+        }
+        applyHandleDrag(move->globalPosition());
+        return true;
+    }
+    case QEvent::MouseButtonRelease:
+        if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) endHandleDrag();
+        return false;  // Still delivered, so Qt's own press tracking ends cleanly.
+    default:
+        return false;
+    }
 }
 
 PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool canClose) {

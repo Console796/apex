@@ -1,11 +1,14 @@
 #pragma once
 
 #include <QByteArray>
+#include <QPointF>
 #include <QPointer>
 #include <QString>
 #include <QTimer>
 #include <QWidget>
 #include <map>
+#include <optional>
+#include <vector>
 
 #include "viewport/layout.hpp"
 #include "editor/editor_session.hpp"
@@ -16,6 +19,7 @@ class RenderMirror;
 }
 
 class QSplitter;
+class QSplitterHandle;
 
 namespace apex::assets {
 struct GameProfile;
@@ -28,6 +32,7 @@ namespace apex::ui {
 
 class GpuHost;
 class PaneFrame;
+class AreaSplitter;
 
 // The central viewport area (plan 0.1, D15/D16): the viewport::ViewportLayout split tree mirrored
 // into nested QSplitters, one PaneFrame (header + native Vulkan window) per leaf. It is a plain
@@ -74,6 +79,19 @@ public:
     // Runs queued rebuilds and one timer tick now (tests, screenshots).
     void flush();
 
+    // Splitter handle drags (called by the area's own handles). The drag follows the global
+    // pointer through an application event filter, so it keeps tracking over the native pane
+    // windows. Opposed splits of a quad move together (Shift keeps them independent), and a press
+    // on the crossing of two bars drags both axes at once.
+    bool beginHandleDrag(AreaSplitter* splitter, QSplitterHandle* handle, QPointF local, QPointF global,
+                         Qt::KeyboardModifiers modifiers);
+    // The perpendicular child splitters whose bar crosses `handle` near `local` (empty: no junction).
+    std::vector<AreaSplitter*> junctionAt(AreaSplitter* splitter, QSplitterHandle* handle, QPointF local) const;
+    bool handleDragging() const { return drag_.has_value(); }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 public slots:
     void resetCameras();   // Every pane back to the preset of its slot, centred on the origin.
     void resetLayout();    // Back to the quad layout.
@@ -97,6 +115,21 @@ private:
     void setActive(viewport::NodeId pane);
     void emitCamera();
     double pixelHeight() const;
+    void applyHandleDrag(QPointF global);
+    void endHandleDrag();
+    void syncRatio(AreaSplitter* splitter);
+    void alignRatio(AreaSplitter* splitter, double ratio);
+
+    struct HandleDrag {
+        QPointer<AreaSplitter> splitter;
+        int index = 1;
+        int startPos = 0;
+        QPointF startGlobal;
+        std::vector<QPointer<AreaSplitter>> crossers;  // Junction drag: bars moved along the other axis.
+        std::vector<int> crosserStart;
+        QPointer<AreaSplitter> partner;                // Aligned sibling bar of a quad.
+    };
+    std::optional<HandleDrag> drag_;
 
     editor::EditorSession* session_ = nullptr;
     static constexpr std::uint64_t kNoPreview = ~std::uint64_t{0};
