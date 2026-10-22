@@ -3,6 +3,7 @@
 #include "ui/viewport_area.hpp"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QKeyEvent>
 #include <QJsonArray>
 #include <QMouseEvent>
@@ -11,6 +12,7 @@
 #include <QVBoxLayout>
 #include <QWindow>
 #include <algorithm>
+#include <utility>
 
 #ifdef APEX_HAS_WAYLAND_POINTER_LOCK
 #include <qpa/qplatformnativeinterface.h>
@@ -118,6 +120,7 @@ ViewportArea::ViewportArea(QWidget* parent) : QWidget(parent) {
     host_ = new GpuHost(this);
     connect(host_, &GpuHost::gpuNameChanged, this, &ViewportArea::gpuNameChanged);
     timer_.setInterval(16);
+    timer_.setTimerType(Qt::PreciseTimer);
     connect(&timer_, &QTimer::timeout, this, &ViewportArea::tick);
     timer_.start();
     rebuild();
@@ -340,7 +343,8 @@ bool ViewportArea::beginHandleDrag(AreaSplitter* splitter, QSplitterHandle* hand
         }
     }
     qApp->installEventFilter(this);
-    applyHandleDrag(handle, event); // Also records the press and the initial legal range.
+    if (auto input = captureHandleDrag(handle, event))
+        applyHandleDrag(std::move(*input)); // Also records the press and initial legal range.
     return true;
 }
 
@@ -358,29 +362,37 @@ void ViewportArea::alignRatio(AreaSplitter* splitter, double ratio) {
     syncRatio(splitter);
 }
 
-void ViewportArea::applyHandleDrag(QObject* receiver, const QMouseEvent& event) {
-    auto& drag = *drag_;
-    if (!drag.splitter) return;
+std::optional<ViewportArea::HandleDragInput> ViewportArea::captureHandleDrag(
+    QObject* receiver, const QMouseEvent& event) const {
     const auto global = receiverGlobal(receiver, event.position());
-    if (!global) return;
+    if (!global) return std::nullopt;
+    HandleDragInput input{*global, {}};
     const bool logging = inputLogEnabled();
-    QJsonObject details;
     if (logging) {
         const auto origin = receiverGlobal(receiver, {}).value_or(QPointF());
         auto* window = qobject_cast<QWindow*>(receiver);
         if (auto* widget = qobject_cast<QWidget*>(receiver)) window = widget->window()->windowHandle();
         const auto windowOrigin = window ? window->mapToGlobal(QPointF()) : origin;
         const auto xy = [](QPointF p) { return QJsonObject{{"x", p.x()}, {"y", p.y()}}; };
-        details = {{"event", event.type() == QEvent::MouseButtonPress ? "press" :
-                              event.type() == QEvent::MouseButtonRelease ? "release" : "move"},
-                   {"event_ms", static_cast<qint64>(event.timestamp())},
-                   {"receiver_class", QString::fromLatin1(receiver->metaObject()->className())},
-                   {"receiver_name", receiver->objectName()},
-                   {"receiver_id", QString::number(reinterpret_cast<quintptr>(receiver), 16)},
-                   {"global", xy(event.globalPosition())}, {"local", xy(event.position())},
-                   {"receiver_origin", xy(origin)}, {"window_origin", xy(windowOrigin)},
-                   {"mapped_global", xy(*global)}};
+        input.trace = {{"event", event.type() == QEvent::MouseButtonPress ? "press" :
+                                  event.type() == QEvent::MouseButtonRelease ? "release" : "move"},
+                       {"event_ms", static_cast<qint64>(event.timestamp())},
+                       {"receiver_class", QString::fromLatin1(receiver->metaObject()->className())},
+                       {"receiver_name", receiver->objectName()},
+                       {"receiver_id", QString::number(reinterpret_cast<quintptr>(receiver), 16)},
+                       {"global", xy(event.globalPosition())}, {"local", xy(event.position())},
+                       {"receiver_origin", xy(origin)}, {"window_origin", xy(windowOrigin)},
+                       {"mapped_global", xy(*global)}};
     }
+    return input;
+}
+
+void ViewportArea::applyHandleDrag(HandleDragInput input, std::uint32_t coalesced) {
+    auto& drag = *drag_;
+    if (!drag.splitter) return;
+    QElapsedTimer applyTimer;
+    applyTimer.start();
+    const bool logging = inputLogEnabled();
     struct Move { AreaSplitter* splitter; int index; int requested; int result; int minimum; int maximum; };
     std::vector<Move> moves;
     const auto move = [&](AreaSplitter* splitter, int index, int requested) {
@@ -391,7 +403,7 @@ void ViewportArea::applyHandleDrag(QObject* receiver, const QMouseEvent& event) 
             moves.push_back({splitter, index, requested, handleStart(splitter, index), minimum, maximum});
         }
     };
-    const QPointF delta = *global - drag.startGlobal;
+    const QPointF delta = input.global - drag.startGlobal;
     move(drag.splitter, drag.index, drag.startPos + along(drag.splitter, delta));
     syncRatio(drag.splitter);
     for (std::size_t i = 0; i < drag.crossers.size(); ++i) {
@@ -418,8 +430,10 @@ void ViewportArea::applyHandleDrag(QObject* receiver, const QMouseEvent& event) 
                 {"requested", m.requested}, {"result", m.result},
                 {"range", QJsonArray{m.minimum, m.maximum}}});
         }
-        details["moves"] = loggedMoves;
-        inputTraceEvent("splitter", std::move(details));
+        input.trace["moves"] = loggedMoves;
+        input.trace["coalesced"] = static_cast<qint64>(coalesced);
+        input.trace["apply_ms"] = static_cast<double>(applyTimer.nsecsElapsed()) / 1.0e6;
+        inputTraceEvent("splitter", std::move(input.trace));
     }
 }
 
@@ -446,13 +460,18 @@ bool ViewportArea::eventFilter(QObject* watched, QEvent* event) {
             return false;
         }
         if (inputLogEnabled()) inputTraceMouse(watched, *move); // This filter consumes the move.
-        applyHandleDrag(watched, *move);
+        if (auto input = captureHandleDrag(watched, *move)) {
+            drag_->pending = std::move(*input);
+            ++drag_->pendingMoves;
+        }
         return true;
     }
     case QEvent::MouseButtonRelease:
         if (const auto* release = static_cast<QMouseEvent*>(event); release->button() == Qt::LeftButton) {
             // A coalesced final move may arrive only as the release position.
-            applyHandleDrag(watched, *release);
+            const auto coalesced = std::exchange(drag_->pendingMoves, 0) + 1;
+            drag_->pending.reset();
+            if (auto input = captureHandleDrag(watched, *release)) applyHandleDrag(std::move(*input), coalesced);
             endHandleDrag("release");
         }
         return false;  // Still delivered, so Qt's own press tracking ends cleanly.
@@ -529,12 +548,18 @@ void ViewportArea::emitCamera() {
 
 void ViewportArea::tick() {
     if (rebuildPending_) return;
+    if (drag_ && drag_->pending) {
+        auto input = std::move(*drag_->pending);
+        const auto coalesced = std::exchange(drag_->pendingMoves, 0);
+        drag_->pending.reset();
+        applyHandleDrag(std::move(input), coalesced);
+    }
     if (gpuReady_ && !gpuAnnounced_) {
         gpuAnnounced_ = true;
         emit gpuNameChanged(host_->gpuName());
     }
     if (gpuReady_ && host_->pump()) forceDraw_ = true;
-    const bool force = forceDraw_;
+    const bool force = forceDraw_ || drag_.has_value();
     forceDraw_ = false;
     for (auto& [id, f] : frames_) {
         if (!f || !f->window()) continue;

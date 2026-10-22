@@ -53,12 +53,8 @@ class Swapchain {
     using Clock = std::chrono::steady_clock;
     Result<FrameStatus> renderFrame(VkExtent2D pixelSize, const RecordFn& record,
                                     Clock::time_point now = Clock::now());
-    // Preserve the last presented frame between drag intervals. Release forces a final resize.
+    // The UI's precise 16 ms tick controls drag cadence. Release forces a final resize.
     void setResizeDragging(bool dragging, Clock::time_point now = Clock::now());
-    // Lets UI callers skip draw-list preparation as well as GPU work between intervals.
-    bool frameDue(Clock::time_point now = Clock::now()) const {
-        return !resizeDragging_ || now - lastDragFrame_ >= std::chrono::milliseconds(16);
-    }
     bool hasRetiredSwapchains() const { return !retired_.empty(); }
     std::size_t retiredSwapchainCount() const { return retired_.size(); }
 
@@ -87,7 +83,6 @@ class Swapchain {
     std::uint32_t firstPresented_ = UINT32_MAX;
     bool retirementReady_ = false;
     bool resizeDragging_ = false;
-    Clock::time_point lastDragFrame_{};
 
     Context* context_ = nullptr;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;

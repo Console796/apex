@@ -465,7 +465,7 @@ void PaneWindow::applyNavigation(double dt) {
 double PaneWindow::tick(bool forceDraw) {
     const double dt = std::min(sinceTick_.restart() / 1000.0, kMaxDt);
     applyNavigation(dt);
-    if ((resizeDragging_ && !swapchain_) || (swapchain_ && !swapchain_->frameDue())) return -1.0;
+    if (resizeDragging_ && !swapchain_) return -1.0;
     const bool retiring = swapchain_ && swapchain_->hasRetiredSwapchains();
     if ((!dirty_ && !forceDraw && !retiring) || !isExposed() || failed_) return -1.0;
     return draw();

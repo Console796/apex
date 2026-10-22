@@ -81,10 +81,9 @@ void Swapchain::destroyRetired() {
     retired_.clear();
 }
 
-void Swapchain::setResizeDragging(bool dragging, Clock::time_point now) {
+void Swapchain::setResizeDragging(bool dragging, Clock::time_point) {
     if (dragging == resizeDragging_) return;
     resizeDragging_ = dragging;
-    lastDragFrame_ = now;
     if (!dragging) needsRecreate_ = true;
 }
 
@@ -193,9 +192,7 @@ Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
     return true;
 }
 
-Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn& record, Clock::time_point now) {
-    if (!frameDue(now)) return FrameStatus::Skipped;
-    if (resizeDragging_) lastDragFrame_ = now;
+Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn& record, Clock::time_point) {
     VkDevice device = context_->device();
     APEX_VK_TRY(vkWaitForFences(device, 1, &inFlight_, VK_TRUE, UINT64_MAX), "wait for frame");
     if (retirementReady_) {

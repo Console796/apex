@@ -1163,6 +1163,7 @@ public:
             const QPointF at = start + (horizontal ? QPointF(requested - initial, 0) : QPointF(0, requested - initial));
             QMouseEvent move(QEvent::MouseMove, handle->mapFromGlobal(at), at, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
             QCoreApplication::sendEvent(handle, &move);
+            flush();
             int minimum = 0, maximum = 0;
             splitter->getRange(1, &minimum, &maximum);
             MESSAGE("drag step=" << step << " pointer=" << at.x() << "," << at.y()
@@ -1245,17 +1246,18 @@ TEST_CASE("splitter maps local motion from changing native receivers despite bog
             QMouseEvent move(QEvent::MouseMove, receiverLocal, QPointF(8000 - step * 200, -6000),
                              Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
             QCoreApplication::sendEvent(receiver, &move);
-            int minimum = 0, maximum = 0;
-            splitter->getRange(1, &minimum, &maximum);
-            CHECK(position() == std::clamp(initial + step * 9, minimum, maximum));
         }
+        CHECK(position() == initial); // Six deliveries only replaced one pending position.
+        area.flush();
+        int minimum = 0, maximum = 0;
+        splitter->getRange(1, &minimum, &maximum);
+        CHECK(position() == std::clamp(initial + 6 * 9, minimum, maximum));
         const QPointF end = start + offset(67); // Release includes a final 13 px.
         second.setPosition({205, 143});
         QMouseEvent release(QEvent::MouseButtonRelease, second.mapFromGlobal(end), QPointF(-4000, 9000),
                             Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
         QCoreApplication::sendEvent(&second, &release);
         CHECK_FALSE(area.handleDragging());
-        int minimum = 0, maximum = 0;
         splitter->getRange(1, &minimum, &maximum);
         CHECK(position() == std::clamp(initial + 67, minimum, maximum));
     }
@@ -1266,6 +1268,55 @@ TEST_CASE("splitter maps local motion from changing native receivers despite bog
                           Qt::NoButton, Qt::NoButton, Qt::NoModifier);
     QCoreApplication::sendEvent(&first, &normalMove);
     CHECK(first.moves == 1); // The filter is removed after the drag.
+}
+
+TEST_CASE("splitter flood coalesces to one apply per explicit tick") {
+    ui::applyTheme(app(), ui::Theme::Dark);
+    ui::ViewportArea area;
+    area.resize(800, 600);
+    area.show();
+    area.flush();
+    auto* splitter = area.findChild<QSplitter*>();
+    REQUIRE(splitter);
+    auto* handle = splitter->handle(1);
+    const bool horizontal = splitter->orientation() == Qt::Horizontal;
+    const auto position = [&] { return horizontal ? handle->x() : handle->y(); };
+    const int initial = position();
+    const QPointF local = handle->rect().center();
+    const QPointF start = handle->mapToGlobal(local);
+    QMouseEvent press(QEvent::MouseButtonPress, local, start,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(handle, &press);
+    REQUIRE(area.handleDragging());
+
+    QElapsedTimer flood;
+    flood.start();
+    for (int step = 1; step <= 500; ++step) {
+        const int delta = step % 151;
+        const QPointF at = start + (horizontal ? QPointF(delta, 0) : QPointF(0, delta));
+        QMouseEvent move(QEvent::MouseMove, handle->mapFromGlobal(at), at,
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(handle, &move);
+    }
+    const double deliveryMs = static_cast<double>(flood.nsecsElapsed()) / 1.0e6;
+    CHECK(position() == initial);
+    QElapsedTimer apply;
+    apply.start();
+    area.flush();
+    const double applyMs = static_cast<double>(apply.nsecsElapsed()) / 1.0e6;
+    const int finalDelta = 500 % 151;
+    int minimum = 0, maximum = 0;
+    splitter->getRange(1, &minimum, &maximum);
+    CHECK(position() == std::clamp(initial + finalDelta, minimum, maximum));
+    MESSAGE("500 splitter moves: delivery_ms=" << deliveryMs << " one_apply_tick_ms=" << applyMs);
+
+    const QPointF end = start + (horizontal ? QPointF(73, 0) : QPointF(0, 73));
+    QMouseEvent release(QEvent::MouseButtonRelease, handle->mapFromGlobal(end), end,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(handle, &release);
+    CHECK_FALSE(area.handleDragging());
+    splitter->getRange(1, &minimum, &maximum);
+    CHECK(position() == std::clamp(initial + 73, minimum, maximum));
 }
 
 TEST_CASE("splitter cancels on lost button escape deactivation hide and rebuild") {

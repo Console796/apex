@@ -96,8 +96,16 @@ def summarize(events):
     for event in events:
         if event.get("type") == "splitter":
             if current is None:
-                current = {"steps": 0, "max_error": 0, "clamped": 0, "start": event.get("t_ms", 0)}
+                current = {"steps": 0, "max_error": 0, "clamped": 0, "start": event.get("t_ms", 0),
+                           "clock_offset": float(event.get("t_ms", 0)) - float(event.get("event_ms", 0)),
+                           "input_lag": [], "apply_ms": [], "coalesced": 0}
             current["steps"] += 1
+            current["coalesced"] += int(event.get("coalesced", 1))
+            if "event_ms" in event:
+                lag = (float(event.get("t_ms", 0)) - float(event["event_ms"])) - current["clock_offset"]
+                current["input_lag"].append(lag)
+            if "apply_ms" in event:
+                current["apply_ms"].append(float(event["apply_ms"]))
             for move in event.get("moves", []):
                 requested, result = move.get("requested", 0), move.get("result", 0)
                 bounds = move.get("range", [requested, requested])
@@ -113,10 +121,18 @@ def summarize(events):
     if not splitters:
         print("  (none)")
     for number, gesture in enumerate(splitters, 1):
-        print(f"  {number}: duration={gesture['end'] - gesture['start']:.1f}ms steps={gesture['steps']} "
+        duration_ms = gesture["end"] - gesture["start"]
+        duration_s = max(duration_ms / 1000.0, 0.001)
+        lag = sorted(gesture["input_lag"])
+        apply = sorted(gesture["apply_ms"])
+        lag_stats = (f"median={lag[len(lag) // 2]:.1f}ms max={max(lag):.1f}ms" if lag else "unavailable")
+        apply_stats = (f"median={apply[len(apply) // 2]:.2f}ms max={max(apply):.2f}ms"
+                       if apply else "unavailable")
+        print(f"  {number}: duration={duration_ms:.1f}ms steps={gesture['steps']} "
+              f"applies_per_s={gesture['steps'] / duration_s:.1f} coalesced_inputs={gesture['coalesced']} "
+              f"input_lag={lag_stats} apply_duration={apply_stats} "
               f"max_target_error={gesture['max_error']}px clamped_moves={gesture['clamped']} reason={gesture['reason']}")
 
-        duration_s = max((gesture["end"] - gesture["start"]) / 1000.0, 0.001)
         frames = defaultdict(int)
         recreate_ms = []
         recreate_count = 0
