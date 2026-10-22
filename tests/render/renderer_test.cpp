@@ -4,6 +4,7 @@
 #include "render/renderer.hpp"
 #include "render/texture_heap.hpp"
 #include "render/view_math.hpp"
+#include "golden_image.hpp"
 
 #include <doctest/doctest.h>
 
@@ -123,6 +124,24 @@ Cube makeCube(Fixture& f, float h, std::uint32_t material) {
     return {std::move(*vb), std::move(*ib), std::move(*eb)};
 }
 
+Cube makeGridFace(Fixture& f, const GridSettings& grid) {
+    const auto& b = *grid.bounds;
+    const DVec2 corners[] = {{b.uMin, b.vMin}, {b.uMax, b.vMin}, {b.uMax, b.vMax}, {b.uMin, b.vMax}};
+    std::array<BrushVertex, 4> vertices{};
+    for (std::size_t i = 0; i < vertices.size(); ++i) {
+        const Vec3 p(grid.uAxis * corners[i].x + grid.vAxis * corners[i].y), n(grid.normal);
+        std::memcpy(vertices[i].position, &p.x, sizeof vertices[i].position);
+        std::memcpy(vertices[i].normal, &n.x, sizeof vertices[i].normal);
+    }
+    const std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    auto& ring = f.heap->uploadRing();
+    auto vb = uploadBuffer(*f.context, ring, std::as_bytes(std::span{vertices}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    auto ib = uploadBuffer(*f.context, ring, std::as_bytes(std::span{indices}), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    REQUIRE(vb);
+    REQUIRE(ib);
+    return {std::move(*vb), std::move(*ib), {}};
+}
+
 FrameView makeView(DVec3 position, DVec3 anglesDeg) {
     const AngleVectors basis = angleVectors(anglesDeg);
     FrameView view;
@@ -133,14 +152,15 @@ FrameView makeView(DVec3 position, DVec3 anglesDeg) {
     return view;
 }
 
-Rgba8Image drawFrame(Fixture& f, const DrawList& list) {
+Rgba8Image drawFrame(Fixture& f, const DrawList& list, RenderTarget* target = nullptr) {
+    RenderTarget& output = target ? *target : f.target;
     auto done = f.context->oneShot([&](VkCommandBuffer commands) {
-        f.target.begin(commands, kClear);
+        output.begin(commands, kClear);
         f.renderer->record(commands, list);
-        f.target.end(commands);
+        output.end(commands);
     });
     REQUIRE(done.has_value());
-    auto image = f.target.readback();
+    auto image = output.readback();
     REQUIRE(image.has_value());
     CHECK(f.context->validation().errorCount() == 0);
     for (const auto& e : f.context->validation().errors()) MESSAGE(e);
@@ -307,6 +327,193 @@ TEST_CASE("renderer: hot reload is a no-op when nothing changed") {
     auto reloaded = gpu->renderer->reloadChangedShaders();
     REQUIRE(reloaded.has_value());
     CHECK(!*reloaded);
+}
+
+TEST_CASE("renderer: grid default ground golden") {
+    REQUIRE_GPU();
+    auto target = RenderTarget::create(*gpu->context, 256, 256);
+    REQUIRE(target);
+    DrawList list;
+    list.view = makeView({0, 0, 128}, {90, 0, 0});
+    list.grid.enabled = true;
+    golden::check("grid_ground", drawFrame(*gpu, list, &*target), *gpu->context);
+}
+
+TEST_CASE("renderer: grid bounded wall and slope goldens with surface depth bias") {
+    REQUIRE_GPU();
+    auto target = RenderTarget::create(*gpu->context, 256, 256);
+    REQUIRE(target);
+    for (const bool slope : {false, true}) {
+        CAPTURE(slope);
+        DrawList list;
+        list.mode = DisplayMode::Flat;
+        list.grid.enabled = true;
+        list.grid.normal = slope ? DVec3(0.6, 0, 0.8) : DVec3(1, 0, 0);
+        list.grid.uAxis = slope ? DVec3(0.8, 0, -0.6) : DVec3(0, 1, 0);
+        list.grid.vAxis = slope ? DVec3(0, 1, 0) : DVec3(0, 0, 1);
+        list.grid.bounds = GridRect{-96, 96, -64, 64};
+        list.grid.spacing = 16;
+        list.grid.colour = Vec4(0.85f, 0.85f, 0.95f, 0.9f);
+        // Projection is outside the rect; the nearest-point fade must keep this face visible.
+        list.grid.fadeDistance = 256;
+        const DVec3 camera = slope ? DVec3(230, -210, 230) : DVec3(220, -180, 130);
+        list.view = makeView(camera, anglesFromForward(-camera, {0, 0, 1}));
+        const Cube face = makeGridFace(*gpu, list.grid);
+        MeshDraw mesh;
+        mesh.vertices = &face.vertices;
+        mesh.indices = &face.indices;
+        mesh.indexCount = 6;
+        mesh.colour = Vec4(0.18f, 0.24f, 0.32f, 1);
+        list.meshes.push_back(mesh);
+        const auto image = drawFrame(*gpu, list, &*target);
+        golden::check(slope ? "grid_slope_bounded" : "grid_wall_bounded", image, *gpu->context);
+        CHECK(drawFrame(*gpu, list, &*target).pixels == image.pixels);
+        // At nearby camera angles, the coplanar grid must still cover the face without holes.
+        for (const double yaw : {-0.1, 0.0, 0.1}) {
+            CAPTURE(yaw);
+            auto angles = anglesFromForward(-camera, {0, 0, 1});
+            angles.y += yaw;
+            list.view = makeView(camera, angles);
+            list.grid.enabled = false;
+            const auto bare = drawFrame(*gpu, list, &*target);
+            list.grid.enabled = true;
+            const auto overlaid = drawFrame(*gpu, list, &*target);
+            DrawList onlyGrid = list;
+            onlyGrid.meshes.clear();
+            const auto unobstructed = drawFrame(*gpu, onlyGrid, &*target);
+            int linesOnFace = 0;
+            for (std::uint32_t y = 0; y < 256; ++y) {
+                for (std::uint32_t x = 0; x < 256; ++x) {
+                    linesOnFace += !isBackground(at(bare, x, y)) &&
+                                   !nearColour(at(bare, x, y), at(overlaid, x, y), 3) ? 1 : 0;
+                    if (isBackground(at(bare, x, y))) continue;
+                    // The same lines must blend over the face as over the clear colour. Any
+                    // lost depth tests leave holes, including at slightly different angles.
+                    const double alpha = (at(unobstructed, x, y).r - 26.0) / (0.85 * 255.0 - 26.0);
+                    const double expected = alpha * 0.85 * 255.0 + (1.0 - alpha) * at(bare, x, y).r;
+                    CHECK(std::abs(at(overlaid, x, y).r - expected) < 3.0);
+                }
+            }
+            CHECK(linesOnFace > 200);
+        }
+    }
+}
+
+TEST_CASE("renderer: grid spacing extremes goldens and subpixel suppression") {
+    REQUIRE_GPU();
+    auto target = RenderTarget::create(*gpu->context, 256, 256);
+    REQUIRE(target);
+    DrawList list;
+    list.grid.enabled = true;
+    list.grid.spacing = 0.125f;
+    list.view = makeView({0.03125, -24.0625, 24}, {45, 90, 0});
+    golden::check("grid_spacing_0125", drawFrame(*gpu, list, &*target), *gpu->context);
+
+    // Two-pixel minors are gone while sixteen-pixel majors remain.
+    const Mat4 down = rotationOnlyView({0, 0, -1}, {1, 0, 0}, {0, 1, 0});
+    list.view.viewProjection = reversedZOrtho(8, 8, 1, 512) * down;
+    list.view.cameraPosition = {0, 0, 128};
+    const auto filtered = drawFrame(*gpu, list, &*target);
+    CHECK(at(filtered, 127, 120).r > 50);
+    CHECK(isBackground(at(filtered, 129, 120)));
+
+    // At this zoom even the major pitch is one pixel: both sets must disappear completely.
+    list.view.viewProjection = reversedZOrtho(128, 128, 1, 512) * rotationOnlyView(angleVectors({90, 0, 0}));
+    list.view.cameraPosition = {0.03125, -0.0625, 128};
+    const auto distant = drawFrame(*gpu, list, &*target);
+    list.grid.enabled = false;
+    CHECK(distant.pixels == drawFrame(*gpu, list, &*target).pixels);
+
+    list.grid.enabled = true;
+    list.grid.spacing = 1024;
+    list.grid.fadeDistance = 32768;
+    list.view = makeView({1536, -512, 8192}, {90, 0, 0});
+    list.view.viewProjection = reversedZOrtho(8192, 8192, 1, 32768) * down;
+    const auto coarse = drawFrame(*gpu, list, &*target);
+    golden::check("grid_spacing_1024", coarse, *gpu->context);
+    // The camera has crossed a 1024 tile: major lines must still be at u=0 and u=8192.
+    CHECK(at(coarse, 104, 140).r > at(coarse, 120, 140).r + 20);
+    CHECK(at(coarse, 232, 140).r > at(coarse, 120, 140).r + 20);
+}
+
+TEST_CASE("renderer: grid microspacing goldens match near and far plane origins") {
+    REQUIRE_GPU();
+    auto target = RenderTarget::create(*gpu->context, 256, 256);
+    REQUIRE(target);
+    DrawList list;
+    list.grid.enabled = true;
+    list.grid.spacing = 0.125f;
+    const DVec3 localCamera{0.03125, -1.0625, 1.125};
+    list.view = makeView(localCamera, {45, 90, 0});
+    list.view.viewProjection = reversedZPerspective(glm::radians(90.0), 1, 0.01) *
+                               rotationOnlyView(angleVectors({45, 90, 0}));
+    const auto near = drawFrame(*gpu, list, &*target);
+    golden::check("grid_near_origin", near, *gpu->context);
+    for (const DVec3 shift : {DVec3(60000, 0, 0), DVec3(65536), DVec3(-65536)}) {
+        CAPTURE(shift.x);
+        list.grid.origin = shift;
+        list.view.cameraPosition = localCamera + shift;
+        const auto far = drawFrame(*gpu, list, &*target);
+        CHECK(far.pixels == near.pixels);
+        if (shift.x == 60000) golden::check("grid_far_origin", far, *gpu->context);
+        // Also move along the same plane: wrapping the camera phase must preserve the
+        // microgrid after crossing many minor and major cells, in either direction.
+        list.grid.origin = {0, 0, shift.z};
+        CHECK(drawFrame(*gpu, list, &*target).pixels == near.pixels);
+    }
+}
+
+TEST_CASE("renderer: grid axis planes in ortho clip at expanded bounds and test depth") {
+    REQUIRE_GPU();
+    auto target = RenderTarget::create(*gpu->context, 256, 256);
+    REQUIRE(target);
+    std::vector<std::uint8_t> reference;
+    for (const DVec3 normal : {DVec3(1, 0, 0), DVec3(-1, 0, 0), DVec3(0, 1, 0), DVec3(0, -1, 0)}) {
+        DrawList list;
+        list.mode = DisplayMode::Flat;
+        list.grid.enabled = true;
+        list.grid.normal = normal;
+        list.grid.uAxis = normal.x != 0 ? DVec3(0, 1, 0) : DVec3(1, 0, 0);
+        list.grid.vAxis = glm::cross(normal, list.grid.uAxis);
+        list.grid.spacing = 16;
+        list.grid.bounds = GridRect{-48, 48, -32, 32};
+        list.view.cameraPosition = normal * 128.0;
+        list.view.viewProjection = reversedZOrtho(128, 128, 1, 512) *
+                                   rotationOnlyView(-normal, list.grid.uAxis, list.grid.vAxis);
+        const auto image = drawFrame(*gpu, list, &*target);
+        if (reference.empty()) {
+            reference = image.pixels;
+            golden::check("grid_wall_ortho", image, *gpu->context);
+        }
+        CHECK(image.pixels == reference);
+        int inside = 0, margin = 0, outside = 0;
+        for (std::uint32_t y = 0; y < 256; ++y) {
+            for (std::uint32_t x = 0; x < 256; ++x) {
+                if (isBackground(at(image, x, y))) continue;
+                if (x < 64 || x >= 192 || y < 80 || y >= 176) ++outside;
+                else if (x < 80 || x >= 176 || y < 96 || y >= 160) ++margin;
+                else ++inside;
+            }
+        }
+        CHECK(outside == 0);
+        CHECK(margin > 100);
+        CHECK(inside > 100);
+        // A solid cube in front of the grid occludes its centre, including the major axes.
+        const Cube cube = makeCube(*gpu, 16, 0);
+        MeshDraw mesh;
+        mesh.vertices = &cube.vertices;
+        mesh.indices = &cube.indices;
+        mesh.indexCount = 36;
+        mesh.origin = normal * 32.0;
+        mesh.colour = Vec4(0.2f, 0.5f, 0.2f, 1);
+        list.meshes.push_back(mesh);
+        const auto occluded = drawFrame(*gpu, list, &*target);
+        list.grid.enabled = false;
+        const auto bare = drawFrame(*gpu, list, &*target);
+        for (std::uint32_t y = 114; y < 142; ++y)
+            for (std::uint32_t x = 114; x < 142; ++x)
+                CHECK(nearColour(at(occluded, x, y), at(bare, x, y), 0));
+    }
 }
 
 TEST_CASE("renderer: outline is dim behind a surface and full strength in front") {

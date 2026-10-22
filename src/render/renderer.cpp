@@ -50,7 +50,7 @@ constexpr Spec kSpecs[kKindCount] = {
     {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
     {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
     {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
-    {"grid_vert", "grid_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {"grid_vert", "grid_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
     {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
     {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
     {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
@@ -454,14 +454,41 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     if (list.grid.enabled) {
         s.bind(commands, Kind::Grid);
         PushConstants push = basePush(list);
-        push.colour = list.grid.colour;
-        // Camera origin modulo 1024 (exact in float; the spacing divides 1024) keeps the grid lines
-        // stable however far the camera is from the world origin.
-        auto wrap = [](double v) { return static_cast<float>(v - std::floor(v / 1024.0) * 1024.0); };
-        push.p0 = Vec4(wrap(camera.x), wrap(camera.y), wrap(camera.z), list.grid.spacing);
-        push.p1 = Vec4(list.grid.fadeDistance, static_cast<float>(list.grid.planeZ - camera.z), 0.0f, 0.0f);
+        const GridSettings& grid = list.grid;
+        const DVec2 projected = gridCameraCoordinates(camera, grid.origin, grid.uAxis, grid.vAxis);
+        const Vec2 wrapped = wrapGridCoordinates(projected, grid.spacing);
+        const Vec2 major = wrapGridCoordinates(projected, grid.spacing * 8.0);
+        const double height = glm::dot(camera - grid.origin, grid.normal);
+        // Vertices are relative to the camera's plane projection; fold the basis into the matrix.
+        Mat4 planeToCamera(1.0f);
+        planeToCamera[0] = Vec4(Vec3(grid.uAxis), 0.0f);
+        planeToCamera[1] = Vec4(Vec3(grid.vAxis), 0.0f);
+        planeToCamera[2] = Vec4(Vec3(grid.normal), 0.0f);
+        planeToCamera[3] = Vec4(Vec3(-grid.normal * height), 1.0f);
+        push.viewProjection *= planeToCamera;
+        if (grid.bounds) {
+            // Surface-anchored grid: pull depth toward the camera by a relative amount so it wins
+            // against the coplanar face on every device. Dynamic depth bias units are
+            // implementation-defined and left holes on RADV. Reversed Z: larger is closer.
+            constexpr float kSurfaceBias = 2e-4f;
+            for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= 1.0f + kSurfaceBias;
+        }
+        push.colour = grid.colour;
+        push.p0 = Vec4(wrapped, major.x, grid.spacing);
+        const double extent = grid.fadeDistance * 2.0;
+        DVec2 lo(-extent), hi(extent), fadeOrigin(0.0);
+        if (grid.bounds) {
+            lo = DVec2(grid.bounds->uMin - grid.margin, grid.bounds->vMin - grid.margin) - projected;
+            hi = DVec2(grid.bounds->uMax + grid.margin, grid.bounds->vMax + grid.margin) - projected;
+            // Fade from the nearest point on the expanded rect to the projected camera. This
+            // keeps an off-centre face visible; the far side still fades over fadeDistance.
+            fadeOrigin = glm::clamp(DVec2(0.0), lo, hi);
+        }
+        push.p1 = Vec4(static_cast<float>(lo.x), static_cast<float>(hi.x),
+                       static_cast<float>(lo.y), static_cast<float>(hi.y));
+        push.offsetSlot = Vec4(Vec2(fadeOrigin), grid.fadeDistance, major.y);
         s.pushAll(commands, push);
-        vkCmdDraw(commands, 6, 1, 0, 0);
+        vkCmdDraw(commands, 64 * 64 * 6, 1, 0, 0);
     }
     // Wireframe keeps its normal hollow appearance, but outlines use surface occlusion.
     if (list.mode == DisplayMode::Wireframe &&

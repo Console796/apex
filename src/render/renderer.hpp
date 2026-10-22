@@ -18,6 +18,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -87,10 +88,19 @@ struct SpriteDraw {
     Vec4 tint{0.0f};
 };
 
+struct GridRect {
+    double uMin, uMax, vMin, vMax; // Plane coordinates relative to GridSettings::origin.
+};
+
 struct GridSettings {
     bool enabled = false;
-    double planeZ = 0.0;        // World height of the grid plane.
-    float spacing = 64.0f;      // Minor line spacing; a power of two, at most 1024.
+    DVec3 origin{0.0};
+    DVec3 normal{0.0, 0.0, 1.0}; // Unit normal and orthonormal in-plane axes.
+    DVec3 uAxis{1.0, 0.0, 0.0};
+    DVec3 vAxis{0.0, 1.0, 0.0};
+    std::optional<GridRect> bounds; // Unset: infinite camera-centred sheet.
+    float margin = 16.0f;       // Expand bounds in plane space before drawing.
+    float spacing = 64.0f;      // Minor line spacing; a power of two from 0.125 to 1024.
     float fadeDistance = 4096.0f;
     Vec4 colour{0.6f, 0.6f, 0.65f, 0.8f}; // rgb line colour, a peak opacity.
 };

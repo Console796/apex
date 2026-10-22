@@ -400,6 +400,37 @@ TEST_CASE("mirror: golden images of the fixture map") {
     golden::check("render_map_wireframe", drawFrame(*g, scene.mirror, DisplayMode::Wireframe), *g->context);
 }
 
+TEST_CASE("mirror: grid plane settings pass through to the draw list") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    MirrorViewOptions options;
+    options.grid.enabled = true;
+    options.grid.origin = {60000, -65536, 128};
+    options.grid.normal = {1, 0, 0};
+    options.grid.uAxis = {0, 1, 0};
+    options.grid.vAxis = {0, 0, 1};
+    options.grid.bounds = GridRect{-32, 64, -16, 48};
+    options.grid.margin = 8;
+    options.grid.spacing = 0.125f;
+    options.grid.fadeDistance = 512;
+    options.grid.colour = Vec4(0.2f, 0.4f, 0.8f, 0.6f);
+    const auto list = scene.mirror.buildDrawList(options);
+    CHECK(list.grid.enabled);
+    CHECK(list.grid.origin == options.grid.origin);
+    CHECK(list.grid.normal == options.grid.normal);
+    CHECK(list.grid.uAxis == options.grid.uAxis);
+    CHECK(list.grid.vAxis == options.grid.vAxis);
+    REQUIRE(list.grid.bounds);
+    CHECK(list.grid.bounds->uMin == -32);
+    CHECK(list.grid.bounds->uMax == 64);
+    CHECK(list.grid.bounds->vMin == -16);
+    CHECK(list.grid.bounds->vMax == 48);
+    CHECK(list.grid.margin == 8.0f);
+    CHECK(list.grid.spacing == 0.125f);
+    CHECK(list.grid.fadeDistance == 512.0f);
+    CHECK(list.grid.colour == options.grid.colour);
+}
+
 TEST_CASE("solid meshing: face ranges retain SideIds and cover triangles and polygon edges") {
     const auto doc = loadMap();
     const auto red = findSolid(*doc, "test/red");

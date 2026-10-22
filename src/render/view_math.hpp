@@ -21,6 +21,18 @@ inline Vec3 toCameraRelative(DVec3 world, DVec3 cameraPosition) {
     return Vec3(world - cameraPosition);
 }
 
+// Project in double before wrapping: microgrid phases must survive at +/-65536.
+inline DVec2 gridCameraCoordinates(DVec3 cameraPosition, DVec3 origin, DVec3 uAxis, DVec3 vAxis) {
+    const DVec3 relative = cameraPosition - origin;
+    return {glm::dot(relative, uAxis), glm::dot(relative, vAxis)};
+}
+
+// Wrap each line set to its own spacing before narrowing. A fixed 1024 period loses
+// microgrid precision when the shader adds the phase and computes line derivatives.
+inline Vec2 wrapGridCoordinates(DVec2 coordinates, double period) {
+    return Vec2(coordinates - glm::floor(coordinates / period) * period);
+}
+
 // Model matrix translation for an object whose origin is `objectOrigin`, camera-relative.
 inline Mat4 cameraRelativeTranslation(DVec3 objectOrigin, DVec3 cameraPosition) {
     Mat4 result(1.0f);
