@@ -31,13 +31,16 @@ public:
         auto* native = QGuiApplication::platformNativeInterface();
         if (!native) return fallback("qt-native-interface-unavailable");
         if (!window_.handle()) return fallback("window-has-no-platform-handle");
+        QWindow* target = &window_;
+        while (target->parent()) target = target->parent();
+        if (!target->handle()) return fallback("toplevel-window-has-no-platform-handle");
         auto* display = static_cast<wl_display*>(native->nativeResourceForIntegration("wl_display"));
-        auto* surface = static_cast<wl_surface*>(native->nativeResourceForWindow("surface", &window_));
+        auto* surface = static_cast<wl_surface*>(native->nativeResourceForWindow("surface", target));
         auto* pointer = static_cast<wl_pointer*>(native->nativeResourceForIntegration("wl_pointer"));
         // Qt 6.10.2's nativeResourceForIntegration supports "wl_pointer" (also
         // "QtWayland::wl_pointer"). Borrow it; never replace Qt's listener or seat.
         if (!display) return fallback("qt-wl_display-unavailable");
-        if (!surface) return fallback("window-wl_surface-unavailable");
+        if (!surface) return fallback("toplevel-wl_surface-unavailable");
         if (!pointer) return fallback("qt-wl_pointer-unavailable");
         if (!registry_) {
             display_ = display;
@@ -51,7 +54,9 @@ public:
         if (!constraints_) return fallback("compositor-missing-zwp_pointer_constraints_v1");
         if (!manager_) return fallback("compositor-missing-zwp_relative_pointer_manager_v1");
         surface_ = surface;
-        restore_ = position;
+        targetWindow_ = target;
+        surfaceTarget_ = target == &window_ ? "pane" : "toplevel";
+        restore_ = target->mapFromGlobal(window_.mapToGlobal(position));
         delta_ = std::move(delta);
         cancel_ = std::move(cancel);
         relative_ = zwp_relative_pointer_manager_v1_get_relative_pointer(manager_, pointer);
@@ -67,6 +72,17 @@ public:
             locked_, wl_fixed_from_double(restore_.x()), wl_fixed_from_double(restore_.y()));
         wl_surface_commit(surface_);
         wl_display_flush(display_);
+        if (inputLogEnabled()) {
+            const auto paneGlobal = window_.mapToGlobal(QPointF(0, 0));
+            const auto targetGlobal = target->mapToGlobal(QPointF(0, 0));
+            inputTraceEvent("pointer_lock", {{"event", "request"}, {"surface_target", surfaceTarget_},
+                {"pane_window_id", QString::number(reinterpret_cast<quintptr>(&window_), 16)},
+                {"target_window_id", QString::number(reinterpret_cast<quintptr>(target), 16)},
+                {"pane_origin", QJsonObject{{"x", paneGlobal.x()}, {"y", paneGlobal.y()}}},
+                {"target_origin", QJsonObject{{"x", targetGlobal.x()}, {"y", targetGlobal.y()}}},
+                {"hint", QJsonObject{{"x", restore_.x()}, {"y", restore_.y()}}},
+                {"lifetime", "oneshot"}, {"surface_commit", true}});
+        }
         decision("relative-pending", "lock-request-sent-awaiting-compositor");
         return Motion::Relative;
     }
@@ -81,6 +97,14 @@ public:
         delta_ = {};
         cancel_ = {};
         if (locked_) {
+            // The hint is applied when the lock is destroyed. Re-submit it on the
+            // constrained top-level surface so an active lock restores the pointer
+            // to the pane press position when the gesture ends.
+            if (surface_) {
+                zwp_locked_pointer_v1_set_cursor_position_hint(
+                    locked_, wl_fixed_from_double(restore_.x()), wl_fixed_from_double(restore_.y()));
+                wl_surface_commit(surface_);
+            }
             zwp_locked_pointer_v1_destroy(locked_);
             locked_ = nullptr;
         }
@@ -89,6 +113,8 @@ public:
             relative_ = nullptr;
         }
         surface_ = nullptr;
+        targetWindow_ = nullptr;
+        surfaceTarget_ = "unresolved";
         if (display_) wl_display_flush(display_);
     }
 
@@ -99,6 +125,8 @@ private:
         if (inputLogEnabled())
             inputTraceEvent("pointer_lock", {{"event", result}, {"reason", reason},
                 {"window_id", QString::number(reinterpret_cast<quintptr>(&window_), 16)},
+                {"surface_target", surfaceTarget_},
+                {"target_window_id", QString::number(reinterpret_cast<quintptr>(targetWindow_), 16)},
                 {"locked_confirmed", lockedConfirmed_},
                 {"relative_events", static_cast<qint64>(relativeEvents_)}});
     }
@@ -174,6 +202,7 @@ private:
     QWindow& window_;
     wl_display* display_ = nullptr;  // Borrowed from Qt, as is surface_.
     wl_surface* surface_ = nullptr;
+    QWindow* targetWindow_ = nullptr;
     wl_registry* registry_ = nullptr;
     zwp_pointer_constraints_v1* constraints_ = nullptr;
     zwp_relative_pointer_manager_v1* manager_ = nullptr;
@@ -185,6 +214,7 @@ private:
     Cancel cancel_;
     std::uint64_t relativeEvents_ = 0;
     bool lockedConfirmed_ = false;
+    const char* surfaceTarget_ = "unresolved";
 };
 
 }  // namespace

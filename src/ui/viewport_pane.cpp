@@ -490,9 +490,16 @@ double PaneWindow::draw() {
         swapchain_->setResizeDragging(resizeDragging_);
         if (inputLogEnabled()) {
             lastTraceRecreates_ = swapchain_->recreateCount();
+            const auto actual = swapchain_->extent();
             inputTraceEvent("swapchain", {{"pane", static_cast<qint64>(pane_)}, {"event", "create"},
                                            {"recreate_count", static_cast<qint64>(lastTraceRecreates_)},
-                                           {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)}});
+                                           {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)},
+                                           {"buffer_width", static_cast<int>(actual.width)},
+                                           {"buffer_height", static_cast<int>(actual.height)},
+                                           {"recreate_ms", swapchain_->lastRecreateMilliseconds()},
+                                           {"retired", static_cast<qint64>(swapchain_->retiredSwapchainCount())},
+                                           {"forced_retirements", static_cast<qint64>(swapchain_->forcedRetirementCount())},
+                                           {"fd_count", inputTraceFdCount(true)}});
         }
     }
     render::Renderer* renderer = host_.renderer(swapchain_->format());
@@ -544,10 +551,19 @@ double PaneWindow::draw() {
     if (inputLogEnabled() && swapchain_->recreateCount() != lastTraceRecreates_) {
         const auto previous = lastTraceRecreates_;
         lastTraceRecreates_ = swapchain_->recreateCount();
+        const auto actual = swapchain_->extent();
+        const QPoint origin = mapToGlobal(QPoint(0, 0));
         inputTraceEvent("swapchain", {{"pane", static_cast<qint64>(pane_)}, {"event", "recreate"},
             {"recreate_count", static_cast<qint64>(lastTraceRecreates_)},
             {"recreate_delta", static_cast<qint64>(lastTraceRecreates_ - previous)},
-            {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)}});
+            {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)},
+            {"buffer_width", static_cast<int>(actual.width)}, {"buffer_height", static_cast<int>(actual.height)},
+            {"window_width", width()}, {"window_height", height()}, {"scale", devicePixelRatio()},
+            {"window_global_x", origin.x()}, {"window_global_y", origin.y()},
+            {"recreate_ms", swapchain_->lastRecreateMilliseconds()},
+            {"retired", static_cast<qint64>(swapchain_->retiredSwapchainCount())},
+            {"forced_retirements", static_cast<qint64>(swapchain_->forcedRetirementCount())},
+            {"fd_count", inputTraceFdCount(true)}});
     }
     if (!status) {
         log::error("viewports: frame failed on pane {}: {}", pane_, status.error().what());
@@ -558,10 +574,19 @@ double PaneWindow::draw() {
     dirty_ = false;
     ++frames_;
     const double milliseconds = timer.nsecsElapsed() / 1.0e6;
-    if (inputLogEnabled())
+    if (inputLogEnabled()) {
+        const auto actual = swapchain_->extent();
+        const QPoint origin = mapToGlobal(QPoint(0, 0));
         inputTraceEvent("frame", {{"pane", static_cast<qint64>(pane_)},
                                    {"frame", static_cast<qint64>(frames_)}, {"duration_ms", milliseconds},
-                                   {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)}});
+                                   {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)},
+                                   {"buffer_width", static_cast<int>(actual.width)},
+                                   {"buffer_height", static_cast<int>(actual.height)},
+                                   {"window_width", width()}, {"window_height", height()},
+                                   {"scale", devicePixelRatio()}, {"window_global_x", origin.x()},
+                                   {"window_global_y", origin.y()}, {"retired", static_cast<qint64>(swapchain_->retiredSwapchainCount())},
+                                   {"fd_count", inputTraceFdCount()}});
+    }
     return milliseconds;
 }
 

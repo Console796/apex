@@ -45,6 +45,7 @@ def summarize(events):
             if event.get("event") == "press" and active is None:
                 active = {"start": event.get("t_ms", 0), "last": position, "mouse": 0.0,
                           "relative": 0, "relative_x": 0.0, "relative_y": 0.0,
+                          "last_relative": None, "max_relative_gap": 0.0,
                           "button": event.get("button", 0)}
             elif active is not None:
                 active["mouse"] += distance(active["last"], position)
@@ -55,6 +56,11 @@ def summarize(events):
                     active = None
         elif kind == "relative" and active is not None:
             dx, dy = xy(event.get("delta"))
+            timestamp = float(event.get("t_ms", 0))
+            if active["last_relative"] is not None:
+                active["max_relative_gap"] = max(active["max_relative_gap"],
+                                                   timestamp - active["last_relative"])
+            active["last_relative"] = timestamp
             active["relative"] += 1
             active["relative_x"] += dx
             active["relative_y"] += dy
@@ -69,7 +75,21 @@ def summarize(events):
         rel_mag = math.hypot(gesture["relative_x"], gesture["relative_y"])
         print(f"  {number}: button={gesture['button']} duration={gesture['end'] - gesture['start']:.1f}ms "
               f"mouse_path={gesture['mouse']:.1f}px relative_events={gesture['relative']} "
-              f"relative_sum=({gesture['relative_x']:.2f},{gesture['relative_y']:.2f}) magnitude={rel_mag:.2f}")
+              f"relative_sum=({gesture['relative_x']:.2f},{gesture['relative_y']:.2f}) magnitude={rel_mag:.2f} "
+              f"max_relative_gap={gesture['max_relative_gap']:.1f}ms")
+
+    lock_events = [event for event in events if event.get("type") == "pointer_lock"]
+    lock_counts = defaultdict(int)
+    for event in lock_events:
+        lock_counts[event.get("event", "?")] += 1
+    requests = [event for event in lock_events if event.get("event") == "request"]
+    targets = defaultdict(int)
+    for event in requests:
+        targets[event.get("surface_target", "?")] += 1
+    if lock_events:
+        print("pointer lock: " + ", ".join(f"{name}={count}" for name, count in sorted(lock_counts.items()))
+              + (" targets=" + ",".join(f"{name}:{count}" for name, count in sorted(targets.items()))
+                 if targets else ""))
 
     splitters = []
     current = None
@@ -96,9 +116,33 @@ def summarize(events):
         print(f"  {number}: duration={gesture['end'] - gesture['start']:.1f}ms steps={gesture['steps']} "
               f"max_target_error={gesture['max_error']}px clamped_moves={gesture['clamped']} reason={gesture['reason']}")
 
+        duration_s = max((gesture["end"] - gesture["start"]) / 1000.0, 0.001)
+        frames = defaultdict(int)
+        recreate_ms = []
+        recreate_count = 0
+        for event in events:
+            timestamp = float(event.get("t_ms", -1))
+            if timestamp < gesture["start"] or timestamp > gesture["end"]:
+                continue
+            if event.get("type") == "frame":
+                frames[event.get("pane")] += 1
+            elif event.get("type") == "swapchain" and event.get("event") == "recreate":
+                recreate_count += int(event.get("recreate_delta", 1))
+                if "recreate_ms" in event:
+                    recreate_ms.append(float(event["recreate_ms"]))
+        fps = ", ".join(f"pane {pane}={count / duration_s:.2f}" for pane, count in sorted(frames.items())) or "none"
+        timing = (f" median={sorted(recreate_ms)[len(recreate_ms) // 2]:.2f}ms max={max(recreate_ms):.2f}ms"
+                  if recreate_ms else " unavailable")
+        print(f"     frame_fps: {fps}; recreates={recreate_count}; recreate_duration:{timing}")
+
     frame_times = defaultdict(list)
     durations = []
     recreates = defaultdict(int)
+    recreate_durations = []
+    fd_counts = []
+    buffer_mismatches = 0
+    max_retired = 0
+    forced_retirements = defaultdict(int)
     for event in events:
         if event.get("type") == "frame":
             frame_times[event.get("pane")].append(float(event.get("t_ms", 0)))
@@ -106,11 +150,34 @@ def summarize(events):
         elif event.get("type") == "swapchain":
             pane = event.get("pane")
             recreates[pane] += int(event.get("recreate_delta", 1))
+            max_retired = max(max_retired, int(event.get("retired", 0)))
+            forced_retirements[pane] = max(forced_retirements[pane],
+                                            int(event.get("forced_retirements", 0)))
+            if "recreate_ms" in event:
+                recreate_durations.append(float(event["recreate_ms"]))
+        if "fd_count" in event and int(event["fd_count"]) >= 0:
+            fd_counts.append(int(event["fd_count"]))
+        if event.get("type") in ("frame", "swapchain") and all(
+                key in event for key in ("buffer_width", "buffer_height", "window_width", "window_height", "scale")):
+            expected_width = round(float(event["window_width"]) * float(event["scale"]))
+            expected_height = round(float(event["window_height"]) * float(event["scale"]))
+            buffer_mismatches += int(int(event["buffer_width"]) != expected_width or
+                                     int(event["buffer_height"]) != expected_height)
     gaps = [(times[i] - times[i - 1], pane) for pane, times in frame_times.items() for i in range(1, len(times))]
     longest_gap, gap_pane = max(gaps, default=(0.0, "?"))
     print(f"frames: count={sum(map(len, frame_times.values()))} longest_gap={longest_gap:.1f}ms "
           f"gap_pane={gap_pane} max_render={max(durations, default=0.0):.1f}ms")
     print("swapchain recreates: " + (", ".join(f"pane {pane}={count}" for pane, count in sorted(recreates.items())) or "none"))
+    if forced_retirements or max_retired:
+        forced = ", ".join(f"pane {pane}={count}" for pane, count in sorted(forced_retirements.items()))
+        print(f"swapchain retirement: max_retired={max_retired} forced_drains={forced or 'none'}")
+    if recreate_durations:
+        ordered = sorted(recreate_durations)
+        print(f"recreate duration: median={ordered[len(ordered) // 2]:.2f}ms max={max(ordered):.2f}ms")
+    if fd_counts:
+        print(f"open fds: min={min(fd_counts)} max={max(fd_counts)} growth={max(fd_counts) - min(fd_counts)}")
+    if any("buffer_width" in event for event in events):
+        print(f"presented buffer/window-size mismatches: {buffer_mismatches}")
 
     markers = [event for event in events if event.get("type") == "marker"]
     if markers:

@@ -57,14 +57,17 @@ class Swapchain {
     void setResizeDragging(bool dragging, Clock::time_point now = Clock::now());
     // Lets UI callers skip draw-list preparation as well as GPU work between intervals.
     bool frameDue(Clock::time_point now = Clock::now()) const {
-        return !resizeDragging_ || now - lastDragFrame_ >= std::chrono::milliseconds(100);
+        return !resizeDragging_ || now - lastDragFrame_ >= std::chrono::milliseconds(16);
     }
     bool hasRetiredSwapchains() const { return !retired_.empty(); }
+    std::size_t retiredSwapchainCount() const { return retired_.size(); }
 
     VkFormat format() const { return format_; }
     VkExtent2D extent() const { return extent_; }
     std::uint32_t imageCount() const { return static_cast<std::uint32_t>(images_.size()); }
     std::uint32_t recreateCount() const { return recreates_; } // For tests and diagnostics.
+    std::uint32_t forcedRetirementCount() const { return forcedRetirements_; }
+    double lastRecreateMilliseconds() const { return lastRecreateMilliseconds_; }
 
   private:
     Swapchain() = default;
@@ -99,6 +102,8 @@ class Swapchain {
     VkCommandBuffer commands_ = VK_NULL_HANDLE;
     bool needsRecreate_ = true;
     std::uint32_t recreates_ = 0;
+    std::uint32_t forcedRetirements_ = 0;
+    double lastRecreateMilliseconds_ = 0.0;
 };
 
 } // namespace apex::render

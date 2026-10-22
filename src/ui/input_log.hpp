@@ -15,6 +15,7 @@ void inputTraceInitialize();
 void inputTraceEvent(const char* type, QJsonObject fields = {});
 void inputTraceSetState(QJsonObject state);
 int inputTraceMarker();
+int inputTraceFdCount(bool refresh = false);
 void inputTraceWindowStart(const QWidget& window);
 void inputTraceMouse(QObject* receiver, const QMouseEvent& event);
 

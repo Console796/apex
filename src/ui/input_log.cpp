@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QDebug>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QGuiApplication>
@@ -33,6 +34,9 @@ public:
                           {"qt", QString::fromLatin1(qVersion())},
                           {"platform", QGuiApplication::platformName()},
                           {"pid", static_cast<qint64>(QCoreApplication::applicationPid())}};
+#ifdef Q_OS_LINUX
+        start["fd_count"] = fdCount(true);
+#endif
         if (const auto* screen = QGuiApplication::primaryScreen()) {
             start["scale"] = screen->devicePixelRatio();
             start["screen_geometry"] = rect(screen->geometry());
@@ -63,6 +67,22 @@ public:
     }
 
     void setState(QJsonObject state) { if (enabled()) state_ = std::move(state); }
+
+    int fdCount(bool refresh) {
+#ifdef Q_OS_LINUX
+        if (!enabled()) return -1;
+        const auto elapsed = clock_.isValid() ? clock_.elapsed() : 0;
+        if (refresh || fdCount_ < 0 || elapsed - fdCountAtMs_ >= 100) {
+            fdCount_ = static_cast<int>(QDir(QStringLiteral("/proc/self/fd"))
+                                            .entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size());
+            fdCountAtMs_ = elapsed;
+        }
+        return fdCount_;
+#else
+        Q_UNUSED(refresh);
+        return -1;
+#endif
+    }
 
     int marker() {
         if (!enabled()) return 0;
@@ -112,6 +132,8 @@ private:
     int markers_ = 0;
     bool installed_ = false;
     double lastFlushMs_ = -100.0;
+    qint64 fdCountAtMs_ = -100;
+    int fdCount_ = -1;
 };
 
 InputTrace& trace() {
@@ -125,6 +147,7 @@ void inputTraceInitialize() { trace().initialize(); }
 void inputTraceEvent(const char* type, QJsonObject fields) { trace().write(type, std::move(fields)); }
 void inputTraceSetState(QJsonObject state) { trace().setState(std::move(state)); }
 int inputTraceMarker() { return trace().marker(); }
+int inputTraceFdCount(bool refresh) { return trace().fdCount(refresh); }
 
 void inputTraceWindowStart(const QWidget& window) {
     if (!inputLogEnabled()) return;

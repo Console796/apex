@@ -8,8 +8,10 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -33,6 +35,18 @@ Context* sharedContext() {
 
 std::vector<std::byte> bytes(std::size_t n, std::uint8_t value) {
     return std::vector<std::byte>(n, std::byte{value});
+}
+
+int openFdCount() {
+#ifdef __linux__
+    std::error_code error;
+    int count = 0;
+    for (std::filesystem::directory_iterator it("/proc/self/fd", error), end; !error && it != end;
+         it.increment(error)) ++count;
+    return error ? -1 : count;
+#else
+    return -1;
+#endif
 }
 
 } // namespace
@@ -224,18 +238,25 @@ TEST_CASE("swapchain on a headless surface recreates on resize") {
 
             // Compare an ordinary resize stream with a handle drag at identical scripted sizes.
             const auto baselineCount = (*swapchain)->recreateCount();
+            const int fdsBeforeResize = openFdCount();
+            int peakFds = fdsBeforeResize;
             const auto baselineStart = Swapchain::Clock::now();
-            for (int step = 1; step <= 200; ++step)
+            for (int step = 1; step <= 256; ++step) {
                 REQUIRE(draw({static_cast<std::uint32_t>(64 + step), 80}));
+                CHECK((*swapchain)->retiredSwapchainCount() <= 2);
+                peakFds = std::max(peakFds, openFdCount());
+            }
             const double baselineMs = std::chrono::duration<double, std::milli>(Swapchain::Clock::now() - baselineStart).count();
-            CHECK((*swapchain)->recreateCount() == baselineCount + 200);
+            CHECK((*swapchain)->recreateCount() == baselineCount + 256);
+            CHECK((*swapchain)->forcedRetirementCount() > 0);
+            if (fdsBeforeResize >= 0 && peakFds >= 0) CHECK(peakFds <= fdsBeforeResize + 128);
 
             const auto initial = (*swapchain)->recreateCount();
             const int dragFrames = frames;
             const auto dragStart = Swapchain::Clock::now();
             (*swapchain)->setResizeDragging(true, now);
             for (int step = 1; step <= 200; ++step) {
-                now += std::chrono::milliseconds(5);
+                now += std::chrono::milliseconds(16);
                 const auto before = (*swapchain)->recreateCount();
                 const auto started = Swapchain::Clock::now();
                 const VkExtent2D size{static_cast<std::uint32_t>(64 + step), 80};
@@ -245,16 +266,18 @@ TEST_CASE("swapchain on a headless surface recreates on resize") {
                 MESSAGE("resize step=" << step << " draw_ms="
                         << std::chrono::duration<double, std::milli>(Swapchain::Clock::now() - started).count()
                         << " recreates=" << after);
-                CHECK(after - initial == static_cast<std::uint32_t>(step / 20));
-                CHECK(after - before == (step % 20 == 0 ? 1u : 0u));
-                if (step % 20 != 0) CHECK(*status == FrameStatus::Skipped);
-                CHECK(frames - dragFrames == step / 20);
+                CHECK(after - initial == static_cast<std::uint32_t>(step));
+                CHECK(after - before == 1u);
+                CHECK(*status == FrameStatus::Presented);
+                CHECK(frames - dragFrames == step);
+                CHECK((*swapchain)->retiredSwapchainCount() <= 2);
             }
             (*swapchain)->setResizeDragging(false, now);
             REQUIRE(draw({264, 80}));
-            CHECK((*swapchain)->recreateCount() == initial + 11);
+            CHECK((*swapchain)->recreateCount() == initial + 201);
             CHECK((*swapchain)->extent().width == 264);
-            MESSAGE("200-step resize: unthrottled_ms=" << baselineMs << " recreates=200; drag_ms="
+            MESSAGE("256-step FD resize: peak_delta=" << (peakFds - fdsBeforeResize)
+                    << " unthrottled_ms=" << baselineMs << "; 200-step drag_ms="
                     << std::chrono::duration<double, std::milli>(Swapchain::Clock::now() - dragStart).count()
                     << " recreates=" << (*swapchain)->recreateCount() - initial);
             // A later acquisition and its frame fence retire the old presentation resources.

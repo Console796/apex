@@ -89,6 +89,7 @@ void Swapchain::setResizeDragging(bool dragging, Clock::time_point now) {
 }
 
 Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
+    const auto recreateStarted = Clock::now();
     VkDevice device = context_->device();
     VkPhysicalDevice physical = context_->physicalDevice();
     // renderFrame has waited for this pane's frame fence; other panes keep running.
@@ -144,6 +145,19 @@ Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
     info.presentMode = VK_PRESENT_MODE_FIFO_KHR; // Always available; frames are on demand anyway.
     info.clipped = VK_TRUE;
     info.oldSwapchain = swapchain_;
+
+    // A resize can replace the swapchain before the replacement reacquires its first
+    // presented image.  That makes the normal presentation-based retirement proof
+    // impossible during a continuous drag.  Bound the native resources before asking
+    // the driver for another swapchain; RADV otherwise retains syncobj FDs until the
+    // process exhausts its descriptor limit.
+    constexpr std::size_t maxRetiredSwapchains = 2;
+    if (retired_.size() >= maxRetiredSwapchains) {
+        APEX_VK_TRY(vkQueueWaitIdle(context_->graphicsQueue()), "wait to retire resize swapchains");
+        destroyRetired();
+        retirementReady_ = false;
+        ++forcedRetirements_;
+    }
     VkSwapchainKHR replacement = VK_NULL_HANDLE;
     APEX_VK_TRY(vkCreateSwapchainKHR(device, &info, nullptr, &replacement), "vkCreateSwapchainKHR");
     if (swapchain_) retired_.push_back({swapchain_, std::move(views_), std::move(renderDone_)});
@@ -174,6 +188,8 @@ Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
     }
     needsRecreate_ = false;
     ++recreates_;
+    lastRecreateMilliseconds_ =
+        std::chrono::duration<double, std::milli>(Clock::now() - recreateStarted).count();
     return true;
 }
 

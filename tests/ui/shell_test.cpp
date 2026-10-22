@@ -1338,7 +1338,7 @@ TEST_CASE("scripted 200-step splitter drag preserves frames between resize inter
         for (const auto& [id, count] : initial) {
             const auto* window = area.frame(id)->window();
             CHECK_FALSE(window->failed());
-            CHECK(window->recreateCount() - count <= static_cast<std::uint32_t>(elapsed.elapsed() / 100));
+            CHECK(window->recreateCount() - count <= static_cast<std::uint32_t>(elapsed.elapsed() / 16 + 1));
         }
     }
     std::map<viewport::NodeId, std::uint32_t> beforeRelease;
