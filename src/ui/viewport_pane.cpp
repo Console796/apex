@@ -4,8 +4,6 @@
 
 #include <QActionGroup>
 #include <QCoreApplication>
-#include <QCursor>
-#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -22,6 +20,7 @@
 #include "render/render_mirror.hpp"
 #include "render/view_math.hpp"
 #include "ui/gpu_host.hpp"
+#include "ui/input_log.hpp"
 #include "ui/key_chord.hpp"
 #include "viewport/pick_math.hpp"
 #include "viewport/view_context.hpp"
@@ -80,6 +79,7 @@ public:
 
 protected:
     bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::FocusOut) window_->releaseCapture();
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease &&
             event->type() != QEvent::ShortcutOverride) return false;
         const auto* key = static_cast<QKeyEvent*>(event);
@@ -130,10 +130,13 @@ render::GridSettings makeGridSettings(const viewport::Viewport& view, const edit
 // ---- PaneWindow ----
 
 PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor accessor)
-    : host_(host), pane_(pane), accessor_(std::move(accessor)), depth_(*host.context()) {
+    : host_(host), pane_(pane), accessor_(std::move(accessor)),
+      pointerLock_(*this, makePointerLockBackend(*this), [this] { releaseCapture(); }),
+      depth_(*host.context()) {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(host.vulkanInstance());
     sinceTick_.start();
+    traceClock_.start();
 }
 
 PaneWindow::~PaneWindow() {
@@ -146,15 +149,14 @@ void PaneWindow::setClearColour(const float rgba[4]) {
     dirty_ = true;
 }
 
-QSize PaneWindow::pixelSize() const {
-    return QSize(qRound(width() * devicePixelRatio()), qRound(height() * devicePixelRatio()));
+void PaneWindow::setResizeDragging(bool dragging) {
+    resizeDragging_ = dragging;
+    if (swapchain_) swapchain_->setResizeDragging(dragging);
+    dirty_ = true; // Release always renders the final extent, including a lost release.
 }
 
-bool PaneWindow::warping() const { return QGuiApplication::platformName() == QLatin1String("xcb"); }
-
-void PaneWindow::warp() {
-    last_ = QPointF(width() / 2.0, height() / 2.0);
-    QCursor::setPos(mapToGlobal(last_.toPoint()));
+QSize PaneWindow::pixelSize() const {
+    return QSize(qRound(width() * devicePixelRatio()), qRound(height() * devicePixelRatio()));
 }
 
 void PaneWindow::destroySwapchain() {
@@ -177,9 +179,10 @@ void PaneWindow::releaseCapture() {
     clickCamera_.reset();
     if (grabbed_) setMouseGrabEnabled(false);
     grabbed_ = false;
-    if (captured_) unsetCursor();
-    captured_ = false;
+    pointerLock_.cancel();
     buttons_ = Qt::NoButton;
+    delta_ = {};
+    forward_ = back_ = left_ = right_ = up_ = down_ = false;
 }
 
 bool PaneWindow::event(QEvent* e) {
@@ -208,7 +211,9 @@ bool PaneWindow::event(QEvent* e) {
     case QEvent::ShortcutOverride:
         // A gizmo drag or modal transform owns the keyboard: Esc, Enter, digits and axis keys
         // must not trigger window shortcuts.
-        if (transform_.owns() || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton)) {
+        // F9 remains available to annotate an input trace during a bad navigation gesture.
+        if (static_cast<QKeyEvent*>(e)->key() != Qt::Key_F9 &&
+            (transform_.owns() || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton))) {
             e->accept();
             return true;
         }
@@ -258,10 +263,7 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         // the view would keep navigating when the pointer comes back.
         const auto lost = buttons_ & ~e->buttons();
         buttons_ &= e->buttons();
-        if (lost.testFlag(Qt::RightButton) && captured_) {
-            captured_ = false;
-            unsetCursor();
-        }
+        pointerLock_.buttons(buttons_);
         if (lost.testFlag(Qt::LeftButton)) cancelSelectionGesture();
         if (buttons_ == Qt::NoButton && grabbed_) {
             setMouseGrabEnabled(false);
@@ -294,28 +296,23 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         last_ = e->position();
         if (!grabbed_) grabbed_ = setMouseGrabEnabled(true);
         const auto* vp = accessor_();
-        if (e->button() == Qt::RightButton && vp && !vp->camera.isOrtho()) {
-            captured_ = true;
-            setCursor(Qt::BlankCursor);
-            if (warping()) warp();
-        }
+        if (e->button() == Qt::MiddleButton ||
+            (e->button() == Qt::RightButton && vp && !vp->camera.isOrtho()))
+            pointerLock_.press(e->button(), e->position());
     } else if (release) {
+        // A fast flick can finish between ticks. Apply its last relative events
+        // while the navigation button still identifies orbit, pan or fly look.
+        if (pointerLock_.active()) applyNavigation(0.0);
         buttons_ = e->buttons();
-        if (e->button() == Qt::RightButton && captured_) {
-            captured_ = false;
-            unsetCursor();
-        }
+        pointerLock_.buttons(buttons_);
         if (buttons_ == Qt::NoButton && grabbed_) {
             setMouseGrabEnabled(false);
             grabbed_ = false;
         }
     } else if (buttons_ != Qt::NoButton) {
-        const QPointF d = e->position() - last_;
-        if (!d.isNull()) {
-            delta_ += d;
-            if (captured_ && warping()) warp();
-            else last_ = e->position();
-        }
+        if (pointerLock_.active()) pointerLock_.move(e->position());
+        else delta_ += e->position() - last_;
+        last_ = e->position();
     }
     return true;
 }
@@ -422,8 +419,8 @@ bool PaneWindow::handleKey(QKeyEvent* e) {
     }
 }
 
-double PaneWindow::tick(bool forceDraw) {
-    const double dt = std::min(sinceTick_.restart() / 1000.0, kMaxDt);
+void PaneWindow::applyNavigation(double dt) {
+    delta_ += pointerLock_.takeDelta();
     if (auto* vp = accessor_()) {
         const bool keys = forward_ || back_ || left_ || right_ || up_ || down_;
         if (buttons_ != Qt::NoButton || keys || scroll_ != 0.0) {
@@ -448,11 +445,29 @@ double PaneWindow::tick(bool forceDraw) {
                 dirty_ = true;
                 emit cameraChanged();
             }
+            if (inputLogEnabled() && traceClock_.elapsed() - lastCameraTraceMs_ >= 100) {
+                lastCameraTraceMs_ = traceClock_.elapsed();
+                const auto& c = vp->camera;
+                QJsonObject state{{"pane", static_cast<qint64>(pane_)},
+                    {"camera_position", QJsonObject{{"x", c.position.x}, {"y", c.position.y}, {"z", c.position.z}}},
+                    {"camera_angles", QJsonObject{{"pitch", c.angles.x}, {"yaw", c.angles.y}, {"roll", c.angles.z}}},
+                    {"buttons", static_cast<qint64>(buttons_.toInt())},
+                    {"navigation_delta", QJsonObject{{"x", in.cursorDelta.x}, {"y", in.cursorDelta.y}}}};
+                inputTraceSetState(state);
+                inputTraceEvent("camera", std::move(state));
+            }
         }
     }
     delta_ = {};
     scroll_ = 0.0;
-    if ((!dirty_ && !forceDraw) || !isExposed() || failed_) return -1.0;
+}
+
+double PaneWindow::tick(bool forceDraw) {
+    const double dt = std::min(static_cast<double>(sinceTick_.restart()) / 1000.0, kMaxDt);
+    applyNavigation(dt);
+    if (resizeDragging_ && !swapchain_) return -1.0;
+    const bool retiring = swapchain_ && swapchain_->hasRetiredSwapchains();
+    if ((!dirty_ && !forceDraw && !retiring) || !isExposed() || failed_) return -1.0;
     return draw();
 }
 
@@ -472,6 +487,20 @@ double PaneWindow::draw() {
             return -1.0;
         }
         swapchain_ = std::move(*created);
+        swapchain_->setResizeDragging(resizeDragging_);
+        if (inputLogEnabled()) {
+            lastTraceRecreates_ = swapchain_->recreateCount();
+            const auto actual = swapchain_->extent();
+            inputTraceEvent("swapchain", {{"pane", static_cast<qint64>(pane_)}, {"event", "create"},
+                                           {"recreate_count", static_cast<qint64>(lastTraceRecreates_)},
+                                           {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)},
+                                           {"buffer_width", static_cast<int>(actual.width)},
+                                           {"buffer_height", static_cast<int>(actual.height)},
+                                           {"recreate_ms", swapchain_->lastRecreateMilliseconds()},
+                                           {"retired", static_cast<qint64>(swapchain_->retiredSwapchainCount())},
+                                           {"forced_retirements", static_cast<qint64>(swapchain_->forcedRetirementCount())},
+                                           {"fd_count", inputTraceFdCount(true)}});
+        }
     }
     render::Renderer* renderer = host_.renderer(swapchain_->format());
     if (!renderer) {
@@ -519,6 +548,23 @@ double PaneWindow::draw() {
         drawMarquee(cb, extent);
         depth_.end(cb);
     });
+    if (inputLogEnabled() && swapchain_->recreateCount() != lastTraceRecreates_) {
+        const auto previous = lastTraceRecreates_;
+        lastTraceRecreates_ = swapchain_->recreateCount();
+        const auto actual = swapchain_->extent();
+        const QPoint origin = mapToGlobal(QPoint(0, 0));
+        inputTraceEvent("swapchain", {{"pane", static_cast<qint64>(pane_)}, {"event", "recreate"},
+            {"recreate_count", static_cast<qint64>(lastTraceRecreates_)},
+            {"recreate_delta", static_cast<qint64>(lastTraceRecreates_ - previous)},
+            {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)},
+            {"buffer_width", static_cast<int>(actual.width)}, {"buffer_height", static_cast<int>(actual.height)},
+            {"window_width", width()}, {"window_height", height()}, {"scale", devicePixelRatio()},
+            {"window_global_x", origin.x()}, {"window_global_y", origin.y()},
+            {"recreate_ms", swapchain_->lastRecreateMilliseconds()},
+            {"retired", static_cast<qint64>(swapchain_->retiredSwapchainCount())},
+            {"forced_retirements", static_cast<qint64>(swapchain_->forcedRetirementCount())},
+            {"fd_count", inputTraceFdCount(true)}});
+    }
     if (!status) {
         log::error("viewports: frame failed on pane {}: {}", pane_, status.error().what());
         failed_ = true;
@@ -527,7 +573,21 @@ double PaneWindow::draw() {
     if (*status == render::FrameStatus::Skipped) return -1.0;  // Retry; dirty_ stays set.
     dirty_ = false;
     ++frames_;
-    return timer.nsecsElapsed() / 1.0e6;
+    const double milliseconds = static_cast<double>(timer.nsecsElapsed()) / 1.0e6;
+    if (inputLogEnabled()) {
+        const auto actual = swapchain_->extent();
+        const QPoint origin = mapToGlobal(QPoint(0, 0));
+        inputTraceEvent("frame", {{"pane", static_cast<qint64>(pane_)},
+                                   {"frame", static_cast<qint64>(frames_)}, {"duration_ms", milliseconds},
+                                   {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)},
+                                   {"buffer_width", static_cast<int>(actual.width)},
+                                   {"buffer_height", static_cast<int>(actual.height)},
+                                   {"window_width", width()}, {"window_height", height()},
+                                   {"scale", devicePixelRatio()}, {"window_global_x", origin.x()},
+                                   {"window_global_y", origin.y()}, {"retired", static_cast<qint64>(swapchain_->retiredSwapchainCount())},
+                                   {"fd_count", inputTraceFdCount()}});
+    }
+    return milliseconds;
 }
 
 // ---- PaneFrame ----

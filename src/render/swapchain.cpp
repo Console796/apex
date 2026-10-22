@@ -55,6 +55,7 @@ Swapchain::~Swapchain() {
     VkDevice device = context_->device();
     vkDeviceWaitIdle(device);
     destroyImages();
+    destroyRetired();
     if (swapchain_) vkDestroySwapchainKHR(device, swapchain_, nullptr);
     if (imageAvailable_) vkDestroySemaphore(device, imageAvailable_, nullptr);
     if (inFlight_) vkDestroyFence(device, inFlight_, nullptr);
@@ -70,10 +71,27 @@ void Swapchain::destroyImages() {
     images_.clear();
 }
 
+void Swapchain::destroyRetired() {
+    const VkDevice device = context_->device();
+    for (const auto& old : retired_) {
+        for (VkImageView view : old.views) vkDestroyImageView(device, view, nullptr);
+        for (VkSemaphore done : old.renderDone) vkDestroySemaphore(device, done, nullptr);
+        vkDestroySwapchainKHR(device, old.swapchain, nullptr);
+    }
+    retired_.clear();
+}
+
+void Swapchain::setResizeDragging(bool dragging, Clock::time_point) {
+    if (dragging == resizeDragging_) return;
+    resizeDragging_ = dragging;
+    if (!dragging) needsRecreate_ = true;
+}
+
 Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
+    const auto recreateStarted = Clock::now();
     VkDevice device = context_->device();
     VkPhysicalDevice physical = context_->physicalDevice();
-    vkDeviceWaitIdle(device);
+    // renderFrame has waited for this pane's frame fence; other panes keep running.
 
     VkSurfaceCapabilitiesKHR caps{};
     APEX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physical, surface_, &caps), "surface capabilities");
@@ -126,10 +144,26 @@ Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
     info.presentMode = VK_PRESENT_MODE_FIFO_KHR; // Always available; frames are on demand anyway.
     info.clipped = VK_TRUE;
     info.oldSwapchain = swapchain_;
+
+    // A resize can replace the swapchain before the replacement reacquires its first
+    // presented image.  That makes the normal presentation-based retirement proof
+    // impossible during a continuous drag.  Bound the native resources before asking
+    // the driver for another swapchain; RADV otherwise retains syncobj FDs until the
+    // process exhausts its descriptor limit.
+    constexpr std::size_t maxRetiredSwapchains = 2;
+    if (retired_.size() >= maxRetiredSwapchains) {
+        APEX_VK_TRY(vkQueueWaitIdle(context_->graphicsQueue()), "wait to retire resize swapchains");
+        destroyRetired();
+        retirementReady_ = false;
+        ++forcedRetirements_;
+    }
     VkSwapchainKHR replacement = VK_NULL_HANDLE;
     APEX_VK_TRY(vkCreateSwapchainKHR(device, &info, nullptr, &replacement), "vkCreateSwapchainKHR");
-    destroyImages();
-    if (swapchain_) vkDestroySwapchainKHR(device, swapchain_, nullptr);
+    if (swapchain_) retired_.push_back({swapchain_, std::move(views_), std::move(renderDone_)});
+    views_.clear();
+    renderDone_.clear();
+    images_.clear();
+    firstPresented_ = UINT32_MAX;
     swapchain_ = replacement;
     format_ = chosen.format;
     extent_ = extent;
@@ -153,11 +187,18 @@ Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
     }
     needsRecreate_ = false;
     ++recreates_;
+    lastRecreateMilliseconds_ =
+        std::chrono::duration<double, std::milli>(Clock::now() - recreateStarted).count();
     return true;
 }
 
-Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn& record) {
+Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn& record, Clock::time_point) {
     VkDevice device = context_->device();
+    APEX_VK_TRY(vkWaitForFences(device, 1, &inFlight_, VK_TRUE, UINT64_MAX), "wait for frame");
+    if (retirementReady_) {
+        destroyRetired();
+        retirementReady_ = false;
+    }
     if (!needsRecreate_) {
         VkSurfaceCapabilitiesKHR caps{};
         APEX_VK_TRY(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(context_->physicalDevice(), surface_, &caps),
@@ -171,18 +212,16 @@ Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn&
         if (!*sized) return FrameStatus::Skipped;
     }
 
-    APEX_VK_TRY(vkWaitForFences(device, 1, &inFlight_, VK_TRUE, UINT64_MAX), "wait for frame");
     std::uint32_t index = 0;
     VkResult acquired = vkAcquireNextImageKHR(device, swapchain_, UINT64_MAX, imageAvailable_, VK_NULL_HANDLE, &index);
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         needsRecreate_ = true;
-        auto sized = recreate(pixelSize);
-        if (!sized) return std::unexpected(sized.error());
-        return FrameStatus::Skipped;
+        return FrameStatus::Skipped; // Retry at the next interval; never recreate twice in one step.
     }
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
         return std::unexpected(vkError(acquired, "vkAcquireNextImageKHR"));
     }
+    if (index == firstPresented_) retirementReady_ = true;
     vkResetFences(device, 1, &inFlight_);
 
     vkResetCommandBuffer(commands_, 0);
@@ -225,6 +264,7 @@ Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn&
     } else if (presented != VK_SUCCESS) {
         return std::unexpected(vkError(presented, "vkQueuePresentKHR"));
     }
+    if (firstPresented_ == UINT32_MAX) firstPresented_ = index;
     return FrameStatus::Presented;
 }
 

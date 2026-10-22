@@ -48,6 +48,7 @@
 #include "document/vmf.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
+#include "ui/input_log.hpp"
 #include "ui/outliner_panel.hpp"
 #include "ui/visgroup_panel.hpp"
 #include "ui/history_panel.hpp"
@@ -134,6 +135,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         autosaveTimer_->start(std::clamp(QSettings().value("autosave/intervalMinutes", 5).toInt(), 1, 1440) * 60000);
     if (!qEnvironmentVariableIsSet("APEX_SKIP_RECOVERY"))
         QTimer::singleShot(0, this, &MainWindow::offerRecovery);
+    QTimer::singleShot(0, this, [this] { inputTraceWindowStart(*this); });
 }
 
 MainWindow::~MainWindow() {
@@ -169,6 +171,17 @@ void MainWindow::buildMenus() {
     saveAsAction_->setEnabled(false);
     file->addSeparator();
     file->addAction(tr("&Quit"), QKeySequence::Quit, this, &QWidget::close);
+
+    auto* marker = new QAction(tr("Mark input trace: felt wrong"), this);
+    marker->setObjectName(QStringLiteral("actionInputTraceMarker"));
+    marker->setShortcut(QKeySequence(Qt::Key_F9));
+    marker->setShortcutContext(Qt::ApplicationShortcut);
+    addAction(marker);
+    connect(marker, &QAction::triggered, this, [this] {
+        const int n = inputTraceMarker();
+        statusBar()->showMessage(n ? tr("Input trace marker %1: felt wrong").arg(n)
+                                   : tr("Input trace is disabled (set APEX_INPUT_LOG)"), 5000);
+    });
     rebuildRecentMenu();
 
     auto* edit = menuBar()->addMenu(tr("&Edit"));

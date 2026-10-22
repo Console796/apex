@@ -10,6 +10,7 @@
 #include "editor/editor_session.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
+#include "ui/pointer_lock.hpp"
 #include "ui/transform_input.hpp"
 #include "viewport/controllers.hpp"
 #include "viewport/layout.hpp"
@@ -41,11 +42,13 @@ public:
     viewport::NodeId paneId() const { return pane_; }
     void requestRedraw() { dirty_ = true; }
     void setClearColour(const float rgba[4]);
+    void setResizeDragging(bool dragging);
     // One timer tick: applies queued navigation input, then draws when dirty (or `forceDraw`).
     // Returns the milliseconds a draw took, or a negative value when nothing was drawn.
     double tick(bool forceDraw);
     std::uint64_t frames() const { return frames_; }
     bool failed() const { return failed_; }
+    std::uint32_t recreateCount() const { return swapchain_ ? swapchain_->recreateCount() : 0; }
 
     void releaseCapture();
     void setEditorSession(editor::EditorSession* session) {
@@ -70,9 +73,8 @@ private:
     void cancelSelectionGesture();
     void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);
     bool handleKey(QKeyEvent* event);
+    void applyNavigation(double dt);
     QSize pixelSize() const;
-    bool warping() const;
-    void warp();
     void destroySwapchain();
     double draw();
 
@@ -88,10 +90,12 @@ private:
     GpuHost& host_;
     viewport::NodeId pane_;
     ViewportAccessor accessor_;
+    PointerLock pointerLock_;
 
     std::unique_ptr<render::Swapchain> swapchain_;
     render::SwapchainDepth depth_;
     float clear_[4] = {0.1f, 0.1f, 0.1f, 1.0f};
+    bool resizeDragging_ = false;
     bool dirty_ = true;
     bool failed_ = false;
     std::uint64_t frames_ = 0;
@@ -103,8 +107,11 @@ private:
     QPointF delta_;
     double scroll_ = 0.0;
     bool forward_ = false, back_ = false, left_ = false, right_ = false, up_ = false, down_ = false;
-    bool captured_ = false, grabbed_ = false;
+    bool grabbed_ = false;
     QElapsedTimer sinceTick_;
+    QElapsedTimer traceClock_;
+    qint64 lastCameraTraceMs_ = -100;
+    std::uint32_t lastTraceRecreates_ = 0;
 };
 
 // A pane in the splitter tree: a header strip (title and the pane menu) above the Vulkan

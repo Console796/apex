@@ -1,5 +1,6 @@
 #include "render/context.hpp"
 #include "render/render_target.hpp"
+#include "render/renderer.hpp"
 #include "render/resources.hpp"
 #include "shared_context.hpp"
 #include "render/swapchain.hpp"
@@ -7,8 +8,10 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -32,6 +35,18 @@ Context* sharedContext() {
 
 std::vector<std::byte> bytes(std::size_t n, std::uint8_t value) {
     return std::vector<std::byte>(n, std::byte{value});
+}
+
+int openFdCount() {
+#ifdef __linux__
+    std::error_code error;
+    int count = 0;
+    for (std::filesystem::directory_iterator it("/proc/self/fd", error), end; !error && it != end;
+         it.increment(error)) ++count;
+    return error ? -1 : count;
+#else
+    return -1;
+#endif
 }
 
 } // namespace
@@ -202,23 +217,15 @@ TEST_CASE("swapchain on a headless surface recreates on resize") {
             MESSAGE("Skipped: " << swapchain.error().what());
         } else {
             int frames = 0;
+            auto now = Swapchain::Clock::now();
+            SwapchainDepth depth(ctx);
             const auto draw = [&](VkExtent2D size) {
                 return (*swapchain)->renderFrame(size, [&](VkCommandBuffer cb, const SwapchainFrame& frame) {
-                    VkRenderingAttachmentInfo color = vkStruct<VkRenderingAttachmentInfo>(VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO);
-                    color.imageView = frame.view;
-                    color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-                    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    color.clearValue.color = {{0.2f, 0.4f, 0.6f, 1.0f}};
-                    VkRenderingInfo ri = vkStruct<VkRenderingInfo>(VK_STRUCTURE_TYPE_RENDERING_INFO);
-                    ri.renderArea = {{0, 0}, frame.extent};
-                    ri.layerCount = 1;
-                    ri.colorAttachmentCount = 1;
-                    ri.pColorAttachments = &color;
-                    vkCmdBeginRendering(cb, &ri);
-                    vkCmdEndRendering(cb);
+                    const float clear[4] = {0.2f, 0.4f, 0.6f, 1.0f};
+                    REQUIRE(depth.begin(cb, frame, clear));
+                    depth.end(cb);
                     ++frames;
-                });
+                }, now);
             };
             for (const VkExtent2D size : {VkExtent2D{64, 48}, VkExtent2D{64, 48}, VkExtent2D{100, 80}, VkExtent2D{33, 17}}) {
                 auto status = draw(size);
@@ -228,6 +235,56 @@ TEST_CASE("swapchain on a headless surface recreates on resize") {
             }
             CHECK(frames == 4);
             CHECK((*swapchain)->recreateCount() >= 3);
+
+            // Compare an ordinary resize stream with a handle drag at identical scripted sizes.
+            const auto baselineCount = (*swapchain)->recreateCount();
+            const int fdsBeforeResize = openFdCount();
+            int peakFds = fdsBeforeResize;
+            const auto baselineStart = Swapchain::Clock::now();
+            for (int step = 1; step <= 256; ++step) {
+                REQUIRE(draw({static_cast<std::uint32_t>(64 + step), 80}));
+                CHECK((*swapchain)->retiredSwapchainCount() <= 2);
+                peakFds = std::max(peakFds, openFdCount());
+            }
+            const double baselineMs = std::chrono::duration<double, std::milli>(Swapchain::Clock::now() - baselineStart).count();
+            CHECK((*swapchain)->recreateCount() == baselineCount + 256);
+            CHECK((*swapchain)->forcedRetirementCount() > 0);
+            if (fdsBeforeResize >= 0 && peakFds >= 0) CHECK(peakFds <= fdsBeforeResize + 128);
+
+            const auto initial = (*swapchain)->recreateCount();
+            const int dragFrames = frames;
+            const auto dragStart = Swapchain::Clock::now();
+            (*swapchain)->setResizeDragging(true, now);
+            for (int step = 1; step <= 200; ++step) {
+                now += std::chrono::milliseconds(16);
+                const auto before = (*swapchain)->recreateCount();
+                const auto started = Swapchain::Clock::now();
+                const VkExtent2D size{static_cast<std::uint32_t>(64 + step), 80};
+                const auto status = draw(size);
+                REQUIRE(status);
+                const auto after = (*swapchain)->recreateCount();
+                MESSAGE("resize step=" << step << " draw_ms="
+                        << std::chrono::duration<double, std::milli>(Swapchain::Clock::now() - started).count()
+                        << " recreates=" << after);
+                CHECK(after - initial == static_cast<std::uint32_t>(step));
+                CHECK(after - before == 1u);
+                CHECK(*status == FrameStatus::Presented);
+                CHECK(frames - dragFrames == step);
+                CHECK((*swapchain)->retiredSwapchainCount() <= 2);
+            }
+            (*swapchain)->setResizeDragging(false, now);
+            REQUIRE(draw({264, 80}));
+            CHECK((*swapchain)->recreateCount() == initial + 201);
+            CHECK((*swapchain)->extent().width == 264);
+            MESSAGE("256-step FD resize: peak_delta=" << (peakFds - fdsBeforeResize)
+                    << " unthrottled_ms=" << baselineMs << "; 200-step drag_ms="
+                    << std::chrono::duration<double, std::milli>(Swapchain::Clock::now() - dragStart).count()
+                    << " recreates=" << (*swapchain)->recreateCount() - initial);
+            // A later acquisition and its frame fence retire the old presentation resources.
+            for (int retry = 0; retry < 12 && (*swapchain)->hasRetiredSwapchains(); ++retry)
+                REQUIRE(draw({264, 80}));
+            CHECK_FALSE((*swapchain)->hasRetiredSwapchains());
+            ctx.waitIdle(); // The local depth target must outlive the last submitted frame.
         }
     }
     ctx.waitIdle();

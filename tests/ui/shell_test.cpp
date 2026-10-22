@@ -111,6 +111,16 @@ TEST_CASE("log panel receives core/log lines") {
     CHECK(panel.toPlainText().contains("hello 42"));
 }
 
+TEST_CASE("input trace marker is available on F9") {
+    app();
+    apex::ui::MainWindow window;
+    auto* marker = window.findChild<QAction*>(QStringLiteral("actionInputTraceMarker"));
+    REQUIRE(marker);
+    CHECK(marker->shortcut() == QKeySequence(Qt::Key_F9));
+    CHECK(marker->shortcutContext() == Qt::ApplicationShortcut);
+    marker->trigger();
+}
+
 TEST_CASE("viewport area mirrors the layout tree into splitters and persists it") {
     auto& a = app();
     apex::ui::applyTheme(a, apex::ui::Theme::Dark);
@@ -1817,4 +1827,266 @@ TEST_CASE("undo cap setting defaults clamps installs and applies live") {
     auto* panel = window.findChild<ui::HistoryPanel*>();
     REQUIRE(panel);
     CHECK(panel->memoryLabel()->text().contains("/ 64 MiB"));
+}
+
+// getRange is public in Qt 6; keep the requested/result/range probe in the test subclass.
+namespace {
+class SplitterDragProbe : public ui::ViewportArea {
+public:
+    void dragTo(QSplitter* splitter, int target) {
+        auto* handle = splitter->handle(1);
+        const bool horizontal = splitter->orientation() == Qt::Horizontal;
+        const auto position = [&] { return horizontal ? handle->x() : handle->y(); };
+        const int initial = position();
+        const QPointF local = handle->rect().center();
+        const QPointF start = handle->mapToGlobal(local);
+        QMouseEvent press(QEvent::MouseButtonPress, local, start, Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        QCoreApplication::sendEvent(handle, &press);
+        for (int step = 1; step <= 20; ++step) {
+            const int requested = initial + qRound((target - 13 - initial) * (step / 20.0));
+            const QPointF at = start + (horizontal ? QPointF(requested - initial, 0) : QPointF(0, requested - initial));
+            QMouseEvent move(QEvent::MouseMove, handle->mapFromGlobal(at), at, Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(handle, &move);
+            flush();
+            int minimum = 0, maximum = 0;
+            splitter->getRange(1, &minimum, &maximum);
+            MESSAGE("drag step=" << step << " pointer=" << at.x() << "," << at.y()
+                    << " requested=" << requested << " handle=" << position()
+                    << " range=[" << minimum << "," << maximum << "]");
+            CHECK(std::abs(position() - std::clamp(requested, minimum, maximum)) <= 1);
+        }
+        const QPointF end = start + (horizontal ? QPointF(target - initial, 0) : QPointF(0, target - initial));
+        QMouseEvent release(QEvent::MouseButtonRelease, handle->mapFromGlobal(end), end, Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+        QCoreApplication::sendEvent(handle, &release);
+        int minimum = 0, maximum = 0;
+        splitter->getRange(1, &minimum, &maximum);
+        MESSAGE("release pointer=" << end.x() << "," << end.y() << " requested=" << target
+                << " handle=" << position() << " range=[" << minimum << "," << maximum << "]");
+        CHECK(std::abs(position() - std::clamp(target, minimum, maximum)) <= 1);
+    }
+};
+}
+
+TEST_CASE("quad splitter reaches legal pointer targets and clamps only at its range") {
+    ui::applyTheme(app(), ui::Theme::Dark);
+    SplitterDragProbe area;
+    area.resize(800, 600);
+    area.show();
+    area.flush();
+    for (auto* splitter : area.findChildren<QSplitter*>()) {
+        for (const int target : {20, 150, 650, 350, 1000}) area.dragTo(splitter, target);
+    }
+}
+
+TEST_CASE("splitter maps local motion from changing native receivers despite bogus global positions") {
+    ui::applyTheme(app(), ui::Theme::Dark);
+    ui::ViewportArea area;
+    area.resize(800, 600);
+    area.move(120, 90);
+    area.show();
+    area.flush();
+    REQUIRE(area.windowHandle());
+    // Native pane stand-ins: no Vulkan or compositor needed. Application filters must
+    // receive their moves before pane mouse handling can consume them.
+    class Receiver : public QWindow {
+    public:
+        using QWindow::QWindow;
+        int moves = 0;
+        int releases = 0;
+        bool event(QEvent* event) override {
+            if (event->type() == QEvent::MouseMove) ++moves;
+            if (event->type() == QEvent::MouseButtonRelease) ++releases;
+            return QWindow::event(event);
+        }
+    };
+    Receiver first(area.windowHandle()), second(area.windowHandle());
+    first.setGeometry(43, 67, 250, 180);
+    second.setGeometry(350, 280, 270, 190);
+    QWidget widget(&area);
+    widget.move(61, 89);
+    const auto splitters = area.findChildren<QSplitter*>();
+    REQUIRE(splitters.size() == 3);
+    for (auto* splitter : splitters) {
+        auto* handle = splitter->handle(1);
+        const bool horizontal = splitter->orientation() == Qt::Horizontal;
+        const auto position = [&] { return horizontal ? handle->x() : handle->y(); };
+        const int initial = position();
+        const QPointF local = handle->rect().center();
+        const QPointF start = handle->mapToGlobal(local);
+        const auto offset = [&](int delta) { return horizontal ? QPointF(delta, 0) : QPointF(0, delta); };
+        // Even the press's reported global origin is unreliable.
+        QMouseEvent press(QEvent::MouseButtonPress, local, QPointF(-9000, 7000),
+                          Qt::LeftButton, Qt::LeftButton, Qt::ShiftModifier);
+        QCoreApplication::sendEvent(handle, &press);
+        REQUIRE(area.handleDragging());
+        for (int step = 1; step <= 6; ++step) {
+            // Resize/reposition a receiver between deliveries, as splitter layout does.
+            first.setGeometry(43 + step * 11, 67 + step * 7, 250 + step, 180 + step);
+            QObject* receiver = step % 3 == 0 ? static_cast<QObject*>(&widget) :
+                                step % 2 == 0 ? static_cast<QObject*>(&second) : &first;
+            const QPointF at = start + offset(step * 9);
+            const QPointF receiverLocal = receiver == &widget ? widget.mapFromGlobal(at) :
+                                         static_cast<QWindow*>(receiver)->mapFromGlobal(at);
+            QMouseEvent move(QEvent::MouseMove, receiverLocal, QPointF(8000 - step * 200, -6000),
+                             Qt::NoButton, Qt::LeftButton, Qt::ShiftModifier);
+            QCoreApplication::sendEvent(receiver, &move);
+        }
+        CHECK(position() == initial); // Six deliveries only replaced one pending position.
+        area.flush();
+        int minimum = 0, maximum = 0;
+        splitter->getRange(1, &minimum, &maximum);
+        CHECK(position() == std::clamp(initial + 6 * 9, minimum, maximum));
+        const QPointF end = start + offset(67); // Release includes a final 13 px.
+        second.setPosition({205, 143});
+        QMouseEvent release(QEvent::MouseButtonRelease, second.mapFromGlobal(end), QPointF(-4000, 9000),
+                            Qt::LeftButton, Qt::NoButton, Qt::ShiftModifier);
+        QCoreApplication::sendEvent(&second, &release);
+        CHECK_FALSE(area.handleDragging());
+        splitter->getRange(1, &minimum, &maximum);
+        CHECK(position() == std::clamp(initial + 67, minimum, maximum));
+    }
+    CHECK(first.moves == 0);
+    CHECK(second.moves == 0);
+    CHECK(second.releases == 3);
+    QMouseEvent normalMove(QEvent::MouseMove, QPointF(20, 20), QPointF(),
+                          Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&first, &normalMove);
+    CHECK(first.moves == 1); // The filter is removed after the drag.
+}
+
+TEST_CASE("splitter flood coalesces to one apply per explicit tick") {
+    ui::applyTheme(app(), ui::Theme::Dark);
+    ui::ViewportArea area;
+    area.resize(800, 600);
+    area.show();
+    area.flush();
+    auto* splitter = area.findChild<QSplitter*>();
+    REQUIRE(splitter);
+    auto* handle = splitter->handle(1);
+    const bool horizontal = splitter->orientation() == Qt::Horizontal;
+    const auto position = [&] { return horizontal ? handle->x() : handle->y(); };
+    const int initial = position();
+    const QPointF local = handle->rect().center();
+    const QPointF start = handle->mapToGlobal(local);
+    QMouseEvent press(QEvent::MouseButtonPress, local, start,
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(handle, &press);
+    REQUIRE(area.handleDragging());
+
+    QElapsedTimer flood;
+    flood.start();
+    for (int step = 1; step <= 500; ++step) {
+        const int delta = step % 151;
+        const QPointF at = start + (horizontal ? QPointF(delta, 0) : QPointF(0, delta));
+        QMouseEvent move(QEvent::MouseMove, handle->mapFromGlobal(at), at,
+                         Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(handle, &move);
+    }
+    const double deliveryMs = static_cast<double>(flood.nsecsElapsed()) / 1.0e6;
+    CHECK(position() == initial);
+    QElapsedTimer apply;
+    apply.start();
+    area.flush();
+    const double applyMs = static_cast<double>(apply.nsecsElapsed()) / 1.0e6;
+    const int finalDelta = 500 % 151;
+    int minimum = 0, maximum = 0;
+    splitter->getRange(1, &minimum, &maximum);
+    CHECK(position() == std::clamp(initial + finalDelta, minimum, maximum));
+    MESSAGE("500 splitter moves: delivery_ms=" << deliveryMs << " one_apply_tick_ms=" << applyMs);
+
+    const QPointF end = start + (horizontal ? QPointF(73, 0) : QPointF(0, 73));
+    QMouseEvent release(QEvent::MouseButtonRelease, handle->mapFromGlobal(end), end,
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(handle, &release);
+    CHECK_FALSE(area.handleDragging());
+    splitter->getRange(1, &minimum, &maximum);
+    CHECK(position() == std::clamp(initial + 73, minimum, maximum));
+}
+
+TEST_CASE("splitter cancels on lost button escape deactivation hide and rebuild") {
+    ui::applyTheme(app(), ui::Theme::Dark);
+    ui::ViewportArea area;
+    area.resize(800, 600);
+    area.show();
+    area.flush();
+    const auto begin = [&] {
+        auto* handle = area.findChild<QSplitter*>()->handle(1);
+        const QPointF local = handle->rect().center();
+        QMouseEvent press(QEvent::MouseButtonPress, local, handle->mapToGlobal(local),
+                          Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(handle, &press);
+        REQUIRE(area.handleDragging());
+    };
+    begin();
+    QMouseEvent lost(QEvent::MouseMove, QPointF(30, 40), QPointF(), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&area, &lost);
+    CHECK_FALSE(area.handleDragging());
+    begin();
+    QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    QCoreApplication::sendEvent(&area, &escape);
+    CHECK_FALSE(area.handleDragging());
+    begin();
+    QEvent deactivate(QEvent::ApplicationDeactivate);
+    QCoreApplication::sendEvent(qApp, &deactivate);
+    CHECK_FALSE(area.handleDragging());
+    begin();
+    area.hide();
+    CHECK_FALSE(area.handleDragging());
+    area.show();
+    begin();
+    area.resetLayout();
+    CHECK_FALSE(area.handleDragging());
+}
+
+TEST_CASE("scripted 200-step splitter drag preserves frames between resize intervals") {
+    ui::applyTheme(app(), ui::Theme::Dark);
+    ui::ViewportArea area;
+    area.resize(800, 600);
+    area.show();
+    QCoreApplication::processEvents();
+    area.flush();
+    auto* splitter = area.findChild<QSplitter*>();
+    REQUIRE(splitter);
+    auto* handle = splitter->handle(1);
+    const bool horizontal = splitter->orientation() == Qt::Horizontal;
+    const QPointF local = handle->rect().center();
+    const QPointF start = handle->mapToGlobal(local);
+    std::map<viewport::NodeId, std::uint32_t> initial;
+    for (auto id : area.viewportLayout().paneIds()) {
+        if (auto* window = area.frame(id)->window()) initial[id] = window->recreateCount();
+    }
+    QMouseEvent press(QEvent::MouseButtonPress, local, start, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(handle, &press);
+    REQUIRE(area.handleDragging());
+    QElapsedTimer elapsed;
+    elapsed.start();
+    for (int step = 1; step <= 200; ++step) {
+        QElapsedTimer frame;
+        frame.start();
+        const QPointF at = start + (horizontal ? QPointF(step, 0) : QPointF(0, step));
+        QMouseEvent move(QEvent::MouseMove, handle->mapFromGlobal(at), at, Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(handle, &move);
+        QCoreApplication::processEvents();
+        area.flush();
+        MESSAGE("splitter step=" << step << " elapsed_ms=" << elapsed.elapsed()
+                << " step_ms=" << static_cast<double>(frame.nsecsElapsed()) / 1.0e6);
+        for (const auto& [id, count] : initial) {
+            const auto* window = area.frame(id)->window();
+            CHECK_FALSE(window->failed());
+            CHECK(window->recreateCount() - count <= static_cast<std::uint32_t>(elapsed.elapsed() / 16 + 1));
+        }
+    }
+    std::map<viewport::NodeId, std::uint32_t> beforeRelease;
+    for (const auto& [id, count] : initial) beforeRelease[id] = area.frame(id)->window()->recreateCount();
+    const QPointF end = start + (horizontal ? QPointF(200, 0) : QPointF(0, 200));
+    QMouseEvent release(QEvent::MouseButtonRelease, handle->mapFromGlobal(end), end, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(handle, &release);
+    CHECK_FALSE(area.handleDragging());
+    area.flush();
+    for (const auto& [id, count] : beforeRelease) {
+        const auto* window = area.frame(id)->window();
+        CHECK_FALSE(window->failed());
+        CHECK(window->recreateCount() == count + 1);
+    }
+    if (initial.empty()) MESSAGE("No native GPU panes on this platform; run with QT_QPA_PLATFORM=xcb for frame measurements");
 }

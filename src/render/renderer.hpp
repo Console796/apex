@@ -211,7 +211,8 @@ class SwapchainDepth {
 
     // Clears colour to `clearColor` and depth to 0, sets viewport and scissor. The colour image
     // must be in COLOR_ATTACHMENT_OPTIMAL (Swapchain::renderFrame guarantees it). Recreates the
-    // depth image when the extent changes (waiting for the device idle first).
+    // depth image when the extent changes. The caller must have completed the previous frame
+    // using this depth image (Swapchain::renderFrame waits for its per-frame fence).
     Result<void> begin(VkCommandBuffer commands, const struct SwapchainFrame& frame, const float clearColor[4]);
     void end(VkCommandBuffer commands);
 

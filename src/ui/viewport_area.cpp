@@ -3,20 +3,60 @@
 #include "ui/viewport_area.hpp"
 
 #include <QApplication>
+#include <QElapsedTimer>
+#include <QKeyEvent>
+#include <QJsonArray>
 #include <QMouseEvent>
 #include <QSplitter>
 #include <QSplitterHandle>
 #include <QVBoxLayout>
+#include <QWindow>
 #include <algorithm>
+#include <utility>
+
+#ifdef APEX_HAS_WAYLAND_POINTER_LOCK
+#include <qpa/qplatformnativeinterface.h>
+#include <wayland-client.h>
+#endif
 
 #include "core/log.hpp"
 #include "editor/selection_expand.hpp"
 #include "ui/gpu_host.hpp"
+#include "ui/input_log.hpp"
 #include "ui/theme.hpp"
 #include "ui/viewport_pane.hpp"
 
 namespace apex::ui {
 namespace {
+
+// The event's reported global position can have a different synthetic origin on Wayland.
+// Map before resizing any pane: its receiving native window may move during this step.
+std::optional<QPointF> receiverGlobal(QObject* receiver, QPointF local) {
+    if (auto* window = qobject_cast<QWindow*>(receiver)) return window->mapToGlobal(local);
+    if (auto* widget = qobject_cast<QWidget*>(receiver)) return widget->mapToGlobal(local);
+    return std::nullopt;
+}
+
+void setInputTransparent(QWindow& window, bool transparent) {
+    window.setFlag(Qt::WindowTransparentForInput, transparent);
+    bool committed = false;
+#ifdef APEX_HAS_WAYLAND_POINTER_LOCK
+    // Qt 6.10 updates wl_surface's pending input region in setWindowFlags, but does not
+    // commit it. Do so now: throttled Vulkan presents must not delay input passthrough.
+    if (auto* native = QGuiApplication::platformNativeInterface()) {
+        auto* surface = static_cast<wl_surface*>(native->nativeResourceForWindow("surface", &window));
+        if (surface) {
+            wl_surface_commit(surface);
+            committed = true;
+            if (auto* display = static_cast<wl_display*>(native->nativeResourceForIntegration("wl_display")))
+                wl_display_flush(display);
+        }
+    }
+#endif
+    if (inputLogEnabled())
+        inputTraceEvent("splitter_input", {{"window_id", QString::number(reinterpret_cast<quintptr>(&window), 16)},
+                                            {"transparent", transparent}, {"wayland_commit", committed}});
+}
 
 void clearColourFor(const Tokens& t, float out[4]) {
     out[0] = static_cast<float>(t.base.redF());
@@ -50,7 +90,7 @@ public:
 protected:
     void mousePressEvent(QMouseEvent* e) override {
         if (e->button() == Qt::LeftButton &&
-            splitter_->area()->beginHandleDrag(splitter_, this, e->position(), e->globalPosition(), e->modifiers())) {
+            splitter_->area()->beginHandleDrag(splitter_, this, *e)) {
             e->accept();
             return;
         }
@@ -72,6 +112,7 @@ private:
 QSplitterHandle* AreaSplitter::createHandle() { return new SplitHandle(orientation(), this); }
 
 ViewportArea::ViewportArea(QWidget* parent) : QWidget(parent) {
+    inputTraceInitialize();
     setObjectName(QStringLiteral("ViewportArea"));
     setMinimumSize(320, 240);
     auto* column = new QVBoxLayout(this);
@@ -79,12 +120,14 @@ ViewportArea::ViewportArea(QWidget* parent) : QWidget(parent) {
     host_ = new GpuHost(this);
     connect(host_, &GpuHost::gpuNameChanged, this, &ViewportArea::gpuNameChanged);
     timer_.setInterval(16);
+    timer_.setTimerType(Qt::PreciseTimer);
     connect(&timer_, &QTimer::timeout, this, &ViewportArea::tick);
     timer_.start();
     rebuild();
 }
 
 ViewportArea::~ViewportArea() {
+    endHandleDrag();
     setEditorSession(nullptr);
     timer_.stop();
     // Panes (and their swapchains) must go before the GPU host.
@@ -189,6 +232,7 @@ double ViewportArea::pixelHeight() const {
 }
 
 void ViewportArea::rebuild() {
+    endHandleDrag();
     rebuildPending_ = false;
     if (!gpuTried_) {
         gpuTried_ = true;
@@ -262,20 +306,19 @@ std::vector<AreaSplitter*> ViewportArea::junctionAt(AreaSplitter* splitter, QSpl
     return out;
 }
 
-bool ViewportArea::beginHandleDrag(AreaSplitter* splitter, QSplitterHandle* handle, QPointF local, QPointF global,
-                                   Qt::KeyboardModifiers modifiers) {
+bool ViewportArea::beginHandleDrag(AreaSplitter* splitter, QSplitterHandle* handle, const QMouseEvent& event) {
     if (drag_ || !splitter || splitter->count() != 2) return false;
     HandleDrag drag;
     drag.splitter = splitter;
     drag.index = splitter->indexOf(handle);
     if (drag.index <= 0) return false;
     drag.startPos = handleStart(splitter, drag.index);
-    drag.startGlobal = global;
-    for (auto* cross : junctionAt(splitter, handle, local)) {
+    drag.startGlobal = handle->mapToGlobal(event.position());
+    for (auto* cross : junctionAt(splitter, handle, event.position())) {
         drag.crossers.push_back(cross);
         drag.crosserStart.push_back(handleStart(cross, 1));
     }
-    if (drag.crossers.empty() && !modifiers.testFlag(Qt::ShiftModifier)) {
+    if (drag.crossers.empty() && !event.modifiers().testFlag(Qt::ShiftModifier)) {
         // Bars of opposed splits stay aligned, as in a Hammer quad.
         if (auto* parent = dynamic_cast<AreaSplitter*>(splitter->parentWidget());
             parent && parent->orientation() != splitter->orientation()) {
@@ -287,7 +330,21 @@ bool ViewportArea::beginHandleDrag(AreaSplitter* splitter, QSplitterHandle* hand
         }
     }
     drag_ = std::move(drag);
+    const bool wayland = QGuiApplication::platformName().startsWith(QLatin1String("wayland"));
+    for (auto& [id, frame] : frames_) {
+        if (!frame || !frame->window()) continue;
+        auto* window = frame->window();
+        window->setResizeDragging(true);
+        // No non-popup grab exists on Wayland. Keep the press surface receiving motion
+        // over the native children, without hiding/reparenting their Vulkan surfaces.
+        if (wayland && !window->flags().testFlag(Qt::WindowTransparentForInput)) {
+            drag_->inputTransparent.push_back(window);
+            setInputTransparent(*window, true);
+        }
+    }
     qApp->installEventFilter(this);
+    if (auto input = captureHandleDrag(handle, event))
+        applyHandleDrag(std::move(*input)); // Also records the press and initial legal range.
     return true;
 }
 
@@ -305,16 +362,54 @@ void ViewportArea::alignRatio(AreaSplitter* splitter, double ratio) {
     syncRatio(splitter);
 }
 
-void ViewportArea::applyHandleDrag(QPointF global) {
+std::optional<ViewportArea::HandleDragInput> ViewportArea::captureHandleDrag(
+    QObject* receiver, const QMouseEvent& event) const {
+    const auto global = receiverGlobal(receiver, event.position());
+    if (!global) return std::nullopt;
+    HandleDragInput input{*global, {}};
+    const bool logging = inputLogEnabled();
+    if (logging) {
+        const auto origin = receiverGlobal(receiver, {}).value_or(QPointF());
+        auto* window = qobject_cast<QWindow*>(receiver);
+        if (auto* widget = qobject_cast<QWidget*>(receiver)) window = widget->window()->windowHandle();
+        const auto windowOrigin = window ? window->mapToGlobal(QPointF()) : origin;
+        const auto xy = [](QPointF p) { return QJsonObject{{"x", p.x()}, {"y", p.y()}}; };
+        input.trace = {{"event", event.type() == QEvent::MouseButtonPress ? "press" :
+                                  event.type() == QEvent::MouseButtonRelease ? "release" : "move"},
+                       {"event_ms", static_cast<qint64>(event.timestamp())},
+                       {"receiver_class", QString::fromLatin1(receiver->metaObject()->className())},
+                       {"receiver_name", receiver->objectName()},
+                       {"receiver_id", QString::number(reinterpret_cast<quintptr>(receiver), 16)},
+                       {"global", xy(event.globalPosition())}, {"local", xy(event.position())},
+                       {"receiver_origin", xy(origin)}, {"window_origin", xy(windowOrigin)},
+                       {"mapped_global", xy(*global)}};
+    }
+    return input;
+}
+
+void ViewportArea::applyHandleDrag(HandleDragInput input, std::uint32_t coalesced) {
     auto& drag = *drag_;
     if (!drag.splitter) return;
-    const QPointF delta = global - drag.startGlobal;
-    drag.splitter->moveSplitter(drag.startPos + along(drag.splitter, delta), drag.index);
+    QElapsedTimer applyTimer;
+    applyTimer.start();
+    const bool logging = inputLogEnabled();
+    struct Move { AreaSplitter* splitter; int index; int requested; int result; int minimum; int maximum; };
+    std::vector<Move> moves;
+    const auto move = [&](AreaSplitter* splitter, int index, int requested) {
+        splitter->moveSplitter(requested, index);
+        if (logging) {
+            int minimum = 0, maximum = 0;
+            splitter->getRange(index, &minimum, &maximum);
+            moves.push_back({splitter, index, requested, handleStart(splitter, index), minimum, maximum});
+        }
+    };
+    const QPointF delta = input.global - drag.startGlobal;
+    move(drag.splitter, drag.index, drag.startPos + along(drag.splitter, delta));
     syncRatio(drag.splitter);
     for (std::size_t i = 0; i < drag.crossers.size(); ++i) {
         auto* cross = drag.crossers[i].data();
         if (!cross) continue;
-        cross->moveSplitter(drag.crosserStart[i] + along(cross, delta), 1);
+        move(cross, 1, drag.crosserStart[i] + along(cross, delta));
         syncRatio(cross);
         if (i != 0 && drag.crossers[0]) {
             const auto sizes = drag.crossers[0]->sizes();
@@ -327,11 +422,30 @@ void ViewportArea::applyHandleDrag(QPointF global) {
         if (sizes.size() == 2 && sizes[0] + sizes[1] > 0)
             alignRatio(drag.partner, static_cast<double>(sizes[0]) / (sizes[0] + sizes[1]));
     }
+    if (logging) {
+        QJsonArray loggedMoves;
+        for (const auto& m : moves) {
+            loggedMoves.append(QJsonObject{{"splitter_id", QString::number(reinterpret_cast<quintptr>(m.splitter), 16)},
+                {"axis", m.splitter->orientation() == Qt::Horizontal ? "x" : "y"}, {"index", m.index},
+                {"requested", m.requested}, {"result", m.result},
+                {"range", QJsonArray{m.minimum, m.maximum}}});
+        }
+        input.trace["moves"] = loggedMoves;
+        input.trace["coalesced"] = static_cast<qint64>(coalesced);
+        input.trace["apply_ms"] = static_cast<double>(applyTimer.nsecsElapsed()) / 1.0e6;
+        inputTraceEvent("splitter", std::move(input.trace));
+    }
 }
 
-void ViewportArea::endHandleDrag() {
+void ViewportArea::endHandleDrag(const char* reason) {
     if (!drag_) return;
+    if (inputLogEnabled()) inputTraceEvent("splitter_end", {{"reason", reason}});
+    for (const auto& window : drag_->inputTransparent)
+        if (window) setInputTransparent(*window, false);
     drag_.reset();
+    for (auto& [id, frame] : frames_)
+        if (frame && frame->window()) frame->window()->setResizeDragging(false);
+    forceDraw_ = true;
     qApp->removeEventFilter(this);
     emit layoutChanged();
 }
@@ -342,15 +456,38 @@ bool ViewportArea::eventFilter(QObject* watched, QEvent* event) {
     case QEvent::MouseMove: {
         const auto* move = static_cast<QMouseEvent*>(event);
         if (!move->buttons().testFlag(Qt::LeftButton)) {  // The release was lost: stop following.
-            endHandleDrag();
+            endHandleDrag("left-button-lost");
             return false;
         }
-        applyHandleDrag(move->globalPosition());
+        if (inputLogEnabled()) inputTraceMouse(watched, *move); // This filter consumes the move.
+        if (auto input = captureHandleDrag(watched, *move)) {
+            drag_->pending = std::move(*input);
+            ++drag_->pendingMoves;
+        }
         return true;
     }
     case QEvent::MouseButtonRelease:
-        if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) endHandleDrag();
+        if (const auto* release = static_cast<QMouseEvent*>(event); release->button() == Qt::LeftButton) {
+            // A coalesced final move may arrive only as the release position.
+            const auto coalesced = std::exchange(drag_->pendingMoves, 0) + 1;
+            drag_->pending.reset();
+            if (auto input = captureHandleDrag(watched, *release)) applyHandleDrag(std::move(*input), coalesced);
+            endHandleDrag("release");
+        }
         return false;  // Still delivered, so Qt's own press tracking ends cleanly.
+    case QEvent::ApplicationDeactivate:
+        endHandleDrag("application-deactivated");
+        return false;
+    case QEvent::Hide:
+        if (watched == this || watched == window() || watched == window()->windowHandle())
+            endHandleDrag("area-hidden");
+        return false;
+    case QEvent::KeyPress:
+        if (static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+            endHandleDrag("escape");
+            return true;
+        }
+        return false;
     default:
         return false;
     }
@@ -411,12 +548,18 @@ void ViewportArea::emitCamera() {
 
 void ViewportArea::tick() {
     if (rebuildPending_) return;
+    if (drag_ && drag_->pending) {
+        auto input = std::move(*drag_->pending);
+        const auto coalesced = std::exchange(drag_->pendingMoves, 0);
+        drag_->pending.reset();
+        applyHandleDrag(std::move(input), coalesced);
+    }
     if (gpuReady_ && !gpuAnnounced_) {
         gpuAnnounced_ = true;
         emit gpuNameChanged(host_->gpuName());
     }
     if (gpuReady_ && host_->pump()) forceDraw_ = true;
-    const bool force = forceDraw_;
+    const bool force = forceDraw_ || drag_.has_value();
     forceDraw_ = false;
     for (auto& [id, f] : frames_) {
         if (!f || !f->window()) continue;
