@@ -18,3 +18,11 @@ The row's first column is the exact name used in `deps.cmake` (CPM) or `find_pac
 | volk | MIT | CPM, pinned commit (vulkan-sdk-1.4.357.0) | render |
 | VulkanMemoryAllocator | MIT | CPM, pinned commit (v3.3.0) | render |
 | qtads | LGPL-2.1 | CPM, pinned commit (4.4.1), static; needs qt6-base-private-dev | ui (side-panel docking) |
+| wayland-client | MIT | optional system package, dynamically linked on Linux | ui (pointer lock) |
+| wayland-scanner | MIT | optional system build tool, located through pkg-config | build (protocol glue) |
+| wayland-protocols | MIT | vendored upstream pointer-constraints and relative-pointer unstable v1 XMLs in `third_party/wayland-protocols/`, copyright/licence headers retained | ui (generated protocol glue) |
+
+The protocol XMLs are copied from the [upstream Wayland protocol definitions](https://gitlab.freedesktop.org/wayland/wayland-protocols),
+`unstable/pointer-constraints/pointer-constraints-unstable-v1.xml` and
+`unstable/relative-pointer/relative-pointer-unstable-v1.xml` (retrieved 2026-10-22).
+They require no installed `wayland-protocols` package. `pkg-config` is used only as a build tool.

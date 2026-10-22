@@ -10,6 +10,7 @@
 #include "editor/editor_session.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
+#include "ui/pointer_lock.hpp"
 #include "ui/transform_input.hpp"
 #include "viewport/controllers.hpp"
 #include "viewport/layout.hpp"
@@ -72,9 +73,8 @@ private:
     void cancelSelectionGesture();
     void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);
     bool handleKey(QKeyEvent* event);
+    void applyNavigation(double dt);
     QSize pixelSize() const;
-    bool warping() const;
-    void warp();
     void destroySwapchain();
     double draw();
 
@@ -90,6 +90,7 @@ private:
     GpuHost& host_;
     viewport::NodeId pane_;
     ViewportAccessor accessor_;
+    PointerLock pointerLock_;
 
     std::unique_ptr<render::Swapchain> swapchain_;
     render::SwapchainDepth depth_;
@@ -106,7 +107,7 @@ private:
     QPointF delta_;
     double scroll_ = 0.0;
     bool forward_ = false, back_ = false, left_ = false, right_ = false, up_ = false, down_ = false;
-    bool captured_ = false, grabbed_ = false;
+    bool grabbed_ = false;
     QElapsedTimer sinceTick_;
 };
 

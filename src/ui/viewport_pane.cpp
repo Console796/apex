@@ -4,8 +4,6 @@
 
 #include <QActionGroup>
 #include <QCoreApplication>
-#include <QCursor>
-#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -80,6 +78,7 @@ public:
 
 protected:
     bool eventFilter(QObject*, QEvent* event) override {
+        if (event->type() == QEvent::FocusOut) window_->releaseCapture();
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease &&
             event->type() != QEvent::ShortcutOverride) return false;
         const auto* key = static_cast<QKeyEvent*>(event);
@@ -130,7 +129,9 @@ render::GridSettings makeGridSettings(const viewport::Viewport& view, const edit
 // ---- PaneWindow ----
 
 PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor accessor)
-    : host_(host), pane_(pane), accessor_(std::move(accessor)), depth_(*host.context()) {
+    : host_(host), pane_(pane), accessor_(std::move(accessor)),
+      pointerLock_(*this, makePointerLockBackend(*this), [this] { releaseCapture(); }),
+      depth_(*host.context()) {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(host.vulkanInstance());
     sinceTick_.start();
@@ -156,13 +157,6 @@ QSize PaneWindow::pixelSize() const {
     return QSize(qRound(width() * devicePixelRatio()), qRound(height() * devicePixelRatio()));
 }
 
-bool PaneWindow::warping() const { return QGuiApplication::platformName() == QLatin1String("xcb"); }
-
-void PaneWindow::warp() {
-    last_ = QPointF(width() / 2.0, height() / 2.0);
-    QCursor::setPos(mapToGlobal(last_.toPoint()));
-}
-
 void PaneWindow::destroySwapchain() {
     if (!swapchain_) {
         return;
@@ -183,9 +177,10 @@ void PaneWindow::releaseCapture() {
     clickCamera_.reset();
     if (grabbed_) setMouseGrabEnabled(false);
     grabbed_ = false;
-    if (captured_) unsetCursor();
-    captured_ = false;
+    pointerLock_.cancel();
     buttons_ = Qt::NoButton;
+    delta_ = {};
+    forward_ = back_ = left_ = right_ = up_ = down_ = false;
 }
 
 bool PaneWindow::event(QEvent* e) {
@@ -264,10 +259,7 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         // the view would keep navigating when the pointer comes back.
         const auto lost = buttons_ & ~e->buttons();
         buttons_ &= e->buttons();
-        if (lost.testFlag(Qt::RightButton) && captured_) {
-            captured_ = false;
-            unsetCursor();
-        }
+        pointerLock_.buttons(buttons_);
         if (lost.testFlag(Qt::LeftButton)) cancelSelectionGesture();
         if (buttons_ == Qt::NoButton && grabbed_) {
             setMouseGrabEnabled(false);
@@ -300,28 +292,23 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         last_ = e->position();
         if (!grabbed_) grabbed_ = setMouseGrabEnabled(true);
         const auto* vp = accessor_();
-        if (e->button() == Qt::RightButton && vp && !vp->camera.isOrtho()) {
-            captured_ = true;
-            setCursor(Qt::BlankCursor);
-            if (warping()) warp();
-        }
+        if (e->button() == Qt::MiddleButton ||
+            (e->button() == Qt::RightButton && vp && !vp->camera.isOrtho()))
+            pointerLock_.press(e->button(), e->position());
     } else if (release) {
+        // A fast flick can finish between ticks. Apply its last relative events
+        // while the navigation button still identifies orbit, pan or fly look.
+        if (pointerLock_.active()) applyNavigation(0.0);
         buttons_ = e->buttons();
-        if (e->button() == Qt::RightButton && captured_) {
-            captured_ = false;
-            unsetCursor();
-        }
+        pointerLock_.buttons(buttons_);
         if (buttons_ == Qt::NoButton && grabbed_) {
             setMouseGrabEnabled(false);
             grabbed_ = false;
         }
     } else if (buttons_ != Qt::NoButton) {
-        const QPointF d = e->position() - last_;
-        if (!d.isNull()) {
-            delta_ += d;
-            if (captured_ && warping()) warp();
-            else last_ = e->position();
-        }
+        if (pointerLock_.active()) pointerLock_.move(e->position());
+        else delta_ += e->position() - last_;
+        last_ = e->position();
     }
     return true;
 }
@@ -428,8 +415,8 @@ bool PaneWindow::handleKey(QKeyEvent* e) {
     }
 }
 
-double PaneWindow::tick(bool forceDraw) {
-    const double dt = std::min(sinceTick_.restart() / 1000.0, kMaxDt);
+void PaneWindow::applyNavigation(double dt) {
+    delta_ += pointerLock_.takeDelta();
     if (auto* vp = accessor_()) {
         const bool keys = forward_ || back_ || left_ || right_ || up_ || down_;
         if (buttons_ != Qt::NoButton || keys || scroll_ != 0.0) {
@@ -458,6 +445,11 @@ double PaneWindow::tick(bool forceDraw) {
     }
     delta_ = {};
     scroll_ = 0.0;
+}
+
+double PaneWindow::tick(bool forceDraw) {
+    const double dt = std::min(sinceTick_.restart() / 1000.0, kMaxDt);
+    applyNavigation(dt);
     if ((resizeDragging_ && !swapchain_) || (swapchain_ && !swapchain_->frameDue())) return -1.0;
     const bool retiring = swapchain_ && swapchain_->hasRetiredSwapchains();
     if ((!dirty_ && !forceDraw && !retiring) || !isExposed() || failed_) return -1.0;

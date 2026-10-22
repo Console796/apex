@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Zlib", "BSL-1.0", "Apache-2.0", "MPL-2.0",
            "LGPL-2.1", "LGPL-3.0", "LGPL-2.1-or-later", "LGPL-3.0-or-later", "Unlicense"}
 # find_package names that are not third-party code we ship or link (build tooling).
-IGNORED_FIND = {"Git", "Python3", "Threads"}
+IGNORED_FIND = {"Git", "Python3", "Threads", "PkgConfig"}
 FIXTURE_EXT = {".vmf", ".vmt", ".kv", ".txt"}
 
 

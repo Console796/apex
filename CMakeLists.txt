@@ -110,14 +110,48 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
   apex_layer(ui SOURCES src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
+                        src/ui/pointer_lock.cpp
                         src/ui/key_chord.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/log_panel.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets ads::qtadvanceddocking-qt6)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
+  # Pointer lock is optional: other platforms and minimal Linux builds retain local input.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+      pkg_check_modules(WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
+      pkg_check_modules(WAYLAND_SCANNER QUIET wayland-scanner)
+      if(WAYLAND_CLIENT_FOUND AND WAYLAND_SCANNER_FOUND)
+        find_package(Qt6 6.5 QUIET COMPONENTS GuiPrivate)
+      endif()
+      if(WAYLAND_CLIENT_FOUND AND WAYLAND_SCANNER_FOUND AND TARGET Qt6::GuiPrivate)
+        pkg_get_variable(_wayland_scanner wayland-scanner wayland_scanner)
+        if(EXISTS "${_wayland_scanner}")
+          enable_language(C)
+          set(_protocol_gen ${CMAKE_CURRENT_BINARY_DIR}/gen/wayland)
+          file(MAKE_DIRECTORY ${_protocol_gen})
+          foreach(_protocol pointer-constraints-unstable-v1 relative-pointer-unstable-v1)
+            set(_xml ${CMAKE_CURRENT_SOURCE_DIR}/third_party/wayland-protocols/${_protocol}.xml)
+            set(_header ${_protocol_gen}/${_protocol}-client-protocol.h)
+            set(_code ${_protocol_gen}/${_protocol}-protocol.c)
+            add_custom_command(OUTPUT ${_header} ${_code}
+              COMMAND ${_wayland_scanner} client-header ${_xml} ${_header}
+              COMMAND ${_wayland_scanner} private-code ${_xml} ${_code}
+              DEPENDS ${_xml} VERBATIM)
+            target_sources(apex_ui PRIVATE ${_header} ${_code})
+          endforeach()
+          target_sources(apex_ui PRIVATE src/ui/pointer_lock_wayland.cpp)
+          target_include_directories(apex_ui PRIVATE ${_protocol_gen})
+          target_link_libraries(apex_ui PRIVATE PkgConfig::WAYLAND_CLIENT Qt6::GuiPrivate)
+          target_compile_definitions(apex_ui PRIVATE APEX_HAS_WAYLAND_POINTER_LOCK)
+        endif()
+      endif()
+    endif()
+  endif()
   add_executable(apex src/app/main.cpp)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
   if(APEX_BUILD_TESTS)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
-    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp)
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/pointer_lock_test.cpp)
     target_link_libraries(apex_ui_tests PRIVATE apex_ui apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

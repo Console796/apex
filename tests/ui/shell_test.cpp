@@ -33,7 +33,7 @@
 #include <QMenu>
 #include <QSplitter>
 
-namespace {
+// Shared with pointer_lock_test.cpp so every UI test uses the same QApplication.
 QApplication& app() {
     static int argc = 1;
     static char name[] = "apex_ui_tests";
@@ -46,6 +46,7 @@ QApplication& app() {
     return a;
 }
 
+namespace {
 const char* kVmf = R"(versioninfo { "editorversion" "400" }
 visgroups { visgroup { "name" "Alpha" "visgroupid" "1" } }
 world { "id" "1" "classname" "worldspawn"
