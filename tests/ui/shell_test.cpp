@@ -1775,3 +1775,46 @@ TEST_CASE("entity toolbar follows session actions and loads point classes from p
     CHECK_FALSE(picker->isEnabled());
     CHECK(window.editorSession().entityClasses().classes.empty());
 }
+
+#include <QInputDialog>
+#include <QTimer>
+
+TEST_CASE("undo cap setting defaults clamps installs and applies live") {
+    app();
+    QSettings settings;
+    const auto previous = settings.value("history/undoCapMiB");
+    struct Restore {
+        QVariant previous;
+        ~Restore() {
+            if (previous.isValid()) QSettings().setValue("history/undoCapMiB", previous);
+            else QSettings().remove("history/undoCapMiB");
+        }
+    } restore{previous};
+    for (const auto& [value, expected] : std::vector<std::pair<QVariant, int>>{
+             {QVariant{}, 512}, {"invalid", 512}, {-3, 16}, {15, 16}, {8193, 8192}, {"128", 128}}) {
+        if (value.isValid()) settings.setValue("history/undoCapMiB", value);
+        else settings.remove("history/undoCapMiB");
+        ui::MainWindow window;
+        window.newFile();
+        REQUIRE(window.document());
+        CHECK(window.document()->undoCap() == static_cast<std::size_t>(expected) * 1024 * 1024);
+        REQUIRE(window.openFile(QStringLiteral(APEX_FIXTURE_DIR) + "/vmf/everything_lf.vmf"));
+        CHECK(window.document()->undoCap() == static_cast<std::size_t>(expected) * 1024 * 1024);
+    }
+    ui::MainWindow window;
+    window.newFile();
+    auto* action = window.findChild<QAction*>("actionUndoMemoryLimit");
+    REQUIRE(action);
+    QTimer::singleShot(0, &window, [&window] {
+        auto* dialog = window.findChild<QInputDialog*>();
+        REQUIRE(dialog);
+        dialog->setIntValue(64);
+        dialog->accept();
+    });
+    action->trigger();
+    CHECK(settings.value("history/undoCapMiB").toInt() == 64);
+    CHECK(window.document()->undoCap() == 64 * 1024 * 1024);
+    auto* panel = window.findChild<ui::HistoryPanel*>();
+    REQUIRE(panel);
+    CHECK(panel->memoryLabel()->text().contains("/ 64 MiB"));
+}

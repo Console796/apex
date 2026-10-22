@@ -16,6 +16,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QKeySequence>
+#include <QInputDialog>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -59,6 +60,11 @@
 
 namespace apex::ui {
 namespace {
+int undoCapMiB() {
+    bool valid = false;
+    const auto value = QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toLongLong(&valid);
+    return valid ? static_cast<int>(std::clamp<qlonglong>(value, 16, 8192)) : 512;
+}
 
 constexpr int kMaxRecent = 10;
 
@@ -193,6 +199,17 @@ void MainWindow::buildMenus() {
     auto* settings = menuBar()->addMenu(tr("&Settings"));
     auto* autosaveSettings = settings->addAction(tr("Autosave..."), this, &MainWindow::configureAutosave);
     autosaveSettings->setObjectName(QStringLiteral("actionAutosaveSettings"));
+    auto* undoMemory = settings->addAction(tr("Undo Memory Limit..."), this, [this] {
+        bool accepted = false;
+        const int limit = QInputDialog::getInt(this, tr("Undo Memory Limit"), tr("Memory limit (MiB):"),
+                                               undoCapMiB(), 16, 8192, 16, &accepted);
+        if (!accepted) return;
+        QSettings().setValue(QStringLiteral("history/undoCapMiB"), limit);
+        if (document_) document_->setUndoCap(static_cast<std::size_t>(limit) * 1024 * 1024);
+        history_->refresh();
+        updateEditorActions();
+    });
+    undoMemory->setObjectName(QStringLiteral("actionUndoMemoryLimit"));
     auto* presets = settings->addMenu(tr("Binding preset"));
     auto* presetGroup = new QActionGroup(presets);
     for (const auto name : editor::presetNames()) {
@@ -863,6 +880,7 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     inspector_->setDocument(nullptr);
     session_.detach();
     document_ = std::move(doc);
+    document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
     session_.attach(*document_);
     path_ = path;
     unsaved_ = unsaved;

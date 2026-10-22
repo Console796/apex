@@ -91,12 +91,6 @@ const kv1::Node& placeholder() {
     static const auto empty = kv1::parse("").value();
     return empty.root();
 }
-std::size_t nodeMemory(const kv1::Node& block) {
-    std::size_t bytes = sizeof(block) + block.key().size() + block.condition().size();
-    if (const auto raw = block.rawValue()) bytes += raw->size();
-    for (const auto& child : block.children()) bytes += nodeMemory(child);
-    return bytes;
-}
 std::vector<std::pair<std::size_t, NodeId>> rootSlots(const kv1::Document& source,
                                                      const std::vector<NodeId>& roots) {
     std::vector<std::pair<std::size_t, NodeId>> result;
@@ -360,7 +354,13 @@ ChangeSet Document::restore(const Entry& entry, bool after) {
     const auto oldSides = sides_;
     for (const auto& delta : entry.deltas) {
         const auto old = handle(delta.id);
-        const auto& target = after ? delta.after : delta.before;
+        auto target = after ? delta.after : delta.before;
+        const auto& frozen = after ? delta.frozenAfter : delta.frozenBefore;
+        if (target && frozen) {
+            auto block = frozen->thaw();
+            if (!block) throw std::logic_error(block.error().what());
+            base(*target).block = std::make_shared<const kv1::Node>(std::move(*block));
+        }
         put(delta.id, target);
         const auto current = handle(delta.id);
         if (!old && current) changes.created.push_back(*current);
@@ -392,19 +392,84 @@ std::size_t Document::memory(const Entry& entry) {
             if (*v) {
                 bytes += base(**v).children.size() * sizeof(NodeId) +
                          base(**v).sourceChildren.size() *
-                             sizeof(std::pair<std::size_t, NodeId>) +
-                         nodeMemory(*base(**v).block);
+                             sizeof(std::pair<std::size_t, NodeId>);
             }
         }
     }
     return bytes;
+}
+void Document::accountBlock(const void* identity, std::size_t bytes, bool add) {
+    if (add) {
+        auto& usage = historyBlocks_[identity];
+        if (usage.references++ == 0) {
+            usage.bytes = bytes;
+            historyBytes_ += bytes;
+        }
+    } else {
+        const auto found = historyBlocks_.find(identity);
+        assert(found != historyBlocks_.end() && found->second.references);
+        if (--found->second.references == 0) {
+            historyBytes_ -= found->second.bytes;
+            historyBlocks_.erase(found);
+        }
+    }
+}
+void Document::account(const Entry& entry, bool add) {
+    const auto bytes = memory(entry);
+    if (add) historyBytes_ += bytes;
+    else historyBytes_ -= bytes;
+    for (const auto& delta : entry.deltas) {
+        for (const auto* value : {&delta.before, &delta.after}) {
+            if (*value && base(**value).block) {
+                const auto& block = base(**value).block;
+                // Only traverse a block on its first reference, not on every commit.
+                const auto size = add && !historyBlocks_.contains(block.get()) ? block->memory() : 0;
+                accountBlock(block.get(), size, add);
+            }
+        }
+        for (const auto& frozen : {delta.frozenBefore, delta.frozenAfter})
+            if (frozen) accountBlock(frozen.get(), frozen->memory(), add);
+    }
+}
+void Document::freeze(Entry& entry) {
+    if (entry.freezeAttempted) return;
+    entry.freezeAttempted = true;
+    for (auto& delta : entry.deltas) {
+        const auto compact = [&](std::optional<NodeValue>& value,
+                                 std::shared_ptr<const kv1::FrozenNode>& frozen) {
+            if (!value || !base(*value).block) return;
+            auto& block = base(*value).block;
+            auto& usage = historyBlocks_.at(block.get());
+            auto candidate = usage.frozen.lock();
+            if (!candidate) {
+                auto result = kv1::FrozenNode::freeze(*block, source_.escapeMode(), source_.lineEnding());
+                if (!result) return; // Fidelity takes priority over compression.
+                candidate = std::make_shared<const kv1::FrozenNode>(std::move(*result));
+                if (candidate->memory() >= usage.bytes) return;
+                usage.frozen = candidate;
+            }
+            accountBlock(block.get(), 0, false);
+            block.reset();
+            frozen = std::move(candidate);
+            accountBlock(frozen.get(), frozen->memory(), true);
+        };
+        compact(delta.before, delta.frozenBefore);
+        compact(delta.after, delta.frozenAfter);
+    }
+}
+void Document::freezeOldEntries() {
+    // The backs are nearest the cursor. Each operation advances at most one boundary;
+    // older entries have already been considered, keeping commit work amortized.
+    constexpr std::size_t hotEntries = 8;
+    for (auto* stack : {&undo_, &redo_})
+        if (stack->size() > hotEntries) freeze((*stack)[stack->size() - hotEntries - 1]);
 }
 void Document::evict() {
     while (historyBytes_ > cap_ && (!undo_.empty() || !redo_.empty())) {
         // The front of undo is the oldest reachable entry. With no undo entries, evict
         // the farthest redo first, retaining a contiguous redo chain from the current state.
         auto& stack = undo_.empty() ? redo_ : undo_;
-        historyBytes_ -= stack.front().bytes;
+        account(stack.front(), false);
         stack.pop_front();
     }
 }
@@ -418,6 +483,8 @@ bool Document::undo() {
     auto changes = restore(entry, false);
     restoredSelection_ = entry.selectionBefore;
     redo_.push_back(std::move(entry));
+    freezeOldEntries();
+    evict();
     notify(changes);
     return true;
 }
@@ -430,6 +497,8 @@ bool Document::redo() {
     auto changes = restore(entry, true);
     restoredSelection_ = entry.selectionAfter;
     undo_.push_back(std::move(entry));
+    freezeOldEntries();
+    evict();
     notify(changes);
     return true;
 }
@@ -843,19 +912,21 @@ ChangeSet Transaction::commit(bool coalesce, std::string coalesceKey) {
     }
     if (!entry_.deltas.empty()) {
         entry_.stateAfter = doc_->historyState_ = doc_->nextHistoryState_++;
-        for (const auto& redo : doc_->redo_) doc_->historyBytes_ -= redo.bytes;
+        for (const auto& redo : doc_->redo_) doc_->account(redo, false);
         doc_->redo_.clear();
         if (doc_->coalesceAllowed_ && !doc_->undo_.empty() &&
             ((!entry_.coalesceKey.empty() && doc_->undo_.back().coalesceKey == entry_.coalesceKey) ||
              (entry_.coalesceKey.empty() && doc_->undo_.back().coalesceKey.empty() &&
               entry_.coalesce && doc_->undo_.back().coalesce == entry_.coalesce))) {
             auto& previous = doc_->undo_.back();
-            doc_->historyBytes_ -= previous.bytes;
+            doc_->account(previous, false);
+            previous.freezeAttempted = false;
             for (const auto& delta : entry_.deltas) {
                 auto old = std::ranges::find(previous.deltas, delta.id, &Document::Delta::id);
                 if (old == previous.deltas.end()) previous.deltas.push_back(delta);
                 else {
                     old->after = delta.after;
+                    old->frozenAfter.reset();
                     old->flags = old->flags | delta.flags;
                 }
             }
@@ -865,14 +936,17 @@ ChangeSet Transaction::commit(bool coalesce, std::string coalesceKey) {
                 previous.selectionBefore = std::move(entry_.selectionBefore);
             if (entry_.selectionAfter)
                 previous.selectionAfter = std::move(entry_.selectionAfter);
-            previous.bytes = Document::memory(previous);
-            doc_->historyBytes_ += previous.bytes;
+            doc_->account(previous, true);
         } else {
-            entry_.bytes = Document::memory(entry_);
-            doc_->historyBytes_ += entry_.bytes;
+            doc_->account(entry_, true);
             doc_->undo_.push_back(std::move(entry_));
         }
         doc_->coalesceAllowed_ = true;
+        doc_->freezeOldEntries();
+        // A bulk edit can exceed the cap on its own. Give its compact form a chance
+        // before discarding the only undo operation, even inside the normal hot window.
+        if (doc_->undo_.size() == 1 && doc_->historyBytes_ > doc_->cap_)
+            doc_->freeze(doc_->undo_.back());
         doc_->evict();
     }
     doc_->checkSideIndex();
