@@ -109,6 +109,9 @@ private:
     bool forward_ = false, back_ = false, left_ = false, right_ = false, up_ = false, down_ = false;
     bool grabbed_ = false;
     QElapsedTimer sinceTick_;
+    QElapsedTimer traceClock_;
+    qint64 lastCameraTraceMs_ = -100;
+    std::uint32_t lastTraceRecreates_ = 0;
 };
 
 // A pane in the splitter tree: a header strip (title and the pane menu) above the Vulkan

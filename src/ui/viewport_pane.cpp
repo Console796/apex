@@ -20,6 +20,7 @@
 #include "render/render_mirror.hpp"
 #include "render/view_math.hpp"
 #include "ui/gpu_host.hpp"
+#include "ui/input_log.hpp"
 #include "ui/key_chord.hpp"
 #include "viewport/pick_math.hpp"
 #include "viewport/view_context.hpp"
@@ -135,6 +136,7 @@ PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor ac
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(host.vulkanInstance());
     sinceTick_.start();
+    traceClock_.start();
 }
 
 PaneWindow::~PaneWindow() {
@@ -209,7 +211,9 @@ bool PaneWindow::event(QEvent* e) {
     case QEvent::ShortcutOverride:
         // A gizmo drag or modal transform owns the keyboard: Esc, Enter, digits and axis keys
         // must not trigger window shortcuts.
-        if (transform_.owns() || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton)) {
+        // F9 remains available to annotate an input trace during a bad navigation gesture.
+        if (static_cast<QKeyEvent*>(e)->key() != Qt::Key_F9 &&
+            (transform_.owns() || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton))) {
             e->accept();
             return true;
         }
@@ -441,6 +445,17 @@ void PaneWindow::applyNavigation(double dt) {
                 dirty_ = true;
                 emit cameraChanged();
             }
+            if (inputLogEnabled() && traceClock_.elapsed() - lastCameraTraceMs_ >= 100) {
+                lastCameraTraceMs_ = traceClock_.elapsed();
+                const auto& c = vp->camera;
+                QJsonObject state{{"pane", static_cast<qint64>(pane_)},
+                    {"camera_position", QJsonObject{{"x", c.position.x}, {"y", c.position.y}, {"z", c.position.z}}},
+                    {"camera_angles", QJsonObject{{"pitch", c.angles.x}, {"yaw", c.angles.y}, {"roll", c.angles.z}}},
+                    {"buttons", static_cast<qint64>(buttons_.toInt())},
+                    {"navigation_delta", QJsonObject{{"x", in.cursorDelta.x}, {"y", in.cursorDelta.y}}}};
+                inputTraceSetState(state);
+                inputTraceEvent("camera", std::move(state));
+            }
         }
     }
     delta_ = {};
@@ -473,6 +488,12 @@ double PaneWindow::draw() {
         }
         swapchain_ = std::move(*created);
         swapchain_->setResizeDragging(resizeDragging_);
+        if (inputLogEnabled()) {
+            lastTraceRecreates_ = swapchain_->recreateCount();
+            inputTraceEvent("swapchain", {{"pane", static_cast<qint64>(pane_)}, {"event", "create"},
+                                           {"recreate_count", static_cast<qint64>(lastTraceRecreates_)},
+                                           {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)}});
+        }
     }
     render::Renderer* renderer = host_.renderer(swapchain_->format());
     if (!renderer) {
@@ -520,6 +541,14 @@ double PaneWindow::draw() {
         drawMarquee(cb, extent);
         depth_.end(cb);
     });
+    if (inputLogEnabled() && swapchain_->recreateCount() != lastTraceRecreates_) {
+        const auto previous = lastTraceRecreates_;
+        lastTraceRecreates_ = swapchain_->recreateCount();
+        inputTraceEvent("swapchain", {{"pane", static_cast<qint64>(pane_)}, {"event", "recreate"},
+            {"recreate_count", static_cast<qint64>(lastTraceRecreates_)},
+            {"recreate_delta", static_cast<qint64>(lastTraceRecreates_ - previous)},
+            {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)}});
+    }
     if (!status) {
         log::error("viewports: frame failed on pane {}: {}", pane_, status.error().what());
         failed_ = true;
@@ -528,7 +557,12 @@ double PaneWindow::draw() {
     if (*status == render::FrameStatus::Skipped) return -1.0;  // Retry; dirty_ stays set.
     dirty_ = false;
     ++frames_;
-    return timer.nsecsElapsed() / 1.0e6;
+    const double milliseconds = timer.nsecsElapsed() / 1.0e6;
+    if (inputLogEnabled())
+        inputTraceEvent("frame", {{"pane", static_cast<qint64>(pane_)},
+                                   {"frame", static_cast<qint64>(frames_)}, {"duration_ms", milliseconds},
+                                   {"width", static_cast<int>(extent.width)}, {"height", static_cast<int>(extent.height)}});
+    return milliseconds;
 }
 
 // ---- PaneFrame ----

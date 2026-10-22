@@ -51,6 +51,7 @@ private:
     QPointF last_, delta_;
     QCursor cursor_;
     bool hidden_ = false;
+    bool relativeSeen_ = false;
 };
 
 }  // namespace apex::ui

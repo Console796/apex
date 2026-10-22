@@ -121,6 +121,22 @@ TEST_CASE("relative flicks accumulate beyond the pane without double counting ab
     }
 }
 
+TEST_CASE("relative mode uses Qt motion until its first native relative event") {
+    app();
+    QWindow window;
+    window.resize(320, 200);
+    auto backend = std::make_unique<FakePointerLock>(window);
+    auto& fake = *backend;
+    PointerLock lock(window, std::move(backend));
+    lock.press(Qt::MiddleButton, {20, 30});
+    lock.move({45, 65});
+    CHECK(lock.takeDelta() == QPointF(25, 35));
+    fake.relative({7, -3});
+    lock.move({80, 90});
+    CHECK(lock.takeDelta() == QPointF(7, -3));
+    lock.buttons(Qt::NoButton);
+}
+
 TEST_CASE("warp backend recentres only near edges and keeps all flick deltas") {
     app();
     QWindow window;
