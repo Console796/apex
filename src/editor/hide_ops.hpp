@@ -9,6 +9,9 @@ std::vector<NodeId> visibilityTargets(const document::Document& doc, const Group
                                 const Selection& selection);
 Result<EditedObjects> stageHide(const document::Document& doc, const GroupIndex& groups,
                                 const Selection& selection, document::Transaction& tx);
+Result<EditedObjects> stageSetNodeHidden(const document::Document& doc, const GroupIndex& groups,
+                                         const std::vector<NodeId>& nodes, bool hidden,
+                                         document::Transaction& tx);
 Result<EditedObjects> stageUnhideAll(const document::Document& doc, document::Transaction& tx);
 Result<EditedObjects> stageHideUnselected(const document::Document& doc, const GroupIndex& groups,
                                           const Selection& selection, document::Transaction& tx);

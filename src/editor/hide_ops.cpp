@@ -34,7 +34,9 @@ bool entity(const document::Document& doc, NodeId id) {
            !ciEquals(doc.get(h)->block->key(), "world");
 }
 EditedObjects::Item item(const document::Document& doc, NodeId id) {
-    return {id, solid(doc, id) ? EditedObjects::Item::Kind::Solid : EditedObjects::Item::Kind::Entity,
+    return {id, solid(doc, id) ? EditedObjects::Item::Kind::Solid :
+                std::holds_alternative<Handle<document::Group>>(*doc.handle(id)) ?
+                    EditedObjects::Item::Kind::Group : EditedObjects::Item::Kind::Entity,
             solid(doc, id) ? std::vector<NodeId>{id} : solidsOf(doc, id), {}};
 }
 EditedObjects hide(const document::Document& doc, const std::vector<NodeId>& targets,
@@ -115,6 +117,61 @@ Result<EditedObjects> stageHideUnselected(const document::Document& doc, const G
             targets.push_back(id);
     }
     return hide(doc, targets, tx);
+}
+Result<EditedObjects> stageSetNodeHidden(const document::Document& doc, const GroupIndex& groups,
+                                         const std::vector<NodeId>& nodes, bool hidden,
+                                         document::Transaction& tx) {
+    std::set<NodeId> targets;
+    for (const auto id : nodes) {
+        const auto h = doc.handle(id);
+        if (!h) return std::unexpected(Error{ErrorCode::InvalidArgument, "unknown object"});
+        if (std::holds_alternative<Handle<document::Group>>(*h)) {
+            targets.insert(id);
+            for (const auto member : groups.members(id, true)) targets.insert(member);
+        } else if (solid(doc, id) || entity(doc, id)) targets.insert(id);
+        else return std::unexpected(Error{ErrorCode::InvalidArgument, "only objects have visibility"});
+    }
+    if (hidden) return hide(doc, {targets.begin(), targets.end()}, tx);
+    // Include ancestors that hide the requested object and the entity's own brush
+    // wrappers, which hide() creates together with its outer wrapper.
+    for (const auto id : std::vector<NodeId>(targets.begin(), targets.end())) {
+        if (entity(doc, id)) for (const auto solid : solidsOf(doc, id)) targets.insert(solid);
+        for (auto parent = doc.get(*doc.handle(id))->parent; parent;) {
+            targets.insert(parent);
+            parent = doc.get(*doc.handle(parent))->parent;
+        }
+    }
+    const auto locations = hierarchy(doc);
+    for (auto it = locations.rbegin(); it != locations.rend(); ++it) {
+        if (!targets.contains(it->node)) continue;
+        const auto h = *doc.handle(it->node);
+        const auto block = doc.get(h)->block;
+        const auto children = doc.get(h)->children;
+        if (ciEquals(block->key(), "hidden")) {
+            // Split shared wrappers: unrelated siblings keep their hidden state.
+            auto position = it->position;
+            for (const auto child : children)
+                if (targets.contains(child)) tx.reparent(*doc.handle(child), doc.handle(it->parent), position++);
+            if (doc.get(h)->children.empty()) tx.destroy(h);
+        } else if (solid(doc, it->node) || entity(doc, it->node) ||
+                   std::holds_alternative<Handle<document::Group>>(h)) {
+            const auto reset = [&](const kv1::Node& editor) {
+                for (const auto key : {"visgroupshown", "visgroupautoshown"}) {
+                    if (const auto* value = editor.find(key); value && value->decodedValue() == "0")
+                        tx.setEditor(h, ciEquals(key, "visgroupshown") ?
+                            document::EditorEdit::setVisgroupShown(true) :
+                            document::EditorEdit::setVisgroupAutoShown(true));
+                }
+            };
+            for (const auto& child : block->children())
+                if (ciEquals(child.key(), "editor")) reset(child);
+            for (const auto child : children) {
+                const auto editor = doc.get(*doc.handle(child))->block;
+                if (ciEquals(editor->key(), "editor")) reset(*editor);
+            }
+        }
+    }
+    return EditedObjects{};
 }
 Result<EditedObjects> stageUnhideAll(const document::Document& doc, document::Transaction& tx) {
     const auto locations = hierarchy(doc);

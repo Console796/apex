@@ -581,6 +581,24 @@ Result<void> EditorSession::moveToWorld() {
         return stageMoveToWorld(*document_, *groups_, selection_, tx);
     });
 }
+Result<void> EditorSession::moveNodesInto(std::vector<NodeId> nodes, NodeId container) {
+    return runEdit("Move in outliner", AfterEdit::Keep, [&](document::Transaction& tx) {
+        return stageMoveNodesInto(*document_, *groups_, std::move(nodes), container, tx);
+    });
+}
+Result<void> EditorSession::renameEntity(NodeId entity, std::string_view targetname) {
+    return runEdit("Rename entity", AfterEdit::Keep, [&](document::Transaction& tx) {
+        return stageRenameEntity(*document_, entity, targetname, tx);
+    });
+}
+Result<void> EditorSession::setNodeHidden(std::vector<NodeId> nodes, bool hidden) {
+    return runEdit(hidden ? "Hide" : "Unhide", AfterEdit::Keep, [&](document::Transaction& tx) {
+        return stageSetNodeHidden(*document_, *groups_, nodes, hidden, tx);
+    });
+}
+bool EditorSession::nodeHidden(NodeId node) const {
+    return document_ && !isVisible(*document_, node);
+}
 Result<void> EditorSession::hideSelection() {
     return runEdit("Hide", AfterEdit::Clear, [&](document::Transaction& tx) {
         return stageHide(*document_, *groups_, selection_, tx);

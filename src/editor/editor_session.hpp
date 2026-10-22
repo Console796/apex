@@ -110,6 +110,10 @@ public:
     Result<void> ungroupSelection();
     Result<void> tieToEntity(const TieParams& params = {});
     Result<void> moveToWorld();
+    Result<void> moveNodesInto(std::vector<NodeId> nodes, NodeId container);
+    Result<void> renameEntity(NodeId entity, std::string_view targetname);
+    Result<void> setNodeHidden(std::vector<NodeId> nodes, bool hidden);
+    bool nodeHidden(NodeId node) const;
     Result<void> hideSelection();
     Result<void> unhideAll();
     Result<void> hideUnselected();

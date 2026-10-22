@@ -5,6 +5,7 @@
 
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace apex::editor {
@@ -66,6 +67,12 @@ Result<EditedObjects> stageTieToEntity(const document::Document& doc, const Grou
 // the world, deleting entities that end up empty.
 Result<EditedObjects> stageMoveToWorld(const document::Document& doc, const GroupIndex& groups,
                                        const Selection& selection, document::Transaction& tx);
+
+Result<EditedObjects> stageMoveNodesInto(const document::Document& doc, const GroupIndex& groups,
+                                          std::vector<NodeId> nodes, NodeId container,
+                                          document::Transaction& tx);
+Result<EditedObjects> stageRenameEntity(const document::Document& doc, NodeId entity,
+                                        std::string_view targetname, document::Transaction& tx);
 
 // Shared with the clipboard codec.
 std::string groupColor(int vmfId);

@@ -1,6 +1,7 @@
 #include "editor/group_ops.hpp"
 
 #include "core/strings.hpp"
+#include "editor/visibility.hpp"
 #include "editor/selection_expand.hpp"
 
 #include <algorithm>
@@ -390,6 +391,63 @@ Result<EditedObjects> stageMoveToWorld(const document::Document& doc, const Grou
     for (const auto id : moved) removed.erase(id);
     destroyAll(doc, tx, removed);
     return result;
+}
+
+Result<EditedObjects> stageMoveNodesInto(const document::Document& doc, const GroupIndex& groups,
+                                          std::vector<NodeId> nodes, NodeId container,
+                                          document::Transaction& tx) {
+    const auto fail = [](const char* message) -> Result<EditedObjects> {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, message});
+    };
+    if (!doc.handle(container) ||
+        (!isWorld(doc, container) && !isGroup(doc, container) && !isEntity(doc, container)))
+        return fail("drop onto the world, a group or an entity");
+    if (nodes.empty()) return fail("no objects to move");
+    std::set<NodeId> requested(nodes.begin(), nodes.end());
+    for (const auto id : requested) {
+        if (!doc.handle(id) || (!isSolid(doc, id) && !isEntity(doc, id) && !isGroup(doc, id)))
+            return fail("only solids, entities and groups can be moved");
+        if (!isVisible(doc, id) || !isVisible(doc, container))
+            return fail("unhide objects and their destination before moving them");
+        if (id == container) return fail("cannot move an object into itself");
+        for (auto parent = groups.parentGroup(container); parent; parent = groups.parentGroup(*parent))
+            if (*parent == id) return fail("cannot move a group into its descendant");
+        if (hasAncestorIn(doc, container, {id})) return fail("cannot move into a descendant");
+        if (isEntity(doc, container) && !isSolid(doc, id))
+            return fail("only solids can be moved into an entity");
+    }
+    // Document order, independent of the order rows were selected. Selected ancestors
+    // carry their descendants; flat group membership needs the same treatment.
+    std::vector<NodeId> ordered;
+    const auto walk = [&](const auto& self, NodeId id) -> void {
+        if (requested.contains(id)) {
+            bool covered = hasAncestorIn(doc, id, requested);
+            for (auto group = groups.parentGroup(id); group; group = groups.parentGroup(*group))
+                covered = covered || requested.contains(*group);
+            if (!covered) ordered.push_back(id);
+        }
+        for (const auto child : nodeOf(doc, id)->children) self(self, child);
+    };
+    for (const auto root : doc.roots()) walk(walk, root);
+    for (const auto id : ordered) {
+        const auto h = *doc.handle(id);
+        const auto membership = isGroup(doc, container) ? vmfId(doc, container) : std::nullopt;
+        tx.setEditor(h, EditorEdit::setGroup(membership));
+        // VMF groups are flat; entity membership also stays at the document root.
+        const auto parent = isEntity(doc, container) ? doc.handle(container) :
+            (isEntity(doc, id) ? std::nullopt : worldHandle(doc));
+        tx.reparent(h, parent);
+    }
+    return EditedObjects{};
+}
+
+Result<EditedObjects> stageRenameEntity(const document::Document& doc, NodeId entity,
+                                        std::string_view targetname, document::Transaction& tx) {
+    if (!doc.handle(entity) || !isEntity(doc, entity))
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "only entities can be renamed"});
+    tx.setKeyValue(*doc.handle(entity), "targetname", targetname.empty() ?
+        std::nullopt : std::optional(std::string(targetname)));
+    return EditedObjects{};
 }
 
 } // namespace apex::editor

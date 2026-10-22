@@ -2,6 +2,11 @@
 #include <doctest/doctest.h>
 
 #include <QApplication>
+#include <QAbstractItemDelegate>
+#include <QTreeWidgetItemIterator>
+#include <QMimeData>
+#include <QStyle>
+#include <QStyleOptionViewItem>
 #include <QAction>
 #include <QMouseEvent>
 #include <QKeyEvent>
@@ -785,6 +790,8 @@ TEST_CASE("Blender modal transform: G, axis, digits, Enter from synthetic keys")
 
 #include <QClipboard>
 #include <QMimeData>
+#include <QStyle>
+#include <QStyleOptionViewItem>
 #include "ui/paste_special_dialog.hpp"
 #include "ui/tie_dialog.hpp"
 
@@ -1146,6 +1153,8 @@ TEST_CASE("quad splitter bars stay aligned and the crossing drags both axes") {
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QMimeData>
+#include <QStyle>
+#include <QStyleOptionViewItem>
 
 namespace {
 QTreeWidgetItem* visgroupItem(ui::VisgroupPanel& panel, int id) {
@@ -1404,4 +1413,124 @@ TEST_CASE("new docks restore their saved visibility and empty view actions are d
     }
     if (saved.isValid()) settings.setValue("ui/docks", saved);
     else settings.remove("ui/docks");
+}
+
+TEST_CASE("editable outliner commits names, drops, visibility and persistent filtering") {
+    app();
+    using namespace editor_test;
+    Document doc(parsed("world { id 1 classname worldspawn group { id 2 } group { id 3 } } entity { id 4 classname func_detail } entity { id 5 classname info_target targetname beacon } entity { id 6 classname info_target targetname first targetname second }"));
+    const auto solid = id(doc, addBox(doc, {0,0,0}, {8,8,8}, worldHandle(doc)));
+    std::vector<NodeId> groups, entities;
+    for (const auto h : nodes(doc)) {
+        if (std::holds_alternative<Handle<Group>>(h)) groups.push_back(id(doc,h));
+        if (doc.get(h)->block->key() == "entity") entities.push_back(id(doc,h));
+    }
+    EditorSession session;
+    session.attach(doc);
+    struct Tree : apex::ui::OutlinerPanel {
+        using OutlinerPanel::mimeData;
+        using OutlinerPanel::dropMimeData;
+    } tree;
+    tree.setEditorSession(&session);
+    tree.setDocument(&doc);
+    tree.resize(420, 600);
+    tree.show();
+    app().processEvents();
+    const auto row = [&](NodeId id) -> QTreeWidgetItem* {
+        for (QTreeWidgetItemIterator it(&tree); *it; ++it)
+            if ((*it)->data(0, Qt::UserRole).toULongLong() == id) return *it;
+        return nullptr;
+    };
+    const auto rename = [&](NodeId id, const QString& name) {
+        const auto matches = tree.model()->match(tree.model()->index(0,0), Qt::UserRole,
+            QVariant::fromValue<qulonglong>(id), 1, Qt::MatchExactly | Qt::MatchRecursive);
+        REQUIRE(matches.size() == 1);
+        const auto index = matches.front();
+        auto* delegate = tree.itemDelegate();
+        auto* editor = delegate->createEditor(&tree, {}, index);
+        REQUIRE(editor);
+        delegate->setEditorData(editor, index);
+        static_cast<QLineEdit*>(editor)->setText(name);
+        delegate->setModelData(editor, tree.model(), index);
+        delete editor;
+        app().processEvents();
+    };
+    tree.setCurrentItem(row(entities[1]));
+    tree.setFocus();
+    QKeyEvent f2(QEvent::KeyPress, Qt::Key_F2, Qt::NoModifier);
+    QApplication::sendEvent(&tree, &f2);
+    auto* inlineEditor = tree.viewport()->findChild<QLineEdit*>();
+    REQUIRE(inlineEditor);
+    CHECK(inlineEditor->text() == "beacon");
+    inlineEditor->setText("renamed_beacon");
+    QKeyEvent enter(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+    QApplication::sendEvent(inlineEditor, &enter);
+    app().processEvents(QEventLoop::AllEvents, 50);
+    CHECK(row(entities[1])->text(0).contains("renamed_beacon"));
+    const auto beforeFailedRename = *doc.write();
+    const auto beforeFailedLabel = row(entities[2])->text(0);
+    rename(entities[2], "rejected");
+    CHECK(*doc.write() == beforeFailedRename);
+    CHECK(row(entities[2])->text(0) == beforeFailedLabel);
+    rename(entities[1], "");
+    CHECK(doc.get(*doc.handle(entities[1]))->block->find("targetname") == nullptr);
+    REQUIRE(session.perform("edit.undo"));
+    const auto drop = [&](NodeId source, NodeId target) {
+        std::unique_ptr<QMimeData> mime(tree.mimeData({row(source)}));
+        return tree.dropMimeData(row(target), -1, mime.get(), Qt::MoveAction);
+    };
+    REQUIRE(drop(solid, groups[0]));
+    CHECK(session.groups().parentGroup(solid) == groups[0]);
+    CHECK(row(solid)->parent() == row(groups[0]));
+    REQUIRE(drop(groups[0], groups[1]));
+    const auto beforeInvalid = *doc.write();
+    CHECK_FALSE(drop(groups[1], groups[0]));
+    CHECK_FALSE(drop(entities[1], entities[0]));
+    CHECK(*doc.write() == beforeInvalid);
+    REQUIRE(drop(solid, entities[0]));
+    CHECK(doc.get(*doc.handle(solid))->parent == entities[0]);
+    session.selection().add(entities[1]);
+    const auto selection = session.selection().toBlob();
+    QStyleOptionViewItem checkOption;
+    checkOption.initFrom(&tree);
+    checkOption.rect = tree.visualItemRect(row(solid));
+    checkOption.features = QStyleOptionViewItem::HasCheckIndicator;
+    const auto checkPoint = tree.style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator,
+                                                        &checkOption, &tree).center();
+    QMouseEvent press(QEvent::MouseButtonPress, checkPoint, checkPoint, Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, checkPoint, checkPoint, Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(tree.viewport(), &press);
+    QApplication::sendEvent(tree.viewport(), &release);
+    app().processEvents();
+    CHECK(session.nodeHidden(solid));
+    CHECK(session.selection().toBlob() == selection);
+    CHECK(row(solid)->foreground(0) == tree.palette().brush(QPalette::Disabled, QPalette::Text));
+    row(solid)->setCheckState(0, Qt::Checked);
+    app().processEvents();
+    CHECK_FALSE(session.nodeHidden(solid));
+    auto* filter = tree.findChild<QLineEdit*>("outlinerFilter");
+    REQUIRE(filter);
+    CHECK(filter->mapTo(&tree, filter->rect().bottomLeft()).y() < tree.viewport()->geometry().top());
+    filter->setText("RENAMED_BEACON");
+    CHECK_FALSE(row(entities[1])->isHidden());
+    CHECK_FALSE(row(entities[1])->parent()->isHidden());
+    CHECK(row(solid)->isHidden());
+    tree.refresh();
+    CHECK(filter->text() == "RENAMED_BEACON");
+    CHECK(row(solid)->isHidden());
+    filter->clear();
+    CHECK_FALSE(row(solid)->isHidden());
+    row(groups[1])->setExpanded(false);
+    tree.refresh();
+    CHECK_FALSE(row(groups[1])->isExpanded());
+    std::unique_ptr<QMimeData> mime(tree.mimeData({row(solid)}));
+    Tree other;
+    other.setEditorSession(&session);
+    other.setDocument(&doc);
+    const auto beforeForeignDrop = *doc.write();
+    CHECK_FALSE(other.dropMimeData(other.topLevelItem(0), -1, mime.get(), Qt::MoveAction));
+    CHECK(*doc.write() == beforeForeignDrop);
+    CHECK_FALSE(mime->hasFormat("application/x-qabstractitemmodeldatalist"));
 }

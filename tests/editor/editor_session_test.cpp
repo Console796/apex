@@ -397,3 +397,99 @@ TEST_CASE("EditorSession history jumps restore selection like undo and redo") {
     REQUIRE(session.jumpHistory(start + 2));
     CHECK(session.selection().ordered() == std::vector<Target>{boxId});
 }
+
+TEST_CASE("Outliner moves preserve ids, membership, order and exact undo") {
+    Document doc(parsed("world { id 1 classname worldspawn group { id 2 } group { id 3 } } entity { id 4 classname func_detail } entity { id 5 classname info_target }"));
+    const auto world = *worldHandle(doc);
+    const auto a = id(doc, addBox(doc, {0,0,0}, {8,8,8}, world));
+    const auto b = id(doc, addBox(doc, {16,0,0}, {24,8,8}, world));
+    std::vector<NodeId> groups, entities;
+    for (auto h : nodes(doc)) {
+        if (std::holds_alternative<Handle<Group>>(h)) groups.push_back(id(doc,h));
+        if (doc.get(h)->block->key() == "entity") entities.push_back(id(doc,h));
+    }
+    EditorSession session;
+    session.attach(doc);
+    const auto original = *doc.write();
+    REQUIRE(session.moveNodesInto({a}, groups[0]));
+    CHECK(session.groups().parentGroup(a) == groups[0]);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == original);
+    REQUIRE(session.moveNodesInto({b,a}, entities[0]));
+    CHECK(doc.get(*doc.handle(a))->parent == entities[0]);
+    CHECK(doc.get(*doc.handle(b))->parent == entities[0]);
+    const auto children = doc.get(*doc.handle(entities[0]))->children;
+    CHECK(std::find(children.begin(),children.end(),a) < std::find(children.begin(),children.end(),b));
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == original);
+    REQUIRE(session.moveNodesInto({groups[0]}, groups[1]));
+    CHECK(session.groups().parentGroup(groups[0]) == groups[1]);
+    const auto nested = *doc.write();
+    CHECK_FALSE(session.moveNodesInto({groups[1]}, groups[0]));
+    CHECK_FALSE(session.moveNodesInto({groups[0]}, groups[0]));
+    CHECK_FALSE(session.moveNodesInto({entities[1]}, entities[0]));
+    CHECK_FALSE(session.moveNodesInto({groups[0]}, entities[0]));
+    CHECK(*doc.write() == nested);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == original);
+    REQUIRE(session.moveNodesInto({a}, entities[0]));
+    REQUIRE(session.moveNodesInto({a}, id(doc,world)));
+    CHECK(doc.get(*doc.handle(a))->parent == id(doc,world));
+    CHECK_FALSE(session.groups().parentGroup(a));
+}
+
+TEST_CASE("Outliner rename and single object visibility preserve selection and undo") {
+    Document doc(parsed("world { id 1 classname worldspawn } entity { id 2 classname info_target }"));
+    const auto solid = id(doc, addBox(doc, {0,0,0}, {8,8,8}, worldHandle(doc)));
+    NodeId entity = 0;
+    for (auto h : nodes(doc)) if (doc.get(h)->block->key() == "entity") entity = id(doc,h);
+    EditorSession session;
+    session.attach(doc);
+    session.selection().add(solid);
+    const auto selection = session.selection().toBlob();
+    const auto original = *doc.write();
+    REQUIRE(session.renameEntity(entity, "destination"));
+    CHECK(doc.get(*doc.handle(entity))->block->find("targetname")->decodedValue() == "destination");
+    REQUIRE(session.renameEntity(entity, ""));
+    CHECK(doc.get(*doc.handle(entity))->block->find("targetname") == nullptr);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(doc.get(*doc.handle(entity))->block->find("targetname")->decodedValue() == "destination");
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == original);
+    REQUIRE(session.setNodeHidden({solid}, true));
+    CHECK(session.nodeHidden(solid));
+    CHECK(session.selection().toBlob() == selection);
+    const auto hidden = *doc.write();
+    CHECK_FALSE(session.moveNodesInto({solid}, entity));
+    REQUIRE(session.setNodeHidden({solid}, false));
+    CHECK_FALSE(session.nodeHidden(solid));
+    CHECK(*doc.write() == original);
+    CHECK(session.selection().toBlob() == selection);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == hidden);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == original);
+}
+
+TEST_CASE("Outliner visibility splits shared wrappers and toggles empty groups") {
+    Document doc(parsed("world { id 1 hidden { solid { id 2 } solid { id 3 } } group { id 4 } }"));
+    std::vector<NodeId> solids;
+    NodeId group = 0;
+    for (const auto h : nodes(doc)) {
+        if (std::holds_alternative<Handle<Solid>>(h)) solids.push_back(id(doc,h));
+        if (std::holds_alternative<Handle<Group>>(h)) group = id(doc,h);
+    }
+    EditorSession session;
+    session.attach(doc);
+    const auto original = *doc.write();
+    REQUIRE(session.setNodeHidden({solids[0]}, false));
+    CHECK_FALSE(session.nodeHidden(solids[0]));
+    CHECK(session.nodeHidden(solids[1]));
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == original);
+    REQUIRE(session.setNodeHidden({group}, true));
+    CHECK(session.nodeHidden(group));
+    REQUIRE(session.setNodeHidden({group}, false));
+    CHECK_FALSE(session.nodeHidden(group));
+    CHECK(*doc.write() == original);
+}
