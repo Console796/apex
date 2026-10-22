@@ -81,6 +81,8 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
 apex_layer(editor SOURCES src/editor/visibility.cpp src/editor/pick_index.cpp
+                          src/editor/group_index.cpp src/editor/selection.cpp
+                          src/editor/selection_ops.cpp src/editor/selection_undo.cpp
            DEPS apex_document apex_geometry apex_core)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp
