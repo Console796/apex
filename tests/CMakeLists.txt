@@ -14,9 +14,9 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/tool_test.cpp
                editor/pick_index_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp
                editor/group_index_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
-               editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/work_plane_test.cpp
+               editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/hide_corpus_test.cpp editor/history_property_test.cpp editor/work_plane_test.cpp
                editor/transform_test.cpp editor/preview_test.cpp
-               editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp
+               editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp
                render/view_math_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
                render/p0_point_data_test.cpp
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp)

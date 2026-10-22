@@ -124,7 +124,10 @@ void applyVisibility(const document::Document& doc, VisgroupVisibility& state,
         if (!needed.contains(id)) continue;
         const auto* n = doc.get(*doc.handle(id));
         const auto parent = n->parent;
-        if (state.wrappers.contains(parent)) continue;
+        // An existing plain Hide wrapper already hides this object. Do not nest
+        // another wrapper inside it: srctools/Hammer require object children here.
+        // Leave its ownership alone so showing the visgroup preserves the plain hide.
+        if (parent && ciEquals(doc.get(*doc.handle(parent))->block->key(), "hidden")) continue;
         const auto siblings = parent ? doc.get(*doc.handle(parent))->children : doc.roots();
         const auto pos = static_cast<std::size_t>(std::find(siblings.begin(), siblings.end(), id) - siblings.begin());
         const auto wrapper = tx.create(kv1::Node::block("hidden"), doc.handle(parent));

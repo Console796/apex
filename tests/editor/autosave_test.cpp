@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <set>
 #ifndef _WIN32
 #include <csignal>
@@ -143,4 +144,96 @@ TEST_CASE("autosave D16 measures main-thread serialization on the largest corpus
     REQUIRE(serialized);
     CHECK(*serialized == bytes);
     MESSAGE("D16 Document::write(): ", largest.string(), ", ", size, " bytes, ", ms, " ms");
+}
+
+TEST_CASE("autosave retention keeps newest ten exact snapshots across session restarts") {
+    StateDir dir;
+    auto parsed = vmf::parse("world { id 1 classname worldspawn }");
+    REQUIRE(parsed);
+    document::Document doc(*parsed);
+    std::vector<std::string> expected;
+    fs::path directory;
+    for (int launch = 0; launch < 3; ++launch) {
+        editor::Autosave save("restarted.vmf", dir.path);
+        if (launch) CHECK(save.lockPath().parent_path() == directory);
+        directory = save.lockPath().parent_path();
+        for (int i = 0; i < 6; ++i) {
+            auto edit = doc.begin("change");
+            edit.setKeyValue(*doc.handle(doc.roots().front()), "message", std::to_string(launch * 6 + i));
+            edit.commit(false);
+            expected.push_back(doc.write().value());
+            REQUIRE(save.snapshot(doc).value());
+            REQUIRE(save.wait());
+        }
+    }
+    const auto paths = vmfs(dir.path);
+    REQUIRE(paths.size() == 10);
+    std::set<std::string> actual;
+    for (const auto& path : paths) actual.insert(read(path));
+    CHECK(actual == std::set<std::string>(expected.end() - 10, expected.end()));
+}
+
+TEST_CASE("autosave same filename in different source directories remains isolated") {
+    StateDir dir;
+    editor::Autosave first(dir.path / "a/shared.vmf", dir.path / "state");
+    editor::Autosave second(dir.path / "b/shared.vmf", dir.path / "state");
+    editor::Autosave reopened(dir.path / "a/../a/shared.vmf", dir.path / "state");
+    CHECK(first.lockPath().parent_path() != second.lockPath().parent_path());
+    CHECK(first.lockPath().parent_path() == reopened.lockPath().parent_path());
+    CHECK(first.lockPath() != reopened.lockPath());
+}
+
+TEST_CASE("autosave stale dead pid skips corrupt and truncated snapshots for newest valid one") {
+    StateDir dir;
+    // PID beyond either platform's PID range is deterministically dead; no race with
+    // the machine's process allocator and no process needs to be killed.
+    const auto dead = std::numeric_limits<std::uint64_t>::max();
+    REQUIRE_FALSE(editor::processRunning(dead));
+    const auto lock = dir.path / "dead-session.lock";
+    {
+        std::ofstream out(lock);
+        out << dead << "\n\"original.vmf\"\n\"003-dead-session.vmf\"\n";
+    }
+    const std::string good = "world { id 1 classname worldspawn }";
+    for (const auto& [name, bytes] : {
+             std::pair{"001-dead-session.vmf", good},
+             std::pair{"002-dead-session.vmf", std::string("world { id 1")},
+             std::pair{"003-dead-session.vmf", std::string("\"unterminated")},
+             std::pair{"004-other-session.vmf", good}}) {
+        std::ofstream out(dir.path / name, std::ios::binary);
+        out << bytes;
+    }
+    const auto recoveries = editor::findRecoveries(dir.path);
+    REQUIRE(recoveries);
+    REQUIRE(recoveries->size() == 1);
+    CHECK(recoveries->front().pid == dead);
+    CHECK(recoveries->front().snapshot == dir.path / "001-dead-session.vmf");
+    CHECK(read(recoveries->front().snapshot) == good);
+    REQUIRE(editor::discardRecovery(recoveries->front()));
+    CHECK_FALSE(fs::exists(lock));
+    CHECK(vmfs(dir.path) == std::vector<fs::path>{dir.path / "004-other-session.vmf"});
+}
+
+TEST_CASE("autosave IO failure is a result and can be retried without throwing") {
+    StateDir dir;
+    auto parsed = vmf::parse("world { id 1 }");
+    REQUIRE(parsed);
+    document::Document doc(*parsed);
+    editor::Autosave save("blocked.vmf", dir.path);
+    const auto directory = save.lockPath().parent_path();
+    // Replace the session directory with a regular file: deterministic ENOTDIR even
+    // when tests run as root, unlike chmod-based permission tests.
+    fs::remove(save.lockPath());
+    fs::remove(directory);
+    { std::ofstream blocker(directory); blocker << "blocked"; }
+    CHECK_NOTHROW(save.snapshot(doc));
+    const auto failed = save.wait();
+    REQUIRE_FALSE(failed);
+    CHECK(failed.error().code == ErrorCode::IoError);
+    fs::remove(directory);
+    fs::create_directories(directory);
+    REQUIRE(save.snapshot(doc).value());
+    REQUIRE(save.wait());
+    REQUIRE(vmfs(dir.path).size() == 1);
+    CHECK(read(vmfs(dir.path).front()) == doc.write().value());
 }
