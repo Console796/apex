@@ -5,6 +5,7 @@
 #include "render/texture_heap.hpp"
 #include "render/view_math.hpp"
 #include "golden_image.hpp"
+#include "editor/transform.hpp"
 
 #include <doctest/doctest.h>
 
@@ -83,7 +84,7 @@ struct Cube {
 
 // Axis-aligned cube of half-extent h around the origin; uv (0,0) is the top-left of each face as
 // seen from outside for the -X face (the one the test camera sees).
-Cube makeCube(Fixture& f, float h, std::uint32_t material) {
+Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transform = DMat4(1.0)) {
     struct Face {
         float n[3];
         float c[4][3];
@@ -105,6 +106,13 @@ Cube makeCube(Fixture& f, float h, std::uint32_t material) {
             BrushVertex v{};
             std::memcpy(v.position, face.c[i], sizeof v.position);
             std::memcpy(v.normal, face.n, sizeof v.normal);
+            if (transform != DMat4(1.0)) {
+                const Vec3 p(transform * DVec4(face.c[i][0], face.c[i][1], face.c[i][2], 1));
+                const Vec3 n(glm::normalize(glm::transpose(glm::inverse(DMat3(transform))) *
+                                           DVec3(face.n[0], face.n[1], face.n[2])));
+                std::memcpy(v.position, &p.x, sizeof v.position);
+                std::memcpy(v.normal, &n.x, sizeof v.normal);
+            }
             std::memcpy(v.uv, uvs[i], sizeof v.uv);
             v.material = material;
             vertices.push_back(v);
@@ -615,4 +623,146 @@ TEST_CASE("renderer: face draw ranges start within existing triangle and edge bu
     for (std::uint32_t x = 19; x <= 23; ++x)
         edge = edge || nearColour(at(image, x, 32), {255, 0, 255}, 2);
     CHECK(edge);
+}
+
+TEST_CASE("renderer preview entity boxes sprites and outlines match baked positions") {
+    REQUIRE_GPU();
+    auto& ring = gpu->heap->uploadRing();
+    const BoxInstance box{{-16, -8, -12}, {16, 8, 12}, {0, 1, 0, 1}};
+    const SpriteInstance sprite{{0, 0, 0}, 16, {1, 1, 1, 1}, gpu->checker, {}};
+    const auto upload = [&](const auto& value) {
+        auto result = uploadBuffer(*gpu->context, ring, std::as_bytes(std::span{&value, 1}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        REQUIRE(result);
+        return std::move(*result);
+    };
+    const auto boxes = upload(box);
+    const auto sprites = upload(sprite);
+    const DVec3 origin{65536, -65536, 32768};
+    const auto move = editor::Transform::translate({0, 24, 8});
+    for (const bool isSprite : {false, true}) {
+        for (const bool wire : {false, true}) {
+            CAPTURE(isSprite);
+            CAPTURE(wire);
+            DrawList list;
+            list.mode = wire ? DisplayMode::Wireframe : DisplayMode::Flat;
+            list.view = makeView(origin + DVec3(-128, 0, 0), {0, 0, 0});
+            list.previews.push_back({move.matrix(), origin});
+            if (isSprite) {
+                list.sprites.push_back({&sprites, 1, origin, 0, Vec4(0), 1});
+                list.spriteOutlines = list.sprites;
+                list.spriteOutlines[0].tint = Vec4(1, 0, 1, 1);
+            } else {
+                list.boxes.push_back({&boxes, 1, origin, !wire, 0, Vec4(0), wire, 1});
+                list.boxOutlines = list.boxes;
+                list.boxOutlines[0].tint = Vec4(1, 0, 1, 1);
+            }
+            const auto preview = drawFrame(*gpu, list);
+            list.previews.clear();
+            if (isSprite) {
+                list.sprites[0].previewIndex = list.spriteOutlines[0].previewIndex = 0;
+                list.sprites[0].origin = list.spriteOutlines[0].origin = move.point(origin);
+            } else {
+                list.boxes[0].previewIndex = list.boxOutlines[0].previewIndex = 0;
+                list.boxes[0].origin = list.boxOutlines[0].origin = move.point(origin);
+            }
+            CHECK(drawFrame(*gpu, list).pixels == preview.pixels);
+            bool visible = false;
+            for (std::uint32_t y = 0; y < kSize; ++y)
+                for (std::uint32_t x = 0; x < kSize; ++x) visible = visible || !isBackground(at(preview, x, y));
+            CHECK(visible);
+        }
+    }
+    // Box shading must use the inverse transpose too. Bake an axis permutation with unequal
+    // lengths and a reflection: its faces and normals match an axis-aligned reference box.
+    const auto transform = editor::Transform::rotate({0, 0, 1}, 90, origin) *
+                           editor::Transform::scale({-2, 0.5, 1.25}, DMat3(1), origin);
+    const BoxInstance baked{{-4, -32, -15}, {4, 32, 15}, {0, 1, 0, 1}};
+    const auto bakedBoxes = upload(baked);
+    DrawList list;
+    list.view = makeView(origin + DVec3(-128, 0, 0), {0, 0, 0});
+    list.boxes.push_back({&boxes, 1, origin, true, 0, Vec4(0), false, 1});
+    list.previews.push_back({transform.matrix(), origin});
+    const auto preview = drawFrame(*gpu, list);
+    list.previews.clear();
+    list.boxes[0].instances = &bakedBoxes;
+    list.boxes[0].previewIndex = 0;
+    CHECK(drawFrame(*gpu, list).pixels == preview.pixels);
+
+    // Scaling a billboard in its camera plane and mirroring its depth axis preserves the
+    // billboard's facing/UV convention, while exercising the sprite's packed BDA/index words.
+    const auto scale = editor::Transform::scale({-1, 1.5, 1.5}, DMat3(1), origin);
+    auto largeSprite = sprite;
+    largeSprite.halfSize = 24;
+    const auto bakedSprite = upload(largeSprite);
+    list.boxes.clear();
+    list.sprites.push_back({&sprites, 1, origin, 0, Vec4(0), 1});
+    list.previews.push_back({scale.matrix(), origin});
+    const auto scaledPreview = drawFrame(*gpu, list);
+    list.previews.clear();
+    list.sprites[0].instances = &bakedSprite;
+    list.sprites[0].previewIndex = 0;
+    CHECK(drawFrame(*gpu, list).pixels == scaledPreview.pixels);
+}
+
+TEST_CASE("renderer preview frame buffers keep separate viewport recordings alive") {
+    REQUIRE_GPU();
+    const Cube cube = makeCube(*gpu, 16, 0);
+    std::array<DrawList, 2> lists;
+    std::array<Rgba8Image, 2> expected;
+    std::array<RenderTarget, 2> targets;
+    for (std::size_t i = 0; i < lists.size(); ++i) {
+        lists[i] = cubeList(cube, DisplayMode::Flat, 0);
+        lists[i].meshes[0].previewIndex = 1;
+        lists[i].previews.push_back({editor::Transform::translate({0, i == 0 ? 24.0 : -24.0, 0}).matrix(), DVec3(0)});
+        expected[i] = drawFrame(*gpu, lists[i]);
+        auto target = RenderTarget::create(*gpu->context, kSize, kSize);
+        REQUIRE(target);
+        targets[i] = std::move(*target);
+    }
+    VkCommandBuffer commands[2]{};
+    auto alloc = vkStruct<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
+    alloc.commandPool = gpu->context->commandPool();
+    alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc.commandBufferCount = 2;
+    REQUIRE(vkAllocateCommandBuffers(gpu->context->device(), &alloc, commands) == VK_SUCCESS);
+    for (std::size_t i = 0; i < lists.size(); ++i) {
+        const auto begin = vkStruct<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+        REQUIRE(vkBeginCommandBuffer(commands[i], &begin) == VK_SUCCESS);
+        targets[i].begin(commands[i], kClear);
+        gpu->renderer->record(commands[i], lists[i]);
+        targets[i].end(commands[i]);
+        REQUIRE(vkEndCommandBuffer(commands[i]) == VK_SUCCESS);
+    }
+    // Submit only after both recordings, in reverse order; a shared upload buffer would fail.
+    for (const std::size_t i : {1u, 0u}) {
+        REQUIRE(gpu->context->submitAndWait(commands[i]));
+        const auto image = targets[i].readback();
+        REQUIRE(image);
+        CHECK(image->pixels == expected[i].pixels);
+    }
+    vkFreeCommandBuffers(gpu->context->device(), gpu->context->commandPool(), 2, commands);
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer preview oblique nonuniform scale and mirror preserve lighting") {
+    REQUIRE_GPU();
+    const auto frame = editor::Transform::rotate({1, 2, 3}, 37).linear();
+    const auto transform = editor::Transform::mirror({1, 2, 3}) *
+                           editor::Transform::scale({2, 0.5, 1.25}, frame);
+    const Cube original = makeCube(*gpu, 24, 0);
+    const Cube baked = makeCube(*gpu, 24, 0, transform.matrix());
+    auto list = cubeList(original, DisplayMode::Flat, 0);
+    list.meshes[0].previewIndex = 1;
+    list.previews.push_back({transform.matrix(), DVec3(0)});
+    const auto preview = drawFrame(*gpu, list);
+    const auto committed = drawFrame(*gpu, cubeList(baked, DisplayMode::Flat, 0));
+    int lit = 0;
+    for (std::uint32_t y = 20; y < 44; ++y) {
+        for (std::uint32_t x = 20; x < 44; ++x) {
+            const auto a = at(preview, x, y), b = at(committed, x, y);
+            CHECK(nearColour(a, b, 1));
+            if (!isBackground(b)) ++lit;
+        }
+    }
+    CHECK(lit > 100);
 }

@@ -9,7 +9,7 @@ layout(location = 2) flat in uint vSlot;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-    if (push.p1.w > 0.5) {
+    if ((floatBitsToUint(push.p0.w) & 1u) != 0) {
         outColor = push.colour;
         return;
     }

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -85,11 +86,15 @@ struct Renderer::Impl {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipelines[kKindCount]{};
     std::map<std::string, std::vector<std::uint32_t>> overrides; // Hot-reloaded SPIR-V.
+    // Swapchains have one frame in flight and distinct command buffers. A slot is reused only
+    // after its fence, so host writes cannot race another viewport or an earlier submission.
+    std::map<VkCommandBuffer, Buffer> previewBuffers;
 #ifdef APEX_SHADER_DIR
     std::map<std::string, std::filesystem::file_time_type> stamps;
 #endif
 
     ~Impl() {
+        if (!previewBuffers.empty()) context->waitIdle();
         destroyPipelines();
         if (layout) vkDestroyPipelineLayout(context->device(), layout, nullptr);
     }
@@ -362,6 +367,40 @@ Result<bool> Renderer::reloadChangedShaders() {
 
 void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     Impl& s = *impl_;
+    VkDeviceAddress previewAddress = 0;
+    if (!list.previews.empty()) {
+        const VkDeviceSize size = list.previews.size() * sizeof(PreviewTransform);
+        Buffer& buffer = s.previewBuffers[commands];
+        if (buffer.size() < size) {
+            auto created = Buffer::create(*s.context, {std::max(size, buffer.size() * 2),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+            if (!created) {
+                log::error("preview transform buffer: {}", created.error().what());
+                return;
+            }
+            buffer = std::move(*created);
+        }
+        auto* packed = static_cast<PreviewTransform*>(buffer.mapped());
+        for (std::size_t i = 0; i < list.previews.size(); ++i) {
+            const auto& preview = list.previews[i];
+            packed[i] = cameraRelativePreview(preview.matrix, preview.origin, list.view.cameraPosition);
+        }
+        buffer.flush(0, size);
+        previewAddress = buffer.deviceAddress();
+    }
+    const auto previewPush = [&](PushConstants& push, std::uint32_t index, bool sprite = false, bool outline = false) {
+        assert(index <= list.previews.size());
+        const float low = std::bit_cast<float>(static_cast<std::uint32_t>(previewAddress));
+        const float high = std::bit_cast<float>(static_cast<std::uint32_t>(previewAddress >> 32));
+        if (sprite) {
+            assert(index <= 0x7FFFFFFFu);
+            push.offsetSlot.w = low;
+            push.p1.w = high;
+            push.p0.w = std::bit_cast<float>((index << 1) | (outline ? 1u : 0u));
+        } else {
+            push.p1 = Vec4(low, high, std::bit_cast<float>(index), 0.0f);
+        }
+    };
     const VkDescriptorSet set = s.heap->descriptorSet();
     vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &set, 0, nullptr);
     vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
@@ -380,6 +419,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             PushConstants push = basePush(list);
             push.offsetSlot = slotVec(toCameraRelative(mesh.origin, camera), mesh.texture);
             setup(push, mesh);
+            previewPush(push, mesh.previewIndex);
             s.pushAll(commands, push);
             vkCmdDrawIndexed(commands, n, 1, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
         }
@@ -430,6 +470,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
         push.offsetSlot = slotVec(toCameraRelative(box.origin, camera), 0);
         push.p0 = Vec4(box.solid ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
         push.colour = box.tint;
+        previewPush(push, box.previewIndex);
         s.pushAll(commands, push);
         vkCmdDraw(commands, box.solid ? 36 : 24, box.count, 0, box.firstInstance);
     }
@@ -446,6 +487,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.colour = sprite.tint;
             push.p0 = Vec4(list.view.cameraRight, 0.0f);
             push.p1 = Vec4(list.view.cameraUp, 0.0f);
+            previewPush(push, sprite.previewIndex, true);
             s.pushAll(commands, push);
             vkCmdDraw(commands, 6, sprite.count, 0, sprite.firstInstance);
         }
@@ -504,6 +546,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             PushConstants push = basePush(list);
             push.offsetSlot = slotVec(toCameraRelative(box.origin, camera), 0);
             push.p0.x = 1.0f;
+            previewPush(push, box.previewIndex);
             s.pushAll(commands, push);
             vkCmdDraw(commands, 36, box.count, 0, box.firstInstance);
         }
@@ -528,6 +571,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.p0.y = 1.0f;
             push.colour = box.tint;
             push.colour.a *= alpha;
+            previewPush(push, box.previewIndex);
             s.pushAll(commands, push);
             vkCmdDraw(commands, 24, box.count, 0, box.firstInstance);
         }
@@ -543,6 +587,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.p1 = Vec4(list.view.cameraUp, 1.0f);
             push.colour = sprite.tint;
             push.colour.a *= alpha;
+            previewPush(push, sprite.previewIndex, true, true);
             s.pushAll(commands, push);
             vkCmdDraw(commands, 8, sprite.count, 0, sprite.firstInstance);
         }

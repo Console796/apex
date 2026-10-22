@@ -8,6 +8,8 @@
 #include "render/solid_mesh.hpp"
 #include "render/texture_heap.hpp"
 #include "render/view_math.hpp"
+#include "editor/preview.hpp"
+#include "editor/pick_index.hpp"
 
 #include <doctest/doctest.h>
 #include <vtfpp/VTF.h>
@@ -666,4 +668,169 @@ TEST_CASE("mirror: highlight golden images in every display mode") {
             golden::check(name, *image, *g->context);
         }
     }
+}
+
+TEST_CASE("mirror preview changes draw state only and cancel restores the image") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto red = findSolid(*scene.doc, "test/red");
+    const auto light = findEntity(*scene.doc, "light");
+    REQUIRE(red);
+    REQUIRE(light);
+    const auto redId = scene.doc->get(*red)->id, lightId = scene.doc->get(*light)->id;
+    const std::array nodes{redId, lightId};
+    const auto preview = editor::fromTransform(nodes, editor::Transform::translate({0, 80, 32}));
+    editor::PickIndex picks(*scene.doc);
+    picks.attach(*scene.doc);
+    const auto bounds = picks.bounds(redId);
+    const auto bytes = scene.doc->write().value();
+    const auto history = scene.doc->undoCount();
+    int notifications = 0;
+    scene.doc->observe([&](const document::ChangeSet&) { ++notifications; });
+    Highlight highlight;
+    highlight.selected = {redId, lightId};
+    scene.mirror.setHighlight(highlight);
+    const auto image = drawFrame(*g, scene.mirror, DisplayMode::Flat, true);
+    const auto before = scene.mirror.buildDrawList({});
+    scene.mirror.resetStats();
+    scene.mirror.setPreview(preview.transforms());
+    CHECK(scene.mirror.needsRedraw());
+    CHECK_FALSE(scene.mirror.pending());
+    const auto after = scene.mirror.buildDrawList({});
+    CHECK_FALSE(scene.mirror.needsRedraw());
+    scene.mirror.setPreview(preview.transforms());
+    CHECK_FALSE(scene.mirror.needsRedraw());
+    REQUIRE(after.previews.size() == 2);
+    REQUIRE(after.outlines.size() == 1);
+    REQUIRE(after.boxOutlines.size() == 1);
+    CHECK(after.outlines[0].previewIndex != 0);
+    CHECK(after.boxOutlines[0].previewIndex != 0);
+    REQUIRE(after.meshes.size() == before.meshes.size());
+    for (std::size_t i = 0; i < after.meshes.size(); ++i) {
+        CHECK(after.meshes[i].vertices == before.meshes[i].vertices);
+        CHECK(after.meshes[i].indices == before.meshes[i].indices);
+        CHECK(after.meshes[i].edgeIndices == before.meshes[i].edgeIndices);
+        CHECK(after.meshes[i].origin == before.meshes[i].origin);
+    }
+    CHECK(drawFrame(*g, scene.mirror, DisplayMode::Flat, true).pixels != image.pixels);
+    scene.mirror.clearPreview();
+    CHECK(scene.mirror.needsRedraw());
+    CHECK(drawFrame(*g, scene.mirror, DisplayMode::Flat, true).pixels == image.pixels);
+    CHECK_FALSE(scene.mirror.needsRedraw());
+    scene.mirror.clearPreview();
+    CHECK_FALSE(scene.mirror.needsRedraw());
+    CHECK(scene.doc->write().value() == bytes);
+    CHECK(scene.doc->undoCount() == history);
+    CHECK(notifications == 0);
+    REQUIRE(bounds);
+    REQUIRE(picks.bounds(redId));
+    CHECK(picks.bounds(redId)->min == bounds->min);
+    CHECK(picks.bounds(redId)->max == bounds->max);
+    CHECK(scene.mirror.stats().jobsSubmitted == 0);
+    CHECK(scene.mirror.stats().solidsRemeshed == 0);
+    CHECK(scene.mirror.stats().texturesUploaded == 0);
+}
+
+TEST_CASE("mirror preview Bite 9 brush images exactly match committed transforms") {
+    REQUIRE_GPU();
+    const DVec3 pivot{-24, -24, 24};
+    const std::array transforms{
+        editor::Transform::translate({8, 48, 16}),
+        editor::Transform::rotate({0, 0, 1}, 90, pivot),
+        editor::Transform::scale({2, 0.5, 1.25}, DMat3(1), pivot),
+        editor::Transform::mirror({1, 0, 0}, {-12, -24, 24})};
+    for (std::size_t t = 0; t < transforms.size(); ++t) {
+        CAPTURE(t);
+        Scene scene(*g);
+        const auto red = findSolid(*scene.doc, "test/red");
+        REQUIRE(red);
+        const std::array nodes{scene.doc->get(*red)->id};
+        Highlight highlight;
+        highlight.selected = {nodes[0]};
+        scene.mirror.setHighlight(highlight);
+        std::vector<Rgba8Image> images;
+        scene.mirror.setPreview(editor::fromTransform(nodes, transforms[t]).transforms());
+        for (const auto mode : {DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe})
+            images.push_back(drawFrame(*g, scene.mirror, mode, true));
+        REQUIRE(editor::commitTransform(*scene.doc, nodes, transforms[t], {}, "Transform"));
+        scene.mirror.clearPreview();
+        REQUIRE(scene.mirror.settle());
+        std::size_t i = 0;
+        for (const auto mode : {DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe}) {
+            CAPTURE(mode);
+            const auto committed = drawFrame(*g, scene.mirror, mode, true);
+            CHECK(images[i++].pixels == committed.pixels);
+        }
+    }
+}
+
+TEST_CASE("mirror preview containers cover descendants with child overrides and no double transform") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto brush = findEntity(*scene.doc, "func_detail");
+    REQUIRE(brush);
+    const auto brushId = scene.doc->get(*brush)->id;
+    const auto& children = scene.doc->get(*brush)->children;
+    REQUIRE_FALSE(children.empty());
+    const auto child = children[0];
+    const auto move = editor::Transform::translate({32, 0, 0}).matrix();
+    scene.mirror.setPreview({{brushId, move}});
+    const auto inherited = scene.mirror.buildDrawList({});
+    REQUIRE(inherited.previews.size() == 1);
+    CHECK(inherited.previews[0].matrix == move);
+    const auto childMove = editor::Transform::translate({0, 64, 0}).matrix();
+    scene.mirror.setPreview({{brushId, move}, {child, childMove}, {99999999, move}});
+    const auto overridden = scene.mirror.buildDrawList({});
+    REQUIRE(overridden.previews.size() == 1);
+    CHECK(overridden.previews[0].matrix == childMove);
+    const auto red = findSolid(*scene.doc, "test/red");
+    REQUIRE(red);
+    auto tx = scene.doc->begin("reparent during preview");
+    tx.reparent(*red, *brush);
+    tx.commit();
+    REQUIRE(scene.mirror.settle());
+    CHECK(scene.mirror.buildDrawList({}).previews.size() == 2);
+    REQUIRE(scene.doc->undo());
+    REQUIRE(scene.mirror.settle());
+    CHECK(scene.mirror.buildDrawList({}).previews.size() == 1);
+}
+
+TEST_CASE("mirror preview 2000 solids builds linear draw state without meshing") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto red = findSolid(*scene.doc, "test/red");
+    const auto world = findEntity(*scene.doc, "worldspawn");
+    REQUIRE(red);
+    REQUIRE(world);
+    const auto block = *scene.doc->get(*red)->block;
+    PreviewTransforms preview;
+    const auto matrix = editor::Transform::translate({1, 2, 3}).matrix();
+    auto tx = scene.doc->begin("2000 solids");
+    for (std::size_t i = 0; i < 2000; ++i) {
+        const auto solid = tx.create(block, world);
+        preview.emplace(scene.doc->get(solid)->id, matrix);
+    }
+    tx.commit();
+    REQUIRE(scene.mirror.settle(std::chrono::seconds(120)));
+    const auto before = scene.mirror.buildDrawList({});
+    scene.mirror.resetStats();
+    const auto start = std::chrono::steady_clock::now();
+    scene.mirror.setPreview(preview);
+    for (int frame = 0; frame < 20; ++frame) {
+        const auto after = scene.mirror.buildDrawList({});
+        REQUIRE(after.previews.size() == 2000);
+        REQUIRE(after.meshes.size() == before.meshes.size());
+        for (std::size_t i = 0; i < after.meshes.size(); ++i) {
+            CHECK(after.meshes[i].vertices == before.meshes[i].vertices);
+            CHECK(after.meshes[i].indices == before.meshes[i].indices);
+            CHECK(after.meshes[i].edgeIndices == before.meshes[i].edgeIndices);
+        }
+    }
+    // Loose debug/ASan guard against accidental quadratic scans, not a frame-time benchmark.
+    CHECK(std::chrono::steady_clock::now() - start < std::chrono::seconds(5));
+    CHECK_FALSE(scene.mirror.pending());
+    scene.mirror.pump();
+    CHECK(scene.mirror.stats().jobsSubmitted == 0);
+    CHECK(scene.mirror.stats().solidsRemeshed == 0);
+    CHECK(scene.mirror.stats().texturesUploaded == 0);
 }

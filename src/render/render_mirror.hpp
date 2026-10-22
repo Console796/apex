@@ -24,10 +24,15 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <map>
 #include <optional>
 #include <vector>
 
 namespace apex::render {
+
+// Render-owned input: no editor dependency. Container transforms cover descendants; a named
+// child overrides its ancestor, so overlapping selections never apply a transform twice.
+using PreviewTransforms = std::map<document::NodeId, DMat4>;
 
 struct MirrorStats {
     std::size_t jobsSubmitted = 0;
@@ -84,6 +89,8 @@ class RenderMirror {
     bool needsRedraw() const;
     // Changes only draw state; never schedules meshing or uploads geometry.
     void setHighlight(const Highlight& highlight);
+    void setPreview(const PreviewTransforms& preview);
+    void clearPreview();
     bool pending() const;
 
     // The returned list borrows the mirror's buffers: draw it before the next pump()/apply().

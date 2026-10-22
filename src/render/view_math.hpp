@@ -16,6 +16,33 @@
 
 namespace apex::render {
 
+// Storage-buffer ABI: three rows, each holding a linear row and translation (48 bytes).
+// Input positions remain draw-local. Compute M * origin - camera in double before narrowing,
+// rather than applying a float matrix to an already narrowed world/camera-relative position.
+struct PreviewTransform {
+    Vec4 rows[3];
+};
+static_assert(sizeof(PreviewTransform) == 48);
+
+inline PreviewTransform cameraRelativePreview(const DMat4& matrix, DVec3 origin, DVec3 camera) {
+    const DVec3 offset = DVec3(matrix * DVec4(origin, 1.0)) - camera;
+    PreviewTransform result;
+    for (int r = 0; r < 3; ++r)
+        result.rows[r] = Vec4(float(matrix[0][r]), float(matrix[1][r]), float(matrix[2][r]), float(offset[r]));
+    return result;
+}
+
+// CPU reference of preview.inc, using the exact packed data uploaded by Renderer.
+inline Vec3 previewPosition(const PreviewTransform& transform, Vec3 local) {
+    const Vec4 p(local, 1.0f);
+    return {glm::dot(transform.rows[0], p), glm::dot(transform.rows[1], p), glm::dot(transform.rows[2], p)};
+}
+
+inline Vec3 previewNormal(const PreviewTransform& transform, Vec3 normal) {
+    const Mat3 linear = glm::transpose(Mat3(Vec3(transform.rows[0]), Vec3(transform.rows[1]), Vec3(transform.rows[2])));
+    return glm::normalize(glm::transpose(glm::inverse(linear)) * normal);
+}
+
 // Position relative to the camera, narrowed to float after the double subtraction.
 inline Vec3 toCameraRelative(DVec3 world, DVec3 cameraPosition) {
     return Vec3(world - cameraPosition);

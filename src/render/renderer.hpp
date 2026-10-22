@@ -68,6 +68,7 @@ struct MeshDraw {
     std::uint32_t firstIndex = 0;
     std::uint32_t firstEdgeIndex = 0;
     bool outlineOnlyWire = false;      // Selected wire edges are emitted by the outline pass.
+    std::uint32_t previewIndex = 0;     // 0 = identity; otherwise DrawList::previews[index - 1].
 };
 
 struct BoxDraw {
@@ -78,6 +79,7 @@ struct BoxDraw {
     std::uint32_t firstInstance = 0;
     Vec4 tint{0.0f};                   // RGB tint blended by alpha; outline draws use RGBA directly.
     bool outlineOnlyWire = false;
+    std::uint32_t previewIndex = 0;
 };
 
 struct SpriteDraw {
@@ -86,6 +88,7 @@ struct SpriteDraw {
     DVec3 origin{0.0};
     std::uint32_t firstInstance = 0;
     Vec4 tint{0.0f};
+    std::uint32_t previewIndex = 0;
 };
 
 struct GridRect {
@@ -112,6 +115,11 @@ struct FrameView {
     Vec3 cameraUp{0.0f, 0.0f, 1.0f};
 };
 
+struct DrawPreview {
+    DMat4 matrix{1.0};
+    DVec3 origin{0.0}; // Same draw-local origin as the draws referring to this entry.
+};
+
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     FrameView view;
@@ -122,6 +130,7 @@ struct DrawList {
     std::vector<MeshDraw> outlines;
     std::vector<BoxDraw> boxOutlines;
     std::vector<SpriteDraw> spriteOutlines;
+    std::vector<DrawPreview> previews;
     float occludedAlpha = 0.25f;
     GridSettings grid;
     bool edgeOverlay = false;           // Textured/Flat: draw edgeIndices lines on top.
@@ -130,6 +139,11 @@ struct DrawList {
 };
 
 // Push constants shared by all pipelines (mirrors shaders/common.inc).
+// Preview ABI, without growing the block:
+//   brush/box: p1.xy = address low/high uint bits, p1.z = index uint bits;
+//   sprite: offsetSlot.w / p1.w = address low/high, p0.w = (index << 1) | outline.
+// Sprite outline used to occupy both p0.w and p1.w; packing it frees the third word.
+// Grid retains every word of its existing layout. Index 0 skips all buffer reads.
 struct PushConstants {
     Mat4 viewProjection;
     Vec4 colour;
@@ -150,7 +164,9 @@ class Renderer {
     Renderer& operator=(const Renderer&) = delete;
 
     // Records the list into the current rendering pass; viewport and scissor are expected to be
-    // set already (RenderTarget::begin does).
+    // set already (RenderTarget::begin does). Each command buffer is a reusable frame slot:
+    // record once per recording, and finish its previous submission before reusing it (as
+    // Swapchain does). Preview buffers are retained per slot, including across preview clears.
     void record(VkCommandBuffer commands, const DrawList& list);
 
     // Debug builds: recompiles any shader under APEX_SHADER_DIR whose source changed (glslc on

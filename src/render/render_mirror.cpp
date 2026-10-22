@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace apex::render {
@@ -107,6 +108,33 @@ struct RenderMirror::Impl {
     Highlight highlight;
     std::set<NodeId> selected;
     std::set<document::SideId> selectedSides;
+    PreviewTransforms preview;
+    struct Hierarchy {
+        NodeId parent;
+        std::vector<NodeId> children;
+    };
+    std::unordered_map<NodeId, Hierarchy> hierarchy;
+    std::map<NodeHandle, NodeId> hierarchyIds;
+    std::unordered_map<NodeId, DMat4> effectivePreview;
+    bool previewDirty = false;
+
+    void resolvePreview() {
+        if (!previewDirty) return;
+        previewDirty = false;
+        effectivePreview.clear();
+        if (preview.empty()) return;
+        const std::unordered_map<NodeId, DMat4> direct(preview.begin(), preview.end());
+        const auto walk = [&](const auto& self, NodeId id, const DMat4* inherited) -> void {
+            const auto found = direct.find(id);
+            const DMat4* matrix = found == direct.end() ? inherited : &found->second;
+            if (matrix) effectivePreview.emplace(id, *matrix);
+            const auto node = hierarchy.find(id);
+            if (node != hierarchy.end())
+                for (const auto child : node->second.children) self(self, child, matrix);
+        };
+        for (const auto& [id, node] : hierarchy)
+            if (!hierarchy.contains(node.parent)) walk(walk, id, nullptr);
+    }
 
     Impl(Context& c, TextureHeap& h, JobPool& j, assets::MaterialCache& m, const assets::EntityClassTable* k)
         : context(c), heap(h), jobs(j), cache(m), classes(k) {
@@ -396,6 +424,24 @@ struct RenderMirror::Impl {
     }
 
     void apply(const Document& doc, const document::ChangeSet& changes) {
+        // Cache IDs only: setPreview/buildDrawList never consult or mutate the document.
+        const auto remember = [&](const NodeHandle& handle) {
+            if (const auto* node = doc.get(handle)) {
+                hierarchy[node->id] = {node->parent, node->children};
+                hierarchyIds[handle] = node->id;
+            }
+        };
+        for (const auto& handle : changes.created) remember(handle);
+        for (const auto& modified : changes.modified) remember(modified.handle);
+        // Destroyed handles no longer resolve. Retain their IDs so deletion stays proportional
+        // to the ChangeSet, including containers that do not have render state of their own.
+        for (const auto& handle : changes.destroyed) {
+            if (const auto found = hierarchyIds.find(handle); found != hierarchyIds.end()) {
+                hierarchy.erase(found->second);
+                hierarchyIds.erase(found);
+            }
+        }
+        previewDirty = true;
         std::set<NodeId> dirty;
         for (const NodeHandle& h : changes.created) handleNode(doc, h, dirty);
         for (const document::Modified& m : changes.modified) {
@@ -497,6 +543,15 @@ void RenderMirror::setHighlight(const Highlight& highlight) {
     impl_->redraw = true;
 }
 
+void RenderMirror::setPreview(const PreviewTransforms& preview) {
+    if (impl_->preview == preview) return;
+    impl_->preview = preview;
+    impl_->previewDirty = true;
+    impl_->redraw = true;
+}
+
+void RenderMirror::clearPreview() { setPreview({}); }
+
 DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     Impl& m = *impl_;
     m.redraw = false;
@@ -508,8 +563,16 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     list.edgeOverlay = options.edgeOverlay;
     list.edgeColour = options.edgeColour;
     list.occludedAlpha = m.highlight.occludedAlpha;
+    m.resolvePreview();
+    const auto previewIndex = [&](NodeId id, DVec3 origin) -> std::uint32_t {
+        const auto found = m.effectivePreview.find(id);
+        if (found == m.effectivePreview.end()) return 0;
+        list.previews.push_back({found->second, origin});
+        return static_cast<std::uint32_t>(list.previews.size());
+    };
     for (const auto& [id, solid] : m.solids) {
         if (solid.hidden || !solid.meshed) continue;
+        const auto preview = previewIndex(id, solid.origin);
         for (const GpuBatch& batch : solid.batches) {
             MeshDraw draw;
             draw.vertices = &batch.vertices;
@@ -518,6 +581,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.edgeIndices = &batch.edges;
             draw.edgeIndexCount = batch.edgeCount;
             draw.origin = solid.origin;
+            draw.previewIndex = preview;
             if (const auto material = m.materials.find(batch.material); material != m.materials.end()) {
                 draw.texture = material->second.slot;
             }
@@ -568,6 +632,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             (void)entity;
             BoxDraw draw{&m.entityBuffer, 1, m.entityOrigin, options.mode != DisplayMode::Wireframe};
             draw.firstInstance = instance++;
+            draw.previewIndex = previewIndex(id, m.entityOrigin);
             const bool selected = m.selected.contains(id);
             draw.tint = selected ? m.highlight.selectTint
                                  : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
