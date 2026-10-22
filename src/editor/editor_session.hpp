@@ -109,6 +109,10 @@ public:
     Result<void> ungroupSelection();
     Result<void> tieToEntity(const TieParams& params = {});
     Result<void> moveToWorld();
+    Result<void> hideSelection();
+    Result<void> unhideAll();
+    Result<void> hideUnselected();
+    bool toggleIsolate();
 
     const Preset& preset() const { return preset_; }
     const Keymap& keymap() const { return keymap_; }

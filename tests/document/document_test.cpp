@@ -905,3 +905,51 @@ TEST_CASE("Document setKeyValue rejects duplicate keys before no-op or removal")
     CHECK(doc.undoCount() == 0);
     CHECK(saved(doc) == bytes);
 }
+
+TEST_CASE("Document history labels and jumps match repeated undo and redo") {
+    const auto file = parsed("entity { id 1 classname info_target }\n");
+    Document jumped(file), stepped(file);
+    const auto populate = [](Document& doc) {
+        const auto entity = *doc.handle(doc.roots()[0]);
+        for (int i = 1; i <= 4; ++i) {
+            auto tx = doc.begin("Edit " + std::to_string(i));
+            tx.setKeyValue(entity, "targetname", std::to_string(i));
+            tx.setSelection({static_cast<std::uint64_t>(i - 1)}, {static_cast<std::uint64_t>(i)});
+            tx.commit(false);
+        }
+    };
+    CHECK(jumped.undoLabels().empty());
+    CHECK(jumped.redoLabels().empty());
+    CHECK(jumped.jumpTo(0));
+    populate(jumped);
+    populate(stepped);
+    CHECK(jumped.undoLabels() == std::vector<std::string>{"Edit 1", "Edit 2", "Edit 3", "Edit 4"});
+    const auto memory = jumped.historyBytes();
+    std::size_t notifications = 0;
+    jumped.observe([&](const ChangeSet&) { ++notifications; });
+    std::size_t expectedNotifications = 0;
+    for (const std::size_t target : {2, 0, 3, 1, 4}) {
+        expectedNotifications += target > stepped.undoCount() ? target - stepped.undoCount() : stepped.undoCount() - target;
+        while (stepped.undoCount() > target) REQUIRE(stepped.undo());
+        while (stepped.undoCount() < target) REQUIRE(stepped.redo());
+        REQUIRE(jumped.jumpTo(target));
+        CHECK(jumped.undoCount() == target);
+        CHECK(saved(jumped) == saved(stepped));
+        CHECK(jumped.restoredSelection() == stepped.restoredSelection());
+        CHECK(jumped.historyBytes() == memory);
+        CHECK(notifications == expectedNotifications);
+    }
+    REQUIRE(jumped.jumpTo(1));
+    CHECK(jumped.undoLabels() == std::vector<std::string>{"Edit 1"});
+    CHECK(jumped.redoLabels() == std::vector<std::string>{"Edit 2", "Edit 3", "Edit 4"});
+    const auto before = saved(jumped);
+    const auto selection = jumped.restoredSelection();
+    const auto beforeNotifications = notifications;
+    CHECK_FALSE(jumped.jumpTo(5));
+    CHECK_FALSE(jumped.jumpTo(static_cast<std::size_t>(-1)));
+    CHECK(saved(jumped) == before);
+    CHECK(jumped.undoCount() == 1);
+    CHECK(jumped.redoCount() == 3);
+    CHECK(jumped.restoredSelection() == selection);
+    CHECK(notifications == beforeNotifications);
+}

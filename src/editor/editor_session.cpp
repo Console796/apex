@@ -1,6 +1,7 @@
 #include "editor/editor_session.hpp"
 
 #include "core/strings.hpp"
+#include "editor/hide_ops.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/selection_undo.hpp"
 
@@ -225,6 +226,10 @@ bool EditorSession::perform(const ActionId& action) {
     if (action == "edit.ungroup") return ungroupSelection().has_value();
     if (action == "edit.tie_to_entity") return tieToEntity().has_value();
     if (action == "edit.move_to_world") return moveToWorld().has_value();
+    if (action == "view.hide") return hideSelection().has_value();
+    if (action == "view.unhide") return unhideAll().has_value();
+    if (action == "view.hide_unselected") return hideUnselected().has_value();
+    if (action == "view.isolate") return toggleIsolate();
     if (action == "edit.undo" || action == "edit.redo") {
         const bool changed = action == "edit.undo" ? document_->undo() : document_->redo();
         if (changed) restoreFromUndo(*document_, selection_);
@@ -541,6 +546,36 @@ Result<void> EditorSession::moveToWorld() {
     return runEdit("Move to world", AfterEdit::Computed, [&](document::Transaction& tx) {
         return stageMoveToWorld(*document_, *groups_, selection_, tx);
     });
+}
+Result<void> EditorSession::hideSelection() {
+    return runEdit("Hide", AfterEdit::Clear, [&](document::Transaction& tx) {
+        return stageHide(*document_, *groups_, selection_, tx);
+    });
+}
+Result<void> EditorSession::unhideAll() {
+    auto result = runEdit("Unhide all", AfterEdit::Computed, [&](document::Transaction& tx) {
+        return stageUnhideAll(*document_, tx);
+    });
+    if (result) setViewState({});
+    return result;
+}
+Result<void> EditorSession::hideUnselected() {
+    return runEdit("Hide unselected", AfterEdit::Keep, [&](document::Transaction& tx) {
+        return stageHideUnselected(*document_, *groups_, selection_, tx);
+    });
+}
+bool EditorSession::toggleIsolate() {
+    if (!document_ || transformActive()) return false;
+    if (view_.isolate) {
+        setViewState({});
+        return true;
+    }
+    const auto targets = visibilityTargets(*document_, *groups_, selection_);
+    if (targets.empty()) return false;
+    ViewState view;
+    view.isolate.emplace(targets.begin(), targets.end());
+    setViewState(std::move(view));
+    return true;
 }
 std::size_t EditorSession::observe(Observer observer) {
     const auto token = nextObserver_++;

@@ -432,6 +432,23 @@ bool Document::redo() {
     return true;
 }
 
+std::vector<std::string> Document::undoLabels() const {
+    std::vector<std::string> labels;
+    for (const auto& entry : undo_) labels.push_back(entry.label);
+    return labels;
+}
+std::vector<std::string> Document::redoLabels() const {
+    std::vector<std::string> labels;
+    for (auto it = redo_.rbegin(); it != redo_.rend(); ++it) labels.push_back(it->label);
+    return labels;
+}
+bool Document::jumpTo(std::size_t target) {
+    if (target > undoCount() + redoCount()) return false;
+    while (undoCount() > target) undo();
+    while (undoCount() < target) redo();
+    return true;
+}
+
 Transaction::Transaction(Document& doc, std::string label) : doc_(&doc) {
     if (doc.active_ || doc.notifying_) throw std::logic_error("nested transaction/observer write");
     entry_.label = std::move(label);

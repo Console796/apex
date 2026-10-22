@@ -118,6 +118,10 @@ public:
     const std::optional<SelectionBlob>& restoredSelection() const { return restoredSelection_; }
     std::size_t undoCount() const { return undo_.size(); }
     std::size_t redoCount() const { return redo_.size(); }
+    // Undo labels are oldest first; redo labels begin with the next redo.
+    std::vector<std::string> undoLabels() const;
+    std::vector<std::string> redoLabels() const;
+    bool jumpTo(std::size_t undoCount);
     std::size_t historyBytes() const { return historyBytes_; }
     void setUndoCap(std::size_t bytes);
     using Observer = std::function<void(const ChangeSet&)>;

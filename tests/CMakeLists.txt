@@ -11,7 +11,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_matching_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
-               editor/pick_index_test.cpp editor/visibility_test.cpp editor/actions_test.cpp
+               editor/pick_index_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/actions_test.cpp
                editor/group_index_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
                editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/work_plane_test.cpp
                editor/transform_test.cpp editor/preview_test.cpp
