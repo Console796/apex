@@ -41,11 +41,13 @@ public:
     viewport::NodeId paneId() const { return pane_; }
     void requestRedraw() { dirty_ = true; }
     void setClearColour(const float rgba[4]);
+    void setResizeDragging(bool dragging);
     // One timer tick: applies queued navigation input, then draws when dirty (or `forceDraw`).
     // Returns the milliseconds a draw took, or a negative value when nothing was drawn.
     double tick(bool forceDraw);
     std::uint64_t frames() const { return frames_; }
     bool failed() const { return failed_; }
+    std::uint32_t recreateCount() const { return swapchain_ ? swapchain_->recreateCount() : 0; }
 
     void releaseCapture();
     void setEditorSession(editor::EditorSession* session) {
@@ -92,6 +94,7 @@ private:
     std::unique_ptr<render::Swapchain> swapchain_;
     render::SwapchainDepth depth_;
     float clear_[4] = {0.1f, 0.1f, 0.1f, 1.0f};
+    bool resizeDragging_ = false;
     bool dirty_ = true;
     bool failed_ = false;
     std::uint64_t frames_ = 0;

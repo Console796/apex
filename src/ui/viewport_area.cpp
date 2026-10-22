@@ -189,6 +189,7 @@ double ViewportArea::pixelHeight() const {
 }
 
 void ViewportArea::rebuild() {
+    endHandleDrag();
     rebuildPending_ = false;
     if (!gpuTried_) {
         gpuTried_ = true;
@@ -287,6 +288,8 @@ bool ViewportArea::beginHandleDrag(AreaSplitter* splitter, QSplitterHandle* hand
         }
     }
     drag_ = std::move(drag);
+    for (auto& [id, frame] : frames_)
+        if (frame && frame->window()) frame->window()->setResizeDragging(true);
     qApp->installEventFilter(this);
     return true;
 }
@@ -332,6 +335,9 @@ void ViewportArea::applyHandleDrag(QPointF global) {
 void ViewportArea::endHandleDrag() {
     if (!drag_) return;
     drag_.reset();
+    for (auto& [id, frame] : frames_)
+        if (frame && frame->window()) frame->window()->setResizeDragging(false);
+    forceDraw_ = true;
     qApp->removeEventFilter(this);
     emit layoutChanged();
 }
@@ -349,7 +355,11 @@ bool ViewportArea::eventFilter(QObject* watched, QEvent* event) {
         return true;
     }
     case QEvent::MouseButtonRelease:
-        if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) endHandleDrag();
+        if (const auto* release = static_cast<QMouseEvent*>(event); release->button() == Qt::LeftButton) {
+            // A coalesced final move may arrive only as the release position.
+            applyHandleDrag(release->globalPosition());
+            endHandleDrag();
+        }
         return false;  // Still delivered, so Qt's own press tracking ends cleanly.
     default:
         return false;

@@ -146,6 +146,12 @@ void PaneWindow::setClearColour(const float rgba[4]) {
     dirty_ = true;
 }
 
+void PaneWindow::setResizeDragging(bool dragging) {
+    resizeDragging_ = dragging;
+    if (swapchain_) swapchain_->setResizeDragging(dragging);
+    dirty_ = true; // Release always renders the final extent, including a lost release.
+}
+
 QSize PaneWindow::pixelSize() const {
     return QSize(qRound(width() * devicePixelRatio()), qRound(height() * devicePixelRatio()));
 }
@@ -452,7 +458,9 @@ double PaneWindow::tick(bool forceDraw) {
     }
     delta_ = {};
     scroll_ = 0.0;
-    if ((!dirty_ && !forceDraw) || !isExposed() || failed_) return -1.0;
+    if ((resizeDragging_ && !swapchain_) || (swapchain_ && !swapchain_->frameDue())) return -1.0;
+    const bool retiring = swapchain_ && swapchain_->hasRetiredSwapchains();
+    if ((!dirty_ && !forceDraw && !retiring) || !isExposed() || failed_) return -1.0;
     return draw();
 }
 
@@ -472,6 +480,7 @@ double PaneWindow::draw() {
             return -1.0;
         }
         swapchain_ = std::move(*created);
+        swapchain_->setResizeDragging(resizeDragging_);
     }
     render::Renderer* renderer = host_.renderer(swapchain_->format());
     if (!renderer) {

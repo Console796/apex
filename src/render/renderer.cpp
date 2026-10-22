@@ -667,7 +667,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
 
 Result<void> SwapchainDepth::begin(VkCommandBuffer commands, const SwapchainFrame& frame, const float clearColor[4]) {
     if (!depth_ || depth_.extent().width != frame.extent.width || depth_.extent().height != frame.extent.height) {
-        context_->waitIdle();
+        // Swapchain::renderFrame waits for this pane's previous frame before recording.
         depth_.reset();
         ImageDesc desc;
         desc.format = kFormat;

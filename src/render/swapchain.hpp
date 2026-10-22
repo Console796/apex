@@ -12,6 +12,7 @@
 #include "core/result.hpp"
 #include "render/context.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -29,8 +30,8 @@ struct SwapchainFrame {
 
 enum class FrameStatus {
     Presented,
-    Skipped, // Zero-sized surface, or the swapchain was out of date and has been recreated:
-             // nothing was drawn, retry on the next expose/update.
+    Skipped, // Zero-sized, out of date, or between resize-drag intervals: nothing was drawn.
+             // Retry on the next expose/update.
 };
 
 class Swapchain {
@@ -49,7 +50,16 @@ class Swapchain {
     Swapchain& operator=(const Swapchain&) = delete;
 
     // Draws and presents one frame at the window's current pixel size.
-    Result<FrameStatus> renderFrame(VkExtent2D pixelSize, const RecordFn& record);
+    using Clock = std::chrono::steady_clock;
+    Result<FrameStatus> renderFrame(VkExtent2D pixelSize, const RecordFn& record,
+                                    Clock::time_point now = Clock::now());
+    // Preserve the last presented frame between drag intervals. Release forces a final resize.
+    void setResizeDragging(bool dragging, Clock::time_point now = Clock::now());
+    // Lets UI callers skip draw-list preparation as well as GPU work between intervals.
+    bool frameDue(Clock::time_point now = Clock::now()) const {
+        return !resizeDragging_ || now - lastDragFrame_ >= std::chrono::milliseconds(100);
+    }
+    bool hasRetiredSwapchains() const { return !retired_.empty(); }
 
     VkFormat format() const { return format_; }
     VkExtent2D extent() const { return extent_; }
@@ -60,6 +70,21 @@ class Swapchain {
     Swapchain() = default;
     Result<bool> recreate(VkExtent2D pixelSize); // false: surface has zero size.
     void destroyImages();
+    void destroyRetired();
+    struct Retired {
+        VkSwapchainKHR swapchain;
+        std::vector<VkImageView> views;
+        std::vector<VkSemaphore> renderDone;
+    };
+    std::vector<Retired> retired_;
+    // Reacquiring the first presented image of the replacement, then completing its frame
+    // fence (which waits on acquisition), proves that the old presentation has finished.
+    // See docs.vulkan.org/samples/latest/samples/api/swapchain_recreation/README.html.
+    // Continuous resizing can defer retirement until release; the UI keeps ticking to collect it.
+    std::uint32_t firstPresented_ = UINT32_MAX;
+    bool retirementReady_ = false;
+    bool resizeDragging_ = false;
+    Clock::time_point lastDragFrame_{};
 
     Context* context_ = nullptr;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
