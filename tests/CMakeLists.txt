@@ -14,7 +14,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/tool_test.cpp
                editor/pick_index_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp
                editor/group_index_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
-               editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/work_plane_test.cpp
+               editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/work_plane_test.cpp
                editor/transform_test.cpp editor/preview_test.cpp
                editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp
                render/view_math_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
@@ -25,6 +25,12 @@ target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets s
                                          apex_editor apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
 doctest_discover_tests(apex_tests)
+
+# Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp)
+target_link_libraries(apex_measure_tests PRIVATE apex_editor apex_warnings doctest::doctest)
+doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
+                      PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")
 
 target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
                                               APEX_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/golden")
