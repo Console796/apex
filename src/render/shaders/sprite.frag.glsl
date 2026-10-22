@@ -9,7 +9,12 @@ layout(location = 2) flat in uint vSlot;
 layout(location = 0) out vec4 outColor;
 
 void main() {
+    if (push.p1.w > 0.5) {
+        outColor = push.colour;
+        return;
+    }
     vec4 texel = sampleSlot(vSlot, vUv) * vColour;
+    texel.rgb = mix(texel.rgb, push.colour.rgb, push.colour.a);
     if (texel.a < 0.5) discard;
     outColor = vec4(texel.rgb, 1.0);
 }

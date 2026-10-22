@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 #include <vtfpp/VTF.h>
 
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -397,4 +398,241 @@ TEST_CASE("mirror: golden images of the fixture map") {
     golden::check("render_map_textured", drawFrame(*g, scene.mirror, DisplayMode::Textured), *g->context);
     golden::check("render_map_flat", drawFrame(*g, scene.mirror, DisplayMode::Flat, true), *g->context);
     golden::check("render_map_wireframe", drawFrame(*g, scene.mirror, DisplayMode::Wireframe), *g->context);
+}
+
+TEST_CASE("solid meshing: face ranges retain SideIds and cover triangles and polygon edges") {
+    const auto doc = loadMap();
+    const auto red = findSolid(*doc, "test/red");
+    REQUIRE(red);
+    const auto& block = *doc->get(*red)->block;
+    const auto mesh = meshSolid(block, [](std::string_view) { return TextureSize{}; });
+    REQUIRE(mesh);
+    const auto& batch = mesh->batches[0];
+    REQUIRE(batch.faces.size() == 6);
+    std::uint32_t triangles = 0, edges = 0;
+    for (const FaceRange& face : batch.faces) {
+        CHECK(doc->side(face.side).has_value());
+        CHECK(face.firstIndex == triangles);
+        CHECK(face.firstEdgeIndex == edges);
+        CHECK(face.indexCount == 6);
+        CHECK(face.edgeIndexCount == 8);
+        triangles += face.indexCount;
+        edges += face.edgeIndexCount;
+    }
+    CHECK(triangles == batch.indices.size());
+    CHECK(edges == batch.edges.size());
+}
+
+TEST_CASE("mirror: highlight changes only draw state in every display mode") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto red = findSolid(*scene.doc, "test/red");
+    const auto blue = findSolid(*scene.doc, "test/blue");
+    const auto light = findEntity(*scene.doc, "light");
+    REQUIRE(red);
+    REQUIRE(blue);
+    REQUIRE(light);
+    const auto redId = scene.doc->get(*red)->id;
+    const auto blueId = scene.doc->get(*blue)->id;
+    const auto lightId = scene.doc->get(*light)->id;
+    const auto sideId = *scene.doc->get(*red)->block->find("side")->find("id")->asInt();
+    for (const auto mode : {DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe}) {
+        MirrorViewOptions options;
+        options.mode = mode;
+        scene.mirror.setHighlight({});
+        const auto before = scene.mirror.buildDrawList(options);
+        CHECK_FALSE(scene.mirror.needsRedraw());
+        scene.mirror.resetStats();
+        Highlight h;
+        h.selected = {redId, lightId, 9999999, redId};
+        h.hover = blueId;
+        scene.mirror.setHighlight(h);
+        CHECK(scene.mirror.needsRedraw());
+        const auto list = scene.mirror.buildDrawList(options);
+        REQUIRE(list.meshes.size() == before.meshes.size());
+        REQUIRE(list.outlines.size() == 1);
+        REQUIRE(list.boxOutlines.size() == 1);
+        CHECK(list.outlines[0].origin == DVec3(-24, -24, 24));
+        for (std::size_t i = 0; i < list.meshes.size(); ++i) {
+            const auto& draw = list.meshes[i];
+            CHECK(draw.vertices == before.meshes[i].vertices);
+            CHECK(draw.indices == before.meshes[i].indices);
+            CHECK(draw.edgeIndices == before.meshes[i].edgeIndices);
+            const Vec4 expected = draw.origin == DVec3(-24, -24, 24) ? h.selectTint :
+                                  draw.origin == DVec3(40, 24, 16) ? h.hoverTint : Vec4(0);
+            CHECK(draw.highlight == expected);
+        }
+        CHECK(list.boxes[list.boxOutlines[0].firstInstance].tint == h.selectTint);
+        CHECK_FALSE(scene.mirror.needsRedraw());
+        scene.mirror.setHighlight(h);
+        CHECK_FALSE(scene.mirror.needsRedraw());
+        h.hover = redId; // Selection wins over hover.
+        scene.mirror.setHighlight(h);
+        const auto selected = scene.mirror.buildDrawList(options);
+        for (const auto& draw : selected.meshes)
+            if (draw.origin == DVec3(-24, -24, 24)) CHECK(draw.highlight == h.selectTint);
+
+        h.selected.clear();
+        h.hover = lightId;
+        scene.mirror.setHighlight(h);
+        const auto hoveredEntity = scene.mirror.buildDrawList(options);
+        CHECK(hoveredEntity.boxOutlines.empty());
+        CHECK(hoveredEntity.boxes[list.boxOutlines[0].firstInstance].tint == h.hoverTint);
+        h.hover = 9999999;
+        h.selectedSides = {sideId, -1};
+        scene.mirror.setHighlight(h);
+        const auto faces = scene.mirror.buildDrawList(options);
+        REQUIRE(faces.outlines.size() == 1);
+        CHECK(faces.outlines[0].edgeIndexCount == 8);
+        CHECK(faces.outlines[0].indexCount == 6);
+        CHECK(faces.meshes.size() == before.meshes.size() + 5);
+        CHECK(std::ranges::count_if(faces.meshes, [&](const MeshDraw& d) { return d.highlight == h.selectTint; }) == 1);
+        options.showEntities = false;
+        h.selected = {lightId};
+        h.selectedSides.clear();
+        scene.mirror.setHighlight(h);
+        const auto noEntities = scene.mirror.buildDrawList(options);
+        CHECK(noEntities.boxes.empty());
+        CHECK(noEntities.boxOutlines.empty());
+        CHECK(noEntities.outlines.empty());
+        scene.mirror.pump();
+        const auto& stats = scene.mirror.stats();
+        CHECK(stats.jobsSubmitted == 0);
+        CHECK(stats.solidsRemeshed == 0);
+        CHECK(stats.meshFailures == 0);
+        CHECK(stats.solidsFreed == 0);
+        CHECK(stats.texturesUploaded == 0);
+    }
+}
+
+TEST_CASE("mirror: hidden solids and point entities never highlight") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto red = findSolid(*scene.doc, "test/red");
+    const auto light = findEntity(*scene.doc, "light");
+    REQUIRE(red);
+    REQUIRE(light);
+    Highlight h;
+    h.selected = {scene.doc->get(*red)->id, scene.doc->get(*light)->id};
+    h.hover = h.selected[0];
+    h.selectedSides = {*scene.doc->get(*red)->block->find("side")->find("id")->asInt()};
+    auto parsed = kv1::parse("hidden {}");
+    REQUIRE(parsed);
+    auto tx = scene.doc->begin("hide");
+    const auto wrapper = tx.create(parsed->root().children()[0]);
+    const auto groupBlock = kv1::parse("group {}");
+    REQUIRE(groupBlock);
+    const auto group = tx.create(groupBlock->root().children()[0]);
+    tx.reparent(*red, group);
+    tx.reparent(*light, group);
+    tx.commit();
+    REQUIRE(scene.mirror.settle());
+    auto hide = scene.doc->begin("hide group");
+    hide.reparent(group, wrapper);
+    hide.commit();
+    REQUIRE(scene.mirror.settle());
+    scene.mirror.setHighlight(h);
+    const auto list = scene.mirror.buildDrawList({});
+    CHECK(list.meshes.size() == 3);
+    CHECK(list.boxes.size() == 1);
+    CHECK(list.outlines.empty());
+    CHECK(list.boxOutlines.empty());
+    REQUIRE(scene.doc->undo());
+    REQUIRE(scene.mirror.settle());
+    const auto restored = scene.mirror.buildDrawList({});
+    CHECK(restored.meshes.size() == 4);
+    CHECK(restored.outlines.size() == 1);
+    CHECK(restored.boxOutlines.size() == 1);
+}
+
+TEST_CASE("mirror: selecting ten thousand solids reuses all uploaded geometry") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto red = findSolid(*scene.doc, "test/red");
+    const auto world = findEntity(*scene.doc, "worldspawn");
+    REQUIRE(red);
+    REQUIRE(world);
+    const auto block = *scene.doc->get(*red)->block;
+    Highlight h;
+    auto tx = scene.doc->begin("many solids");
+    for (std::size_t i = 0; i < 10000; ++i) {
+        const auto solid = tx.create(block, world);
+        h.selected.push_back(scene.doc->get(solid)->id);
+    }
+    tx.commit();
+    REQUIRE(scene.mirror.settle(std::chrono::seconds(120)));
+    const auto before = scene.mirror.buildDrawList({});
+    scene.mirror.resetStats();
+    scene.mirror.setHighlight(h);
+    CHECK(scene.mirror.needsRedraw());
+    scene.mirror.pump();
+    const auto after = scene.mirror.buildDrawList({});
+    CHECK_FALSE(scene.mirror.needsRedraw());
+    CHECK(after.outlines.size() == 10000);
+    REQUIRE(after.meshes.size() == before.meshes.size());
+    for (std::size_t i = 0; i < after.meshes.size(); ++i) {
+        CHECK(after.meshes[i].vertices == before.meshes[i].vertices);
+        CHECK(after.meshes[i].indices == before.meshes[i].indices);
+        CHECK(after.meshes[i].edgeIndices == before.meshes[i].edgeIndices);
+    }
+    const auto& stats = scene.mirror.stats();
+    CHECK(stats.jobsSubmitted == 0);
+    CHECK(stats.solidsRemeshed == 0);
+    CHECK(stats.meshFailures == 0);
+    CHECK(stats.solidsFreed == 0);
+    CHECK(stats.texturesUploaded == 0);
+}
+
+TEST_CASE("mirror: highlight golden images in every display mode") {
+    REQUIRE_GPU();
+    for (const auto mode : {DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe}) {
+        const std::string suffix = mode == DisplayMode::Textured ? "textured" : mode == DisplayMode::Flat ? "flat" : "wireframe";
+        for (const std::string scenario : {"selected", "hovered", "occluded", "entity", "face"}) {
+            CAPTURE(suffix);
+            CAPTURE(scenario);
+            Scene scene(*g);
+            const auto red = findSolid(*scene.doc, "test/red");
+            const auto light = findEntity(*scene.doc, "light");
+            REQUIRE(red);
+            REQUIRE(light);
+            Highlight h;
+            MirrorViewOptions options;
+            options.mode = mode;
+            options.view = makeView({-150, -110, 100}, {27, 33, 0});
+            const auto redId = scene.doc->get(*red)->id;
+            if (scenario == "selected") h.selected = {redId};
+            if (scenario == "hovered") h.hover = redId;
+            if (scenario == "face") h.selectedSides = {*scene.doc->get(*red)->block->find("side")->find("id")->asInt()};
+            if (scenario == "entity") {
+                h.selected = {scene.doc->get(*light)->id};
+                options.view = makeView({-50, -40, 125}, {24, 38, 0});
+            }
+            if (scenario == "occluded") {
+                // A same-sized brush behind the red wall is entirely hidden in this view.
+                auto tx = scene.doc->begin("rear brush");
+                const auto rear = tx.create(*scene.doc->get(*red)->block);
+                auto geometry = geometry::solidGeometry(*scene.doc->get(rear)->block);
+                REQUIRE(geometry);
+                for (auto& p : geometry->poly.vertices) p.x += 96;
+                for (auto& face : geometry->poly.faces) face.plane = geometry->poly.derivePlane(face).value();
+                tx.setSolidGeometry(std::get<Handle<document::Solid>>(rear), *geometry);
+                tx.commit();
+                REQUIRE(scene.mirror.settle());
+                h.selected = {scene.doc->get(rear)->id};
+                options.view = makeView({-152, -24, 24}, {0, 0, 0});
+            }
+            scene.mirror.setHighlight(h);
+            const auto list = scene.mirror.buildDrawList(options);
+            REQUIRE(g->context->oneShot([&](VkCommandBuffer commands) {
+                g->target.begin(commands, kClear);
+                g->renderer->record(commands, list);
+                g->target.end(commands);
+            }));
+            const auto image = g->target.readback();
+            REQUIRE(image);
+            CHECK(g->context->validation().errorCount() == 0);
+            const std::string name = "highlight_" + scenario + "_" + suffix;
+            golden::check(name, *image, *g->context);
+        }
+    }
 }

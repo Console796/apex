@@ -10,4 +10,5 @@ layout(location = 0) out vec4 outColor;
 
 void main() {
     outColor = push.colour;
+    outColor.rgb = mix(outColor.rgb, push.p0.rgb, push.p0.a);
 }

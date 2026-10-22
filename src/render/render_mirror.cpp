@@ -52,6 +52,7 @@ struct GpuBatch {
     std::string material;
     Buffer vertices, indices, edges;
     std::uint32_t indexCount = 0, edgeCount = 0;
+    std::vector<FaceRange> faces;
 };
 
 struct SolidState {
@@ -103,6 +104,9 @@ struct RenderMirror::Impl {
 
     std::vector<Buffer> garbage;
     MirrorStats stats;
+    Highlight highlight;
+    std::set<NodeId> selected;
+    std::set<document::SideId> selectedSides;
 
     Impl(Context& c, TextureHeap& h, JobPool& j, assets::MaterialCache& m, const assets::EntityClassTable* k)
         : context(c), heap(h), jobs(j), cache(m), classes(k) {
@@ -276,6 +280,7 @@ struct RenderMirror::Impl {
             }
             GpuBatch gpu;
             gpu.material = batch.material;
+            gpu.faces = std::move(batch.faces);
             gpu.vertices = std::move(*vertices);
             gpu.indices = std::move(*indices);
             gpu.edges = std::move(*edges);
@@ -393,7 +398,26 @@ struct RenderMirror::Impl {
     void apply(const Document& doc, const document::ChangeSet& changes) {
         std::set<NodeId> dirty;
         for (const NodeHandle& h : changes.created) handleNode(doc, h, dirty);
-        for (const document::Modified& m : changes.modified) handleNode(doc, m.handle, dirty);
+        for (const document::Modified& m : changes.modified) {
+            handleNode(doc, m.handle, dirty);
+            if ((static_cast<unsigned>(m.flags) & static_cast<unsigned>(document::Dirty::Hierarchy)) == 0) continue;
+            // Moving a container into/out of hidden{} changes visibility of all descendants.
+            const auto refresh = [&](const auto& self, NodeId id) -> void {
+                const auto h = doc.handle(id);
+                const auto* node = h ? doc.get(*h) : nullptr;
+                if (!node) return;
+                if (const auto* solid = std::get_if<Handle<document::Solid>>(&*h)) {
+                    const auto state = solids.find(id);
+                    if (state != solids.end() && state->second.hidden != hidden(doc, *node))
+                        touchSolid(doc, *solid, dirty);
+                } else if (const auto* entity = std::get_if<Handle<document::Entity>>(&*h)) {
+                    updateEntity(doc, *entity);
+                }
+                for (const auto child : node->children) self(self, child);
+            };
+            if (const auto* node = doc.get(m.handle))
+                for (const auto child : node->children) refresh(refresh, child);
+        }
         for (const NodeHandle& h : changes.destroyed) {
             if (const auto* s = std::get_if<Handle<document::Solid>>(&h)) {
                 if (const auto it = solidIds.find(*s); it != solidIds.end()) {
@@ -465,6 +489,14 @@ bool RenderMirror::settle(std::chrono::milliseconds timeout) {
 bool RenderMirror::needsRedraw() const { return impl_->redraw || impl_->pending(); }
 bool RenderMirror::pending() const { return impl_->pending(); }
 
+void RenderMirror::setHighlight(const Highlight& highlight) {
+    if (impl_->highlight == highlight) return;
+    impl_->highlight = highlight;
+    impl_->selected = {highlight.selected.begin(), highlight.selected.end()};
+    impl_->selectedSides = {highlight.selectedSides.begin(), highlight.selectedSides.end()};
+    impl_->redraw = true;
+}
+
 DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     Impl& m = *impl_;
     m.redraw = false;
@@ -475,6 +507,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     list.grid = options.grid;
     list.edgeOverlay = options.edgeOverlay;
     list.edgeColour = options.edgeColour;
+    list.occludedAlpha = m.highlight.occludedAlpha;
     for (const auto& [id, solid] : m.solids) {
         if (solid.hidden || !solid.meshed) continue;
         for (const GpuBatch& batch : solid.batches) {
@@ -493,11 +526,59 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             case DisplayMode::Flat: draw.colour = flatColour(batch.material); break;
             case DisplayMode::Wireframe: draw.colour = options.wireColour; break;
             }
-            list.meshes.push_back(draw);
+            const bool selected = m.selected.contains(id);
+            const Vec4 tint = selected ? m.highlight.selectTint
+                                      : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
+            draw.highlight = tint;
+            draw.outlineOnlyWire = selected;
+            const bool faceMode = !selected && std::ranges::any_of(batch.faces, [&](const FaceRange& face) {
+                return m.selectedSides.contains(face.side);
+            });
+            if (faceMode) {
+                // Split existing ranges so a face tint does not bleed into its material siblings.
+                for (const FaceRange& face : batch.faces) {
+                    MeshDraw part = draw;
+                    part.firstIndex = face.firstIndex;
+                    part.indexCount = face.indexCount;
+                    part.firstEdgeIndex = face.firstEdgeIndex;
+                    part.edgeIndexCount = face.edgeIndexCount;
+                    if (m.selectedSides.contains(face.side)) {
+                        part.highlight = m.highlight.selectTint;
+                        part.outlineOnlyWire = true;
+                        MeshDraw outline = part;
+                        outline.colour = m.highlight.outlineColour;
+                        outline.highlight = Vec4(0.0f);
+                        list.outlines.push_back(outline);
+                    }
+                    list.meshes.push_back(part);
+                }
+            } else {
+                list.meshes.push_back(draw);
+            }
+            if (selected) {
+                draw.colour = m.highlight.outlineColour;
+                draw.highlight = Vec4(0.0f);
+                list.outlines.push_back(draw);
+            }
         }
     }
     if (options.showEntities && m.entityBuffer && m.entityCount > 0) {
-        list.boxes.push_back({&m.entityBuffer, m.entityCount, m.entityOrigin, options.mode != DisplayMode::Wireframe});
+        std::uint32_t instance = 0;
+        for (const auto& [id, entity] : m.entities) {
+            (void)entity;
+            BoxDraw draw{&m.entityBuffer, 1, m.entityOrigin, options.mode != DisplayMode::Wireframe};
+            draw.firstInstance = instance++;
+            const bool selected = m.selected.contains(id);
+            draw.tint = selected ? m.highlight.selectTint
+                                 : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
+            draw.outlineOnlyWire = selected;
+            list.boxes.push_back(draw);
+            if (selected) {
+                draw.solid = false;
+                draw.tint = m.highlight.outlineColour;
+                list.boxOutlines.push_back(draw);
+            }
+        }
     }
     return list;
 }

@@ -6,6 +6,7 @@
 #include "core/kv1.hpp"
 #include "core/math.hpp"
 #include "core/result.hpp"
+#include "document/document.hpp"
 #include "render/renderer.hpp"
 
 #include <cstdint>
@@ -22,12 +23,20 @@ struct TextureSize {
     bool operator==(const TextureSize&) const = default;
 };
 
+// Ranges into the batch's existing buffers; face selection never re-meshes or uploads.
+struct FaceRange {
+    document::SideId side = 0;
+    std::uint32_t firstIndex = 0, indexCount = 0;
+    std::uint32_t firstEdgeIndex = 0, edgeIndexCount = 0;
+};
+
 // Faces of one material, in one batch. Vertices are relative to SolidMesh::origin.
 struct BatchMesh {
     std::string material; // Lower-case.
     std::vector<BrushVertex> vertices;
     std::vector<std::uint32_t> indices; // Triangle list.
     std::vector<std::uint32_t> edges;   // Line list.
+    std::vector<FaceRange> faces;
 };
 
 struct SolidMesh {

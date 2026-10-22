@@ -46,7 +46,7 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
     for (const geometry::Face& face : polyhedron->faces) {
         if (face.vertices.size() < 3) continue;
         const auto [it, inserted] = batchIndex.try_emplace(lower(face.material), mesh.batches.size());
-        if (inserted) mesh.batches.push_back({it->first, {}, {}, {}});
+        if (inserted) mesh.batches.push_back({it->first, {}, {}, {}, {}});
         BatchMesh& batch = mesh.batches[it->second];
         const TextureSize size = sizeOf(it->first);
         const auto base = static_cast<std::uint32_t>(batch.vertices.size());
@@ -66,6 +66,10 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
             v.material = 0;
             batch.vertices.push_back(v);
         }
+        FaceRange range;
+        range.side = static_cast<document::SideId>(face.sideId);
+        range.firstIndex = static_cast<std::uint32_t>(batch.indices.size());
+        range.firstEdgeIndex = static_cast<std::uint32_t>(batch.edges.size());
         const auto count = static_cast<std::uint32_t>(face.vertices.size());
         for (std::uint32_t i = 1; i + 1 < count; ++i) {
             batch.indices.insert(batch.indices.end(), {base, base + i, base + i + 1});
@@ -73,6 +77,9 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
         for (std::uint32_t i = 0; i < count; ++i) {
             batch.edges.insert(batch.edges.end(), {base + i, base + (i + 1) % count});
         }
+        range.indexCount = static_cast<std::uint32_t>(batch.indices.size()) - range.firstIndex;
+        range.edgeIndexCount = static_cast<std::uint32_t>(batch.edges.size()) - range.firstEdgeIndex;
+        batch.faces.push_back(range);
     }
     } catch (const std::exception& e) { // uvAt rejects invalid UV data.
         return fail(std::string("invalid face data: ") + e.what());

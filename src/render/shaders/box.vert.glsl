@@ -32,5 +32,6 @@ void main() {
     }
     vec3 p = mix(inMins, inMaxs, vec3(bvec3((corner & 1) != 0, (corner & 2) != 0, (corner & 4) != 0)));
     gl_Position = push.viewProj * vec4(p + push.offsetSlot.xyz, 1.0);
-    vColour = vec4(inColour.rgb * shade, inColour.a);
+    vColour = push.p0.y > 0.5 ? push.colour
+                              : vec4(mix(inColour.rgb * shade, push.colour.rgb, push.colour.a), inColour.a);
 }

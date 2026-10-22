@@ -63,6 +63,10 @@ struct MeshDraw {
     DVec3 origin{0.0};                 // World position the vertices are relative to.
     TextureSlot texture = kCheckerboardSlot; // Or kVertexMaterial.
     Vec4 colour{1.0f};                 // Tint (Textured), fill (Flat), line colour (Wireframe).
+    Vec4 highlight{0.0f};              // RGB tint blended by alpha, after material shading.
+    std::uint32_t firstIndex = 0;
+    std::uint32_t firstEdgeIndex = 0;
+    bool outlineOnlyWire = false;      // Selected wire edges are emitted by the outline pass.
 };
 
 struct BoxDraw {
@@ -70,12 +74,17 @@ struct BoxDraw {
     std::uint32_t count = 0;
     DVec3 origin{0.0};
     bool solid = false;                // Shaded faces instead of wire edges.
+    std::uint32_t firstInstance = 0;
+    Vec4 tint{0.0f};                   // RGB tint blended by alpha; outline draws use RGBA directly.
+    bool outlineOnlyWire = false;
 };
 
 struct SpriteDraw {
     const Buffer* instances = nullptr; // SpriteInstance, VERTEX_BUFFER_BIT.
     std::uint32_t count = 0;
     DVec3 origin{0.0};
+    std::uint32_t firstInstance = 0;
+    Vec4 tint{0.0f};
 };
 
 struct GridSettings {
@@ -99,6 +108,11 @@ struct DrawList {
     std::vector<MeshDraw> meshes;
     std::vector<BoxDraw> boxes;
     std::vector<SpriteDraw> sprites;
+    // Recorded last: dim depth-disabled lines, then full-strength visible lines. No depth writes.
+    std::vector<MeshDraw> outlines;
+    std::vector<BoxDraw> boxOutlines;
+    std::vector<SpriteDraw> spriteOutlines;
+    float occludedAlpha = 0.25f;
     GridSettings grid;
     bool edgeOverlay = false;           // Textured/Flat: draw edgeIndices lines on top.
     Vec4 edgeColour{0.0f, 0.0f, 0.0f, 1.0f};

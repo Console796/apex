@@ -20,7 +20,11 @@ namespace apex::render {
 
 namespace {
 
-enum class Kind : std::uint32_t { Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid, Count };
+enum class Kind : std::uint32_t {
+    Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid,
+    Outline, OutlineAlways, BoxOutline, BoxOutlineAlways, SpriteOutline, SpriteOutlineAlways,
+    DepthOnly, BoxDepthOnly, Count
+};
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
 enum class Input { Brush, Box, Sprite, None };
@@ -34,6 +38,8 @@ struct Spec {
     bool depthWrite;
     bool blend;
     bool depthBias;
+    bool depthTest = true;
+    bool colourWrite = true;
 };
 
 constexpr Spec kSpecs[kKindCount] = {
@@ -45,6 +51,14 @@ constexpr Spec kSpecs[kKindCount] = {
     {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
     {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
     {"grid_vert", "grid_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
+    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
+    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
+    {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
+    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
@@ -177,11 +191,12 @@ struct Renderer::Impl {
         VkPipelineMultisampleStateCreateInfo multisample = vkStruct<VkPipelineMultisampleStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
         multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         VkPipelineDepthStencilStateCreateInfo depth = vkStruct<VkPipelineDepthStencilStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
-        depth.depthTestEnable = VK_TRUE;
+        depth.depthTestEnable = spec.depthTest ? VK_TRUE : VK_FALSE;
         depth.depthWriteEnable = spec.depthWrite ? VK_TRUE : VK_FALSE;
         depth.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Reversed-Z.
         VkPipelineColorBlendAttachmentState attachment{};
         attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        if (!spec.colourWrite) attachment.colorWriteMask = 0;
         if (spec.blend) {
             attachment.blendEnable = VK_TRUE;
             attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -352,10 +367,10 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
     const DVec3 camera = list.view.cameraPosition;
 
-    auto drawMeshes = [&](Kind kind, auto&& setup, auto&& count, auto&& indices) {
+    auto drawMeshes = [&](Kind kind, const auto& meshes, auto&& setup, auto&& count, auto&& indices, bool edges) {
         if (!s.has(kind)) return;
         s.bind(commands, kind);
-        for (const MeshDraw& mesh : list.meshes) {
+        for (const MeshDraw& mesh : meshes) {
             const std::uint32_t n = count(mesh);
             if (!mesh.vertices || !indices(mesh) || n == 0) continue;
             const VkDeviceSize zero = 0;
@@ -366,40 +381,46 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.offsetSlot = slotVec(toCameraRelative(mesh.origin, camera), mesh.texture);
             setup(push, mesh);
             s.pushAll(commands, push);
-            vkCmdDrawIndexed(commands, n, 1, 0, 0, 0);
+            vkCmdDrawIndexed(commands, n, 1, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
         }
     };
     auto trianglesOf = [](const MeshDraw& m) { return m.indexCount; };
     auto trianglesBuf = [](const MeshDraw& m) { return m.indices; };
     auto edgesOf = [](const MeshDraw& m) { return m.edgeIndexCount; };
     auto edgesBuf = [](const MeshDraw& m) { return m.edgeIndices; };
+    auto brushColour = [](PushConstants& p, const MeshDraw& m) {
+        p.colour = m.colour;
+        p.p0 = m.highlight;
+    };
 
     switch (list.mode) {
     case DisplayMode::Textured:
-        drawMeshes(Kind::Textured, [](PushConstants& p, const MeshDraw& m) { p.colour = m.colour; }, trianglesOf, trianglesBuf);
+        drawMeshes(Kind::Textured, list.meshes, brushColour, trianglesOf, trianglesBuf, false);
         break;
     case DisplayMode::Flat:
-        drawMeshes(Kind::Flat, [](PushConstants& p, const MeshDraw& m) { p.colour = m.colour; }, trianglesOf, trianglesBuf);
+        drawMeshes(Kind::Flat, list.meshes, brushColour, trianglesOf, trianglesBuf, false);
         break;
     case DisplayMode::Wireframe: {
         // Prefer the real edge list; fall back to polygon-mode lines (shows triangulation).
         bool anyEdges = std::ranges::any_of(list.meshes, [](const MeshDraw& m) { return m.edgeIndices && m.edgeIndexCount; });
         if (anyEdges) {
-            drawMeshes(Kind::Edges, [](PushConstants& p, const MeshDraw& m) { p.colour = m.colour; }, edgesOf, edgesBuf);
+            drawMeshes(Kind::Edges, list.meshes, brushColour,
+                       [](const MeshDraw& m) { return m.outlineOnlyWire ? 0u : m.edgeIndexCount; }, edgesBuf, true);
         } else {
-            drawMeshes(Kind::WireFill, [](PushConstants& p, const MeshDraw& m) { p.colour = m.colour; }, trianglesOf, trianglesBuf);
+            drawMeshes(Kind::WireFill, list.meshes, brushColour,
+                       [](const MeshDraw& m) { return m.outlineOnlyWire ? 0u : m.indexCount; }, trianglesBuf, false);
         }
         break;
     }
     }
     if (list.edgeOverlay && list.mode != DisplayMode::Wireframe && s.has(Kind::Edges)) {
         vkCmdSetDepthBias(commands, list.edgeDepthBias, 0.0f, 1.0f);
-        drawMeshes(Kind::Edges, [&](PushConstants& p, const MeshDraw&) { p.colour = list.edgeColour; }, edgesOf, edgesBuf);
+        drawMeshes(Kind::Edges, list.meshes, [&](PushConstants& p, const MeshDraw&) { p.colour = list.edgeColour; }, edgesOf, edgesBuf, true);
         vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
     }
 
     for (const BoxDraw& box : list.boxes) {
-        if (!box.instances || box.count == 0) continue;
+        if (!box.instances || box.count == 0 || (!box.solid && box.outlineOnlyWire)) continue;
         const Kind kind = box.solid ? Kind::BoxSolid : Kind::BoxWire;
         s.bind(commands, kind);
         const VkDeviceSize zero = 0;
@@ -407,9 +428,10 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
         vkCmdBindVertexBuffers(commands, 0, 1, &vb, &zero);
         PushConstants push = basePush(list);
         push.offsetSlot = slotVec(toCameraRelative(box.origin, camera), 0);
-        push.p0 = Vec4(box.solid ? 1.0f : 0.0f);
+        push.p0 = Vec4(box.solid ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+        push.colour = box.tint;
         s.pushAll(commands, push);
-        vkCmdDraw(commands, box.solid ? 36 : 24, box.count, 0, 0);
+        vkCmdDraw(commands, box.solid ? 36 : 24, box.count, 0, box.firstInstance);
     }
 
     if (!list.sprites.empty()) {
@@ -421,10 +443,11 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             vkCmdBindVertexBuffers(commands, 0, 1, &vb, &zero);
             PushConstants push = basePush(list);
             push.offsetSlot = slotVec(toCameraRelative(sprite.origin, camera), 0);
+            push.colour = sprite.tint;
             push.p0 = Vec4(list.view.cameraRight, 0.0f);
             push.p1 = Vec4(list.view.cameraUp, 0.0f);
             s.pushAll(commands, push);
-            vkCmdDraw(commands, 6, sprite.count, 0, 0);
+            vkCmdDraw(commands, 6, sprite.count, 0, sprite.firstInstance);
         }
     }
 
@@ -440,6 +463,64 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
         s.pushAll(commands, push);
         vkCmdDraw(commands, 6, 1, 0, 0);
     }
+    // Wireframe keeps its normal hollow appearance, but outlines use surface occlusion.
+    if (list.mode == DisplayMode::Wireframe &&
+        (!list.outlines.empty() || !list.boxOutlines.empty() || !list.spriteOutlines.empty())) {
+        drawMeshes(Kind::DepthOnly, list.meshes, [](PushConstants&, const MeshDraw&) {},
+                   trianglesOf, trianglesBuf, false);
+        for (const BoxDraw& box : list.boxes) {
+            if (!box.instances || box.count == 0) continue;
+            s.bind(commands, Kind::BoxDepthOnly);
+            const VkDeviceSize zero = 0;
+            const VkBuffer vb = box.instances->handle();
+            vkCmdBindVertexBuffers(commands, 0, 1, &vb, &zero);
+            PushConstants push = basePush(list);
+            push.offsetSlot = slotVec(toCameraRelative(box.origin, camera), 0);
+            push.p0.x = 1.0f;
+            s.pushAll(commands, push);
+            vkCmdDraw(commands, 36, box.count, 0, box.firstInstance);
+        }
+    }
+    // Depth-disabled dim pass first; visible lines replace it at full strength. Keep depth intact.
+    for (const bool visible : {false, true}) {
+        vkCmdSetDepthBias(commands, visible ? list.edgeDepthBias : 0.0f, 0.0f, visible ? 1.0f : 0.0f);
+        const float alpha = visible ? 1.0f : list.occludedAlpha;
+        drawMeshes(visible ? Kind::Outline : Kind::OutlineAlways, list.outlines,
+                   [&](PushConstants& p, const MeshDraw& m) {
+                       p.colour = m.colour;
+                       p.colour.a *= alpha;
+                   }, edgesOf, edgesBuf, true);
+        for (const BoxDraw& box : list.boxOutlines) {
+            if (!box.instances || box.count == 0) continue;
+            s.bind(commands, visible ? Kind::BoxOutline : Kind::BoxOutlineAlways);
+            const VkDeviceSize zero = 0;
+            const VkBuffer vb = box.instances->handle();
+            vkCmdBindVertexBuffers(commands, 0, 1, &vb, &zero);
+            PushConstants push = basePush(list);
+            push.offsetSlot = slotVec(toCameraRelative(box.origin, camera), 0);
+            push.p0.y = 1.0f;
+            push.colour = box.tint;
+            push.colour.a *= alpha;
+            s.pushAll(commands, push);
+            vkCmdDraw(commands, 24, box.count, 0, box.firstInstance);
+        }
+        for (const SpriteDraw& sprite : list.spriteOutlines) {
+            if (!sprite.instances || sprite.count == 0) continue;
+            s.bind(commands, visible ? Kind::SpriteOutline : Kind::SpriteOutlineAlways);
+            const VkDeviceSize zero = 0;
+            const VkBuffer vb = sprite.instances->handle();
+            vkCmdBindVertexBuffers(commands, 0, 1, &vb, &zero);
+            PushConstants push = basePush(list);
+            push.offsetSlot = slotVec(toCameraRelative(sprite.origin, camera), 0);
+            push.p0 = Vec4(list.view.cameraRight, 1.0f);
+            push.p1 = Vec4(list.view.cameraUp, 1.0f);
+            push.colour = sprite.tint;
+            push.colour.a *= alpha;
+            s.pushAll(commands, push);
+            vkCmdDraw(commands, 8, sprite.count, 0, sprite.firstInstance);
+        }
+    }
+    vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
 }
 
 Result<void> SwapchainDepth::begin(VkCommandBuffer commands, const SwapchainFrame& frame, const float clearColor[4]) {

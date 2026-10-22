@@ -24,6 +24,8 @@
 #include <chrono>
 #include <cstddef>
 #include <memory>
+#include <optional>
+#include <vector>
 
 namespace apex::render {
 
@@ -33,6 +35,18 @@ struct MirrorStats {
     std::size_t meshFailures = 0;     // Solids that do not form a valid convex polyhedron.
     std::size_t solidsFreed = 0;      // Removed solids whose buffers were released.
     std::size_t texturesUploaded = 0;
+};
+
+// Owned IDs; independent of editor selection. Tint alpha controls the colour blend.
+struct Highlight {
+    std::vector<document::NodeId> selected;
+    std::optional<document::NodeId> hover;
+    std::vector<document::SideId> selectedSides;
+    Vec4 selectTint{1.0f, 0.55f, 0.1f, 0.45f};
+    Vec4 hoverTint{0.2f, 0.85f, 1.0f, 0.35f};
+    Vec4 outlineColour{1.0f, 0.65f, 0.15f, 1.0f};
+    float occludedAlpha = 0.25f;
+    bool operator==(const Highlight&) const = default;
 };
 
 struct MirrorViewOptions {
@@ -68,6 +82,8 @@ class RenderMirror {
     // Visible state changed since the last buildDrawList(), or work is still pending
     // (meshing or texture stream-in).
     bool needsRedraw() const;
+    // Changes only draw state; never schedules meshing or uploads geometry.
+    void setHighlight(const Highlight& highlight);
     bool pending() const;
 
     // The returned list borrows the mirror's buffers: draw it before the next pump()/apply().

@@ -308,3 +308,104 @@ TEST_CASE("renderer: hot reload is a no-op when nothing changed") {
     REQUIRE(reloaded.has_value());
     CHECK(!*reloaded);
 }
+
+TEST_CASE("renderer: outline is dim behind a surface and full strength in front") {
+    REQUIRE_GPU();
+    const Cube cube = makeCube(*gpu, 32.0f, 0);
+    for (const auto mode : {DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe}) {
+        DrawList list = cubeList(cube, mode, gpu->checker);
+        MeshDraw rear = list.meshes[0];
+        rear.origin.x = 96;
+        rear.colour = Vec4(1, 1, 1, 1);
+        rear.outlineOnlyWire = true;
+        list.meshes.push_back(rear);
+        list.outlines.push_back(rear);
+        list.occludedAlpha = 0.0f;
+        const auto baseline = drawFrame(*gpu, list);
+        list.occludedAlpha = 0.25f;
+        const auto dim = drawFrame(*gpu, list);
+        list.outlines[0].origin.x = -48; // In front of the wall, outside its silhouette.
+        const auto visible = drawFrame(*gpu, list);
+        int dimPixels = 0, brightPixels = 0;
+        for (std::uint32_t y = 0; y < kSize; ++y) {
+            for (std::uint32_t x = 0; x < kSize; ++x) {
+                const Px p = at(dim, x, y), b = at(baseline, x, y);
+                if (!nearColour(p, b, 2)) {
+                    ++dimPixels;
+                    CHECK_FALSE(nearColour(p, {255, 255, 255}, 2));
+                }
+                brightPixels += nearColour(at(visible, x, y), {255, 255, 255}, 2) ? 1 : 0;
+            }
+        }
+        CHECK(dimPixels > 20);
+        CHECK(brightPixels > 20);
+        list.occludedAlpha = 0.0f;
+        const auto noDim = drawFrame(*gpu, list);
+        for (std::uint32_t y = 0; y < kSize; ++y)
+            for (std::uint32_t x = 0; x < kSize; ++x)
+                if (nearColour(at(visible, x, y), {255, 255, 255}, 2))
+                    CHECK(nearColour(at(noDim, x, y), {255, 255, 255}, 2));
+    }
+}
+
+TEST_CASE("renderer: box and sprite tints address a single existing instance") {
+    REQUIRE_GPU();
+    const BoxInstance boxes[] = {
+        {{-16, 200, -16}, {16, 232, 16}, {1, 0, 0, 1}},
+        {{-16, -16, -16}, {16, 16, 16}, {1, 0, 0, 1}}
+    };
+    const SpriteInstance sprites[] = {
+        {{0, 216, 0}, 16, {1, 1, 1, 1}, gpu->checker, {}},
+        {{0, 0, 0}, 16, {1, 1, 1, 1}, gpu->checker, {}}
+    };
+    auto& ring = gpu->heap->uploadRing();
+    auto boxBuffer = uploadBuffer(*gpu->context, ring, std::as_bytes(std::span{boxes}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    auto spriteBuffer = uploadBuffer(*gpu->context, ring, std::as_bytes(std::span{sprites}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    REQUIRE(boxBuffer);
+    REQUIRE(spriteBuffer);
+    for (const bool sprite : {false, true}) {
+        CAPTURE(sprite);
+        DrawList list;
+        list.view = makeView({-128, 0, 0}, {0, 0, 0});
+        if (sprite) {
+            list.sprites.push_back({&*spriteBuffer, 1, DVec3(0), 1, Vec4(0, 1, 1, 1)});
+        } else {
+            list.boxes.push_back({&*boxBuffer, 1, DVec3(0), true, 1, Vec4(0, 1, 1, 1)});
+        }
+        CHECK(nearColour(at(drawFrame(*gpu, list), 32, 32), {0, 255, 255}, 2));
+        // Outline uses the instance's geometry with an independent RGBA colour.
+        if (sprite) {
+            list.spriteOutlines = list.sprites;
+            list.spriteOutlines[0].tint = Vec4(1, 0, 1, 1);
+        } else {
+            list.boxOutlines = list.boxes;
+            list.boxOutlines[0].tint = Vec4(1, 0, 1, 1);
+        }
+        const auto image = drawFrame(*gpu, list);
+        int magenta = 0;
+        for (std::uint32_t y = 0; y < kSize; ++y)
+            for (std::uint32_t x = 0; x < kSize; ++x)
+                magenta += nearColour(at(image, x, y), {255, 0, 255}, 2) ? 1 : 0;
+        CHECK(magenta > 20);
+    }
+}
+
+TEST_CASE("renderer: face draw ranges start within existing triangle and edge buffers") {
+    REQUIRE_GPU();
+    const Cube cube = makeCube(*gpu, 32, 0);
+    DrawList list = cubeList(cube, DisplayMode::Flat, 0);
+    list.view = makeView({128, 0, 0}, {0, 180, 0}); // The second face (+X).
+    auto& face = list.meshes[0];
+    face.firstIndex = 6;
+    face.indexCount = 6;
+    face.firstEdgeIndex = 8;
+    face.edgeIndexCount = 8;
+    CHECK(nearColour(at(drawFrame(*gpu, list), 32, 32), {35, 140, 35}, 12));
+    list.outlines.push_back(face);
+    list.outlines[0].colour = Vec4(1, 0, 1, 1);
+    const auto image = drawFrame(*gpu, list);
+    bool edge = false;
+    for (std::uint32_t x = 19; x <= 23; ++x)
+        edge = edge || nearColour(at(image, x, 32), {255, 0, 255}, 2);
+    CHECK(edge);
+}

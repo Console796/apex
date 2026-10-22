@@ -15,7 +15,8 @@ layout(location = 2) flat out uint vSlot;
 const vec2 kCorners[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, -1), vec2(1, 1), vec2(-1, 1));
 
 void main() {
-    vec2 c = kCorners[gl_VertexIndex % 6];
+    const int lineCorners[8] = int[8](0, 1, 1, 2, 2, 5, 5, 0);
+    vec2 c = kCorners[push.p0.w > 0.5 ? lineCorners[gl_VertexIndex % 8] : gl_VertexIndex % 6];
     vec3 p = inPositionSize.xyz + push.offsetSlot.xyz + (push.p0.xyz * c.x + push.p1.xyz * c.y) * inPositionSize.w;
     gl_Position = push.viewProj * vec4(p, 1.0);
     vUv = vec2(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
