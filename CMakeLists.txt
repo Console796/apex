@@ -80,6 +80,8 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
+apex_layer(editor SOURCES src/editor/visibility.cpp src/editor/pick_index.cpp
+           DEPS apex_document apex_geometry apex_core)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp
                          src/assets/material_cache.cpp DEPS apex_core)

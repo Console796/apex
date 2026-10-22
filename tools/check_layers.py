@@ -14,6 +14,7 @@ DEPS = {
     "core": [],
     "geometry": ["core"],
     "document": ["geometry", "core"],
+    "editor": ["document", "geometry", "core"],
     "assets": ["core"],
     "render": ["document", "assets"],
     "viewport": ["render", "document"],
