@@ -449,8 +449,12 @@ TEST_CASE("Document selection metadata counts toward history memory and eviction
     const auto plainBytes = plain.historyBytes();
     const auto selectedBytes = selected.historyBytes();
     CHECK(selectedBytes == plainBytes + 48 * sizeof(std::uint64_t));
+    // The next entry shares a block with this one; subtracting the first entry's old
+    // total would also subtract that still-live block. Measure the retained entry alone.
+    Document lastOnly(selected.toVmf().value());
+    edit(lastOnly, true, "origin");
     edit(selected, true, "origin");
-    selected.setUndoCap(selected.historyBytes() - selectedBytes);
+    selected.setUndoCap(lastOnly.historyBytes());
     CHECK(selected.undoCount() == 1);
     REQUIRE(selected.undo());
     CHECK(selected.restoredSelection() == std::optional<SelectionBlob>{SelectionBlob(16, 1)});
@@ -475,7 +479,8 @@ TEST_CASE("Document coalesced selection memory is recalculated before eviction")
     CHECK(doc.undoCount() == 1);
     CHECK(doc.historyBytes() == initial + 9 * sizeof(std::uint64_t));
     doc.setUndoCap(doc.historyBytes());
-    edit("c", {5}, SelectionBlob(11, 6));
+    // Selection alone must exceed the cap even if the codec blocks can be frozen.
+    edit("c", {5}, SelectionBlob(10000, 6));
     CHECK(doc.undoCount() == 0);
     CHECK(doc.historyBytes() == 0);
 }
@@ -952,4 +957,122 @@ TEST_CASE("Document history labels and jumps match repeated undo and redo") {
     CHECK(jumped.redoCount() == 3);
     CHECK(jumped.restoredSelection() == selection);
     CHECK(notifications == beforeNotifications);
+}
+
+TEST_CASE("Document shared block accounting releases only the last history reference") {
+    // Hierarchy-only edits keep the exact same immutable block in every snapshot.
+    Document doc(parsed("entity { id 1 " + std::string(100000, 'x') + " value } entity { id 2 }"));
+    const auto child = *doc.handle(doc.roots()[0]);
+    const auto parent = *doc.handle(doc.roots()[1]);
+    const auto edit = [&](bool attach) {
+        auto tx = doc.begin("move");
+        tx.reparent(child, attach ? std::optional(parent) : std::nullopt);
+        tx.commit(false);
+    };
+    edit(true);
+    const auto first = doc.historyBytes();
+    edit(false);
+    const auto increment = doc.historyBytes() - first;
+    CHECK(increment < first / 4);
+    edit(true);
+    CHECK(doc.historyBytes() == first + 2 * increment);
+    doc.setUndoCap(first);
+    CHECK(doc.undoCount() == 1);
+    CHECK(doc.historyBytes() == first);
+    REQUIRE(doc.undo());
+    REQUIRE(doc.redo());
+    doc.setUndoCap(0);
+    CHECK(doc.historyBytes() == 0);
+}
+
+TEST_CASE("Document frozen fixture states and coalesced edits stay byte exact at every cursor") {
+    for (const auto& fixture : std::filesystem::directory_iterator(
+             std::filesystem::path(APEX_FIXTURE_DIR) / "vmf")) {
+        CAPTURE(fixture.path().string());
+        const auto bytes = read(fixture.path());
+        Document doc(parsed(bytes));
+        const auto id = doc.roots().front();
+        std::vector<std::string> states{bytes};
+        for (int i = 0; i < 32; ++i) {
+            const auto focus = "focus" + std::to_string(i);
+            for (const auto suffix : {"typing", "done"}) {
+                auto tx = doc.begin("edit");
+                tx.setKeyValue(*doc.handle(id), "apex_history", std::to_string(i) + suffix);
+                tx.commit(true, focus);
+            }
+            states.push_back(doc.write().value());
+        }
+        REQUIRE(doc.undoCount() == 32);
+        for (std::size_t i = states.size() - 1; i > 0; --i) {
+            REQUIRE(doc.undo());
+            CHECK(doc.write().value() == states[i - 1]);
+        }
+        for (std::size_t i = 1; i < states.size(); ++i) {
+            REQUIRE(doc.redo());
+            CHECK(doc.write().value() == states[i]);
+        }
+        for (const std::size_t target : {3, 25, 0, 31, 9, 32}) {
+            REQUIRE(doc.jumpTo(target));
+            CHECK(doc.write().value() == states[target]);
+        }
+        // Branch from a thawed state; later output must still use its original writer state.
+        REQUIRE(doc.jumpTo(3));
+        auto tx = doc.begin("branch");
+        tx.setKeyValue(*doc.handle(id), "apex_branch", "new");
+        tx.commit(false);
+        CHECK(doc.redoCount() == 0);
+        REQUIRE(doc.undo());
+        CHECK(doc.write().value() == states[3]);
+    }
+}
+
+TEST_CASE("Document freezing cuts retained block memory after the hot window") {
+    std::string text = "solid { id 1 side { id 2";
+    for (int i = 0; i < 120; ++i) text += " key" + std::to_string(i) + " value";
+    text += " } }";
+    Document doc(parsed(text));
+    const auto solid = *doc.handle(doc.roots()[0]);
+    std::vector<std::string> states{doc.write().value()};
+    std::size_t hotBytes = 0;
+    for (int i = 0; i < 40; ++i) {
+        auto tx = doc.begin("edit");
+        tx.setKeyValue(solid, "step", std::to_string(i));
+        tx.commit(false);
+        states.push_back(doc.write().value());
+        if (i == 7) hotBytes = doc.historyBytes();
+    }
+    CHECK(doc.historyBytes() < hotBytes * 3); // Five times the entries, mostly compact text.
+    const auto compact = doc.historyBytes();
+    REQUIRE(doc.jumpTo(0));
+    CHECK(doc.write().value() == states.front());
+    REQUIRE(doc.jumpTo(40));
+    CHECK(doc.write().value() == states.back());
+    CHECK(doc.historyBytes() <= compact);
+    doc.setUndoCap(doc.historyBytes() / 2);
+    CHECK(doc.undoCount() < 40);
+    CHECK(doc.historyBytes() <= doc.undoCap());
+    while (doc.undo()) {}
+    while (doc.redo()) {}
+    CHECK(doc.write().value() == states.back());
+}
+
+TEST_CASE("Document freezes an oversized newest entry before eviction and can coalesce it") {
+    std::string text = "solid { id 1 side { id 2";
+    for (int i = 0; i < 200; ++i) text += " key" + std::to_string(i) + " value";
+    text += " } }";
+    Document doc(parsed(text), 32 * 1024);
+    const auto solid = *doc.handle(doc.roots()[0]);
+    const auto initial = doc.write().value();
+    for (int i = 0; i < 2; ++i) {
+        auto tx = doc.begin("coalesced");
+        tx.setKeyValue(solid, "step", std::to_string(i));
+        tx.commit(true, "focus");
+        REQUIRE(doc.undoCount() == 1);
+        CHECK(doc.historyBytes() <= doc.undoCap());
+    }
+    const auto final = doc.write().value();
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == initial);
+    REQUIRE(doc.redo());
+    CHECK(doc.write().value() == final);
 }

@@ -38,6 +38,7 @@ Result<std::vector<Token>> tokenize(std::string_view source,
 using Resolver = std::function<Result<std::string>(std::string_view path)>;
 using Vec3 = std::array<double, 3>;
 using Color255 = std::array<std::uint8_t, 4>;
+class FrozenNode;
 
 class Node {
 public:
@@ -73,11 +74,14 @@ public:
     Result<void> insert(std::size_t index, Node node);
     Result<void> remove(std::size_t index);
     bool modified() const;
+    // Node storage and owned allocations; shared input buffers are owned by the document.
+    std::size_t memory() const;
 
 private:
     friend class Parser;
     friend class Writer;
     friend class Document;
+    friend class FrozenNode;
     void detach();
     std::string_view slice(SourceSpan span) const;
 
@@ -125,5 +129,20 @@ private:
 Result<Document> parse(std::string source, EscapeMode mode = EscapeMode::Strata);
 // Legacy cannot encode a newly supplied literal quote; write returns Unsupported in that case.
 Result<std::string> write(const Document& document);
+
+// In-process, lossless snapshot: KV1 text plus compact writer provenance. Source buffers
+// are shared, never copied. The sidecar preserves formatting on subsequent edits too.
+// Refuses states that cannot reparse with the same structure and values.
+class FrozenNode {
+public:
+    static Result<FrozenNode> freeze(const Node& node, EscapeMode mode, std::string_view newline);
+    Result<Node> thaw() const;
+    std::size_t memory() const;
+private:
+    FrozenNode() = default;
+    std::string text_, provenance_;
+    std::vector<std::shared_ptr<const std::string>> sources_;
+    EscapeMode mode_ = EscapeMode::Strata;
+};
 
 } // namespace apex::kv1

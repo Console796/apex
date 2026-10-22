@@ -427,3 +427,38 @@ TEST_CASE("KV1 optional loose P2CE corpus") {
               << ", expected failures=" << expectedFailures << '\n';
     CHECK(scanned > 0);
 }
+
+TEST_CASE("KV1 frozen nodes preserve writer provenance in both escape modes") {
+    for (const auto mode : {EscapeMode::Strata, EscapeMode::Legacy}) {
+        const std::string source =
+            "// lead\r\nroot [$WIN32] {\r\n // trivia\r\n duplicate one duplicate two\r\n"
+            " path \"a\\nb\\t\\\\\"\r\n child { unknown value } [!$LINUX]\r\n} // tail\r\n";
+        auto original = parsed(source, mode);
+        for (const bool modified : {false, true}) {
+            CAPTURE(mode);
+            CAPTURE(modified);
+            auto expected = original;
+            if (modified) {
+                expected.root().children()[0].find("duplicate")->setValue("changed\\path").value();
+                expected.root().children()[0].append(Node::value("new", mode == EscapeMode::Strata
+                    ? "line\n\t\"quoted\"\\unknown" : "line\ntext")).value();
+            }
+            const auto frozen = FrozenNode::freeze(expected.root().children()[0], mode, expected.lineEnding());
+            REQUIRE(frozen);
+            const auto thawed = frozen->thaw();
+            REQUIRE(thawed);
+            auto actual = expected;
+            actual.root().children()[0] = *thawed;
+            CHECK(written(actual) == written(expected));
+            // A later mutation must not expose canonical formatting from the frozen text.
+            for (auto* doc : {&expected, &actual})
+                doc->root().children()[0].find("child")->find("unknown")->setValue("next").value();
+            CHECK(written(actual) == written(expected));
+            CHECK(actual.root().children()[0].find("path")->rawValue() ==
+                  expected.root().children()[0].find("path")->rawValue());
+        }
+    }
+    auto legacy = parsed("root { key value }", EscapeMode::Legacy);
+    legacy.root().children()[0].find("key")->setValue("a\"b").value();
+    CHECK_FALSE(FrozenNode::freeze(legacy.root().children()[0], EscapeMode::Legacy, "\n"));
+}

@@ -67,6 +67,18 @@ Node Node::block(std::string key) {
     return node;
 }
 
+std::size_t Node::memory() const {
+    const auto allocated = [](const std::string& text) -> std::size_t {
+        const auto data = reinterpret_cast<std::uintptr_t>(text.data());
+        const auto object = reinterpret_cast<std::uintptr_t>(&text);
+        return data >= object && data < object + sizeof(text) ? 0 : text.capacity() + 1;
+    };
+    std::size_t bytes = sizeof(*this) + allocated(key_) + allocated(condition_) +
+                        (value_ ? allocated(*value_) : 0) + children_.capacity() * sizeof(Node);
+    for (const auto& child : children_) bytes += child.memory() - sizeof(Node);
+    return bytes;
+}
+
 std::string_view Node::slice(SourceSpan span) const {
     return source_ ? std::string_view(*source_).substr(span.offset, span.length)
                    : std::string_view{};
@@ -363,6 +375,104 @@ Result<Document> Document::resolve(const Resolver& resolver) const {
     result.root_ = std::move(*expanded);
     result.root_.detach();
     return result;
+}
+
+Result<FrozenNode> FrozenNode::freeze(const Node& node, EscapeMode mode, std::string_view newline) {
+    auto wrapper = parse(std::string(newline), mode);
+    if (!wrapper) return std::unexpected(wrapper.error());
+    wrapper->root().append(node).value();
+    auto text = write(*wrapper);
+    if (!text) return std::unexpected(text.error());
+    auto parsed = parse(*text, mode);
+    if (!parsed) return std::unexpected(parsed.error());
+    if (parsed->root().children().size() != 1)
+        return std::unexpected(invalid("snapshot is not one KV1 node"));
+    FrozenNode result;
+    result.mode_ = mode;
+    result.text_ = std::move(*text);
+    const auto number = [&](std::size_t value) {
+        do {
+            auto byte = static_cast<unsigned char>(value & 127);
+            value >>= 7;
+            if (value) byte |= 128;
+            result.provenance_ += static_cast<char>(byte);
+        } while (value);
+    };
+    const auto encode = [&](const auto& self, const Node& original, const Node& copy) -> bool {
+        if (original.kind_ != copy.kind_ || original.key_ != copy.key_ ||
+            original.condition_ != copy.condition_ || original.children_.size() != copy.children_.size())
+            return false;
+        if (original.kind_ != NodeKind::Block && original.decodedValue().value() != copy.decodedValue().value())
+            return false;
+        // Preserve mode per node: newly inserted nodes may use a different mode from the file.
+        number((original.dirty_ ? 1U : 0U) | (original.valueQuoted_ ? 2U : 0U) |
+               (original.value_ ? 4U : 0U) | (original.mode_ == EscapeMode::Legacy ? 8U : 0U));
+        std::size_t source = 0;
+        if (original.source_) {
+            const auto found = std::ranges::find(result.sources_, original.source_);
+            source = static_cast<std::size_t>(found - result.sources_.begin()) + 1;
+            if (found == result.sources_.end()) result.sources_.push_back(original.source_);
+        }
+        number(source);
+        for (const auto span : {original.span_, original.keySpan_, original.valueSpan_,
+                                original.leading_, original.header_, original.tail_}) {
+            number(span.offset);
+            number(span.length);
+            number(span.line);
+        }
+        for (std::size_t i = 0; i < original.children_.size(); ++i)
+            if (!self(self, original.children_[i], copy.children_[i])) return false;
+        return true;
+    };
+    if (!encode(encode, node, parsed->root().children()[0]))
+        return std::unexpected(invalid("KV1 snapshot changes node structure or values"));
+    result.text_.shrink_to_fit();
+    result.provenance_.shrink_to_fit();
+    result.sources_.shrink_to_fit();
+    return result;
+}
+
+Result<Node> FrozenNode::thaw() const {
+    auto parsed = parse(text_, mode_);
+    if (!parsed) return std::unexpected(parsed.error());
+    auto result = std::move(parsed->root().children()[0]);
+    std::size_t offset = 0;
+    const auto number = [&] {
+        std::size_t value = 0;
+        unsigned shift = 0;
+        unsigned char byte;
+        do {
+            byte = static_cast<unsigned char>(provenance_.at(offset++));
+            value |= std::size_t(byte & 127) << shift;
+            shift += 7;
+        } while (byte & 128);
+        return value;
+    };
+    const auto decode = [&](const auto& self, Node& node) -> void {
+        const auto flags = number();
+        // Capture the parsed value before restoring the original source spans.
+        if (flags & 4) node.value_ = node.decodedValue().value();
+        else node.value_.reset();
+        node.dirty_ = flags & 1;
+        node.valueQuoted_ = flags & 2;
+        node.mode_ = flags & 8 ? EscapeMode::Legacy : EscapeMode::Strata;
+        const auto source = number();
+        node.source_ = source ? sources_.at(source - 1) : nullptr;
+        for (auto* span : {&node.span_, &node.keySpan_, &node.valueSpan_,
+                           &node.leading_, &node.header_, &node.tail_}) {
+            span->offset = number();
+            span->length = number();
+            span->line = number();
+        }
+        for (auto& child : node.children_) self(self, child);
+    };
+    decode(decode, result);
+    return result;
+}
+
+std::size_t FrozenNode::memory() const {
+    return sizeof(*this) + text_.capacity() + provenance_.capacity() +
+           sources_.capacity() * sizeof(sources_[0]);
 }
 
 } // namespace apex::kv1

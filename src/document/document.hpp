@@ -125,6 +125,7 @@ public:
     std::vector<std::string> redoLabels() const;
     bool jumpTo(std::size_t undoCount);
     std::size_t historyBytes() const { return historyBytes_; }
+    std::size_t undoCap() const { return cap_; }
     void setUndoCap(std::size_t bytes);
     using Observer = std::function<void(const ChangeSet&)>;
     std::size_t observe(Observer observer);
@@ -140,6 +141,7 @@ private:
         std::optional<NodeValue> before, after;
         Dirty flags = Dirty::None;
         std::optional<NodeHandle> beforeHandle;
+        std::shared_ptr<const kv1::FrozenNode> frozenBefore{}, frozenAfter{};
     };
     struct Entry {
         std::string label;
@@ -149,7 +151,7 @@ private:
         std::optional<std::pair<NodeId, std::string>> coalesce;
         std::string coalesceKey;
         std::optional<SelectionBlob> selectionBefore, selectionAfter;
-        std::size_t bytes = 0;
+        bool freezeAttempted = false;
     };
     Pools pools_;
     kv1::Document source_;
@@ -161,6 +163,12 @@ private:
     NodeId nextNode_ = 1;
     std::uint64_t historyState_ = 0, nextHistoryState_ = 1;
     std::deque<Entry> undo_, redo_;
+    struct BlockUsage {
+        std::size_t references = 0;
+        std::size_t bytes = 0;
+        std::weak_ptr<const kv1::FrozenNode> frozen;
+    };
+    std::unordered_map<const void*, BlockUsage> historyBlocks_;
     std::optional<SelectionBlob> restoredSelection_;
     std::size_t cap_, historyBytes_ = 0, nextObserver_ = 1;
     std::map<std::size_t, Observer> observers_;
@@ -180,6 +188,10 @@ private:
     void notify(const ChangeSet& changes);
     ChangeSet restore(const Entry& entry, bool after);
     void evict();
+    void account(const Entry& entry, bool add);
+    void accountBlock(const void* identity, std::size_t bytes, bool add);
+    void freezeOldEntries();
+    void freeze(Entry& entry);
     static std::size_t memory(const Entry& entry);
     static int allocate(std::int64_t& next);
 };

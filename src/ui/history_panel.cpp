@@ -51,8 +51,9 @@ void HistoryPanel::refresh() {
     const auto count = document_ ? document_->undoCount() + document_->redoCount() : 0;
     const double bytes = document_ ? static_cast<double>(document_->historyBytes()) : 0;
     const bool mib = bytes >= 1024 * 1024;
-    memory_->setText(tr("%1 entries · %2 %3").arg(count).arg(bytes / (mib ? 1024 * 1024 : 1024), 0, 'f', 1)
-                        .arg(mib ? tr("MiB") : tr("KiB")));
+    const double cap = document_ ? static_cast<double>(document_->undoCap()) / (1024 * 1024) : 0;
+    memory_->setText(tr("%1 entries · %2 %3 / %4 MiB").arg(count).arg(bytes / (mib ? 1024 * 1024 : 1024), 0, 'f', 1)
+                        .arg(mib ? tr("MiB") : tr("KiB")).arg(cap, 0, 'f', 0));
     list_->setEnabled(document_ && session_ && session_->document() == document_);
     if (!document_) return;
     const auto add = [this](const QString& label, std::size_t target) {
