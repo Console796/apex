@@ -11,6 +11,10 @@
 #include "editor/editor_session.hpp"
 #include "viewport/map_views.hpp"
 
+namespace apex::render {
+class RenderMirror;
+}
+
 class QSplitter;
 
 namespace apex::assets {
@@ -79,6 +83,7 @@ signals:
     void layoutChanged();  // Structure or viewport settings changed (a persistence hint).
 
 private:
+    void syncPreview(render::RenderMirror& mirror);
     void scheduleRebuild();
     void rebuild();
     QWidget* build(const viewport::LayoutNode& node, bool canClose);
@@ -89,6 +94,9 @@ private:
     double pixelHeight() const;
 
     editor::EditorSession* session_ = nullptr;
+    static constexpr std::uint64_t kNoPreview = ~std::uint64_t{0};
+    std::uint64_t previewRevision_ = kNoPreview;
+    bool previewEmpty_ = true;
     std::size_t sessionObserver_ = 0;
     document::Document* document_ = nullptr;
     viewport::ViewportLayout layout_ = viewport::ViewportLayout::quad();

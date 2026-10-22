@@ -120,6 +120,21 @@ struct DrawPreview {
     DVec3 origin{0.0}; // Same draw-local origin as the draws referring to this entry.
 };
 
+// Screen-space overlay primitives (editor gizmos): drawn after everything, no depth test, alpha
+// blended. Positions are world space; segments are expanded to `widthPixels` quads in the renderer.
+struct OverlaySegment {
+    DVec3 a{0.0};
+    DVec3 b{0.0};
+    Vec4 colour{1.0f};
+    float widthPixels = 2.0f;
+};
+struct OverlayTriangle {
+    DVec3 a{0.0};
+    DVec3 b{0.0};
+    DVec3 c{0.0};
+    Vec4 colour{1.0f};
+};
+
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     FrameView view;
@@ -136,6 +151,10 @@ struct DrawList {
     bool edgeOverlay = false;           // Textured/Flat: draw edgeIndices lines on top.
     Vec4 edgeColour{0.0f, 0.0f, 0.0f, 1.0f};
     float edgeDepthBias = 2.0f;         // Constant depth-bias factor pulling lines toward the camera.
+    // Empty by default, which leaves every other frame untouched.
+    std::vector<OverlaySegment> overlaySegments;
+    std::vector<OverlayTriangle> overlayTriangles;
+    Vec2 viewportSize{0.0f};            // Pixels; required when overlay primitives are present.
 };
 
 // Push constants shared by all pipelines (mirrors shaders/common.inc).

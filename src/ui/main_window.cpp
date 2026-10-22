@@ -23,6 +23,7 @@
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QToolBar>
+#include <QToolButton>
 
 #include "core/log.hpp"
 #include "core/version.hpp"
@@ -31,6 +32,7 @@
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/outliner_panel.hpp"
+#include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
 #include "viewport/map_views.hpp"
 
@@ -41,6 +43,11 @@ constexpr int kMaxRecent = 10;
 
 QString fromStd(std::string_view s) {
     return QString::fromUtf8(s.data(), static_cast<qsizetype>(s.size()));
+}
+
+bool isTransformAction(const editor::ActionId& id) {
+    return id.starts_with("gizmo.") || id.starts_with("nudge.") || id.starts_with("edit.flip.") ||
+           id == "transform.dialog" || id == "transform.texture_lock.toggle" || id == "snap.mode.toggle";
 }
 
 QString profileDir() {
@@ -54,6 +61,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     resize(1280, 800);
     buildMenus();
     buildStatusBar();
+    buildTransformUi();
     buildDocks();
     viewport_->setEditorSession(&session_);
     outliner_->setEditorSession(&session_);
@@ -179,10 +187,24 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
     for (const auto& [id, action] : editorActions_) {
         QList<QKeySequence> sequences;
         const auto& binding = session_.preset().bindings.at(id);
+        const bool transformAction = isTransformAction(id);
         if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
-            for (const auto& chord : *chords) sequences.push_back(keySequence(chord));
+            for (const auto& chord : *chords) {
+                // A bare modifier is a held key (snap.suspend style), never a shortcut.
+                if (transformAction && (chord.key == "Ctrl" || chord.key == "Alt" || chord.key == "Shift")) continue;
+                sequences.push_back(keySequence(chord));
+            }
         }
         action->setShortcuts(sequences);
+        // Unmodified keys (W/E/R, arrows, Shift+L) belong to the focused pane, which routes them
+        // through the same keymap; a window shortcut would steal them from the outliner.
+        if (transformAction) {
+            bool plain = true;
+            if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
+                for (const auto& chord : *chords) plain = plain && !chord.ctrl && !chord.alt;
+            }
+            action->setShortcutContext(plain ? Qt::WidgetShortcut : Qt::WindowShortcut);
+        }
     }
     for (const auto name : editor::presetNames()) {
         if (auto* action = findChild<QAction*>(QStringLiteral("preset.") + fromStd(name)))
@@ -206,6 +228,20 @@ void MainWindow::updateEditorActions() {
                 savedMarqueeTouching_ = touching;
             }
         }
+        if (id == "gizmo.mode.translate") action->setChecked(session_.gizmoMode() == editor::GizmoMode::Translate);
+        if (id == "gizmo.mode.rotate") action->setChecked(session_.gizmoMode() == editor::GizmoMode::Rotate);
+        if (id == "gizmo.mode.scale") action->setChecked(session_.gizmoMode() == editor::GizmoMode::Scale);
+        if (id == "gizmo.space.toggle") {
+            const bool local = session_.gizmoSpace() == editor::GizmoSpace::Local;
+            action->setChecked(local);
+            action->setText(local ? tr("Space: Local") : tr("Space: Global"));
+        }
+        if (id == "snap.mode.toggle") {
+            const bool relative = session_.snapSettings().mode == editor::SnapMode::Relative;
+            action->setChecked(relative);
+            action->setText(relative ? tr("Snap: Relative") : tr("Snap: Absolute"));
+        }
+        if (id == "transform.texture_lock.toggle") action->setChecked(session_.textureLock());
         const std::pair<const char*, editor::SelectionMode> modes[] = {
             {"selection.mode.groups", editor::SelectionMode::Groups},
             {"selection.mode.objects", editor::SelectionMode::Objects},
@@ -305,6 +341,8 @@ void MainWindow::updateGridStatus() {
         : resolved->source == editor::WorkPlaneSource::Pinned ? tr("Plane: pinned") : tr("Plane: face (hover)");
     if (gridLabel_->text() != grid) gridLabel_->setText(grid);
     if (planeLabel_->text() != plane) planeLabel_->setText(plane);
+    const auto readout = session_.transformActive() ? QString::fromStdString(session_.activeReadout().text) : QString();
+    if (readoutLabel_->text() != readout) readoutLabel_->setText(readout);
 }
 
 void MainWindow::buildStatusBar() {
@@ -312,12 +350,90 @@ void MainWindow::buildStatusBar() {
     gridLabel_->setObjectName(QStringLiteral("statusGrid"));
     planeLabel_ = new QLabel;
     planeLabel_->setObjectName(QStringLiteral("statusPlane"));
+    readoutLabel_ = new QLabel;
+    readoutLabel_->setObjectName(QStringLiteral("statusReadout"));
+    statusBar()->addWidget(readoutLabel_);
     cameraLabel_ = new QLabel(tr("Cam: -"));
     frameLabel_ = new QLabel(tr("- ms"));
     gpuLabel_ = new QLabel(tr("GPU: -"));
     for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
     updateGridStatus();
     statusBar()->showMessage(tr("Ready"));
+}
+
+void MainWindow::buildTransformUi() {
+    const auto make = [this](const char* id, QMenu* menu, bool checkable) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = menu->addAction(fromStd(entry->name));
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        action->setCheckable(checkable);
+        editorActions_.emplace(entry->id, action);
+        connect(action, &QAction::triggered, this, [this, id = entry->id] {
+            if (id == "transform.dialog") openTransformDialog();
+            else session_.perform(id);
+            updateEditorActions();
+        });
+        return action;
+    };
+
+    auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
+    auto* transform = edit->addMenu(tr("Transform"));
+    transform->setObjectName(QStringLiteral("menuTransform"));
+    make("transform.dialog", transform, false);
+    transform->addSeparator();
+    for (const char* id : {"edit.flip.x", "edit.flip.y", "edit.flip.z"}) make(id, transform, false);
+    transform->addSeparator();
+    for (const char* id : {"nudge.left", "nudge.right", "nudge.up", "nudge.down"}) make(id, transform, false);
+    transform->addSeparator();
+    auto* textureLock = make("transform.texture_lock.toggle", transform, true);
+
+    auto* gizmo = viewMenu_->addMenu(tr("Gizmo"));
+    gizmo->setObjectName(QStringLiteral("menuGizmo"));
+    auto* modes = new QActionGroup(this);
+    std::vector<QAction*> modeActions;
+    for (const char* id : {"gizmo.mode.translate", "gizmo.mode.rotate", "gizmo.mode.scale"}) {
+        auto* action = make(id, gizmo, true);
+        modes->addAction(action);
+        modeActions.push_back(action);
+    }
+    gizmo->addSeparator();
+    auto* space = make("gizmo.space.toggle", gizmo, true);
+    make("gizmo.pivot.cycle", gizmo, false);
+    auto* snap = make("snap.mode.toggle", gizmo, true);
+
+    auto* bar = addToolBar(tr("Transform"));
+    bar->setObjectName(QStringLiteral("toolbarTransform"));
+    for (auto* action : modeActions) bar->addAction(action);
+    bar->addSeparator();
+    bar->addAction(snap);
+    bar->addAction(textureLock);
+    bar->addAction(space);
+
+    // The same actions as checkable buttons in the status bar (always visible, even with the
+    // toolbar hidden).
+    const std::pair<const char*, QAction*> buttons[] = {
+        {"statusGizmoTranslate", modeActions[0]}, {"statusGizmoRotate", modeActions[1]},
+        {"statusGizmoScale", modeActions[2]}, {"statusSnapMode", snap}, {"statusTextureLock", textureLock}};
+    for (const auto& [name, action] : buttons) {
+        auto* button = new QToolButton;
+        button->setObjectName(QString::fromLatin1(name));
+        button->setDefaultAction(action);
+        button->setAutoRaise(true);
+        statusBar()->addPermanentWidget(button);
+    }
+}
+
+void MainWindow::openTransformDialog() {
+    if (!document_) return;
+    if (auto* open = findChild<TransformDialog*>(QStringLiteral("transformDialog"))) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+    auto* dialog = new TransformDialog(session_, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void MainWindow::restoreLayout() {

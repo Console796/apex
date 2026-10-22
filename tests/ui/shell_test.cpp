@@ -19,6 +19,14 @@
 #include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
 #include "ui/outliner_panel.hpp"
+#include "ui/transform_dialog.hpp"
+#include "ui/transform_input.hpp"
+#include "viewport/pick_math.hpp"
+#include <QLineEdit>
+#include <QCheckBox>
+#include <QTabWidget>
+#include <QToolButton>
+#include <QToolBar>
 #include "ui/theme.hpp"
 #include "ui/viewport_area.hpp"
 #include "ui/viewport_pane.hpp"
@@ -399,4 +407,378 @@ TEST_CASE("pane grids use surface bounds pinned precedence and every axis fallba
     CHECK(grid.origin == DVec3{0});
     CHECK(grid.normal == DVec3{0, 0, 1});
     CHECK_FALSE(grid.bounds);
+}
+
+namespace {
+using namespace apex;
+
+struct TransformScene {
+    ui::MainWindow window;
+    document::NodeHandle box;
+    document::NodeId boxId = 0;
+
+    explicit TransformScene(const char* preset = "Hammer") {
+        app();
+        QSettings().setValue("editor/preset", preset);
+        window.show();
+        REQUIRE(window.openFile(QStringLiteral(APEX_FIXTURE_DIR "/probe/e_control.vmf")));
+        box = editor_test::addBox(*window.document(), {5, 5, 5}, {69, 69, 69});
+        boxId = editor_test::id(*window.document(), box);
+        auto& session = window.editorSession();
+        session.perform("selection.mode.solids");
+        session.selectNode(boxId);
+        QCoreApplication::processEvents();
+    }
+    editor::EditorSession& session() { return window.editorSession(); }
+    QAction* action(const char* id) {
+        auto* a = window.findChild<QAction*>(id);
+        REQUIRE(a);
+        return a;
+    }
+    std::size_t undo() { return window.document()->undoCount(); }
+    DVec3 min() {
+        const auto solid = geometry::solidGeometry(*window.document()->get(box)->block);
+        REQUIRE(solid);
+        DVec3 m{1e9};
+        for (const auto& v : solid->poly.vertices) m = glm::min(m, v);
+        return m;
+    }
+};
+
+viewport::Camera cameraLooking(DVec3 from, DVec3 at) {
+    viewport::Camera camera;
+    camera.position = from;
+    const DVec3 f = glm::normalize(at - from);
+    camera.angles = {glm::degrees(-std::asin(f.z)), glm::degrees(std::atan2(f.y, f.x)), 0.0};
+    return camera;
+}
+
+const QSizeF kPane{800, 600};
+
+QMouseEvent mouseEvent(QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons buttons,
+                       Qt::KeyboardModifiers mods = Qt::NoModifier) {
+    return QMouseEvent(type, at, at, button, buttons, mods);
+}
+
+std::optional<QPointF> findHandle(editor::EditorSession& session, const viewport::Camera& camera,
+                                  editor::GizmoHandle handle) {
+    const auto context = session.gizmoContext();
+    if (!context) return std::nullopt;
+    const auto view = ui::gizmoViewFor(camera, kPane, context->pivot);
+    for (double y = 0; y < kPane.height(); y += 2) {
+        for (double x = 0; x < kPane.width(); x += 2) {
+            const auto ray = viewport::pixelRay(camera, kPane.width() / kPane.height(), x, y, kPane.width(), kPane.height());
+            const auto hit = editor::hitTestGizmo(session.gizmoMode(), *context, view, ray);
+            if (hit && hit->handle == handle) return QPointF(x, y);
+        }
+    }
+    return std::nullopt;
+}
+
+Ray rayAtPixel(const viewport::Camera& camera, QPointF at) {
+    return viewport::pixelRay(camera, kPane.width() / kPane.height(), at.x(), at.y(), kPane.width(), kPane.height());
+}
+}  // namespace
+
+TEST_CASE("transform actions route through the session, menus, toolbar and status bar") {
+    TransformScene scene;
+    auto& session = scene.session();
+    const auto* edit = scene.window.findChild<QMenu*>("menuTransform");
+    const auto* gizmo = scene.window.findChild<QMenu*>("menuGizmo");
+    REQUIRE(edit);
+    REQUIRE(gizmo);
+    for (const char* id : {"transform.dialog", "edit.flip.x", "edit.flip.y", "edit.flip.z", "nudge.left", "nudge.right",
+                           "nudge.up", "nudge.down", "transform.texture_lock.toggle"})
+        CHECK(edit->actions().contains(scene.action(id)));
+    for (const char* id : {"gizmo.mode.translate", "gizmo.mode.rotate", "gizmo.mode.scale", "gizmo.space.toggle",
+                           "gizmo.pivot.cycle", "snap.mode.toggle"})
+        CHECK(gizmo->actions().contains(scene.action(id)));
+
+    auto* toolbar = scene.window.findChild<QToolBar*>("toolbarTransform");
+    REQUIRE(toolbar);
+    for (const char* id : {"gizmo.mode.translate", "gizmo.mode.rotate", "gizmo.mode.scale", "snap.mode.toggle",
+                           "transform.texture_lock.toggle"})
+        CHECK(toolbar->actions().contains(scene.action(id)));
+    for (const char* name : {"statusGizmoTranslate", "statusGizmoRotate", "statusGizmoScale", "statusSnapMode",
+                             "statusTextureLock"})
+        CHECK(scene.window.findChild<QToolButton*>(name));
+    CHECK(scene.window.findChild<QLabel*>("statusGrid"));
+
+    // Gizmo modes: exclusive, mirrored on toolbar action and status button.
+    CHECK(scene.action("gizmo.mode.translate")->isChecked());
+    scene.action("gizmo.mode.rotate")->trigger();
+    CHECK(session.gizmoMode() == editor::GizmoMode::Rotate);
+    CHECK(scene.action("gizmo.mode.rotate")->isChecked());
+    CHECK_FALSE(scene.action("gizmo.mode.translate")->isChecked());
+    CHECK(scene.window.findChild<QToolButton*>("statusGizmoRotate")->isChecked());
+    scene.window.findChild<QToolButton*>("statusGizmoScale")->click();
+    CHECK(session.gizmoMode() == editor::GizmoMode::Scale);
+    scene.action("gizmo.mode.translate")->trigger();
+
+    // Snap mode and texture lock toggles.
+    CHECK(session.snapSettings().mode == editor::SnapMode::Absolute);
+    scene.action("snap.mode.toggle")->trigger();
+    CHECK(session.snapSettings().mode == editor::SnapMode::Relative);
+    CHECK(scene.action("snap.mode.toggle")->isChecked());
+    CHECK(scene.action("snap.mode.toggle")->text().contains("Relative"));
+    scene.action("snap.mode.toggle")->trigger();
+    CHECK(session.snapSettings().mode == editor::SnapMode::Absolute);
+    const bool lock = session.textureLock();
+    scene.window.findChild<QToolButton*>("statusTextureLock")->click();
+    CHECK(session.textureLock() == !lock);
+    CHECK(scene.action("transform.texture_lock.toggle")->isChecked() == !lock);
+    scene.action("gizmo.space.toggle")->trigger();
+    CHECK(session.gizmoSpace() == editor::GizmoSpace::Local);
+    CHECK(scene.action("gizmo.space.toggle")->isChecked());
+    const auto pivot = session.pivotMode();
+    scene.action("gizmo.pivot.cycle")->trigger();
+    CHECK(session.pivotMode() != pivot);
+
+    // Document edits: one undo step each.
+    const auto before = scene.undo();
+    scene.action("edit.flip.x")->trigger();
+    CHECK(scene.undo() == before + 1);
+    scene.action("nudge.right")->trigger();
+    CHECK(scene.undo() == before + 2);
+
+    // Hammer binds W/E/R to the pane and Ctrl+M to the window; bare modifiers never become shortcuts.
+    CHECK(scene.action("transform.dialog")->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_M));
+    CHECK(scene.action("gizmo.mode.rotate")->shortcutContext() == Qt::WidgetShortcut);
+}
+
+TEST_CASE("transform dialog applies exact values and rejects invalid input") {
+    TransformScene scene;
+    auto& session = scene.session();
+    scene.action("transform.dialog")->trigger();
+    auto* dialog = scene.window.findChild<ui::TransformDialog*>("transformDialog");
+    REQUIRE(dialog);
+    const auto field = [&](const char* name) {
+        auto* f = dialog->findChild<QLineEdit*>(name);
+        REQUIRE(f);
+        return f;
+    };
+    auto* error = dialog->findChild<QLabel*>("transformError");
+    REQUIRE(error);
+
+    // Absolute move: the pivot goes to the typed point. Box is 64 wide, so min = pivot - 32.
+    const auto before = scene.undo();
+    dialog->setTab(ui::TransformDialog::Move);
+    field("moveX")->setText("100");
+    field("moveY")->setText("200");
+    field("moveZ")->setText("300");
+    CHECK(dialog->apply());
+    CHECK(scene.undo() == before + 1);
+    editor_test::checkPoint(scene.min(), {68, 168, 268});
+
+    // Relative move.
+    dialog->findChild<QCheckBox*>("moveRelative")->setChecked(true);
+    field("moveX")->setText("8");
+    field("moveY")->setText("0");
+    field("moveZ")->setText("-4");
+    CHECK(dialog->apply());
+    CHECK(scene.undo() == before + 2);
+    editor_test::checkPoint(scene.min(), {76, 168, 264});
+
+    // Invalid input: error shown, nothing changes.
+    field("moveX")->setText("abc");
+    CHECK_FALSE(dialog->apply());
+    CHECK_FALSE(dialog->error().isEmpty());
+    CHECK(scene.undo() == before + 2);
+    field("moveX")->setText("nan");
+    CHECK_FALSE(dialog->apply());
+    field("moveX")->setText("1e999");
+    CHECK_FALSE(dialog->apply());
+    CHECK(scene.undo() == before + 2);
+    editor_test::checkPoint(scene.min(), {76, 168, 264});
+
+    // Rotate: yaw 90 about the pivot keeps a cube's extents but is one undo step.
+    dialog->setTab(ui::TransformDialog::Rotate);
+    field("rotateYaw")->setText("45");
+    CHECK(dialog->apply());
+    CHECK(scene.undo() == before + 3);
+    CHECK(dialog->error().isEmpty());
+
+    // Scale: zero is rejected, 2 doubles the box.
+    dialog->setTab(ui::TransformDialog::Scale);
+    field("scaleX")->setText("0");
+    CHECK_FALSE(dialog->apply());
+    CHECK(scene.undo() == before + 3);
+    field("scaleX")->setText("2");
+    field("scaleY")->setText("2");
+    field("scaleZ")->setText("2");
+    CHECK(dialog->apply());
+    CHECK(scene.undo() == before + 4);
+    for (int i = 0; i < 4; ++i) scene.session().perform("edit.undo");
+    CHECK(scene.undo() == before);
+    editor_test::checkPoint(scene.min(), {5, 5, 5});
+    (void)session;
+    dialog->reject();
+}
+
+TEST_CASE("simulated gizmo drag commits one undo step identical to the editor-level drag") {
+    TransformScene scene;
+    auto& session = scene.session();
+    const auto context = session.gizmoContext();
+    REQUIRE(context);
+    const auto camera = cameraLooking(context->pivot + DVec3{-260, -300, 220}, context->pivot);
+    const auto handle = findHandle(session, camera, editor::GizmoHandle::X);
+    REQUIRE(handle);
+
+    ui::TransformInput input;
+    input.setSession(&session);
+    const auto before = scene.undo();
+    const auto start = scene.min();
+
+    auto move = mouseEvent(QEvent::MouseMove, *handle, Qt::NoButton, Qt::NoButton);
+    CHECK(input.mouse(move, camera, kPane));
+    CHECK(input.hovered() == editor::GizmoHandle::X);
+    auto press = mouseEvent(QEvent::MouseButtonPress, *handle, Qt::LeftButton, Qt::LeftButton);
+    CHECK(input.mouse(press, camera, kPane));
+    CHECK(input.owns());
+    CHECK(session.transformActive());
+
+    // Drag along the projected X axis.
+    const QPointF end = *handle + QPointF(70, 25);
+    ui::TransformInput* in = &input;
+    auto drag = mouseEvent(QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+    CHECK(in->mouse(drag, camera, kPane));
+    CHECK_FALSE(session.preview().empty());
+    CHECK(scene.undo() == before);  // Previewing never touches the document.
+    CHECK_FALSE(session.activeReadout().text.empty());
+    auto release = mouseEvent(QEvent::MouseButtonRelease, end, Qt::LeftButton, Qt::NoButton);
+    CHECK(in->mouse(release, camera, kPane));
+    CHECK_FALSE(input.owns());
+    CHECK(session.preview().empty());
+    CHECK(scene.undo() == before + 1);
+    const auto moved = scene.min();
+    CHECK(moved.x != start.x);
+
+    // The same drag at the editor level on a fresh document yields the same result.
+    TransformScene reference;
+    auto& ref = reference.session();
+    const auto refContext = ref.gizmoContext();
+    REQUIRE(refContext);
+    const auto view = ui::gizmoViewFor(camera, kPane, refContext->pivot);
+    REQUIRE(ref.beginGizmoDrag(editor::GizmoHandle::X, view, rayAtPixel(camera, *handle)));
+    REQUIRE(ref.updateGizmoDrag(rayAtPixel(camera, end), ui::transformModifiers(ref.preset(), Qt::NoModifier)));
+    REQUIRE(ref.endGizmoDrag());
+    editor_test::checkPoint(moved, reference.min());
+
+    // Undo restores the start in one step.
+    session.perform("edit.undo");
+    editor_test::checkPoint(scene.min(), start);
+
+    // Esc cancels a drag without an undo step; right press too.
+    const auto press2 = mouseEvent(QEvent::MouseButtonPress, *handle, Qt::LeftButton, Qt::LeftButton);
+    REQUIRE(input.mouse(press2, camera, kPane));
+    const auto drag2 = mouseEvent(QEvent::MouseMove, end, Qt::NoButton, Qt::LeftButton);
+    input.mouse(drag2, camera, kPane);
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    CHECK(input.key(esc, camera, kPane, true));
+    CHECK_FALSE(session.transformActive());
+    CHECK(session.preview().empty());
+    editor_test::checkPoint(scene.min(), start);
+    const auto after = scene.undo();
+    const auto press3 = mouseEvent(QEvent::MouseButtonPress, *handle, Qt::LeftButton, Qt::LeftButton);
+    REQUIRE(input.mouse(press3, camera, kPane));
+    auto right = mouseEvent(QEvent::MouseButtonPress, end, Qt::RightButton, Qt::LeftButton | Qt::RightButton);
+    CHECK(input.mouse(right, camera, kPane));
+    CHECK_FALSE(session.transformActive());
+    CHECK(scene.undo() == after);
+
+    // A press away from the gizmo is not consumed (selection click logic unchanged).
+    auto away = mouseEvent(QEvent::MouseButtonPress, QPointF(5, 5), Qt::LeftButton, Qt::LeftButton);
+    CHECK_FALSE(input.mouse(away, camera, kPane));
+    CHECK_FALSE(session.transformActive());
+}
+
+TEST_CASE("snap suspend follows the preset and the overlay describes the gizmo") {
+    app();
+    const auto& hammer = editor::hammerPreset();
+    const auto& blender = editor::blenderPreset();
+    CHECK(ui::snapSuspendModifier(hammer) == Qt::AltModifier);
+    CHECK(ui::snapSuspendModifier(blender) == Qt::ControlModifier);
+    CHECK(ui::transformModifiers(hammer, Qt::AltModifier).suspend);
+    CHECK_FALSE(ui::transformModifiers(hammer, Qt::ControlModifier).suspend);
+    CHECK(ui::transformModifiers(blender, Qt::ControlModifier).suspend);
+    CHECK_FALSE(ui::transformModifiers(blender, Qt::AltModifier).suspend);
+    CHECK(ui::transformModifiers(hammer, Qt::ShiftModifier).fine);
+
+    TransformScene scene;
+    auto& session = scene.session();
+    const auto context = session.gizmoContext();
+    REQUIRE(context);
+    const auto camera = cameraLooking(context->pivot + DVec3{-260, -300, 220}, context->pivot);
+    ui::TransformInput input;
+    input.setSession(&session);
+    for (const auto mode : {editor::GizmoMode::Translate, editor::GizmoMode::Rotate, editor::GizmoMode::Scale}) {
+        session.setGizmoMode(mode);
+        render::DrawList list;
+        input.appendOverlay(list, camera, kPane, 1.0);
+        CHECK((list.overlaySegments.size() + list.overlayTriangles.size()) > 0);
+        CHECK(list.viewportSize.x == doctest::Approx(800.0));
+    }
+    // Ortho panes draw the gizmo too.
+    viewport::Camera ortho = cameraLooking(context->pivot + DVec3{0, 0, 500}, context->pivot);
+    ortho.projection = viewport::ProjectionKind::Orthographic;
+    session.setGizmoMode(editor::GizmoMode::Translate);
+    render::DrawList list;
+    input.appendOverlay(list, ortho, kPane, 1.0);
+    CHECK_FALSE(list.overlaySegments.empty());
+    // Nothing selected: no gizmo.
+    session.selection().clear();
+    render::DrawList empty;
+    input.appendOverlay(empty, camera, kPane, 1.0);
+    CHECK(empty.overlaySegments.empty());
+    CHECK(empty.overlayTriangles.empty());
+}
+
+TEST_CASE("Blender modal transform: G, axis, digits, Enter from synthetic keys") {
+    TransformScene scene("Blender");
+    auto& session = scene.session();
+    session.setPreset(editor::blenderPreset());
+    const auto context = session.gizmoContext();
+    REQUIRE(context);
+    const auto camera = cameraLooking(context->pivot + DVec3{-260, -300, 220}, context->pivot);
+    ui::TransformInput input;
+    input.setSession(&session);
+    const auto start = scene.min();
+    const auto before = scene.undo();
+
+    auto hover = mouseEvent(QEvent::MouseMove, QPointF(400, 300), Qt::NoButton, Qt::NoButton);
+    input.mouse(hover, camera, kPane);
+    const auto key = [&](int k, Qt::KeyboardModifiers m = Qt::NoModifier) {
+        QKeyEvent e(QEvent::KeyPress, k, m, QString());
+        return input.key(e, camera, kPane, true);
+    };
+    CHECK(key(Qt::Key_G));
+    CHECK(session.modal().active());
+    CHECK(input.owns());
+    CHECK(key(Qt::Key_X));
+    CHECK(key(Qt::Key_5));
+    CHECK(key(Qt::Key_0));
+    CHECK(session.activeReadout().text.size() > 0);
+    CHECK(key(Qt::Key_Return));
+    CHECK_FALSE(session.transformActive());
+    CHECK(scene.undo() == before + 1);
+    editor_test::checkPoint(scene.min(), start + DVec3{50, 0, 0});
+
+    // Left click commits, right click cancels, Esc cancels.
+    CHECK(key(Qt::Key_G));
+    input.mouse(mouseEvent(QEvent::MouseMove, QPointF(430, 300), Qt::NoButton, Qt::NoButton), camera, kPane);
+    CHECK(input.mouse(mouseEvent(QEvent::MouseButtonPress, QPointF(430, 300), Qt::LeftButton, Qt::LeftButton), camera, kPane));
+    CHECK_FALSE(session.transformActive());
+    CHECK(scene.undo() == before + 2);
+
+    CHECK(key(Qt::Key_R));
+    CHECK(input.mouse(mouseEvent(QEvent::MouseButtonPress, QPointF(430, 300), Qt::RightButton, Qt::RightButton), camera, kPane));
+    CHECK_FALSE(session.transformActive());
+    CHECK(scene.undo() == before + 2);
+    CHECK(key(Qt::Key_S));
+    CHECK(key(Qt::Key_Escape));
+    CHECK_FALSE(session.transformActive());
+    CHECK(scene.undo() == before + 2);
+
+    // Keys unrelated to modal start are not consumed.
+    CHECK_FALSE(key(Qt::Key_Q));
 }

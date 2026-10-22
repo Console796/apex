@@ -13,6 +13,7 @@ class QAction;
 class QComboBox;
 class QLabel;
 class QMenu;
+class QToolButton;
 
 namespace ads {
 class CDockManager;
@@ -60,6 +61,8 @@ private slots:
 
 private:
     void buildMenus();
+    void buildTransformUi();
+    void openTransformDialog();
     void updateEditorActions();
     void updateGridStatus();
     void applyPreset(const editor::Preset& preset);
@@ -93,6 +96,7 @@ private:
     QAction* lightAction_ = nullptr;
     QLabel* gridLabel_ = nullptr;
     QLabel* planeLabel_ = nullptr;
+    QLabel* readoutLabel_ = nullptr;
     QLabel* cameraLabel_ = nullptr;
     QLabel* frameLabel_ = nullptr;
     QLabel* gpuLabel_ = nullptr;

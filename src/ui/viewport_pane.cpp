@@ -190,6 +190,7 @@ bool PaneWindow::event(QEvent* e) {
         break;
     case QEvent::FocusOut:
     case QEvent::Hide:
+        if (e->type() == QEvent::Hide) transform_.cancel();
         releaseCapture();
         forward_ = back_ = left_ = right_ = up_ = down_ = false;
         break;
@@ -198,10 +199,14 @@ bool PaneWindow::event(QEvent* e) {
     case QEvent::MouseMove:
         return handleMouse(static_cast<QMouseEvent*>(e));
     case QEvent::Leave:
-        if (session_) session_->clearHover();
+        if (session_ && !transform_.owns()) session_->clearHover();
+        transform_.leave();
+        if (transform_.takeDirty()) dirty_ = true;
         break;
     case QEvent::ShortcutOverride:
-        if (buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton)) {
+        // A gizmo drag or modal transform owns the keyboard: Esc, Enter, digits and axis keys
+        // must not trigger window shortcuts.
+        if (transform_.owns() || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton)) {
             e->accept();
             return true;
         }
@@ -223,6 +228,7 @@ bool PaneWindow::event(QEvent* e) {
         // Release the swapchain before Qt takes the surface away (hide/destroy).
         if (static_cast<QPlatformSurfaceEvent*>(e)->surfaceEventType() ==
             QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
+            transform_.cancel();
             releaseCapture();
             destroySwapchain();
         }
@@ -238,6 +244,23 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
     const bool press = e->type() == QEvent::MouseButtonPress;
     const bool release = e->type() == QEvent::MouseButtonRelease;
     cursor_ = e->position();
+    bool consumed = false;
+    if (const auto* vp = accessor_(); vp && session_)
+        consumed = transform_.mouse(*e, vp->camera, QSizeF(width(), height()));
+    if (transform_.takeDirty()) dirty_ = true;
+    if (consumed) {
+        // The gizmo or a modal transform owns this event: never selection, marquee or navigation.
+        cancelSelectionGesture();
+        if (press) {
+            requestActivate();
+            emit pressed();
+            if (!grabbed_) grabbed_ = setMouseGrabEnabled(true);
+        } else if (release && e->buttons() == Qt::NoButton && grabbed_ && buttons_ == Qt::NoButton) {
+            setMouseGrabEnabled(false);
+            grabbed_ = false;
+        }
+        return true;
+    }
     selectionMouse(e);
     if (press) {
         requestActivate();
@@ -342,6 +365,12 @@ bool PaneWindow::handleKey(QKeyEvent* e) {
     modifiers_ = e->modifiers();
     const bool down = e->type() == QEvent::KeyPress;
     const bool navigating = buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton);
+    if (session_) {
+        const auto* vp = accessor_();
+        const bool consumed = vp && transform_.key(*e, vp->camera, QSizeF(width(), height()), !navigating);
+        if (transform_.takeDirty()) dirty_ = true;
+        if (consumed) return true;
+    }
     if (!navigating) {
         if (session_ && down && !e->isAutoRepeat()) {
             if (const auto chord = keyChord(*e)) {
@@ -448,6 +477,7 @@ double PaneWindow::draw() {
         list.view = options.view;
         list.grid = options.grid;
     }
+    transform_.appendOverlay(list, camera, QSizeF(width(), height()), devicePixelRatio());
 
     QElapsedTimer timer;
     timer.start();

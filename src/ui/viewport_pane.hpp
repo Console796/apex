@@ -10,6 +10,7 @@
 #include "editor/editor_session.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
+#include "ui/transform_input.hpp"
 #include "viewport/controllers.hpp"
 #include "viewport/layout.hpp"
 
@@ -47,7 +48,12 @@ public:
     bool failed() const { return failed_; }
 
     void releaseCapture();
-    void setEditorSession(editor::EditorSession* session) { session_ = session; }
+    void setEditorSession(editor::EditorSession* session) {
+        transform_.setSession(session);
+        session_ = session;
+        dirty_ = true;
+    }
+    TransformInput& transformInput() { return transform_; }
 
 signals:
     void pressed();             // Any mouse press: the pane becomes active and takes focus.
@@ -69,6 +75,7 @@ private:
     double draw();
 
     editor::EditorSession* session_ = nullptr;
+    TransformInput transform_;
     bool selectionPending_ = false, marqueeAllowed_ = false, marqueeDragging_ = false;
     QPointF selectionStart_, lastClick_;
     QSize lastClickSize_;

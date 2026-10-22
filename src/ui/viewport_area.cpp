@@ -48,6 +48,7 @@ ViewportArea::~ViewportArea() {
 void ViewportArea::setDocument(document::Document* document, const assets::GameProfile* profile) {
     document_ = document;
     host_->setDocument(document, profile);
+    previewRevision_ = kNoPreview;  // The mirror may be new.
     updateHighlight();
     forceDraw_ = true;
     for (auto& [id, f] : frames_)
@@ -57,6 +58,7 @@ void ViewportArea::setDocument(document::Document* document, const assets::GameP
 void ViewportArea::setEditorSession(editor::EditorSession* session) {
     if (session_) session_->unobserve(sessionObserver_);
     session_ = session;
+    previewRevision_ = kNoPreview;
     if (session_) sessionObserver_ = session_->observe([this] { updateHighlight(); });
     for (auto& [id, frame] : frames_)
         if (frame && frame->window()) frame->window()->setEditorSession(session_);
@@ -73,10 +75,30 @@ void ViewportArea::updateHighlight() {
         // in Groups/Faces mode, rather than an arbitrary member of its selection.
         highlight.hover = session_->hoverDrawable();
     }
-    if (auto* mirror = host_->mirror()) mirror->setHighlight(highlight);
+    if (auto* mirror = host_->mirror()) {
+        mirror->setHighlight(highlight);
+        syncPreview(*mirror);
+    }
     forceDraw_ = true;
     for (auto& [id, frame] : frames_)
         if (frame && frame->window()) frame->window()->requestRedraw();
+}
+
+// The session owns the transient transform channel; the mirror only draws it. Equal revisions
+// are skipped, and the session clearing it (commit, cancel) clears the mirror in the same call.
+void ViewportArea::syncPreview(render::RenderMirror& mirror) {
+    if (!session_) {
+        if (previewRevision_ != kNoPreview) mirror.clearPreview();
+        previewRevision_ = kNoPreview;
+        return;
+    }
+    const auto& preview = session_->preview();
+    const bool changed = preview.revision() != previewRevision_ || previewEmpty_ != preview.empty();
+    if (!changed) return;
+    if (preview.empty()) mirror.clearPreview();
+    else mirror.setPreview(preview.transforms());
+    previewRevision_ = preview.revision();
+    previewEmpty_ = preview.empty();
 }
 
 void ViewportArea::setLayout(viewport::ViewportLayout layout) {

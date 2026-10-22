@@ -8,7 +8,7 @@
 namespace apex::render {
 
 namespace {
-const std::array<std::pair<std::string_view, std::span<const std::uint32_t>>, 10> kBlobs{{
+const std::array<std::pair<std::string_view, std::span<const std::uint32_t>>, 11> kBlobs{{
     {"brush_vert", std::span{shaders::brush_vert}},
     {"brush_textured_frag", std::span{shaders::brush_textured_frag}},
     {"brush_flat_frag", std::span{shaders::brush_flat_frag}},
@@ -19,6 +19,7 @@ const std::array<std::pair<std::string_view, std::span<const std::uint32_t>>, 10
     {"sprite_frag", std::span{shaders::sprite_frag}},
     {"grid_vert", std::span{shaders::grid_vert}},
     {"grid_frag", std::span{shaders::grid_frag}},
+    {"overlay_vert", std::span{shaders::overlay_vert}},
 }};
 } // namespace
 

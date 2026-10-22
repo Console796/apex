@@ -24,7 +24,7 @@ namespace {
 enum class Kind : std::uint32_t {
     Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid,
     Outline, OutlineAlways, BoxOutline, BoxOutlineAlways, SpriteOutline, SpriteOutlineAlways,
-    DepthOnly, BoxDepthOnly, Count
+    DepthOnly, BoxDepthOnly, Overlay, Count
 };
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
@@ -60,10 +60,53 @@ constexpr Spec kSpecs[kKindCount] = {
     {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
     {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
     {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
+    {"overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
-                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag"};
+                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert"};
+
+struct OverlayVertex {
+    Vec4 position;
+    Vec4 colour;
+};
+
+// Expands the overlay primitives to clip-space triangles. Primitives behind the near plane are
+// clipped in clip space (w = kNearW), so a gizmo straddling the camera plane stays sane.
+std::vector<OverlayVertex> expandOverlay(const DrawList& list) {
+    constexpr float kNearW = 1e-3f;
+    std::vector<OverlayVertex> out;
+    const Vec2 size = list.viewportSize;
+    if (size.x <= 0.0f || size.y <= 0.0f) return out;
+    const auto clip = [&](DVec3 world) {
+        return list.view.viewProjection * Vec4(toCameraRelative(world, list.view.cameraPosition), 1.0f);
+    };
+    const auto lerp = [](Vec4 a, Vec4 b, float t) { return a + (b - a) * t; };
+    for (const OverlaySegment& seg : list.overlaySegments) {
+        Vec4 a = clip(seg.a), b = clip(seg.b);
+        if (a.w < kNearW && b.w < kNearW) continue;
+        if (a.w < kNearW) a = lerp(a, b, (kNearW - a.w) / (b.w - a.w));
+        else if (b.w < kNearW) b = lerp(b, a, (kNearW - b.w) / (a.w - b.w));
+        const Vec2 pa = Vec2(a.x, a.y) / a.w * size * 0.5f, pb = Vec2(b.x, b.y) / b.w * size * 0.5f;
+        Vec2 d = pb - pa;
+        const float length = glm::length(d);
+        d = length > 1e-6f ? d / length : Vec2(1.0f, 0.0f);
+        const Vec2 n = Vec2(-d.y, d.x) * (seg.widthPixels * 0.5f);
+        const auto vertex = [&](Vec4 c, Vec2 p, Vec2 offset) {
+            const Vec2 ndc = (p + offset) * 2.0f / size;
+            return OverlayVertex{Vec4(ndc * c.w, c.z, c.w), seg.colour};
+        };
+        const OverlayVertex q[4] = {vertex(a, pa, n), vertex(a, pa, -n), vertex(b, pb, -n), vertex(b, pb, n)};
+        for (const int i : {0, 1, 2, 0, 2, 3}) out.push_back(q[i]);
+    }
+    for (const OverlayTriangle& tri : list.overlayTriangles) {
+        Vec4 v[3] = {clip(tri.a), clip(tri.b), clip(tri.c)};
+        // Skip anything touching the near plane; filled handles are small and in front of the camera.
+        if (v[0].w < kNearW || v[1].w < kNearW || v[2].w < kNearW) continue;
+        for (const Vec4& c : v) out.push_back({c, tri.colour});
+    }
+    return out;
+}
 
 PushConstants basePush(const DrawList& list) {
     PushConstants push{};
@@ -89,12 +132,13 @@ struct Renderer::Impl {
     // Swapchains have one frame in flight and distinct command buffers. A slot is reused only
     // after its fence, so host writes cannot race another viewport or an earlier submission.
     std::map<VkCommandBuffer, Buffer> previewBuffers;
+    std::map<VkCommandBuffer, Buffer> overlayBuffers; // Same slot discipline as previewBuffers.
 #ifdef APEX_SHADER_DIR
     std::map<std::string, std::filesystem::file_time_type> stamps;
 #endif
 
     ~Impl() {
-        if (!previewBuffers.empty()) context->waitIdle();
+        if (!previewBuffers.empty() || !overlayBuffers.empty()) context->waitIdle();
         destroyPipelines();
         if (layout) vkDestroyPipelineLayout(context->device(), layout, nullptr);
     }
@@ -593,6 +637,32 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
         }
     }
     vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
+
+    if (!list.overlaySegments.empty() || !list.overlayTriangles.empty()) {
+        const auto vertices = expandOverlay(list);
+        if (!vertices.empty() && s.has(Kind::Overlay)) {
+            const VkDeviceSize size = vertices.size() * sizeof(OverlayVertex);
+            Buffer& buffer = s.overlayBuffers[commands];
+            if (buffer.size() < size) {
+                auto created = Buffer::create(*s.context, {std::max(size, buffer.size() * 2),
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+                if (!created) {
+                    log::error("overlay buffer: {}", created.error().what());
+                    return;
+                }
+                buffer = std::move(*created);
+            }
+            std::memcpy(buffer.mapped(), vertices.data(), size);
+            buffer.flush(0, size);
+            const VkDeviceAddress address = buffer.deviceAddress();
+            s.bind(commands, Kind::Overlay);
+            PushConstants push = basePush(list);
+            push.p1 = Vec4(std::bit_cast<float>(static_cast<std::uint32_t>(address)),
+                           std::bit_cast<float>(static_cast<std::uint32_t>(address >> 32)), 0.0f, 0.0f);
+            s.pushAll(commands, push);
+            vkCmdDraw(commands, static_cast<std::uint32_t>(vertices.size()), 1, 0, 0);
+        }
+    }
 }
 
 Result<void> SwapchainDepth::begin(VkCommandBuffer commands, const SwapchainFrame& frame, const float clearColor[4]) {

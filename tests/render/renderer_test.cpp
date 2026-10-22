@@ -766,3 +766,53 @@ TEST_CASE("renderer preview oblique nonuniform scale and mirror preserve lightin
     }
     CHECK(lit > 100);
 }
+
+TEST_CASE("renderer: overlay draws on top of geometry without depth and leaves other frames alone") {
+    REQUIRE_GPU();
+    const Cube cube = makeCube(*gpu, 32.0f, 0);
+    DrawList list = cubeList(cube, DisplayMode::Flat, gpu->checker);
+    list.viewportSize = Vec2(kSize);
+    const auto baseline = drawFrame(*gpu, list);
+    const auto again = drawFrame(*gpu, list);
+    CHECK(baseline.pixels == again.pixels); // Empty overlay lists change nothing.
+
+    // A segment buried inside the cube, 6 px wide; a triangle in a corner of the screen.
+    OverlaySegment segment;
+    segment.a = {20.0, -20.0, 0.0};
+    segment.b = {20.0, 20.0, 0.0};
+    segment.colour = Vec4(1.0f, 0.0f, 0.0f, 1.0f);
+    segment.widthPixels = 6.0f;
+    list.overlaySegments.push_back(segment);
+    OverlayTriangle triangle;
+    triangle.a = {0.0, 60.0, 60.0};
+    triangle.b = {0.0, 40.0, 60.0};
+    triangle.c = {0.0, 60.0, 40.0};
+    triangle.colour = Vec4(0.0f, 1.0f, 0.0f, 1.0f);
+    list.overlayTriangles.push_back(triangle);
+    // Entirely behind the camera and straddling it: neither may draw nor fault.
+    list.overlaySegments.push_back({{-300.0, 0.0, 0.0}, {-200.0, 10.0, 0.0}, Vec4(0, 0, 1, 1), 4.0f});
+    list.overlaySegments.push_back({{-300.0, 0.0, 30.0}, {200.0, 0.0, 30.0}, Vec4(1, 1, 0, 1), 2.0f});
+    const auto image = drawFrame(*gpu, list);
+
+    int red = 0, green = 0, blue = 0, yellow = 0;
+    for (std::uint32_t y = 0; y < kSize; ++y) {
+        for (std::uint32_t x = 0; x < kSize; ++x) {
+            const Px p = at(image, x, y);
+            red += nearColour(p, {255, 0, 0}, 3);
+            green += nearColour(p, {0, 255, 0}, 3);
+            blue += nearColour(p, {0, 0, 255}, 3);
+            yellow += nearColour(p, {255, 255, 0}, 3);
+        }
+    }
+    CHECK(red >= 30);   // About 6 px wide and 8 px tall.
+    CHECK(red < 120);
+    CHECK(green >= 6);
+    CHECK(blue == 0);
+    CHECK(yellow >= 8);
+    // Pixels outside the overlay are untouched.
+    int changed = 0;
+    for (std::uint32_t y = 0; y < kSize; ++y)
+        for (std::uint32_t x = 0; x < kSize; ++x)
+            changed += nearColour(at(image, x, y), at(baseline, x, y), 1) ? 0 : 1;
+    CHECK(changed < 600);
+}
