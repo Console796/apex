@@ -86,6 +86,7 @@ apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp 
                           src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
                           src/editor/transform.cpp src/editor/preview.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
+                          src/editor/inspector_model.cpp src/editor/placement.cpp
            DEPS apex_document apex_geometry apex_core)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp
@@ -110,7 +111,7 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
   apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
-                        src/ui/key_chord.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/log_panel.cpp
+                        src/ui/key_chord.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets ads::qtadvanceddocking-qt6)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
   add_executable(apex src/app/main.cpp)

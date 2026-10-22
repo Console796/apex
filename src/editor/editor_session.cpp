@@ -7,6 +7,8 @@
 #include "editor/visibility.hpp"
 
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 namespace apex::editor {
 
@@ -20,7 +22,12 @@ void EditorSession::attach(document::Document& doc) {
     document_ = &doc;
     visgroupVisibility_ = buildVisgroupVisibility(doc);
     visgroupHistory_[doc.historyState()] = visgroupVisibility_;
-    picks_ = std::make_unique<PickIndex>(doc);
+    picks_ = std::make_unique<PickIndex>(doc, [this](std::string_view name) -> std::optional<LocalBox> {
+        const auto* cls = entityClasses_.find(name);
+        if (!cls || !cls->mins || !cls->maxs) return {};
+        return LocalBox{{(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]},
+                        {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]}};
+    });
     groups_ = std::make_unique<GroupIndex>(doc);
     documentObserver_ = doc.observe([this](const document::ChangeSet& changes) {
         const auto count = document_->historyState();
@@ -80,6 +87,7 @@ void EditorSession::clearHover() {
     notify();
 }
 void EditorSession::pointerHover(Ray ray) {
+    if (activeTool_ == Tool::Entity) { clearHover(); return; }
     std::optional<Target> target;
     std::optional<NodeId> drawable;
     std::optional<std::pair<NodeId, SideId>> face;
@@ -121,9 +129,14 @@ void EditorSession::setGridSize(double units) {
     notify();
 }
 void EditorSession::pointerClick(Ray ray, Modifiers modifiers, bool sameSpot) {
+    if (activeTool_ == Tool::Entity) {
+        placeEntity(currentEntityClass_, ray, alignToSurface_);
+        return;
+    }
     if (picks_) click(selection_, *picks_, *groups_, ray, modifiers, &cycle_, sameSpot);
 }
 void EditorSession::marquee(std::span<const Plane> planes, Modifiers modifiers) {
+    if (activeTool_ == Tool::Entity) return;
     cycle_ = {};
     if (picks_) editor::marquee(selection_, *picks_, *groups_, planes, marqueeMode_, modifiers);
 }
@@ -172,7 +185,29 @@ void EditorSession::setPreset(const Preset& preset) {
     keymap_ = std::move(keymap);
     notify();
 }
+void EditorSession::setActiveTool(Tool tool) {
+    if (activeTool_ == tool) return;
+    cancelTransform();
+    activeTool_ = tool;
+    cycle_ = {};
+    clearHover();
+    notify();
+}
+void EditorSession::setCurrentEntityClass(std::string classname) {
+    if (currentEntityClass_ == classname) return;
+    currentEntityClass_ = std::move(classname);
+    notify();
+}
+void EditorSession::setAlignToSurface(bool align) {
+    if (alignToSurface_ == align) return;
+    alignToSurface_ = align;
+    notify();
+}
 bool EditorSession::perform(const ActionId& action) {
+    if (action == "tool.select" || action == "tool.entity") {
+        setActiveTool(action == "tool.select" ? Tool::Select : Tool::Entity);
+        return true;
+    }
     if (!document_) return false;
     if (action == "grid.larger" || action == "grid.smaller") {
         setGridSize(action == "grid.larger" ? GridLadder::larger(gridSize_) : GridLadder::smaller(gridSize_));
@@ -306,6 +341,7 @@ std::vector<NodeId> EditorSession::transformNodes() const {
     return expandSelection(*document_, *groups_, selection_).solidsAndEntities;
 }
 std::optional<GizmoContext> EditorSession::gizmoContext() const {
+    if (activeTool_ != Tool::Select) return std::nullopt;
     const auto nodes = transformNodes();
     if (nodes.empty()) return std::nullopt;
     GizmoContext context;
@@ -479,7 +515,8 @@ void EditorSession::edit(std::string label, const std::function<void(document::T
     transaction.commit();
 }
 Result<void> EditorSession::runEdit(std::string label, AfterEdit policy,
-                                    const std::function<Result<EditedObjects>(document::Transaction&)>& stage) {
+                                    const std::function<Result<EditedObjects>(document::Transaction&)>& stage,
+                                    std::string coalesceKey) {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
     if (transformActive()) return std::unexpected(Error{ErrorCode::InvalidArgument, "a transform is active"});
     const Selection before(selection_);
@@ -511,13 +548,119 @@ Result<void> EditorSession::runEdit(std::string label, AfterEdit policy,
             after.replace(targets);
         }
         recordSelection(transaction, before, after);
-        transaction.commit(false);
+        const bool coalesce = !coalesceKey.empty();
+        transaction.commit(coalesce, std::move(coalesceKey));
         selection_ = after;
         notify();
     } catch (const std::exception& error) {
         return std::unexpected(Error{ErrorCode::Internal, error.what()});
     }
     return {};
+}
+void EditorSession::setEntityClasses(assets::EntityClassTable classes) {
+    entityClasses_ = std::move(classes);
+    ++entityClassesRevision_;
+    if (picks_) picks_->rebuild();
+    notify();
+}
+InspectorModel EditorSession::inspectorModel(bool raw) const {
+    if (!document_) throw std::logic_error("no document");
+    return InspectorModel(*document_, selection_, entityClasses_, raw);
+}
+Result<void> EditorSession::editProperty(std::size_t row, std::string text, std::string focusKey, bool raw) {
+    return runEdit("Edit property", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = inspectorModel(raw).setProperty(tx, row, std::move(text));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    }, inspectorCoalesceKey(row, focusKey, raw));
+}
+std::string EditorSession::inspectorCoalesceKey(std::size_t row, std::string_view focusKey, bool raw) const {
+    if (focusKey.empty()) return {};
+    std::string key = "inspector:" + std::string(focusKey) + ":" + std::to_string(row) +
+                      (raw ? ":raw:" : ":typed:");
+    for (const auto id : selectedNodes(selection_)) key += std::to_string(id) + ",";
+    return key;
+}
+Result<void> EditorSession::editVectorComponent(std::size_t row, std::size_t component,
+                                               std::string text, std::string focusKey) {
+    return runEdit("Edit property", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = inspectorModel().setVectorComponent(tx, row, component, std::move(text));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    }, inspectorCoalesceKey(row, focusKey));
+}
+Result<void> EditorSession::toggleFlag(std::size_t row, std::uint64_t bit, bool enabled, std::string focusKey) {
+    return runEdit("Edit flags", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = inspectorModel().toggleFlag(tx, row, bit, enabled);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    }, inspectorCoalesceKey(row, focusKey));
+}
+Result<void> EditorSession::setChoice(std::size_t row, std::string value, std::string focusKey) {
+    return runEdit("Edit choice", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = inspectorModel().setChoice(tx, row, std::move(value));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    }, inspectorCoalesceKey(row, focusKey));
+}
+Result<void> EditorSession::setClass(std::string classname) {
+    return runEdit("Change class", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = inspectorModel().setClass(tx, std::move(classname));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
+                                       std::optional<DVec3> normal, bool align) {
+    return runEdit("Place entity", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        const auto* cls = entityClasses_.find(classname);
+        if (!cls || !ciEquals(cls->type, "PointClass"))
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
+        AABB bounds{{-4, -4, -4}, {4, 4, 4}};
+        if (cls->mins && cls->maxs) {
+            bounds.min = {(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]};
+            bounds.max = {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]};
+        }
+        if (!normal) {
+            const auto resolved = workPlane_.resolve();
+            const auto& plane = resolved ? resolved->plane : fallbackPlane_;
+            hit -= plane.normal * glm::dot(hit - plane.origin, plane.normal);
+            for (const auto axis : {plane.uAxis, plane.vAxis}) {
+                const double distance = glm::dot(hit - plane.origin, axis);
+                hit += axis * (std::round(distance / gridSize_) * gridSize_ - distance);
+            }
+            normal = plane.normal;
+        }
+        auto placement = placeOnSurface(hit, *normal, bounds, align);
+        if (!placement) return std::unexpected(placement.error());
+        const auto text = [](DVec3 v) {
+            std::ostringstream stream;
+            stream << std::setprecision(17) << v.x << ' ' << v.y << ' ' << v.z;
+            return stream.str();
+        };
+        auto block = kv1::Node::block("entity");
+        block.append(kv1::Node::value("classname", cls->name)).value();
+        block.append(kv1::Node::value("origin", text(placement->origin))).value();
+        if (placement->angles) block.append(kv1::Node::value("angles", text(*placement->angles))).value();
+        const auto handle = tx.create(std::move(block));
+        EditedObjects result;
+        result.items.push_back({document_->get(handle)->id, EditedObjects::Item::Kind::Entity, {}, {}});
+        return result;
+    });
+}
+Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool align) {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    for (const auto& hit : picks_->pick(ray)) {
+        if (hit.side) return placeEntity(std::move(classname), hit.point, hit.normal, align);
+    }
+    const auto resolved = workPlane_.resolve();
+    const auto& plane = resolved ? resolved->plane : fallbackPlane_;
+    const double denominator = glm::dot(plane.normal, ray.dir);
+    if (std::abs(denominator) < 1e-12)
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "ray is parallel to work plane"});
+    const double t = glm::dot(plane.origin - ray.origin, plane.normal) / denominator;
+    if (t < 0) return std::unexpected(Error{ErrorCode::InvalidArgument, "work plane is behind ray"});
+    return placeEntity(std::move(classname), ray.origin + ray.dir * t, std::nullopt, align);
 }
 Result<std::string> EditorSession::copyText() const {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});

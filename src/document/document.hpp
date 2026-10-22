@@ -147,6 +147,7 @@ private:
         std::vector<Delta> deltas;
         std::vector<NodeId> rootsBefore, rootsAfter;
         std::optional<std::pair<NodeId, std::string>> coalesce;
+        std::string coalesceKey;
         std::optional<SelectionBlob> selectionBefore, selectionAfter;
         std::size_t bytes = 0;
     };
@@ -201,6 +202,8 @@ public:
                   std::size_t position = static_cast<std::size_t>(-1));
     // Throws std::invalid_argument if the key occurs more than once (case insensitive).
     void setKeyValue(NodeHandle handle, std::string key, std::optional<std::string> value);
+    // Edit one scalar occurrence without replacing or dropping duplicate keys.
+    void setKeyValueOccurrence(NodeHandle handle, std::string key, std::size_t occurrence, std::string value);
     void setEditor(NodeHandle handle, EditorEdit edit);
     // Side identity is stable; the face index is resolved internally for each write.
     void setSideKeyValue(SideId side, std::string key, std::string value);
@@ -209,7 +212,9 @@ public:
     // Opaque caller state; metadata alone does not create an undo entry.
     void setSelection(SelectionBlob before, SelectionBlob after);
     // Consecutive single edits of the same node/key coalesce unless disabled for a gesture.
-    ChangeSet commit(bool coalesce = true);
+    // An explicit key groups consecutive edits in one caller-defined field focus, including
+    // multi-selection. Use a fresh key for each focus; empty retains node/key coalescing.
+    ChangeSet commit(bool coalesce = true, std::string coalesceKey = {});
 
 private:
     friend class Document;

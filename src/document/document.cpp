@@ -382,6 +382,7 @@ std::size_t Document::memory(const Entry& entry) {
     std::size_t bytes = sizeof(Entry) + entry.label.size() +
                         (entry.rootsBefore.size() + entry.rootsAfter.size()) * sizeof(NodeId);
     if (entry.coalesce) bytes += entry.coalesce->second.size();
+    bytes += entry.coalesceKey.size();
     for (const auto* selection : {&entry.selectionBefore, &entry.selectionAfter}) {
         if (*selection) bytes += (*selection)->size() * sizeof(SelectionBlob::value_type);
     }
@@ -594,6 +595,25 @@ void Transaction::setKeyValue(NodeHandle h, std::string key, std::optional<std::
     key_ = {id, folded(std::move(key))};
     ++operations_;
 }
+void Transaction::setKeyValueOccurrence(NodeHandle h, std::string key, std::size_t occurrence, std::string text) {
+    const auto id = checked(h);
+    const auto& original = *doc_->node(id)->block;
+    if (identity(key, original)) throw std::invalid_argument("identity keys are allocated by Document");
+    auto block = original;
+    for (auto& child : block.children()) {
+        if (child.kind() != kv1::NodeKind::Value || !ciEquals(child.key(), key)) continue;
+        if (occurrence-- != 0) continue;
+        if (child.decodedValue() == text) return;
+        const auto changed = child.setValue(std::move(text));
+        if (!changed) throw std::invalid_argument(changed.error().what());
+        touch(id, Dirty::KeyValues);
+        doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
+        key_.reset(); // Occurrences only coalesce with an explicit field-focus key.
+        ++operations_;
+        return;
+    }
+    throw std::invalid_argument("missing key occurrence");
+}
 void Transaction::setEditor(NodeHandle h, EditorEdit edit) {
     const auto id = checked(h);
     const bool solid = std::holds_alternative<Handle<Solid>>(h);
@@ -787,7 +807,7 @@ void Transaction::setSelection(SelectionBlob before, SelectionBlob after) {
     entry_.selectionBefore = std::move(before);
     entry_.selectionAfter = std::move(after);
 }
-ChangeSet Transaction::commit(bool coalesce) {
+ChangeSet Transaction::commit(bool coalesce, std::string coalesceKey) {
     if (!doc_) throw std::logic_error("transaction already finished");
     doc_->restoredSelection_.reset();
     for (auto& delta : entry_.deltas) {
@@ -796,6 +816,7 @@ ChangeSet Transaction::commit(bool coalesce) {
     std::erase_if(entry_.deltas, [](const auto& d) { return !d.before && !d.after; });
     entry_.rootsAfter = doc_->roots_;
     if (coalesce && operations_ == 1) entry_.coalesce = key_;
+    if (coalesce) entry_.coalesceKey = std::move(coalesceKey);
     // Build the event from the before snapshots without disturbing live handles.
     ChangeSet changes;
     std::map<SideId, bool> previousSides;
@@ -824,11 +845,20 @@ ChangeSet Transaction::commit(bool coalesce) {
         entry_.stateAfter = doc_->historyState_ = doc_->nextHistoryState_++;
         for (const auto& redo : doc_->redo_) doc_->historyBytes_ -= redo.bytes;
         doc_->redo_.clear();
-        if (doc_->coalesceAllowed_ && entry_.coalesce && !doc_->undo_.empty() &&
-            doc_->undo_.back().coalesce == entry_.coalesce) {
+        if (doc_->coalesceAllowed_ && !doc_->undo_.empty() &&
+            ((!entry_.coalesceKey.empty() && doc_->undo_.back().coalesceKey == entry_.coalesceKey) ||
+             (entry_.coalesceKey.empty() && doc_->undo_.back().coalesceKey.empty() &&
+              entry_.coalesce && doc_->undo_.back().coalesce == entry_.coalesce))) {
             auto& previous = doc_->undo_.back();
             doc_->historyBytes_ -= previous.bytes;
-            previous.deltas.front().after = entry_.deltas.front().after;
+            for (const auto& delta : entry_.deltas) {
+                auto old = std::ranges::find(previous.deltas, delta.id, &Document::Delta::id);
+                if (old == previous.deltas.end()) previous.deltas.push_back(delta);
+                else {
+                    old->after = delta.after;
+                    old->flags = old->flags | delta.flags;
+                }
+            }
             previous.rootsAfter = entry_.rootsAfter;
             previous.stateAfter = entry_.stateAfter;
             if (!previous.selectionBefore)
