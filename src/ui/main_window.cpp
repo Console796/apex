@@ -26,6 +26,12 @@
 #include <QStatusBar>
 #include <QToolBar>
 #include <QToolButton>
+#include <QTimer>
+#include <QCheckBox>
+#include <QSpinBox>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include "ui/recovery_dialog.hpp"
 
 #include <algorithm>
 #include <tuple>
@@ -100,6 +106,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     sessionObserver_ = session_.observe([this] {
         updateEditorActions();
         updateGridStatus();
+        updateTitle();
     });
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
     const bool touching = QSettings().value(QStringLiteral("editor/marqueeTouching"), false).toBool();
@@ -108,6 +115,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     applyPreset(preset ? *preset : editor::hammerPreset());
     updateTitle();
     restoreLayout();
+    autosaveTimer_ = new QTimer(this);
+    autosaveTimer_->setObjectName(QStringLiteral("autosaveTimer"));
+    connect(autosaveTimer_, &QTimer::timeout, this, &MainWindow::snapshotAutosave);
+    if (QSettings().value("autosave/enabled", true).toBool())
+        autosaveTimer_->start(std::clamp(QSettings().value("autosave/intervalMinutes", 5).toInt(), 1, 1440) * 60000);
+    if (!qEnvironmentVariableIsSet("APEX_SKIP_RECOVERY"))
+        QTimer::singleShot(0, this, &MainWindow::offerRecovery);
 }
 
 MainWindow::~MainWindow() {
@@ -126,6 +140,8 @@ MainWindow::~MainWindow() {
 
 void MainWindow::buildMenus() {
     auto* file = menuBar()->addMenu(tr("&File"));
+    auto* create = file->addAction(tr("&New"), QKeySequence::New, this, &MainWindow::newFile);
+    create->setObjectName(QStringLiteral("actionNew"));
     auto* open = file->addAction(tr("&Open..."), QKeySequence::Open, this, &MainWindow::openDialog);
     open->setObjectName(QStringLiteral("actionOpen"));
     recentMenu_ = file->addMenu(tr("Open &Recent"));
@@ -167,6 +183,8 @@ void MainWindow::buildMenus() {
         });
     }
     auto* settings = menuBar()->addMenu(tr("&Settings"));
+    auto* autosaveSettings = settings->addAction(tr("Autosave..."), this, &MainWindow::configureAutosave);
+    autosaveSettings->setObjectName(QStringLiteral("actionAutosaveSettings"));
     auto* presets = settings->addMenu(tr("Binding preset"));
     auto* presetGroup = new QActionGroup(presets);
     for (const auto name : editor::presetNames()) {
@@ -680,6 +698,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     s.setValue(QStringLiteral("ui/viewports"), viewport_->layoutJson());
     s.setValue(QStringLiteral("ui/theme"), currentTheme() == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
     QMainWindow::closeEvent(event);
+    if (event->isAccepted()) {
+        autosaveTimer_->stop();
+        autosave_.reset();
+    }
 }
 
 void MainWindow::setTheme(Theme theme) {
@@ -729,7 +751,11 @@ const assets::GameProfile* MainWindow::currentProfile() const {
 }
 
 bool MainWindow::openFile(const QString& path) {
-    QFile f(path);
+    return loadFile(path, path, false);
+}
+
+bool MainWindow::loadFile(const QString& readPath, const QString& path, bool recovered) {
+    QFile f(readPath);
     if (!f.open(QIODevice::ReadOnly)) {
         const auto msg = tr("Cannot open %1: %2").arg(path, f.errorString());
         log::error("{}", msg.toStdString());
@@ -746,7 +772,18 @@ bool MainWindow::openFile(const QString& path) {
         QMessageBox::warning(this, tr("Open"), msg);
         return false;
     }
-    auto doc = std::make_unique<document::Document>(*parsed);
+    installDocument(std::make_unique<document::Document>(*parsed), *parsed, path, recovered);
+    if (!recovered) {
+        addRecent(path);
+        log::info("opened {}", path.toStdString());
+        statusBar()->showMessage(tr("Opened %1").arg(path), 5000);
+    }
+    return true;
+}
+
+void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const vmf::VmfFile& parsed,
+                                 const QString& path, bool unsaved) {
+    autosave_.reset();
     viewport_->setDocument(nullptr);
     outliner_->setDocument(nullptr);
     visgroups_->setDocument(nullptr);
@@ -755,18 +792,89 @@ bool MainWindow::openFile(const QString& path) {
     document_ = std::move(doc);
     session_.attach(*document_);
     path_ = path;
+    unsaved_ = unsaved;
+    savedState_ = document_->historyState();
     viewport_->setDocument(document_.get(), currentProfile());
-    viewport_->applyMapViews(viewport::readMapViews(*parsed));
+    viewport_->applyMapViews(viewport::readMapViews(parsed));
     outliner_->setDocument(document_.get());
     visgroups_->setDocument(document_.get());
     history_->setDocument(document_.get());
     saveAction_->setEnabled(true);
     saveAsAction_->setEnabled(true);
-    addRecent(path);
+    startAutosave();
     updateTitle();
-    log::info("opened {}", path.toStdString());
-    statusBar()->showMessage(tr("Opened %1").arg(path), 5000);
-    return true;
+}
+
+void MainWindow::newFile() {
+    auto parsed = vmf::parse("versioninfo { editorversion 400 mapversion 1 } world { id 1 classname worldspawn }");
+    if (parsed) installDocument(std::make_unique<document::Document>(*parsed), *parsed, {}, true);
+}
+
+void MainWindow::startAutosave() {
+    try {
+        autosave_ = std::make_unique<editor::Autosave>(std::filesystem::path(path_.toStdU16String()));
+    } catch (const std::exception& e) {
+        log::warn("autosave: {}", e.what());
+        statusBar()->showMessage(tr("Autosave unavailable: %1").arg(QString::fromUtf8(e.what())), 10000);
+    }
+}
+
+void MainWindow::snapshotAutosave() {
+    if (!document_ || !autosave_) return;
+    if (auto done = autosave_->snapshot(*document_); !done) {
+        log::warn("autosave: {}", done.error().what());
+        statusBar()->showMessage(tr("Autosave failed: %1").arg(QString::fromStdString(done.error().what())), 10000);
+    }
+}
+
+bool MainWindow::recoverAutosave(const editor::Recovery& recovery) {
+    if (!loadFile(QString::fromStdU16String(recovery.snapshot.u16string()),
+                  QString::fromStdU16String(recovery.source.u16string()), true)) return false;
+    // Preserve recovery across a second crash, before retiring the stale session.
+    if (!autosave_) return false;
+    auto started = autosave_->snapshot(*document_);
+    return started && autosave_->wait().has_value();
+}
+
+void MainWindow::offerRecovery() {
+    try {
+        auto entries = editor::findRecoveries();
+        if (!entries) { log::warn("recovery: {}", entries.error().what()); return; }
+        if (entries->empty()) return;
+        auto* dialog = new RecoveryDialog(std::move(*entries), [this](const editor::Recovery& entry) {
+            return recoverAutosave(entry);
+        }, this);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->show();
+    } catch (const std::exception& e) { log::warn("recovery: {}", e.what()); }
+}
+
+void MainWindow::configureAutosave() {
+    auto* dialog = new QDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("autosaveSettingsDialog"));
+    dialog->setWindowTitle(tr("Autosave settings"));
+    auto* form = new QFormLayout(dialog);
+    auto* enabled = new QCheckBox(tr("Enable autosave"), dialog);
+    enabled->setChecked(QSettings().value("autosave/enabled", true).toBool());
+    auto* interval = new QSpinBox(dialog);
+    interval->setRange(1, 1440);
+    interval->setSuffix(tr(" min"));
+    interval->setValue(QSettings().value("autosave/intervalMinutes", 5).toInt());
+    form->addRow(enabled);
+    form->addRow(tr("Interval"), interval);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    form->addRow(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, enabled, interval] {
+        QSettings settings;
+        settings.setValue("autosave/enabled", enabled->isChecked());
+        settings.setValue("autosave/intervalMinutes", interval->value());
+        autosaveTimer_->stop();
+        if (enabled->isChecked()) autosaveTimer_->start(interval->value() * 60000);
+        dialog->accept();
+    });
+    dialog->show();
 }
 
 bool MainWindow::saveFile(const QString& path) {
@@ -800,7 +908,14 @@ bool MainWindow::saveFile(const QString& path) {
         QMessageBox::warning(this, tr("Save"), msg);
         return false;
     }
-    path_ = path;
+    if (path_ != path) {
+        autosave_.reset();
+        path_ = path;
+        startAutosave();
+    }
+    unsaved_ = false;
+    savedState_ = document_->historyState();
+    setWindowModified(false);
     addRecent(path);
     updateTitle();
     log::info("saved {}", path.toStdString());
@@ -858,6 +973,7 @@ void MainWindow::updateTitle() {
     const auto& v = version();
     QString title = QStringLiteral("Apex %1").arg(fromStd(v.string));
     if (!path_.isEmpty()) title = QStringLiteral("%1 - %2").arg(QFileInfo(path_).fileName(), title);
+    if (document_ && (unsaved_ || savedState_ != document_->historyState())) title.prepend(QStringLiteral("* "));
     setWindowTitle(title);
 }
 

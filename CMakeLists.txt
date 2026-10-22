@@ -80,7 +80,7 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
-apex_layer(editor SOURCES src/editor/editor_session.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
+apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
                           src/editor/group_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
                           src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
@@ -109,7 +109,7 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
 
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
-  apex_layer(ui SOURCES src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
+  apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
                         src/ui/key_chord.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/log_panel.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets ads::qtadvanceddocking-qt6)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
@@ -117,12 +117,12 @@ if(APEX_BUILD_APP)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
   if(APEX_BUILD_TESTS)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
-    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp)
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/recovery_test.cpp)
     target_link_libraries(apex_ui_tests PRIVATE apex_ui apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME apex_ui_tests COMMAND apex_ui_tests)
-    set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0")
+    set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;APEX_SKIP_RECOVERY=1")
     if(WIN32)
       # Shared Qt DLLs are not on the guest's PATH.
       set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT_MODIFICATION

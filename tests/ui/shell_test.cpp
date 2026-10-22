@@ -1,4 +1,5 @@
 // Headless shell tests; run with QT_QPA_PLATFORM=offscreen (set by CTest).
+#include "test_app.hpp"
 #include <doctest/doctest.h>
 
 #include <QApplication>
@@ -39,17 +40,7 @@
 #include <QSplitter>
 
 namespace {
-QApplication& app() {
-    static int argc = 1;
-    static char name[] = "apex_ui_tests";
-    static char* argv[] = {name, nullptr};
-    static QTemporaryDir config;  // Keep QSettings out of the user's real config.
-    qputenv("XDG_CONFIG_HOME", config.path().toUtf8());
-    QCoreApplication::setOrganizationName(QStringLiteral("ApexTest"));
-    QCoreApplication::setApplicationName(QStringLiteral("ApexTest"));
-    static QApplication a(argc, argv);
-    return a;
-}
+QApplication& app() { return apex::ui_test::app(); }
 
 const char* kVmf = R"(versioninfo { "editorversion" "400" }
 visgroups { visgroup { "name" "Alpha" "visgroupid" "1" } }

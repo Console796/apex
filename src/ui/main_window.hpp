@@ -7,6 +7,7 @@
 
 #include "assets/game_profile.hpp"
 #include "editor/editor_session.hpp"
+#include "editor/autosave.hpp"
 #include "ui/theme.hpp"
 
 class QAction;
@@ -14,6 +15,7 @@ class QComboBox;
 class QLabel;
 class QMenu;
 class QToolButton;
+class QTimer;
 
 namespace ads {
 class CDockManager;
@@ -44,6 +46,8 @@ public:
     const assets::GameProfile* currentProfile() const;
 
     bool openFile(const QString& path);
+    void newFile();
+    bool recoverAutosave(const editor::Recovery& recovery);
     bool saveFile(const QString& path);
     editor::EditorSession& editorSession() { return session_; }
     document::Document* document() const { return document_.get(); }
@@ -74,6 +78,13 @@ private slots:
 
 private:
     void buildMenus();
+    bool loadFile(const QString& readPath, const QString& source, bool recovered);
+    void installDocument(std::unique_ptr<document::Document> doc, const vmf::VmfFile& parsed,
+                         const QString& path, bool unsaved);
+    void startAutosave();
+    void snapshotAutosave();
+    void configureAutosave();
+    void offerRecovery();
     void buildTransformUi();
     void openTransformDialog();
     void buildClipboardUi();
@@ -94,6 +105,10 @@ private:
 
     std::unique_ptr<document::Document> document_;
     editor::EditorSession session_;
+    std::unique_ptr<editor::Autosave> autosave_;
+    QTimer* autosaveTimer_ = nullptr;
+    std::uint64_t savedState_ = 0;
+    bool unsaved_ = false;
     std::size_t sessionObserver_ = 0;
     bool clipboardHasFragment_ = false;
     QString classesKey_;
