@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <sstream>
 #include <stdexcept>
 
@@ -183,7 +184,17 @@ Result<std::vector<Recovery>> findRecoveries(const fs::path& root) {
             if (!(in >> recovery.pid >> std::quoted(source) >> std::quoted(last)) || processRunning(recovery.pid)) continue;
             recovery.source = fs::path(std::u8string(source.begin(), source.end()));
             const auto paths = snapshots(recovery.lock.parent_path(), recovery.lock.stem().string());
-            if (!paths.empty()) recovery.snapshot = paths.back();
+            // A crash can leave a truncated snapshot. Offer the newest parseable
+            // file from this session, falling back through older snapshots.
+            for (auto it = paths.rbegin(); it != paths.rend(); ++it) {
+                std::ifstream snapshot(*it, std::ios::binary);
+                if (!snapshot) continue;
+                const std::string bytes{std::istreambuf_iterator<char>(snapshot), {}};
+                if (snapshot.bad()) continue;
+                if (!vmf::parse(bytes) && !vmf::parse(bytes, {kv1::EscapeMode::Legacy})) continue;
+                recovery.snapshot = *it;
+                break;
+            }
             result.push_back(std::move(recovery));
         }
         return result;

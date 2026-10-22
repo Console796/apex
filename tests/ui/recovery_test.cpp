@@ -120,3 +120,33 @@ TEST_CASE("autosave settings persist enabled and interval and update the timer")
     if (oldInterval.isValid()) settings.setValue("autosave/intervalMinutes", oldInterval);
     else settings.remove("autosave/intervalMinutes");
 }
+
+TEST_CASE("unwritable autosave root does not prevent creating or editing a document") {
+    apex::ui_test::app();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const auto blocker = dir.path() + "/state-file";
+    QFile file(blocker);
+    REQUIRE(file.open(QIODevice::WriteOnly));
+    file.write("not a directory");
+    file.close();
+    struct RestoreEnv {
+        QByteArray root = qgetenv("APEX_AUTOSAVE_DIR"), skip = qgetenv("APEX_SKIP_RECOVERY");
+        ~RestoreEnv() {
+            if (root.isNull()) qunsetenv("APEX_AUTOSAVE_DIR"); else qputenv("APEX_AUTOSAVE_DIR", root);
+            if (skip.isNull()) qunsetenv("APEX_SKIP_RECOVERY"); else qputenv("APEX_SKIP_RECOVERY", skip);
+        }
+    } restore;
+    qputenv("APEX_AUTOSAVE_DIR", blocker.toUtf8());
+    qputenv("APEX_SKIP_RECOVERY", "1");
+    apex::ui::MainWindow window;
+    CHECK_NOTHROW(window.newFile());
+    REQUIRE(window.document());
+    const auto before = window.document()->write().value();
+    auto tx = window.document()->begin("still editable");
+    tx.setKeyValue(*window.document()->handle(window.document()->roots().back()), "message", "saved manually");
+    tx.commit(false);
+    CHECK(window.document()->write().value() != before);
+    REQUIRE(window.document()->undo());
+    CHECK(window.document()->write().value() == before);
+}
