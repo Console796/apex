@@ -26,6 +26,7 @@ public:
     std::vector<std::string> autocomplete(std::size_t row) const;
     // Stage into the caller-owned transaction; drop it on failure to roll back.
     Result<void> setProperty(document::Transaction& tx, std::size_t row, std::string text) const;
+    Result<void> setVectorComponent(document::Transaction& tx, std::size_t row, std::size_t component, std::string text) const;
     Result<void> toggleFlag(document::Transaction& tx, std::size_t row, std::uint64_t bit, bool enabled) const;
     Result<void> setChoice(document::Transaction& tx, std::size_t row, std::string value) const;
     Result<void> setClass(document::Transaction& tx, std::string classname) const;

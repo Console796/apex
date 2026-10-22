@@ -4,7 +4,9 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <set>
+#include <sstream>
 
 namespace apex::editor {
 namespace {
@@ -137,6 +139,30 @@ Result<void> InspectorModel::setProperty(document::Transaction& tx, std::size_t 
             else tx.setKeyValue(h, field.key, text);
         }
     } catch (const std::exception& error) { return invalid(error.what()); }
+    return {};
+}
+Result<void> InspectorModel::setVectorComponent(document::Transaction& tx, std::size_t row,
+                                                 std::size_t component, std::string text) const {
+    if (auto ok = writable(row); !ok) return ok;
+    const auto& field = rows_[row];
+    const auto type = field.property ? field.property->type : std::string{};
+    if (component >= 3 || field.section == Section::Raw ||
+        !(type == "origin" || type == "angle" || type == "angles" ||
+          ciEquals(field.key, "origin") || ciEquals(field.key, "angles"))) return invalid("invalid vector component");
+    double number;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), number);
+    if (error != std::errc{} || end != text.data() + text.size() || !std::isfinite(number))
+        return invalid("invalid vector component");
+    for (const auto id : entities_) {
+        const auto h = *doc_.handle(id);
+        auto existing = value(*doc_.get(h)->block, field.key);
+        if (!existing && field.property) existing = defaults_.at({id, toLowerAscii(field.key)});
+        std::istringstream stream(existing && !existing->empty() ? *existing : "0 0 0");
+        std::array<std::string, 3> parts;
+        if (!(stream >> parts[0] >> parts[1] >> parts[2])) return invalid("invalid vector value");
+        parts[component] = text;
+        tx.setKeyValue(h, field.key, parts[0] + " " + parts[1] + " " + parts[2]);
+    }
     return {};
 }
 Result<void> InspectorModel::toggleFlag(document::Transaction& tx, std::size_t row,

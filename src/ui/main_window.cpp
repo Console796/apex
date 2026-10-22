@@ -10,6 +10,8 @@
 #include <QCloseEvent>
 #include <QClipboard>
 #include <QComboBox>
+#include <QCheckBox>
+#include <QCompleter>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -42,6 +44,7 @@
 #include "ui/outliner_panel.hpp"
 #include "ui/visgroup_panel.hpp"
 #include "ui/history_panel.hpp"
+#include "ui/inspector_panel.hpp"
 #include "ui/paste_special_dialog.hpp"
 #include "ui/tie_dialog.hpp"
 #include "ui/transform_dialog.hpp"
@@ -92,14 +95,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     buildStatusBar();
     buildTransformUi();
     buildClipboardUi();
+    buildEntityUi();
     buildDocks();
     viewport_->setEditorSession(&session_);
     outliner_->setEditorSession(&session_);
     visgroups_->setEditorSession(&session_);
     history_->setEditorSession(&session_);
+    inspector_->setEditorSession(&session_);
     sessionObserver_ = session_.observe([this] {
         updateEditorActions();
         updateGridStatus();
+        refreshEntityUi();
     });
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
     const bool touching = QSettings().value(QStringLiteral("editor/marqueeTouching"), false).toBool();
@@ -116,12 +122,14 @@ MainWindow::~MainWindow() {
     outliner_->setEditorSession(nullptr);
     visgroups_->setEditorSession(nullptr);
     history_->setEditorSession(nullptr);
+    inspector_->setEditorSession(nullptr);
     session_.detach();
     // The viewport area holds a raw pointer to the document.
     if (viewport_) viewport_->setDocument(nullptr);
     if (outliner_) outliner_->setDocument(nullptr);
     if (visgroups_) visgroups_->setDocument(nullptr);
     if (history_) history_->setDocument(nullptr);
+    if (inspector_) inspector_->setDocument(nullptr);
 }
 
 void MainWindow::buildMenus() {
@@ -212,14 +220,14 @@ void MainWindow::buildMenus() {
     connect(profileCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
         if (i < 0 || static_cast<std::size_t>(i) >= profiles_.size()) return;
         QSettings().setValue(QStringLiteral("profile/last"), QString::fromStdString(profiles_[static_cast<std::size_t>(i)].name));
+        loadEntityClasses();
         log::info("game profile: {}", profiles_[static_cast<std::size_t>(i)].name);
     });
 }
 
 void MainWindow::applyPreset(const editor::Preset& preset) {
     session_.setPreset(preset);
-    // SelectToolActive is always active until tools land. All shortcuts come from
-    // the registry; native pane key delivery uses this same session Keymap.
+    // Native pane key delivery uses this same session keymap.
     for (const auto& [id, action] : editorActions_) {
         QList<QKeySequence> sequences;
         const auto& binding = session_.preset().bindings.at(id);
@@ -252,6 +260,11 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
+        if (id == "tool.select" || id == "tool.entity") {
+            action->setEnabled(true);
+            const auto tool = id == "tool.select" ? editor::EditorSession::Tool::Select : editor::EditorSession::Tool::Entity;
+            action->setChecked(session_.activeTool() == tool);
+        }
         if (id.starts_with("edit.") && !id.starts_with("edit.flip.")) {
             const bool have = session_.document() != nullptr;
             const bool objects = have && !editor::selectedNodes(session_.selection()).empty();
@@ -350,9 +363,11 @@ void MainWindow::buildDocks() {
     auto* leftArea = dockManager_->addDockWidget(ads::CenterDockWidgetArea, outlinerDock);
     visgroups_ = new VisgroupPanel;
     history_ = new HistoryPanel;
+    inspector_ = new InspectorPanel;
     std::vector<ads::CDockWidget*> leftDocks{outlinerDock};
     for (const auto& [name, title, panel] : std::vector<std::tuple<const char*, QString, QWidget*>>{
-             {"dockVisgroups", tr("Visgroups"), visgroups_}, {"dockHistory", tr("Undo History"), history_}}) {
+             {"dockInspector", tr("Inspector"), inspector_}, {"dockVisgroups", tr("Visgroups"), visgroups_},
+             {"dockHistory", tr("Undo History"), history_}}) {
         auto* dock = new ads::CDockWidget(dockManager_, title);
         dock->setObjectName(QString::fromLatin1(name));
         dock->setWidget(panel);
@@ -497,6 +512,73 @@ void MainWindow::buildTransformUi() {
     }
 }
 
+void MainWindow::buildEntityUi() {
+    auto* bar = findChild<QToolBar*>(QStringLiteral("toolbarTransform"));
+    bar->addSeparator();
+    auto* group = new QActionGroup(this);
+    for (const char* id : {"tool.select", "tool.entity"}) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = new QAction(fromStd(entry->name), this);
+        action->setObjectName(fromStd(entry->id));
+        action->setCheckable(true);
+        group->addAction(action);
+        editorActions_.emplace(entry->id, action);
+        viewMenu_->addAction(action);
+        bar->addAction(action);
+        connect(action, &QAction::triggered, this, [this, id] { session_.perform(id); });
+    }
+    entityClass_ = new QComboBox(bar);
+    entityClass_->setObjectName(QStringLiteral("entityClassPicker"));
+    entityClass_->setEditable(true);
+    entityClass_->setInsertPolicy(QComboBox::NoInsert);
+    entityClass_->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+    entityClass_->completer()->setFilterMode(Qt::MatchContains);
+    entityClass_->setEnabled(false);
+    entityClass_->setMinimumContentsLength(20);
+    bar->addWidget(entityClass_);
+    connect(entityClass_, &QComboBox::currentTextChanged, this, [this](const QString& name) {
+        session_.setCurrentEntityClass(name.toStdString());
+        if (entityClass_->findText(name) >= 0) QSettings().setValue(QStringLiteral("editor/entityClass"), name);
+    });
+    alignToSurface_ = new QCheckBox(tr("Align to surface"), bar);
+    alignToSurface_->setObjectName(QStringLiteral("entityAlignToSurface"));
+    bar->addWidget(alignToSurface_);
+    connect(alignToSurface_, &QCheckBox::toggled, this, [this](bool align) { session_.setAlignToSurface(align); });
+}
+
+void MainWindow::loadEntityClasses() {
+    assets::EntityClassTable table;
+    if (const auto* profile = currentProfile(); profile && !profile->fgds.empty()) {
+        if (auto loaded = assets::loadEntityClasses(profile->fgds)) table = std::move(*loaded);
+        else log::warn("FGD load failed: {}", loaded.error().what());
+    }
+    session_.setEntityClasses(std::move(table));
+}
+
+void MainWindow::refreshEntityUi() {
+    if (!entityClass_) return;
+    const QSignalBlocker classBlock(entityClass_);
+    if (shownClassesRevision_ != session_.entityClassesRevision()) {
+        shownClassesRevision_ = session_.entityClassesRevision();
+        QStringList names;
+        for (const auto& [key, cls] : session_.entityClasses().classes)
+            if (ciEquals(cls.type, "PointClass")) names.push_back(fromStd(cls.name));
+        auto name = fromStd(session_.currentEntityClass());
+        if (!names.contains(name)) name = QSettings().value(QStringLiteral("editor/entityClass")).toString();
+        if (!names.contains(name)) name = names.value(0);
+        entityClass_->clear();
+        entityClass_->addItems(names);
+        entityClass_->setCurrentIndex(static_cast<int>(names.indexOf(name)));
+        entityClass_->setEditText(name);
+        session_.setCurrentEntityClass(name.toStdString());
+    }
+    if (entityClass_->currentText() != fromStd(session_.currentEntityClass()))
+        entityClass_->setEditText(fromStd(session_.currentEntityClass()));
+    entityClass_->setEnabled(entityClass_->count() != 0);
+    const QSignalBlocker alignBlock(alignToSurface_);
+    alignToSurface_->setChecked(session_.alignToSurface());
+}
+
 QString MainWindow::fragmentMimeType() { return QStringLiteral("application/x-apex-vmf-fragment"); }
 
 std::string MainWindow::clipboardFragment() {
@@ -592,22 +674,10 @@ void MainWindow::openPasteSpecial() {
 }
 
 QStringList MainWindow::solidClasses() {
-    const auto* profile = currentProfile();
-    if (!profile || profile->fgds.empty()) return {};
-    QString key = QString::fromStdString(profile->name);
-    for (const auto& f : profile->fgds) key += QLatin1Char('|') + QString::fromStdString(f.string());
-    if (key != classesKey_) {
-        classesKey_ = key;
-        classes_.clear();
-        if (auto table = assets::loadEntityClasses(profile->fgds)) {
-            for (const auto& [name, cls] : table->classes) {
-                if (ciEquals(cls.type, "SolidClass")) classes_.push_back(QString::fromStdString(cls.name));
-            }
-        } else {
-            log::warn("tie to entity: FGD load failed: {}", table.error().what());
-        }
-    }
-    return classes_;
+    QStringList classes;
+    for (const auto& [name, cls] : session_.entityClasses().classes)
+        if (ciEquals(cls.type, "SolidClass")) classes.push_back(fromStd(cls.name));
+    return classes;
 }
 
 void MainWindow::openTieDialog() {
@@ -700,10 +770,12 @@ void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {
     if (profiles_.empty()) {
         profileCombo_->addItem(tr("(no game profiles)"));
         profileCombo_->setEnabled(false);
+        loadEntityClasses();
         return;
     }
     profileCombo_->setEnabled(true);
     if (const int i = profileCombo_->findText(previous); i >= 0) profileCombo_->setCurrentIndex(i);
+    loadEntityClasses();
 }
 
 void MainWindow::reloadProfiles() {
@@ -751,6 +823,7 @@ bool MainWindow::openFile(const QString& path) {
     outliner_->setDocument(nullptr);
     visgroups_->setDocument(nullptr);
     history_->setDocument(nullptr);
+    inspector_->setDocument(nullptr);
     session_.detach();
     document_ = std::move(doc);
     session_.attach(*document_);
@@ -760,6 +833,7 @@ bool MainWindow::openFile(const QString& path) {
     outliner_->setDocument(document_.get());
     visgroups_->setDocument(document_.get());
     history_->setDocument(document_.get());
+    inspector_->setDocument(document_.get());
     saveAction_->setEnabled(true);
     saveAsAction_->setEnabled(true);
     addRecent(path);

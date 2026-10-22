@@ -1363,7 +1363,7 @@ TEST_CASE("view actions hide unhide isolate and track selection") {
     scene.action("view.hide_unselected")->trigger();
     CHECK(editor::isVisible(doc, scene.boxId));
     CHECK(doc.undoCount() > count);
-    for (const auto& title : {QStringLiteral("Visgroups"), QStringLiteral("Undo History")}) {
+    for (const auto& title : {QStringLiteral("Inspector"), QStringLiteral("Visgroups"), QStringLiteral("Undo History")}) {
         QAction* toggle = nullptr;
         for (auto* action : menu->actions()) if (action->text() == title) toggle = action;
         REQUIRE(toggle);
@@ -1533,4 +1533,254 @@ TEST_CASE("editable outliner commits names, drops, visibility and persistent fil
     CHECK_FALSE(other.dropMimeData(other.topLevelItem(0), -1, mime.get(), Qt::MoveAction));
     CHECK(*doc.write() == beforeForeignDrop);
     CHECK_FALSE(mime->hasFormat("application/x-qabstractitemmodeldatalist"));
+}
+
+#include "assets/fgd.hpp"
+#include "ui/inspector_panel.hpp"
+#include <QCompleter>
+#include <QPushButton>
+#include <QFocusEvent>
+#include <QFormLayout>
+
+namespace {
+const char* inspectorFgd = R"(@PointClass = test [
+    text(string) : "Text" : "hello"
+    count(integer) : "Count" : 3
+    rate(float) : "Rate" : "1.5"
+    mode(choices) : "Mode" : 1 = [ 1 : "One" 2 : "Two" ]
+    spawnflags(flags) = [ 1 : "One" : 0 4 : "Four" : 0 ]
+    color(color255) : "Colour" : "255 255 255"
+    origin(origin) : "Origin" : "0 0 0"
+    angles(angle) : "Angles" : "0 0 0"
+    target(target_destination) : "Target"
+    model(studio) : "Model"
+    material(material) : "Material"
+    noise(sound) : "Sound"
+    locked(string) readonly : "Locked" : "keep"
+]
+@PointClass = second [ text(string) : "Text" ]
+@SolidClass = brush []
+)";
+void putFgd(const QString& path) {
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::WriteOnly));
+    file.write(inspectorFgd);
+}
+void typeText(QLineEdit* edit, const QString& value) {
+    REQUIRE(edit);
+    edit->setFocus();
+    edit->selectAll();
+    QKeyEvent event(QEvent::KeyPress, Qt::Key_unknown, Qt::NoModifier, value);
+    QApplication::sendEvent(edit, &event);
+    app().processEvents();
+}
+std::map<std::string, std::string> inspectorValues(const document::Document& doc, document::NodeId id) {
+    std::map<std::string, std::string> values;
+    for (const auto& key : doc.get(*doc.handle(id))->block->children())
+        if (key.kind() == kv1::NodeKind::Value) values[std::string(key.key())] = key.decodedValue().value();
+    return values;
+}
+}
+
+TEST_CASE("inspector builds FGD controls and coalesces one field focus") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("inspector.fgd");
+    putFgd(path);
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    document::Document doc(editor_test::parsed(R"(entity { id 1 classname test text first spawnflags 8 origin "1 2 3" unknown keep }
+        entity { id 2 classname test text second spawnflags 9 origin "4 5 6" targetname destination })"));
+    const auto first = doc.roots()[0], second = doc.roots()[1];
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(500, 900);
+    panel.show();
+    session.selectNode(first);
+    app().processEvents();
+    auto* edit = panel.findChild<QLineEdit*>("edit.text.0");
+    REQUIRE(edit);
+    CHECK(edit->text() == "first");
+    CHECK_FALSE(panel.findChild<QLineEdit*>("edit.locked.0")->isEnabled());
+    CHECK(panel.findChild<QLineEdit*>("edit.target.0")->completer());
+    CHECK(panel.findChild<QLineEdit*>("edit.origin.2"));
+    CHECK(panel.findChild<QLineEdit*>("edit.angles.2"));
+    CHECK(panel.findChild<QComboBox*>("choice.mode"));
+    int disabledBrowse = 0;
+    for (auto* button : panel.findChildren<QPushButton*>())
+        if (button->text().startsWith("Browse") && !button->isEnabled()) ++disabledBrowse;
+    CHECK(disabledBrowse == 3);
+    auto expected = inspectorValues(doc, first);
+    const auto initial = doc.undoCount();
+    typeText(edit, "changed");
+    typeText(edit, "changed again");
+    CHECK(panel.findChild<QLineEdit*>("edit.text.0") == edit);
+    CHECK(edit->hasFocus());
+    expected["text"] = "changed again";
+    CHECK(inspectorValues(doc, first) == expected);
+    CHECK(doc.undoCount() == initial + 1);
+    edit->clearFocus();
+    app().processEvents();
+    edit = panel.findChild<QLineEdit*>("edit.text.0");
+    typeText(edit, "next focus");
+    CHECK(doc.undoCount() == initial + 2);
+    edit->clearFocus();
+    app().processEvents();
+    auto* flag = panel.findChild<QCheckBox*>("flag.spawnflags.4");
+    REQUIRE(flag);
+    flag->setFocus();
+    const auto flagHistory = doc.undoCount();
+    flag->click();
+    flag->click();
+    flag->click();
+    app().processEvents();
+    CHECK(doc.undoCount() == flagHistory + 1);
+    flag->clearFocus();
+    app().processEvents();
+    expected["text"] = "next focus";
+    expected["spawnflags"] = "12";
+    CHECK(inspectorValues(doc, first) == expected);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(inspectorValues(doc, first)["spawnflags"] == "8");
+    session.selection().add(second);
+    app().processEvents();
+    edit = panel.findChild<QLineEdit*>("edit.text.0");
+    REQUIRE(edit);
+    CHECK(edit->text().isEmpty());
+    CHECK(edit->placeholderText() == "(mixed)");
+    const auto beforeMixed = doc.write().value();
+    const auto beforeHistory = doc.undoCount();
+    edit->setFocus();
+    edit->clearFocus();
+    app().processEvents();
+    CHECK(doc.write().value() == beforeMixed);
+    CHECK(doc.undoCount() == beforeHistory);
+    flag = panel.findChild<QCheckBox*>("flag.spawnflags.4");
+    REQUIRE(flag);
+    flag->click();
+    app().processEvents();
+    CHECK(inspectorValues(doc, first)["spawnflags"] == "12");
+    CHECK(inspectorValues(doc, second)["spawnflags"] == "13");
+    auto* x = panel.findChild<QLineEdit*>("edit.origin.0");
+    REQUIRE(x);
+    CHECK(x->placeholderText() == "(mixed)");
+    const auto vectorHistory = doc.undoCount();
+    typeText(x, "10");
+    typeText(x, "20");
+    CHECK(doc.undoCount() == vectorHistory + 1);
+    CHECK(inspectorValues(doc, first)["origin"] == "20 2 3");
+    CHECK(inspectorValues(doc, second)["origin"] == "20 5 6");
+    x->clearFocus();
+    app().processEvents();
+    auto beforeClass = inspectorValues(doc, first);
+    auto* picker = panel.findChild<QComboBox*>("inspectorClass");
+    REQUIRE(picker);
+    picker->setCurrentIndex(picker->findText("second"));
+    picker->activated(picker->currentIndex());
+    app().processEvents();
+    beforeClass["classname"] = "second";
+    CHECK(inspectorValues(doc, first) == beforeClass);
+    CHECK(inspectorValues(doc, second)["classname"] == "second");
+    session.selectNode(first);
+    app().processEvents();
+    edit = panel.findChild<QLineEdit*>("edit.text.0");
+    REQUIRE(edit);
+    edit->setFocus();
+    const auto beforeSelectionChange = doc.write().value();
+    session.selectNode(second);
+    typeText(edit, "stale input");
+    CHECK(doc.write().value() == beforeSelectionChange);
+    CHECK(panel.findChild<QLineEdit*>("edit.text.0")->text() == "second");
+    panel.setEditorSession(nullptr);
+    panel.setDocument(nullptr);
+}
+
+TEST_CASE("raw inspector preserves duplicate order and edits one occurrence") {
+    app();
+    document::Document doc(editor_test::parsed("entity { id 1 classname test extra first extra second tail last }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.selectNode(doc.roots().front());
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    auto* raw = panel.findChild<QCheckBox*>("inspectorRaw");
+    REQUIRE(raw);
+    raw->setChecked(true);
+    app().processEvents();
+    auto* first = panel.findChild<QLineEdit*>("edit.extra.0");
+    auto* second = panel.findChild<QLineEdit*>("edit.extra.1");
+    REQUIRE(first);
+    REQUIRE(second);
+    CHECK(first->text() == "first");
+    CHECK(second->text() == "second");
+    auto* form = qobject_cast<QFormLayout*>(first->parentWidget()->parentWidget()->layout());
+    REQUIRE(form);
+    int firstRow = -1, secondRow = -1;
+    QFormLayout::ItemRole role;
+    form->getWidgetPosition(first->parentWidget(), &firstRow, &role);
+    form->getWidgetPosition(second->parentWidget(), &secondRow, &role);
+    CHECK(firstRow < secondRow);
+    typeText(second, "replacement");
+    const auto& block = doc.get(*doc.handle(doc.roots().front()))->block;
+    const auto keys = block->findAll("extra");
+    REQUIRE(keys.size() == 2);
+    CHECK(keys[0]->decodedValue().value() == "first");
+    CHECK(keys[1]->decodedValue().value() == "replacement");
+    panel.setDocument(nullptr);
+    CHECK(panel.findChildren<QLineEdit*>().size() == 1); // Class picker's editor only.
+}
+
+TEST_CASE("entity toolbar follows session actions and loads point classes from profile") {
+    app();
+    QTemporaryDir dir;
+    putFgd(dir.filePath("test.fgd"));
+    QSettings settings;
+    settings.setValue("editor/entityClass", "second");
+    ui::MainWindow window;
+    auto* picker = window.findChild<QComboBox*>("entityClassPicker");
+    REQUIRE(picker);
+    CHECK_FALSE(picker->isEnabled());
+    assets::GameProfile profile;
+    profile.name = "Inspector test";
+    profile.fgds.push_back(std::filesystem::path(dir.filePath("test.fgd").toStdString()));
+    window.setProfiles({profile});
+    CHECK(picker->isEnabled());
+    CHECK(picker->count() == 2);
+    CHECK(picker->findText("brush") == -1);
+    CHECK(picker->currentText() == "second");
+    CHECK(window.editorSession().currentEntityClass() == "second");
+    auto* entity = window.findChild<QAction*>("tool.entity");
+    auto* select = window.findChild<QAction*>("tool.select");
+    auto* toolbar = window.findChild<QToolBar*>("toolbarTransform");
+    REQUIRE(entity);
+    REQUIRE(select);
+    REQUIRE(toolbar);
+    CHECK(toolbar->actions().contains(entity));
+    CHECK(toolbar->actions().contains(select));
+    window.findChild<QAction*>("preset.Hammer")->trigger();
+    CHECK(entity->shortcut() == QKeySequence("Shift+E"));
+    CHECK(select->shortcut() == QKeySequence("Shift+S"));
+    REQUIRE(window.editorSession().perform("tool.entity"));
+    CHECK(entity->isChecked());
+    CHECK_FALSE(select->isChecked());
+    CHECK(qobject_cast<QToolButton*>(toolbar->widgetForAction(entity))->isChecked());
+    select->trigger();
+    CHECK(window.editorSession().activeTool() == editor::EditorSession::Tool::Select);
+    CHECK(select->isChecked());
+    auto* align = window.findChild<QCheckBox*>("entityAlignToSurface");
+    REQUIRE(align);
+    align->click();
+    CHECK(window.editorSession().alignToSurface());
+    picker->setCurrentIndex(picker->findText("test"));
+    CHECK(window.editorSession().currentEntityClass() == "test");
+    CHECK(settings.value("editor/entityClass").toString() == "test");
+    window.setProfiles({});
+    CHECK_FALSE(picker->isEnabled());
+    CHECK(window.editorSession().entityClasses().classes.empty());
 }

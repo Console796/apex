@@ -18,6 +18,14 @@ namespace apex::editor {
 // detach(). Selection-only gestures never write to Document or its undo history.
 class EditorSession {
 public:
+    enum class Tool { Select, Entity };
+    Tool activeTool() const { return activeTool_; }
+    void setActiveTool(Tool tool);
+    const std::string& currentEntityClass() const { return currentEntityClass_; }
+    void setCurrentEntityClass(std::string classname);
+    bool alignToSurface() const { return alignToSurface_; }
+    void setAlignToSurface(bool align);
+
     EditorSession();
     ~EditorSession();
     EditorSession(const EditorSession&) = delete;
@@ -98,12 +106,14 @@ public:
 
     void setEntityClasses(assets::EntityClassTable classes);
     const assets::EntityClassTable& entityClasses() const { return entityClasses_; }
+    std::uint64_t entityClassesRevision() const { return entityClassesRevision_; }
     InspectorModel inspectorModel(bool raw = false) const;
     // Supply a unique nonempty token for each field focus to coalesce typing. Rebuild the
     // model after each commit; raw selects occurrence-aware rows. Empty means one undo step.
     Result<void> editProperty(std::size_t row, std::string text, std::string focusKey = {}, bool raw = false);
-    Result<void> toggleFlag(std::size_t row, std::uint64_t bit, bool enabled);
-    Result<void> setChoice(std::size_t row, std::string value);
+    Result<void> editVectorComponent(std::size_t row, std::size_t component, std::string text, std::string focusKey = {});
+    Result<void> toggleFlag(std::size_t row, std::uint64_t bit, bool enabled, std::string focusKey = {});
+    Result<void> setChoice(std::size_t row, std::string value, std::string focusKey = {});
     Result<void> setClass(std::string classname);
     // With no normal, hit is projected onto the resolved work plane and snapped in-plane.
     Result<void> placeEntity(std::string classname, DVec3 hit, std::optional<DVec3> normal, bool align = false);
@@ -166,7 +176,11 @@ private:
     std::unique_ptr<PickIndex> picks_;
     std::unique_ptr<GroupIndex> groups_;
     Selection selection_;
+    Tool activeTool_ = Tool::Select;
+    std::string currentEntityClass_;
+    bool alignToSurface_ = false;
     assets::EntityClassTable entityClasses_;
+    std::uint64_t entityClassesRevision_ = 0;
     CycleState cycle_;
     ViewState view_;
     std::optional<Target> hover_;
@@ -202,6 +216,7 @@ private:
     Result<void> runEdit(std::string label, AfterEdit after,
                          const std::function<Result<EditedObjects>(document::Transaction&)>& stage,
                          std::string coalesceKey = {});
+    std::string inspectorCoalesceKey(std::size_t row, std::string_view focusKey, bool raw = false) const;
     std::vector<NodeId> transformNodes() const;
     void publishPreview(const Transform& transform);
     bool commitActive(const Transform& transform, GizmoMode mode);

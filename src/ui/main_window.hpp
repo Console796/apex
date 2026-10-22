@@ -11,6 +11,7 @@
 
 class QAction;
 class QComboBox;
+class QCheckBox;
 class QLabel;
 class QMenu;
 class QToolButton;
@@ -29,6 +30,7 @@ class LogPanel;
 class OutlinerPanel;
 class VisgroupPanel;
 class HistoryPanel;
+class InspectorPanel;
 class ViewportArea;
 
 class MainWindow : public QMainWindow {
@@ -75,6 +77,9 @@ private slots:
 private:
     void buildMenus();
     void buildTransformUi();
+    void buildEntityUi();
+    void loadEntityClasses();
+    void refreshEntityUi();
     void openTransformDialog();
     void buildClipboardUi();
     void openPasteSpecial();
@@ -96,8 +101,7 @@ private:
     editor::EditorSession session_;
     std::size_t sessionObserver_ = 0;
     bool clipboardHasFragment_ = false;
-    QString classesKey_;
-    QStringList classes_;
+    std::optional<std::uint64_t> shownClassesRevision_;
     std::optional<bool> savedMarqueeTouching_;
     std::map<editor::ActionId, QAction*> editorActions_;
     QString path_;
@@ -109,6 +113,9 @@ private:
     OutlinerPanel* outliner_ = nullptr;
     VisgroupPanel* visgroups_ = nullptr;
     HistoryPanel* history_ = nullptr;
+    InspectorPanel* inspector_ = nullptr;
+    QComboBox* entityClass_ = nullptr;
+    QCheckBox* alignToSurface_ = nullptr;
     LogPanel* log_ = nullptr;
     QComboBox* profileCombo_ = nullptr;
     QMenu* recentMenu_ = nullptr;
