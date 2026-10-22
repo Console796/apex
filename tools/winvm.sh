@@ -34,6 +34,11 @@ poweroff() {
 
 case "${1:-}" in
   start)
+    # User restriction (tools/winvm-lock.sh): refuse and say why.
+    rf="${XDG_STATE_HOME:-$HOME/.local/state}/apex/winvm.restrict"
+    if [[ -f "$rf" ]]; then
+      echo "winvm: the Windows VM is restricted by the user:" >&2; cat "$rf" >&2; exit 3
+    fi
     if running; then echo "already running"; exit 0; fi
     cd "$dir"
     qemu-system-x86_64 -name win10-ci -machine q35,accel=kvm \

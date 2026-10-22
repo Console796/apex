@@ -22,6 +22,7 @@ Environment:
   APEX_WIN_SSH_KEY   private key (default ~/.ssh/id_ed25519_apex_ci)
   APEX_WIN_QT        Qt prefix in the guest (default C:\\Qt\\6.10.2\\msvc2022_64)
   APEX_WIN_DIR       work directory in the VM (default C:/apex-ci)
+  APEX_WIN_LOCK_WAIT seconds to wait for another run to release the VM (default 0: refuse at once)
   APEX_WIN_MANAGE    1 (default): tools/winvm.sh starts the VM before and shuts it down after;
                      0 leaves it running (for a working session)
   APEX_WIN_ENV_CMD   cmd command that puts MSVC on PATH (default: vcvars64 of VS 2022 Build Tools)
@@ -38,6 +39,8 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+import winvm_lock
 
 ROOT = Path(__file__).resolve().parent.parent
 LINUX_PRESETS = ["linux-gcc-release", "linux-clang-release", "linux-asan"]
@@ -303,6 +306,12 @@ def windows_stage(build, report):
     wwin = wdir.replace("/", "\\")
     qt = os.environ.get("APEX_WIN_QT", "C:\\Qt\\6.10.2\\msvc2022_64")
     try:
+        lock = winvm_lock.acquire(f"ci.py build {build}", int(os.environ.get("APEX_WIN_LOCK_WAIT", "0")))
+        lock.__enter__()
+    except winvm_lock.VmUnavailable as e:
+        report.add("windows-msvc", "FAIL", 0, str(e))
+        return
+    try:
         if manage:
             subprocess.run([str(ROOT / "tools" / "winvm.sh"), "start"], check=True)
             for _ in range(60):  # wait up to 5 min for sshd in the guest
@@ -349,6 +358,7 @@ def windows_stage(build, report):
     finally:
         if manage:
             subprocess.run([str(ROOT / "tools" / "winvm.sh"), "stop"])
+        lock.__exit__(None, None, None)
 
 
 def crosscheck_stage(corpus, fixtures_only, report):
