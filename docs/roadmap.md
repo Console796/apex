@@ -30,9 +30,9 @@ string puts the suffix last (`0.2.11.42-release`). Git tags mark completed sub-m
 (`v0.1.3`) and releases (`v0.2.11-release`) and carry no build number. 0.1 predates this policy:
 its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 
-**Status:** 0.1 is complete and 0.2.11 has landed (`version.txt` reads 0.2.11). The 0.2 release
-has its automated parts done (exit test and measurements); Hammer acceptance and the manual 3D
-session are pending. When it lands it is 0.2.11-release (see `plans/0.2.md`).
+**Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`
+(`version.txt` reads `0.2.11-release`; see [plans/0.2.md](plans/0.2.md)). The next landed work
+is 0.3.1; 0.3 needs its own plan before work starts.
 
 ## Principles that hold across every milestone
 
@@ -67,11 +67,11 @@ unmodified file is byte-identical; `tools/ci.py` is green on the Linux presets a
 VM, with validation-layer-clean offscreen render tests and the full P2CE corpus.
 
 ### 0.2: Selection & manipulation
-Picking (BVH over faces, entities and models), object/face/solid selection modes, marquee/frustum
+Picking (BVH over faces and entities), object/face/solid selection modes, marquee/frustum
 select, gizmos (translate/rotate/scale, local/global, pivot) with snapping, surface-anchored grid
 and work planes, undo history panel, clipboard/duplicate/paste-special, groups, visgroups,
 hide/isolate, outliner (editable), FGD-driven entity property inspector, point-entity placement on
-surfaces, autosave + crash recovery, texture lock under transforms, and the Hammer and Blender
+surfaces, autosave + crash recovery, texture lock under transforms (0.2 D7), and the Hammer and Blender
 binding presets with modal transforms (the 0.9 keymap editor edits these presets, plan 0.2 D15).
 Model-triangle picking moves to 0.4 with model rendering; prop entities pick by their FGD box until then.
 Scope adjustments after 0.1 (plan 0.1.10): the viewport split tree, per-viewport header menus,
@@ -91,7 +91,8 @@ measure tool). Texture lock under transforms moved to 0.2 (plan 0.2 D7).
 **Exit:** a complete test chamber can be built from nothing without an orthographic view.
 
 ### 0.4: Entities & assets
-MDL rendering (v44–49: skins, bodygroups, non-uniform scale), FGD helpers (iconsprite, studio,
+MDL rendering (v44–49: skins, bodygroups, non-uniform scale) and model-triangle picking
+(moved from 0.2; plan 0.2 §4), FGD helpers (iconsprite, studio,
 sphere, line, frustum, cylinder, worldtext, catapult…), I/O connection editor with validation
 and autocompletion, `func_instance` rendering, in-context instance preview and collapse, model,
 sound and particle browsers, prefabs, entity report, find & replace.
@@ -130,8 +131,8 @@ rope and cable preview, detail/structural tooling.
 
 ### 0.9: Extensibility
 Plugin API (stable C ABI with a header-only C++ wrapper), a scripting host (language decided in
-the 0.9 plan), custom tools/panels/importers, keymap editor, theme editor, addon manager,
-scriptable primitives.
+the 0.9 plan), custom tools/panels/importers, keymap editor for the Hammer and Blender presets (0.2 D15),
+theme editor, addon manager, scriptable primitives.
 **Exit:** a third-party tool can be built, loaded and shipped without rebuilding Apex.
 
 ### 0.10: Production hardening → 1.0 RC
