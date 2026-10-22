@@ -59,7 +59,9 @@ Picking (BVH over faces, entities and models), object/face/solid selection modes
 select, gizmos (translate/rotate/scale, local/global, pivot) with snapping, surface-anchored grid
 and work planes, undo history panel, clipboard/duplicate/paste-special, groups, visgroups,
 hide/isolate, outliner (editable), FGD-driven entity property inspector, point-entity placement on
-surfaces, autosave + crash recovery.
+surfaces, autosave + crash recovery, texture lock under transforms, and the Hammer and Blender
+binding presets with modal transforms (the 0.9 keymap editor edits these presets, plan 0.2 D15).
+Model-triangle picking moves to 0.4 with model rendering; prop entities pick by their FGD box until then.
 Scope adjustments after 0.1 (plan 0.1.10): the viewport split tree, per-viewport header menus,
 `ViewContext`/`WorkPlane` types, the log console, status bar, theme tokens and a **read-only**
 outliner are already in 0.1. 0.2 therefore starts from them: it wires tools to `ViewContext`,
@@ -73,7 +75,7 @@ Block tool (draw on a surface or work plane, then extrude), primitives (wedge, c
 spike, sphere), clip tool (3 points placed on surfaces), vertex/edge/face tool with
 convex-hull rebuild and invalid-state feedback, carve/hollow/merge, material browser,
 texture application and face editing (shift/scale/rotate, justify/fit, align to world/face,
-texture lock under transforms), measure tool.
+measure tool). Texture lock under transforms moved to 0.2 (plan 0.2 D7).
 **Exit:** a complete test chamber can be built from nothing without an orthographic view.
 
 ### 0.4: Entities & assets
