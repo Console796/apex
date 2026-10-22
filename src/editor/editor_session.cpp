@@ -4,6 +4,9 @@
 #include "editor/hide_ops.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/selection_undo.hpp"
+#include "editor/visibility.hpp"
+
+#include <algorithm>
 
 namespace apex::editor {
 
@@ -15,9 +18,19 @@ EditorSession::~EditorSession() { detach(); }
 void EditorSession::attach(document::Document& doc) {
     detach();
     document_ = &doc;
+    visgroupVisibility_ = buildVisgroupVisibility(doc);
+    visgroupHistory_[doc.historyState()] = visgroupVisibility_;
     picks_ = std::make_unique<PickIndex>(doc);
     groups_ = std::make_unique<GroupIndex>(doc);
     documentObserver_ = doc.observe([this](const document::ChangeSet& changes) {
+        const auto count = document_->historyState();
+        if (visgroupHistory_.contains(count))
+            visgroupVisibility_ = visgroupHistory_.at(count);
+        else {
+            if (count < visgroupHistory_.rbegin()->first)
+                visgroupVisibility_ = buildVisgroupVisibility(*document_);
+            visgroupHistory_[count] = visgroupVisibility_;
+        }
         picks_->apply(changes);
         groups_->apply(changes);
         if (transformActive()) endTransform(); // Undo/redo/external edits invalidate a drag.
@@ -35,6 +48,8 @@ void EditorSession::detach() {
     if (transformActive()) endTransform();
     if (document_) document_->unobserve(documentObserver_);
     document_ = nullptr;
+    visgroupHistory_.clear();
+    visgroupVisibility_ = {};
     picks_.reset();
     groups_.reset();
     cycle_ = {};
@@ -476,6 +491,25 @@ Result<void> EditorSession::runEdit(std::string label, AfterEdit policy,
         if (policy == AfterEdit::Computed) after = selectionFor(selection_, *staged);
         else if (policy == AfterEdit::Clear) after.clear();
         after.prune(*document_);
+        if (policy == AfterEdit::Visible) {
+            auto targets = after.ordered();
+            std::erase_if(targets, [&](const Target& target) {
+                if (const auto* node = std::get_if<NodeId>(&target)) {
+                    if (!isVisible(*document_, *node)) return true;
+                    if (std::holds_alternative<Handle<document::Group>>(*document_->handle(*node))) {
+                        const auto members = groups_->members(*node, true);
+                        return !members.empty() && std::ranges::none_of(members, [&](NodeId member) {
+                            return !std::holds_alternative<Handle<document::Group>>(*document_->handle(member)) &&
+                                isVisible(*document_, member);
+                        });
+                    }
+                    return false;
+                }
+                const auto face = document_->side(std::get<SideId>(target));
+                return !face || !isVisible(*document_, document_->get(face->solid)->id);
+            });
+            after.replace(targets);
+        }
         recordSelection(transaction, before, after);
         transaction.commit(false);
         selection_ = after;
@@ -556,7 +590,11 @@ Result<void> EditorSession::unhideAll() {
     auto result = runEdit("Unhide all", AfterEdit::Computed, [&](document::Transaction& tx) {
         return stageUnhideAll(*document_, tx);
     });
-    if (result) setViewState({});
+    if (result) {
+        visgroupVisibility_ = {};
+        visgroupHistory_[document_->historyState()] = visgroupVisibility_;
+        setViewState({});
+    }
     return result;
 }
 Result<void> EditorSession::hideUnselected() {
@@ -564,6 +602,88 @@ Result<void> EditorSession::hideUnselected() {
         return stageHideUnselected(*document_, *groups_, selection_, tx);
     });
 }
+
+Result<void> EditorSession::runVisgroupEdit(std::string label,
+    const std::function<Result<void>(document::Transaction&, VisgroupVisibility&)>& stage, bool pruneHidden) {
+    const auto before = visgroupVisibility_;
+    auto result = runEdit(std::move(label), pruneHidden ? AfterEdit::Visible : AfterEdit::Keep,
+        [&](document::Transaction& tx) -> Result<EditedObjects> {
+            auto done = stage(tx, visgroupVisibility_);
+            if (!done) return std::unexpected(done.error());
+            return EditedObjects{};
+        });
+    if (!result) visgroupVisibility_ = before;
+    else visgroupHistory_[document_->historyState()] = visgroupVisibility_;
+    return result;
+}
+Result<int> EditorSession::createVisgroup(std::string name, std::optional<int> parent) {
+    int id = 0;
+    const auto result = runVisgroupEdit("New visgroup", [&](auto& tx, auto&) -> Result<void> {
+        const auto created = stageCreateVisgroup(*document_, std::move(name), parent, tx);
+        if (!created) return std::unexpected(created.error());
+        id = *created;
+        return {};
+    });
+    if (!result) return std::unexpected(result.error());
+    return id;
+}
+Result<void> EditorSession::renameVisgroup(int id, std::string name) {
+    return runVisgroupEdit("Rename visgroup", [&](auto& tx, auto&) {
+        return stageRenameVisgroup(*document_, id, std::move(name), tx);
+    });
+}
+Result<void> EditorSession::moveVisgroup(int id, std::optional<int> parent, std::size_t position) {
+    return runVisgroupEdit("Move visgroup", [&](auto& tx, auto&) {
+        return stageMoveVisgroup(*document_, id, parent, position, tx);
+    });
+}
+Result<void> EditorSession::deleteVisgroup(int id) {
+    return runVisgroupEdit("Delete visgroup", [&](auto& tx, auto& state) {
+        return stageDeleteVisgroup(*document_, id, state, tx);
+    });
+}
+Result<void> EditorSession::addSelectionToVisgroup(int id) {
+    return runVisgroupEdit("Add to visgroup", [&](auto& tx, auto&) {
+        return stageVisgroupMembership(*document_, *groups_, selection_, id, true, tx);
+    });
+}
+Result<void> EditorSession::removeSelectionFromVisgroup(int id) {
+    return runVisgroupEdit("Remove from visgroup", [&](auto& tx, auto&) {
+        return stageVisgroupMembership(*document_, *groups_, selection_, id, false, tx);
+    });
+}
+Result<void> EditorSession::selectVisgroupMembers(int id) {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    const auto tree = buildVisgroupTree(*document_);
+    if (!tree.find(id)) return std::unexpected(Error{ErrorCode::NotFound, "unknown visgroup"});
+    selection_.setMode(SelectionMode::Objects);
+    std::vector<Target> members;
+    for (const auto member : tree.members(id)) members.emplace_back(member);
+    selection_.replace(members);
+    return {};
+}
+Result<void> EditorSession::selectAutoMembers(std::string_view id) {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    const auto definitions = autoVisgroups();
+    if (std::ranges::none_of(definitions, [&](const auto& a) { return a.id == id; }))
+        return std::unexpected(Error{ErrorCode::NotFound, "unknown auto visgroup"});
+    selection_.setMode(SelectionMode::Objects);
+    std::vector<Target> members;
+    for (const auto member : autoMembers(*document_, id)) members.emplace_back(member);
+    selection_.replace(members);
+    return {};
+}
+Result<void> EditorSession::setVisgroupShown(int id, bool shown) {
+    return runVisgroupEdit(shown ? "Show visgroup" : "Hide visgroup", [&](auto& tx, auto& state) {
+        return stageSetVisgroupShown(*document_, id, shown, state, tx);
+    }, !shown);
+}
+Result<void> EditorSession::setAutoVisgroupShown(std::string_view id, bool shown) {
+    return runVisgroupEdit(shown ? "Show auto visgroup" : "Hide auto visgroup", [&](auto& tx, auto& state) {
+        return stageSetAutoVisgroupShown(*document_, id, shown, state, tx);
+    }, !shown);
+}
+
 bool EditorSession::toggleIsolate() {
     if (!document_ || transformActive()) return false;
     if (view_.isolate) {

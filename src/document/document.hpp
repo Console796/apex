@@ -117,6 +117,8 @@ public:
     bool redo();
     const std::optional<SelectionBlob>& restoredSelection() const { return restoredSelection_; }
     std::size_t undoCount() const { return undo_.size(); }
+    // Stable identity of the current history state, including across eviction and branching.
+    std::uint64_t historyState() const { return historyState_; }
     std::size_t redoCount() const { return redo_.size(); }
     // Undo labels are oldest first; redo labels begin with the next redo.
     std::vector<std::string> undoLabels() const;
@@ -141,6 +143,7 @@ private:
     };
     struct Entry {
         std::string label;
+        std::uint64_t stateBefore = 0, stateAfter = 0;
         std::vector<Delta> deltas;
         std::vector<NodeId> rootsBefore, rootsAfter;
         std::optional<std::pair<NodeId, std::string>> coalesce;
@@ -155,6 +158,7 @@ private:
     std::map<SideId, std::vector<SideLocation>> sideCandidates_;
     std::int64_t nextObject_ = 1, nextSide_ = 1, nextGroup_ = 1, nextVisgroup_ = 1;
     NodeId nextNode_ = 1;
+    std::uint64_t historyState_ = 0, nextHistoryState_ = 1;
     std::deque<Entry> undo_, redo_;
     std::optional<SelectionBlob> restoredSelection_;
     std::size_t cap_, historyBytes_ = 0, nextObserver_ = 1;

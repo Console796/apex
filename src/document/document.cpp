@@ -369,6 +369,7 @@ ChangeSet Document::restore(const Entry& entry, bool after) {
             changes.modified.push_back({*current, delta.flags});
     }
     roots_ = after ? entry.rootsAfter : entry.rootsBefore;
+    historyState_ = after ? entry.stateAfter : entry.stateBefore;
     indexSides();
     checkSideIndex();
     for (const auto& [id, location] : oldSides) {
@@ -452,6 +453,7 @@ bool Document::jumpTo(std::size_t target) {
 Transaction::Transaction(Document& doc, std::string label) : doc_(&doc) {
     if (doc.active_ || doc.notifying_) throw std::logic_error("nested transaction/observer write");
     entry_.label = std::move(label);
+    entry_.stateBefore = doc.historyState_;
     entry_.rootsBefore = doc.roots_;
     doc.active_ = true;
 }
@@ -819,6 +821,7 @@ ChangeSet Transaction::commit(bool coalesce) {
         if (!doc_->side(id)) changes.vanishedSides.push_back(id);
     }
     if (!entry_.deltas.empty()) {
+        entry_.stateAfter = doc_->historyState_ = doc_->nextHistoryState_++;
         for (const auto& redo : doc_->redo_) doc_->historyBytes_ -= redo.bytes;
         doc_->redo_.clear();
         if (doc_->coalesceAllowed_ && entry_.coalesce && !doc_->undo_.empty() &&
@@ -827,6 +830,7 @@ ChangeSet Transaction::commit(bool coalesce) {
             doc_->historyBytes_ -= previous.bytes;
             previous.deltas.front().after = entry_.deltas.front().after;
             previous.rootsAfter = entry_.rootsAfter;
+            previous.stateAfter = entry_.stateAfter;
             if (!previous.selectionBefore)
                 previous.selectionBefore = std::move(entry_.selectionBefore);
             if (entry_.selectionAfter)

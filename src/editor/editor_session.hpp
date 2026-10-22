@@ -5,6 +5,7 @@
 #include "editor/modal_transform.hpp"
 #include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
+#include "editor/visgroups.hpp"
 #include "editor/work_plane.hpp"
 
 #include <memory>
@@ -113,6 +114,17 @@ public:
     Result<void> unhideAll();
     Result<void> hideUnselected();
     bool toggleIsolate();
+    Result<int> createVisgroup(std::string name, std::optional<int> parent = {});
+    Result<void> renameVisgroup(int id, std::string name);
+    Result<void> moveVisgroup(int id, std::optional<int> parent = {},
+                              std::size_t position = static_cast<std::size_t>(-1));
+    Result<void> deleteVisgroup(int id);
+    Result<void> addSelectionToVisgroup(int id);
+    Result<void> removeSelectionFromVisgroup(int id);
+    Result<void> selectVisgroupMembers(int id);
+    Result<void> selectAutoMembers(std::string_view id);
+    Result<void> setVisgroupShown(int id, bool shown);
+    Result<void> setAutoVisgroupShown(std::string_view id, bool shown);
 
     const Preset& preset() const { return preset_; }
     const Keymap& keymap() const { return keymap_; }
@@ -158,7 +170,12 @@ private:
     std::map<std::size_t, Observer> observers_;
     std::size_t nextObserver_ = 1;
     void notify();
-    enum class AfterEdit { Computed, Keep, Clear };
+    VisgroupVisibility visgroupVisibility_;
+    std::map<std::uint64_t, VisgroupVisibility> visgroupHistory_;
+    Result<void> runVisgroupEdit(std::string label,
+        const std::function<Result<void>(document::Transaction&, VisgroupVisibility&)>& stage,
+        bool pruneHidden = false);
+    enum class AfterEdit { Computed, Keep, Clear, Visible };
     Result<void> runEdit(std::string label, AfterEdit after,
                          const std::function<Result<EditedObjects>(document::Transaction&)>& stage);
     std::vector<NodeId> transformNodes() const;
