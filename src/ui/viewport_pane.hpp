@@ -54,6 +54,8 @@ public:
         dirty_ = true;
     }
     TransformInput& transformInput() { return transform_; }
+    // World-space ray under the pointer while it is over this pane; empty otherwise.
+    std::optional<Ray> pointerRay() const;
 
 signals:
     void pressed();             // Any mouse press: the pane becomes active and takes focus.
@@ -76,6 +78,7 @@ private:
 
     editor::EditorSession* session_ = nullptr;
     TransformInput transform_;
+    bool pointerInside_ = false;
     bool selectionPending_ = false, marqueeAllowed_ = false, marqueeDragging_ = false;
     QPointF selectionStart_, lastClick_;
     QSize lastClickSize_;

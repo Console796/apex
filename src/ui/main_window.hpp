@@ -54,6 +54,17 @@ public:
     QComboBox* profilePicker() const { return profileCombo_; }
     QStringList recentFiles() const;
 
+    // Clipboard (plan 0.2.6, D12): copies carry the VMF fragment under this MIME type and as
+    // plain text, so other Apex instances and text editors can paste it.
+    static QString fragmentMimeType();
+    // The VMF fragment on the system clipboard: the custom MIME type first, then plain text.
+    // Empty when neither parses as a fragment.
+    static std::string clipboardFragment();
+    // Where Paste lands: at the pointer's work-plane hit, or in place without a pointer/hit.
+    editor::PasteOptions pastePlacement(bool inPlace) const;
+    // Handles the edit.* clipboard, duplicate, group and tie actions (menus and shortcuts).
+    bool performEditAction(const editor::ActionId& id);
+
 private slots:
     void openDialog();
     void save();
@@ -63,6 +74,11 @@ private:
     void buildMenus();
     void buildTransformUi();
     void openTransformDialog();
+    void buildClipboardUi();
+    void openPasteSpecial();
+    void openTieDialog();
+    QStringList solidClasses();
+    void refreshClipboardState();
     void updateEditorActions();
     void updateGridStatus();
     void applyPreset(const editor::Preset& preset);
@@ -77,6 +93,9 @@ private:
     std::unique_ptr<document::Document> document_;
     editor::EditorSession session_;
     std::size_t sessionObserver_ = 0;
+    bool clipboardHasFragment_ = false;
+    QString classesKey_;
+    QStringList classes_;
     std::optional<bool> savedMarqueeTouching_;
     std::map<editor::ActionId, QAction*> editorActions_;
     QString path_;

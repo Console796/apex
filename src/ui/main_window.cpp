@@ -8,6 +8,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QClipboard>
 #include <QComboBox>
 #include <QDir>
 #include <QFile>
@@ -17,6 +18,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QMimeData>
 #include <QSaveFile>
 #include <QSettings>
 #include <QSplitter>
@@ -25,13 +27,18 @@
 #include <QToolBar>
 #include <QToolButton>
 
+#include "assets/fgd.hpp"
+#include "core/kv1.hpp"
 #include "core/log.hpp"
+#include "core/strings.hpp"
 #include "core/version.hpp"
 #include "document/document.hpp"
 #include "document/vmf.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/outliner_panel.hpp"
+#include "ui/paste_special_dialog.hpp"
+#include "ui/tie_dialog.hpp"
 #include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
 #include "viewport/map_views.hpp"
@@ -50,6 +57,23 @@ bool isTransformAction(const editor::ActionId& id) {
            id == "transform.dialog" || id == "transform.texture_lock.toggle" || id == "snap.mode.toggle";
 }
 
+// Edit actions whose plain (unmodified) default keys belong to the focused pane.
+bool isPaneKeyAction(const editor::ActionId& id) {
+    return isTransformAction(id) || id == "edit.delete" || id == "edit.duplicate";
+}
+
+bool looksLikeFragment(std::string_view text) {
+    if (text.empty() || text.size() > (256u << 20)) return false;
+    auto parsed = kv1::parse(std::string(text));
+    if (!parsed) return false;
+    for (const auto& child : parsed->root().children()) {
+        if (child.kind() != kv1::NodeKind::Block) continue;
+        if (ciEquals(child.key(), "group") || ciEquals(child.key(), "solid") || ciEquals(child.key(), "entity"))
+            return true;
+    }
+    return false;
+}
+
 QString profileDir() {
     return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
            QStringLiteral("/profiles");
@@ -62,6 +86,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     buildMenus();
     buildStatusBar();
     buildTransformUi();
+    buildClipboardUi();
     buildDocks();
     viewport_->setEditorSession(&session_);
     outliner_->setEditorSession(&session_);
@@ -187,11 +212,11 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
     for (const auto& [id, action] : editorActions_) {
         QList<QKeySequence> sequences;
         const auto& binding = session_.preset().bindings.at(id);
-        const bool transformAction = isTransformAction(id);
+        const bool transformAction = isPaneKeyAction(id);
         if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
             for (const auto& chord : *chords) {
                 // A bare modifier is a held key (snap.suspend style), never a shortcut.
-                if (transformAction && (chord.key == "Ctrl" || chord.key == "Alt" || chord.key == "Shift")) continue;
+                if (isTransformAction(id) && (chord.key == "Ctrl" || chord.key == "Alt" || chord.key == "Shift")) continue;
                 sequences.push_back(keySequence(chord));
             }
         }
@@ -216,6 +241,15 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
+        if (id.starts_with("edit.") && !id.starts_with("edit.flip.")) {
+            const bool have = session_.document() != nullptr;
+            const bool objects = have && !editor::selectedNodes(session_.selection()).empty();
+            if (id == "edit.copy" || id == "edit.cut" || id == "edit.delete" || id == "edit.duplicate" ||
+                id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world")
+                action->setEnabled(objects);
+            if (id == "edit.paste" || id == "edit.paste_in_place" || id == "edit.paste_special")
+                action->setEnabled(have && clipboardHasFragment_);
+        }
         if (id == "edit.undo") action->setEnabled(document_ && document_->undoCount() != 0);
         if (id == "edit.redo") action->setEnabled(document_ && document_->redoCount() != 0);
         if (id == "selection.ignore_groups") action->setChecked(session_.selection().ignoreGroups());
@@ -422,6 +456,152 @@ void MainWindow::buildTransformUi() {
         button->setAutoRaise(true);
         statusBar()->addPermanentWidget(button);
     }
+}
+
+QString MainWindow::fragmentMimeType() { return QStringLiteral("application/x-apex-vmf-fragment"); }
+
+std::string MainWindow::clipboardFragment() {
+    const auto* data = QApplication::clipboard()->mimeData();
+    if (!data) return {};
+    if (data->hasFormat(fragmentMimeType())) {
+        const QByteArray bytes = data->data(fragmentMimeType());
+        const std::string text(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+        if (looksLikeFragment(text)) return text;
+    }
+    if (data->hasText()) {
+        const std::string text = data->text().toStdString();
+        if (looksLikeFragment(text)) return text;
+    }
+    return {};
+}
+
+void MainWindow::refreshClipboardState() {
+    clipboardHasFragment_ = !clipboardFragment().empty();
+    updateEditorActions();
+}
+
+editor::PasteOptions MainWindow::pastePlacement(bool inPlace) const {
+    editor::PasteOptions options;
+    options.inPlace = true;
+    if (inPlace || !viewport_) return options;
+    const auto ray = viewport_->pointerRay();
+    if (!ray) return options;
+    const auto resolved = session_.resolvedWorkPlane();
+    const auto plane = resolved ? resolved->plane : session_.fallbackPlane();
+    const double denom = glm::dot(ray->dir, plane.normal);
+    if (std::abs(denom) < 1e-9) return options;
+    const double t = glm::dot(plane.origin - ray->origin, plane.normal) / denom;
+    if (!std::isfinite(t) || t <= 0.0) return options;
+    options.inPlace = false;
+    options.at = ray->at(t);
+    options.plane = plane;
+    return options;
+}
+
+bool MainWindow::performEditAction(const editor::ActionId& id) {
+    const auto say = [this](const QString& text) { statusBar()->showMessage(text, 5000); };
+    if (!session_.document()) return false;
+    bool ok = true;
+    if (id == "edit.copy" || id == "edit.cut") {
+        auto text = id == "edit.copy" ? session_.copyText() : session_.cutText();
+        if (!text) {
+            say(tr("%1: %2").arg(id == "edit.copy" ? tr("Copy") : tr("Cut"), QString::fromStdString(text.error().what())));
+            ok = false;
+        } else {
+            auto* mime = new QMimeData;
+            mime->setData(fragmentMimeType(), QByteArray(text->data(), static_cast<qsizetype>(text->size())));
+            mime->setText(QString::fromStdString(*text));
+            QApplication::clipboard()->setMimeData(mime);
+            say(id == "edit.copy" ? tr("Copied") : tr("Cut"));
+        }
+    } else if (id == "edit.paste" || id == "edit.paste_in_place") {
+        const auto text = clipboardFragment();
+        if (text.empty()) {
+            say(tr("The clipboard holds no VMF fragment."));
+            ok = false;
+        } else if (auto done = session_.pasteText(text, pastePlacement(id == "edit.paste_in_place")); !done) {
+            say(tr("Paste: %1").arg(QString::fromStdString(done.error().what())));
+            ok = false;
+        }
+    } else if (id == "edit.paste_special") {
+        openPasteSpecial();
+    } else if (id == "edit.tie_to_entity") {
+        openTieDialog();
+    } else {
+        ok = session_.perform(id);
+        if (!ok) say(tr("%1: nothing to do").arg(fromStd(editor::actionRegistry().find(id)->name)));
+    }
+    updateEditorActions();
+    return ok;
+}
+
+void MainWindow::openPasteSpecial() {
+    if (!document_) return;
+    if (auto* open = findChild<PasteSpecialDialog*>(QStringLiteral("pasteSpecialDialog"))) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+    const auto text = clipboardFragment();
+    if (text.empty()) {
+        statusBar()->showMessage(tr("The clipboard holds no VMF fragment."), 5000);
+        return;
+    }
+    auto* dialog = new PasteSpecialDialog(session_, text, pastePlacement(false), this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
+QStringList MainWindow::solidClasses() {
+    const auto* profile = currentProfile();
+    if (!profile || profile->fgds.empty()) return {};
+    QString key = QString::fromStdString(profile->name);
+    for (const auto& f : profile->fgds) key += QLatin1Char('|') + QString::fromStdString(f.string());
+    if (key != classesKey_) {
+        classesKey_ = key;
+        classes_.clear();
+        if (auto table = assets::loadEntityClasses(profile->fgds)) {
+            for (const auto& [name, cls] : table->classes) {
+                if (ciEquals(cls.type, "SolidClass")) classes_.push_back(QString::fromStdString(cls.name));
+            }
+        } else {
+            log::warn("tie to entity: FGD load failed: {}", table.error().what());
+        }
+    }
+    return classes_;
+}
+
+void MainWindow::openTieDialog() {
+    if (!document_) return;
+    if (auto* open = findChild<TieDialog*>(QStringLiteral("tieDialog"))) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+    auto* dialog = new TieDialog(session_, solidClasses(), this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
+void MainWindow::buildClipboardUi() {
+    auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
+    edit->addSeparator();
+    for (const char* id : {"edit.cut", "edit.copy", "edit.paste", "edit.paste_in_place", "edit.paste_special",
+                           "edit.duplicate", "edit.delete", "edit.group", "edit.ungroup", "edit.tie_to_entity",
+                           "edit.move_to_world"}) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = edit->addAction(fromStd(entry->name));
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        editorActions_.emplace(entry->id, action);
+        connect(action, &QAction::triggered, this, [this, id = entry->id] { performEditAction(id); });
+        if (std::string_view(id) == "edit.duplicate" || std::string_view(id) == "edit.delete" ||
+            std::string_view(id) == "edit.paste_special" || std::string_view(id) == "edit.ungroup")
+            edit->addSeparator();
+    }
+    connect(QApplication::clipboard(), &QClipboard::dataChanged, this, &MainWindow::refreshClipboardState);
+    connect(edit, &QMenu::aboutToShow, this, &MainWindow::refreshClipboardState);
+    clipboardHasFragment_ = !clipboardFragment().empty();
 }
 
 void MainWindow::openTransformDialog() {

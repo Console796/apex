@@ -112,6 +112,16 @@ PaneFrame* ViewportArea::frame(viewport::NodeId pane) const {
     return it == frames_.end() ? nullptr : it->second.data();
 }
 
+std::optional<Ray> ViewportArea::pointerRay() const {
+    if (pointerOverride_) return pointerOverride_;
+    for (const auto& [id, f] : frames_) {
+        if (f && f->window()) {
+            if (const auto ray = f->window()->pointerRay()) return ray;
+        }
+    }
+    return std::nullopt;
+}
+
 void ViewportArea::flush() {
     if (rebuildPending_) rebuild();
     tick();

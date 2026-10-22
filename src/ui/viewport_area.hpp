@@ -66,6 +66,11 @@ public:
     void applyMapViews(const viewport::MapViews& views);
     viewport::MapViews captureMapViews() const;
 
+    // The world ray under the mouse pointer when it is over a pane (Paste places at its work-plane
+    // hit). The override stands in for a real pointer in tests and scripted input.
+    std::optional<Ray> pointerRay() const;
+    void setPointerRayOverride(std::optional<Ray> ray) { pointerOverride_ = ray; }
+
     // Runs queued rebuilds and one timer tick now (tests, screenshots).
     void flush();
 
@@ -113,6 +118,7 @@ private:
     double lastCam_[3] = {0, 0, 0};
     bool forceDraw_ = false;
     bool gpuAnnounced_ = false;
+    std::optional<Ray> pointerOverride_;
 };
 
 }  // namespace apex::ui

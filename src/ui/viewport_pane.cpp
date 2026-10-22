@@ -199,6 +199,7 @@ bool PaneWindow::event(QEvent* e) {
     case QEvent::MouseMove:
         return handleMouse(static_cast<QMouseEvent*>(e));
     case QEvent::Leave:
+        pointerInside_ = false;
         if (session_ && !transform_.owns()) session_->clearHover();
         transform_.leave();
         if (transform_.takeDirty()) dirty_ = true;
@@ -239,11 +240,18 @@ bool PaneWindow::event(QEvent* e) {
     return QWindow::event(e);
 }
 
+std::optional<Ray> PaneWindow::pointerRay() const {
+    const auto* vp = accessor_();
+    if (!pointerInside_ || !vp || width() <= 0 || height() <= 0) return std::nullopt;
+    return viewport::pixelRay(vp->camera, static_cast<double>(width()) / height(), cursor_.x(), cursor_.y(), width(), height());
+}
+
 bool PaneWindow::handleMouse(QMouseEvent* e) {
     modifiers_ = e->modifiers();
     const bool press = e->type() == QEvent::MouseButtonPress;
     const bool release = e->type() == QEvent::MouseButtonRelease;
     cursor_ = e->position();
+    pointerInside_ = true;
     bool consumed = false;
     if (const auto* vp = accessor_(); vp && session_)
         consumed = transform_.mouse(*e, vp->camera, QSizeF(width(), height()));

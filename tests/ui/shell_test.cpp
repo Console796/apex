@@ -782,3 +782,301 @@ TEST_CASE("Blender modal transform: G, axis, digits, Enter from synthetic keys")
     // Keys unrelated to modal start are not consumed.
     CHECK_FALSE(key(Qt::Key_Q));
 }
+
+#include <QClipboard>
+#include <QMimeData>
+#include "ui/paste_special_dialog.hpp"
+#include "ui/tie_dialog.hpp"
+
+namespace {
+using namespace apex;
+
+void setClipboardText(const QString& text) {
+    auto* mime = new QMimeData;
+    mime->setText(text);
+    QApplication::clipboard()->setMimeData(mime);
+}
+
+void closeDialog(QWidget* dialog) {
+    dialog->close();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+DVec3 solidMin(document::Document& doc, document::NodeId id) {
+    const auto handle = doc.handle(id);
+    REQUIRE(handle);
+    const auto solid = geometry::solidGeometry(*doc.get(*handle)->block);
+    REQUIRE(solid);
+    DVec3 m{1e9};
+    for (const auto& v : solid->poly.vertices) m = glm::min(m, v);
+    return m;
+}
+
+std::size_t nodeCount(const ui::MainWindow& w) { return editor_test::nodes(*w.document()).size(); }
+}  // namespace
+
+TEST_CASE("copy and paste round-trip through the system clipboard") {
+    TransformScene scene;
+    auto& session = scene.session();
+    const auto nodes = nodeCount(scene.window);
+    const auto undo = scene.undo();
+
+    scene.action("edit.copy")->trigger();
+    const auto* mime = QApplication::clipboard()->mimeData();
+    REQUIRE(mime);
+    CHECK(mime->hasFormat(ui::MainWindow::fragmentMimeType()));
+    CHECK(mime->hasText());
+    CHECK(mime->data(ui::MainWindow::fragmentMimeType()).toStdString() == mime->text().toStdString());
+    CHECK(scene.undo() == undo);
+    CHECK(scene.action("edit.paste")->isEnabled());
+
+    // No pointer over a pane: paste in place keeps the copied coordinates exactly.
+    scene.action("edit.paste")->trigger();
+    CHECK(scene.undo() == undo + 1);
+    CHECK(nodeCount(scene.window) == nodes + 1);
+    auto selected = editor::selectedNodes(session.selection());
+    REQUIRE(selected.size() == 1);
+    CHECK(selected[0] != scene.boxId);
+    editor_test::checkPoint(solidMin(*scene.window.document(), selected[0]), {5, 5, 5});
+    scene.window.document()->undo();
+    CHECK(nodeCount(scene.window) == nodes);
+
+    // Pointer over a pane looking straight down at the ground: the copy is centred on the hit and
+    // rests on the plane.
+    scene.window.viewportArea()->setPointerRayOverride(Ray{{640, 320, 500}, {0, 0, -1}});
+    session.selectNode(scene.boxId);
+    scene.action("edit.paste")->trigger();
+    selected = editor::selectedNodes(session.selection());
+    REQUIRE(selected.size() == 1);
+    const auto placed = solidMin(*scene.window.document(), selected[0]);
+    CHECK(std::abs(placed.z) < 1e-6);
+    CHECK(std::abs(placed.x + 32 - 640) <= 32.0 + 1e-6);
+    CHECK(std::abs(placed.y + 32 - 320) <= 32.0 + 1e-6);
+    CHECK(placed != DVec3{5, 5, 5});
+    scene.window.document()->undo();
+
+    // A ray that misses the plane (parallel) falls back to in place.
+    scene.window.viewportArea()->setPointerRayOverride(Ray{{0, 0, 500}, {1, 0, 0}});
+    scene.action("edit.paste")->trigger();
+    selected = editor::selectedNodes(session.selection());
+    REQUIRE(selected.size() == 1);
+    editor_test::checkPoint(solidMin(*scene.window.document(), selected[0]), {5, 5, 5});
+    scene.window.document()->undo();
+    scene.window.viewportArea()->setPointerRayOverride(std::nullopt);
+
+    // Paste in place ignores the pointer.
+    scene.window.viewportArea()->setPointerRayOverride(Ray{{640, 320, 500}, {0, 0, -1}});
+    scene.action("edit.paste_in_place")->trigger();
+    selected = editor::selectedNodes(session.selection());
+    REQUIRE(selected.size() == 1);
+    editor_test::checkPoint(solidMin(*scene.window.document(), selected[0]), {5, 5, 5});
+    scene.window.viewportArea()->setPointerRayOverride(std::nullopt);
+}
+
+TEST_CASE("paste reads plain text, other instances' custom MIME, and ignores everything else") {
+    TransformScene scene;
+    auto& session = scene.session();
+    scene.action("edit.copy")->trigger();
+    const QString text = QApplication::clipboard()->mimeData()->text();
+    const auto undo = scene.undo();
+
+    // Plain text only (a text editor, or a tool that drops the custom type).
+    setClipboardText(text);
+    CHECK(scene.action("edit.paste")->isEnabled());
+    scene.action("edit.paste_in_place")->trigger();
+    CHECK(scene.undo() == undo + 1);
+
+    // Custom MIME only (another Apex instance).
+    auto* mime = new QMimeData;
+    mime->setData(ui::MainWindow::fragmentMimeType(), text.toUtf8());
+    QApplication::clipboard()->setMimeData(mime);
+    CHECK(ui::MainWindow::clipboardFragment() == text.toStdString());
+    scene.action("edit.paste")->trigger();
+    CHECK(scene.undo() == undo + 2);
+
+    // Not a fragment: ignored with a status message, nothing changes, paste is disabled.
+    for (const QString junk : {QStringLiteral("hello world"), QStringLiteral("versioninfo { \"editorversion\" \"400\" }"),
+                               QString()}) {
+        setClipboardText(junk);
+        CHECK(ui::MainWindow::clipboardFragment().empty());
+        CHECK_FALSE(scene.action("edit.paste")->isEnabled());
+        CHECK_FALSE(scene.action("edit.paste_in_place")->isEnabled());
+        CHECK_FALSE(scene.action("edit.paste_special")->isEnabled());
+        scene.action("edit.paste")->trigger();
+        CHECK(scene.undo() == undo + 2);
+    }
+    (void)session;
+}
+
+TEST_CASE("cut writes the clipboard and one undo restores the document") {
+    TransformScene scene;
+    const auto before = scene.window.document()->write();
+    REQUIRE(before);
+    const auto undo = scene.undo();
+    scene.action("edit.cut")->trigger();
+    CHECK(scene.undo() == undo + 1);
+    CHECK(QApplication::clipboard()->mimeData()->hasFormat(ui::MainWindow::fragmentMimeType()));
+    CHECK(scene.session().selection().ordered().empty());
+    CHECK_FALSE(scene.action("edit.cut")->isEnabled());
+    scene.window.document()->undo();
+    const auto after = scene.window.document()->write();
+    REQUIRE(after);
+    CHECK(*after == *before);
+}
+
+TEST_CASE("paste special dialog applies copies and rejects invalid input") {
+    TransformScene scene;
+    scene.action("edit.copy")->trigger();
+    scene.action("edit.paste_special")->trigger();
+    auto* dialog = scene.window.findChild<ui::PasteSpecialDialog*>("pasteSpecialDialog");
+    REQUIRE(dialog);
+    const auto field = [&](const char* name) {
+        auto* f = dialog->findChild<QLineEdit*>(name);
+        REQUIRE(f);
+        return f;
+    };
+    const auto undo = scene.undo();
+    const auto nodes = nodeCount(scene.window);
+    const auto reject = [&](const char* name, const char* value) {
+        const QString old = field(name)->text();
+        field(name)->setText(value);
+        CHECK_FALSE(dialog->apply());
+        CHECK_FALSE(dialog->error().isEmpty());
+        CHECK(scene.undo() == undo);
+        CHECK(nodeCount(scene.window) == nodes);
+        field(name)->setText(old);
+    };
+    reject("psCopies", "0");
+    reject("psCopies", "257");
+    reject("psCopies", "abc");
+    reject("psCopies", "1.5");
+    reject("psOffsetX", "nan");
+    reject("psOffsetY", "1e999");
+    reject("psOffsetZ", "");
+    reject("psPitch", "x");
+    reject("psYaw", "inf");
+    reject("psRoll", "1,5");
+    {
+        auto* mode = dialog->findChild<QComboBox*>("psNameMode");
+        REQUIRE(mode);
+        mode->setCurrentIndex(1);  // Prefix with no text.
+        CHECK_FALSE(dialog->apply());
+        CHECK(scene.undo() == undo);
+        mode->setCurrentIndex(0);
+    }
+
+    // Three copies, 128 units apart in x: one transaction.
+    field("psCopies")->setText("3");
+    field("psOffsetX")->setText("128");
+    CHECK(dialog->apply());
+    CHECK(dialog->error().isEmpty());
+    CHECK(scene.undo() == undo + 1);
+    CHECK(nodeCount(scene.window) == nodes + 3);
+    const auto selected = editor::selectedNodes(scene.session().selection());
+    REQUIRE(selected.size() == 3);
+    std::vector<double> xs;
+    for (const auto id : selected) xs.push_back(solidMin(*scene.window.document(), id).x);
+    std::ranges::sort(xs);
+    CHECK(xs[1] - xs[0] == doctest::Approx(128));
+    CHECK(xs[2] - xs[1] == doctest::Approx(128));
+    scene.window.document()->undo();
+
+    // Grouping the copies adds groups.
+    dialog->findChild<QCheckBox*>("psGroup")->setChecked(true);
+    CHECK(dialog->apply());
+    CHECK(nodeCount(scene.window) > nodes + 3);
+    scene.window.document()->undo();
+    closeDialog(dialog);
+}
+
+TEST_CASE("delete, duplicate, group, ungroup, tie and move to world are undoable actions") {
+    TransformScene scene;
+    auto& doc = *scene.window.document();
+    auto& session = scene.session();
+    const auto start = doc.write();
+    REQUIRE(start);
+    const auto undo = scene.undo();
+    const auto nodes = nodeCount(scene.window);
+
+    scene.action("edit.duplicate")->trigger();
+    CHECK(scene.undo() == undo + 1);
+    CHECK(nodeCount(scene.window) == nodes + 1);
+    session.perform("edit.undo");
+
+    scene.action("edit.delete")->trigger();
+    CHECK(scene.undo() == undo + 1);
+    CHECK(nodeCount(scene.window) == nodes - 1);
+    CHECK_FALSE(scene.action("edit.delete")->isEnabled());
+    session.perform("edit.undo");
+    CHECK(*doc.write() == *start);
+    CHECK(scene.action("edit.delete")->isEnabled());
+
+    // Group and ungroup.
+    session.perform("selection.mode.objects");
+    session.selectNode(scene.boxId);
+    scene.action("edit.group")->trigger();
+    CHECK(scene.undo() == undo + 1);
+    CHECK(nodeCount(scene.window) > nodes);
+    scene.action("edit.ungroup")->trigger();
+    CHECK(scene.undo() == undo + 2);
+    CHECK(nodeCount(scene.window) == nodes);
+    session.perform("edit.undo");
+    session.perform("edit.undo");
+    CHECK(*doc.write() == *start);
+
+    // Tie to entity through the dialog, then move back to the world.
+    session.perform("selection.mode.solids");
+    session.selectNode(scene.boxId);
+    scene.action("edit.tie_to_entity")->trigger();
+    auto* tie = scene.window.findChild<ui::TieDialog*>("tieDialog");
+    REQUIRE(tie);
+    CHECK(tie->className() == "func_detail");
+    tie->setClassName("bad class");
+    CHECK_FALSE(tie->apply());
+    CHECK_FALSE(tie->error().isEmpty());
+    CHECK(scene.undo() == undo);
+    tie->setClassName("func_detail");
+    CHECK(tie->apply());
+    CHECK(scene.undo() == undo + 1);
+    CHECK(editor::brushEntityOf(doc, scene.boxId));
+    closeDialog(tie);
+    session.perform("selection.mode.solids");
+    session.selectNode(scene.boxId);
+    scene.action("edit.move_to_world")->trigger();
+    CHECK(scene.undo() == undo + 2);
+    CHECK_FALSE(editor::brushEntityOf(doc, scene.boxId));
+    session.perform("edit.undo");
+    CHECK(editor::brushEntityOf(doc, scene.boxId));
+    session.perform("edit.undo");
+    CHECK(*doc.write() == *start);
+}
+
+TEST_CASE("edit menu enabled states follow selection and clipboard") {
+    TransformScene scene;
+    auto& session = scene.session();
+    const auto* edit = scene.window.findChild<QMenu*>("menuEdit");
+    REQUIRE(edit);
+    const char* selectionActions[] = {"edit.copy", "edit.cut", "edit.delete", "edit.duplicate", "edit.group",
+                                      "edit.ungroup", "edit.tie_to_entity", "edit.move_to_world"};
+    for (const char* id : {"edit.copy", "edit.cut", "edit.paste", "edit.paste_in_place", "edit.paste_special",
+                           "edit.duplicate", "edit.delete", "edit.group", "edit.ungroup", "edit.tie_to_entity",
+                           "edit.move_to_world"})
+        CHECK(edit->actions().contains(scene.action(id)));
+    setClipboardText(QString());
+    session.perform("selection.none");
+    QCoreApplication::processEvents();
+    for (const char* id : selectionActions) CHECK_FALSE(scene.action(id)->isEnabled());
+    session.selectNode(scene.boxId);
+    for (const char* id : selectionActions) CHECK(scene.action(id)->isEnabled());
+    CHECK_FALSE(scene.action("edit.paste")->isEnabled());
+    scene.action("edit.copy")->trigger();
+    CHECK(scene.action("edit.paste")->isEnabled());
+    // Faces mode has no objects to copy.
+    session.perform("selection.mode.faces");
+    CHECK_FALSE(scene.action("edit.copy")->isEnabled());
+    CHECK(scene.action("edit.paste")->isEnabled());
+    // Hammer: Delete is a plain key (pane), Ctrl+C/V are window shortcuts.
+    CHECK(scene.action("edit.delete")->shortcutContext() == Qt::WidgetShortcut);
+    CHECK(scene.action("edit.copy")->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_C));
+    CHECK(scene.action("edit.paste")->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_V));
+}
