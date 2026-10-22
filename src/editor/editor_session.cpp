@@ -19,6 +19,7 @@ void EditorSession::attach(document::Document& doc) {
     documentObserver_ = doc.observe([this](const document::ChangeSet& changes) {
         picks_->apply(changes);
         groups_->apply(changes);
+        if (transformActive()) endTransform(); // Undo/redo/external edits invalidate a drag.
         cycle_ = {};
         hover_.reset();
         hoverDrawable_.reset();
@@ -30,6 +31,7 @@ void EditorSession::attach(document::Document& doc) {
     notify();
 }
 void EditorSession::detach() {
+    if (transformActive()) endTransform();
     if (document_) document_->unobserve(documentObserver_);
     document_ = nullptr;
     picks_.reset();
@@ -179,6 +181,40 @@ bool EditorSession::perform(const ActionId& action) {
         pinAxisWorkPlane(axis, bounds.empty() ? DVec3{0.0} : bounds.center());
         return true;
     }
+    // Escape: an active drag/modal is cancelled first, then the pin, then the selection.
+    if (action == "selection.none" && transformActive()) {
+        cancelTransform();
+        return true;
+    }
+    if (action == "gizmo.mode.translate" || action == "gizmo.mode.rotate" || action == "gizmo.mode.scale") {
+        setGizmoMode(action == "gizmo.mode.translate" ? GizmoMode::Translate
+                     : action == "gizmo.mode.rotate" ? GizmoMode::Rotate : GizmoMode::Scale);
+        return true;
+    }
+    if (action == "gizmo.space.toggle") {
+        setGizmoSpace(gizmoSpace_ == GizmoSpace::Global ? GizmoSpace::Local : GizmoSpace::Global);
+        return true;
+    }
+    if (action == "gizmo.pivot.cycle") {
+        setPivotMode(pivotMode_ == PivotMode::BoundsCentre ? PivotMode::ActiveOrigin
+                     : pivotMode_ == PivotMode::ActiveOrigin ? PivotMode::Custom : PivotMode::BoundsCentre);
+        return true;
+    }
+    if (action == "snap.mode.toggle") {
+        setSnapMode(snap_.mode == SnapMode::Absolute ? SnapMode::Relative : SnapMode::Absolute);
+        return true;
+    }
+    if (action == "transform.texture_lock.toggle") {
+        setTextureLock(!textureLock_);
+        return true;
+    }
+    if (action == "edit.flip.x" || action == "edit.flip.y" || action == "edit.flip.z")
+        return flipSelection(action == "edit.flip.x" ? Axis::X : action == "edit.flip.y" ? Axis::Y : Axis::Z);
+    if (action == "nudge.left" || action == "nudge.right" || action == "nudge.up" || action == "nudge.down")
+        return nudgeSelection(action == "nudge.up" || action == "nudge.down",
+                              action == "nudge.right" || action == "nudge.up" ? 1 : -1);
+    // transform.dialog, transform.modal.* and snap.suspend need pointer/UI state: the UI
+    // layer calls beginModal(), the dialog backend or TransformModifiers directly.
     if (action == "selection.none" && workPlane_.pinned()) {
         unpinWorkPlane();
         return true;
@@ -208,6 +244,204 @@ bool EditorSession::perform(const ActionId& action) {
     clearHover();
     return true;
 }
+void EditorSession::setGizmoMode(GizmoMode mode) {
+    if (transformActive() || mode == gizmoMode_) return;
+    gizmoMode_ = mode;
+    notify();
+}
+void EditorSession::setGizmoSpace(GizmoSpace space) {
+    if (transformActive() || space == gizmoSpace_) return;
+    gizmoSpace_ = space;
+    notify();
+}
+void EditorSession::setPivotMode(PivotMode mode) {
+    if (transformActive() || mode == pivotMode_) return;
+    pivotMode_ = mode;
+    notify();
+}
+void EditorSession::setCustomPivot(DVec3 pivot) {
+    if (transformActive() || pivot == customPivot_) return;
+    customPivot_ = pivot;
+    if (pivotMode_ == PivotMode::Custom) notify();
+}
+void EditorSession::setSnapMode(SnapMode mode) {
+    if (mode == snap_.mode) return;
+    snap_.mode = mode;
+    notify();
+}
+void EditorSession::setTextureLock(bool lock) {
+    if (lock == textureLock_) return;
+    textureLock_ = lock;
+    notify();
+}
+
+std::vector<NodeId> EditorSession::transformNodes() const {
+    if (!document_ || selection_.mode() == SelectionMode::Faces) return {};
+    return expandSelection(*document_, *groups_, selection_).solidsAndEntities;
+}
+std::optional<GizmoContext> EditorSession::gizmoContext() const {
+    const auto nodes = transformNodes();
+    if (nodes.empty()) return std::nullopt;
+    GizmoContext context;
+    AABB bounds;
+    for (const auto node : nodes) {
+        if (const auto box = picks_->bounds(node)) bounds.expand(*box);
+    }
+    if (bounds.empty()) return std::nullopt;
+    context.bounds = bounds;
+    // Active object: its entity key values give the origin and basis; other nodes use bounds.
+    DVec3 activeOrigin = bounds.center(), activeAngles{0.0};
+    DMat3 local{1.0};
+    bool activeEntity = false;
+    if (const auto active = selection_.active(); active && std::holds_alternative<NodeId>(*active)) {
+        const auto node = std::get<NodeId>(*active);
+        if (const auto box = picks_->bounds(node)) activeOrigin = box->center();
+        const auto handle = document_->handle(node);
+        if (handle && std::holds_alternative<Handle<document::Entity>>(*handle)) {
+            const auto& block = *document_->get(*handle)->block;
+            const auto vector = [&](std::string_view key) -> std::optional<DVec3> {
+                const auto* entry = block.find(key);
+                const auto parsed = entry ? entry->asVec3() : Result<std::array<double, 3>>{};
+                if (!entry || !parsed) return std::nullopt;
+                return DVec3{(*parsed)[0], (*parsed)[1], (*parsed)[2]};
+            };
+            if (const auto origin = vector("origin")) activeOrigin = *origin;
+            if (const auto angles = vector("angles")) {
+                const auto basis = basisFromAngles(*angles);
+                local = DMat3{basis[0], -basis[1], basis[2]}; // Source's right-axis is -Y.
+                activeAngles = *angles;
+                activeEntity = true;
+            }
+        }
+    }
+    context.pivot = pivotMode_ == PivotMode::Custom ? customPivot_
+                    : pivotMode_ == PivotMode::ActiveOrigin ? activeOrigin : bounds.center();
+    context.localFrame = local;
+    context.frame = gizmoSpace_ == GizmoSpace::Local ? local : DMat3{1.0};
+    if (gizmoSpace_ == GizmoSpace::Global && activeEntity)
+        context.rotationStartDeg = {activeAngles.z, activeAngles.x, activeAngles.y}; // Roll, pitch, yaw.
+    const auto resolved = workPlane_.resolve();
+    context.workPlane = resolved ? resolved->plane : fallbackPlane_;
+    context.snap = snap_;
+    context.snap.gridSize = gridSize_;
+    return context;
+}
+
+void EditorSession::publishPreview(const Transform& transform) {
+    preview_ = fromTransform(activeNodes_, transform);
+    notify();
+}
+void EditorSession::endTransform() {
+    drag_.cancel();
+    modal_.cancel();
+    dragging_ = modalActive_ = false;
+    activeNodes_.clear();
+    preview_.clear();
+}
+void EditorSession::cancelTransform() {
+    if (!transformActive()) return;
+    endTransform();
+    notify();
+}
+bool EditorSession::commitNow(const Transform& transform, std::string label) {
+    const auto nodes = transformNodes();
+    if (nodes.empty()) return false;
+    if (transform.matrix() == DMat4{1.0}) return true;
+    return commitTransform(*document_, nodes, transform, {textureLock_}, std::move(label)).has_value();
+}
+bool EditorSession::commitActive(const Transform& transform, GizmoMode mode) {
+    endTransform(); // The preview is cleared in the same call as the commit.
+    const bool ok = commitNow(transform, mode == GizmoMode::Translate ? "Move"
+                                         : mode == GizmoMode::Rotate ? "Rotate" : "Scale");
+    notify();
+    return ok;
+}
+const TransformReadout& EditorSession::activeReadout() const {
+    return modalActive_ ? modal_.value() : drag_.value();
+}
+bool EditorSession::beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray) {
+    if (!document_ || transformActive()) return false;
+    const auto context = gizmoContext();
+    if (!context || !drag_.begin(gizmoMode_, handle, *context, view, ray)) return false;
+    dragging_ = true;
+    activeMode_ = gizmoMode_;
+    activeNodes_ = transformNodes();
+    publishPreview(Transform{});
+    return true;
+}
+bool EditorSession::updateGizmoDrag(Ray ray, TransformModifiers modifiers) {
+    if (!dragging_) return false;
+    publishPreview(drag_.update(ray, modifiers).transform);
+    return true;
+}
+bool EditorSession::endGizmoDrag() {
+    if (!dragging_) return false;
+    return commitActive(drag_.value().transform, activeMode_);
+}
+bool EditorSession::beginModal(GizmoMode mode, const GizmoView& view, Ray ray, DVec2 screenAnchor) {
+    if (!document_ || transformActive()) return false;
+    const auto context = gizmoContext();
+    if (!context || !modal_.start(mode, *context, view, ray, screenAnchor)) return false;
+    modalActive_ = true;
+    activeMode_ = mode;
+    activeNodes_ = transformNodes();
+    publishPreview(modal_.value().transform);
+    return true;
+}
+bool EditorSession::updateModal(Ray ray, TransformModifiers modifiers) {
+    if (!modalActive_) return false;
+    publishPreview(modal_.update(ray, modifiers).transform);
+    return true;
+}
+ModalEvent EditorSession::modalKey(std::string_view key, bool shift) {
+    if (!modalActive_) return ModalEvent::Ignored;
+    const auto event = modal_.key(key, shift);
+    if (event == ModalEvent::Commit) commitActive(modal_.value().transform, activeMode_);
+    else if (event == ModalEvent::Cancel) cancelTransform();
+    else if (event == ModalEvent::Updated) publishPreview(modal_.value().transform);
+    return event;
+}
+
+bool EditorSession::moveSelection(DVec3 value, bool relative) {
+    const auto context = document_ && !transformActive() ? gizmoContext() : std::nullopt;
+    if (!context) return false;
+    const auto delta = relative ? value : value - context->pivot;
+    try { return commitNow(Transform::translate(delta), "Move"); } catch (const std::invalid_argument&) { return false; }
+}
+bool EditorSession::rotateSelection(DVec3 anglesDeg) {
+    const auto context = document_ && !transformActive() ? gizmoContext() : std::nullopt;
+    if (!context) return false;
+    try {
+        const auto pivot = context->pivot;
+        const auto transform = Transform::rotate({0, 0, 1}, anglesDeg.z, pivot) *
+                               Transform::rotate({0, 1, 0}, anglesDeg.y, pivot) *
+                               Transform::rotate({1, 0, 0}, anglesDeg.x, pivot);
+        return commitNow(transform, "Rotate");
+    } catch (const std::invalid_argument&) { return false; }
+}
+bool EditorSession::scaleSelection(DVec3 factors) {
+    const auto context = document_ && !transformActive() ? gizmoContext() : std::nullopt;
+    if (!context) return false;
+    try { return commitNow(Transform::scale(factors, context->frame, context->pivot), "Scale"); }
+    catch (const std::invalid_argument&) { return false; }
+}
+bool EditorSession::flipSelection(Axis axis) {
+    const auto context = document_ && !transformActive() ? gizmoContext() : std::nullopt;
+    if (!context) return false;
+    const int index = axis == Axis::X ? 0 : axis == Axis::Y ? 1 : 2;
+    try {
+        return commitNow(Transform::mirror(context->frame[index], context->pivot),
+                         std::string("Flip ") + "XYZ"[index]);
+    } catch (const std::invalid_argument&) { return false; }
+}
+bool EditorSession::nudgeSelection(bool alongV, int direction) {
+    if (!document_ || transformActive() || !gizmoContext()) return false;
+    try {
+        return commitNow(Transform::translate(nudgeDelta(workPlane_, fallbackPlane_, alongV, gridSize_, direction)),
+                         "Nudge");
+    } catch (const std::invalid_argument&) { return false; }
+}
+
 void EditorSession::edit(std::string label, const std::function<void(document::Transaction&)>& operation) {
     if (!document_) return;
     const Selection before(selection_);

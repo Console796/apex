@@ -31,9 +31,9 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 38);
+    REQUIRE(registry.entries().size() == 49);
     CHECK(registry.entries().front().id == "edit.undo");
-    CHECK(registry.entries().back().id == "transform.modal.scale");
+    CHECK(registry.entries().back().id == "nudge.down");
     std::set<ActionId> ids;
     for (std::size_t i = 0; i < registry.entries().size(); ++i) {
         const auto& action = registry.entries()[i];
@@ -114,13 +114,22 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
         {"W", "gizmo.mode.translate"}, {"E", "gizmo.mode.rotate"}, {"R", "gizmo.mode.scale"},
         {"H", "view.hide"}, {"Ctrl+Z", "edit.undo"},
     }, BindingContext::SelectToolActive);
+    checkBindings(hammerPreset(), {
+        {"Left", "nudge.left"}, {"Right", "nudge.right"}, {"Up", "nudge.up"}, {"Down", "nudge.down"},
+    }, BindingContext::SelectToolActive);
+    checkBindings(hammerPreset(), {
+        {"Shift+L", "transform.texture_lock.toggle"}, {"Ctrl+L", "edit.flip.x"}, {"Ctrl+I", "edit.flip.y"},
+    });
     Keymap keymap(hammerPreset());
+    CHECK_FALSE(keymap.lookup(chord("Left")));
     for (const auto* key : {"W", "E", "R"}) CHECK_FALSE(keymap.lookup(chord(key)));
     CHECK_FALSE(keymap.lookup(chord("F24")));
     for (const auto& [id, binding] : hammerPreset().bindings) {
         const bool provisional = id == "selection.all" || id == "selection.none" ||
                                  id == "edit.delete" || id == "edit.duplicate" ||
-                                 id == "view.unhide" || id == "view.isolate" || id == "workplane.pin";
+                                 id == "view.unhide" || id == "view.isolate" || id == "workplane.pin" ||
+                                 id == "transform.texture_lock.toggle" || id == "edit.flip.x" ||
+                                 id == "edit.flip.y" || id.starts_with("nudge.");
         CHECK(binding.provisional == provisional);
     }
 }
@@ -134,6 +143,7 @@ TEST_CASE("Blender preset follows D15 including alternatives and held snap modif
         {"Ctrl+G", "edit.group"}, {"G", "transform.modal.grab"},
         {"R", "transform.modal.rotate"}, {"S", "transform.modal.scale"},
         {"Ctrl", "snap.suspend"}, {"Ctrl+Z", "edit.undo"}, {"Ctrl+Shift+Z", "edit.redo"},
+        {"Alt+Space", "gizmo.space.toggle"}, {"Shift+Tab", "snap.mode.toggle"},
     });
     for (const auto& [id, binding] : blenderPreset().bindings) {
         CAPTURE(id);

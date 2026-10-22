@@ -1,6 +1,8 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/modal_transform.hpp"
+#include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
 #include "editor/work_plane.hpp"
 
@@ -44,6 +46,52 @@ public:
     MarqueeMode marqueeMode() const { return marqueeMode_; }
     void setMarqueeMode(MarqueeMode mode);
 
+    // Transform tooling. Drags and modal sessions publish a transient preview() and write to
+    // the document only on commit, as one transaction labelled Move/Rotate/Scale. Mutating
+    // tooling state is ignored while a transform is active.
+    GizmoMode gizmoMode() const { return gizmoMode_; }
+    void setGizmoMode(GizmoMode mode);
+    GizmoSpace gizmoSpace() const { return gizmoSpace_; }
+    void setGizmoSpace(GizmoSpace space);
+    PivotMode pivotMode() const { return pivotMode_; }
+    void setPivotMode(PivotMode mode);
+    DVec3 customPivot() const { return customPivot_; }
+    void setCustomPivot(DVec3 pivot);
+    // gridSize follows gridSize(); fine/suspended are per-event TransformModifiers.
+    const SnapSettings& snapSettings() const { return snap_; }
+    void setSnapMode(SnapMode mode);
+    bool textureLock() const { return textureLock_; }
+    void setTextureLock(bool lock);
+    // Work plane used by nudge when nothing is hovered or pinned (the viewport supplies it).
+    void setFallbackPlane(SurfacePlane plane) { fallbackPlane_ = std::move(plane); }
+    const SurfacePlane& fallbackPlane() const { return fallbackPlane_; }
+    const Preview& preview() const { return preview_; }
+    // Null while nothing transformable is selected (empty, or face mode).
+    std::optional<GizmoContext> gizmoContext() const;
+    bool transformActive() const { return dragging_ || modalActive_; }
+    // Gizmo drag: begin on a handle, update on pointer motion, end to commit.
+    bool beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray);
+    bool updateGizmoDrag(Ray ray, TransformModifiers modifiers = {});
+    bool endGizmoDrag();
+    // Modal transform (G/R/S): keys are ModalTransform names; Commit/Cancel are applied here.
+    bool beginModal(GizmoMode mode, const GizmoView& view, Ray ray, DVec2 screenAnchor = DVec2{0.0});
+    bool updateModal(Ray ray, TransformModifiers modifiers = {});
+    ModalEvent modalKey(std::string_view key, bool shift = false);
+    const ModalTransform& modal() const { return modal_; }
+    const TransformReadout& activeReadout() const;
+    // Aborts any active drag/modal: clears the preview, leaves document and undo untouched.
+    void cancelTransform();
+    // Transform dialog backend: exact values bypass snapping; one transaction each, false
+    // when nothing is selected or the result is invalid (the document is then untouched).
+    // Relative moves are world deltas; absolute moves put the pivot at value.
+    bool moveSelection(DVec3 value, bool relative);
+    // Degrees about the global X, then Y, then Z axes through the pivot.
+    bool rotateSelection(DVec3 anglesDeg);
+    // Per-axis factors in the current gizmo frame about the pivot.
+    bool scaleSelection(DVec3 factors);
+    bool flipSelection(Axis axis);
+    bool nudgeSelection(bool alongV, int direction);
+
     const Preset& preset() const { return preset_; }
     const Keymap& keymap() const { return keymap_; }
     void setPreset(const Preset& preset);
@@ -70,11 +118,29 @@ private:
     WorkPlaneState workPlane_;
     double gridSize_ = GridLadder::kDefault;
     MarqueeMode marqueeMode_ = MarqueeMode::Enclosed;
+    GizmoMode gizmoMode_ = GizmoMode::Translate;
+    GizmoSpace gizmoSpace_ = GizmoSpace::Global;
+    PivotMode pivotMode_ = PivotMode::BoundsCentre;
+    DVec3 customPivot_{0.0};
+    SnapSettings snap_;
+    bool textureLock_ = true;
+    SurfacePlane fallbackPlane_{{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}, {}};
+    Preview preview_;
+    GizmoDrag drag_;
+    ModalTransform modal_;
+    bool dragging_ = false, modalActive_ = false;
+    GizmoMode activeMode_ = GizmoMode::Translate;
+    std::vector<NodeId> activeNodes_;
     Preset preset_;
     Keymap keymap_;
     std::map<std::size_t, Observer> observers_;
     std::size_t nextObserver_ = 1;
     void notify();
+    std::vector<NodeId> transformNodes() const;
+    void publishPreview(const Transform& transform);
+    bool commitActive(const Transform& transform, GizmoMode mode);
+    bool commitNow(const Transform& transform, std::string label);
+    void endTransform();
 };
 
 } // namespace apex::editor

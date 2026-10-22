@@ -85,6 +85,7 @@ apex_layer(editor SOURCES src/editor/editor_session.cpp src/editor/visibility.cp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
                           src/editor/work_plane.cpp
                           src/editor/transform.cpp src/editor/preview.cpp
+                          src/editor/gizmo.cpp src/editor/modal_transform.cpp
            DEPS apex_document apex_geometry apex_core)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp

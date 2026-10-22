@@ -60,6 +60,19 @@ Actions::Actions()
         {"transform.modal.scale", "Scale", "Transform",
          "Start modal scaling. X/Y/Z constrains an axis (twice: local); Shift+X/Y/Z excludes "
          "that axis. Digits set a value; Enter/left click commits; Esc/right click cancels."},
+        {"gizmo.space.toggle", "Gizmo space", "Transform", "Toggle the gizmo between global and local axes."},
+        {"gizmo.pivot.cycle", "Cycle pivot", "Transform",
+         "Cycle the transform pivot: bounds centre, active origin, custom point."},
+        {"snap.mode.toggle", "Snap mode", "Transform", "Toggle between absolute and relative snapping."},
+        {"transform.texture_lock.toggle", "Texture lock", "Transform",
+         "Toggle texture lock while transforming."},
+        {"edit.flip.x", "Flip X", "Edit", "Mirror the selection across its pivot along X."},
+        {"edit.flip.y", "Flip Y", "Edit", "Mirror the selection across its pivot along Y."},
+        {"edit.flip.z", "Flip Z", "Edit", "Mirror the selection across its pivot along Z."},
+        {"nudge.left", "Nudge left", "Transform", "Move the selection one grid step along -U of the work plane."},
+        {"nudge.right", "Nudge right", "Transform", "Move the selection one grid step along +U of the work plane."},
+        {"nudge.up", "Nudge up", "Transform", "Move the selection one grid step along +V of the work plane."},
+        {"nudge.down", "Nudge down", "Transform", "Move the selection one grid step along -V of the work plane."},
       } {}
 
 Actions::Actions(std::vector<Action> entries) : entries_(std::move(entries)) {}
@@ -174,6 +187,17 @@ const Preset& hammerPreset() {
         {"transform.modal.grab", unbound("Hammer uses the translate gizmo or transform dialog.")},
         {"transform.modal.rotate", unbound("Hammer uses the rotate gizmo or transform dialog.")},
         {"transform.modal.scale", unbound("Hammer uses the scale gizmo or transform dialog.")},
+        {"gizmo.space.toggle", unbound("Choose the space in the transform toolbar.")},
+        {"gizmo.pivot.cycle", unbound("Choose the pivot in the transform toolbar.")},
+        {"snap.mode.toggle", unbound("Choose the snap mode in the transform toolbar.")},
+        {"transform.texture_lock.toggle", bound({"Shift+L"}, BindingContext::Always, true)},
+        {"edit.flip.x", bound({"Ctrl+L"}, BindingContext::Always, true)},
+        {"edit.flip.y", bound({"Ctrl+I"}, BindingContext::Always, true)},
+        {"edit.flip.z", unbound("Available through the Edit menu.")},
+        {"nudge.left", bound({"Left"}, BindingContext::SelectToolActive, true)},
+        {"nudge.right", bound({"Right"}, BindingContext::SelectToolActive, true)},
+        {"nudge.up", bound({"Up"}, BindingContext::SelectToolActive, true)},
+        {"nudge.down", bound({"Down"}, BindingContext::SelectToolActive, true)},
     }};
     return preset;
 }
@@ -218,6 +242,17 @@ const Preset& blenderPreset() {
         {"transform.modal.grab", bound({"G"})},
         {"transform.modal.rotate", bound({"R"})},
         {"transform.modal.scale", bound({"S"})},
+        {"gizmo.space.toggle", bound({"Alt+Space"})},
+        {"gizmo.pivot.cycle", unbound("Choose the pivot in the transform toolbar.")},
+        {"snap.mode.toggle", bound({"Shift+Tab"})},
+        {"transform.texture_lock.toggle", unbound("Available through the Edit menu.")},
+        {"edit.flip.x", unbound("Available through the Edit menu; use S then -1 on an axis.")},
+        {"edit.flip.y", unbound("Available through the Edit menu; use S then -1 on an axis.")},
+        {"edit.flip.z", unbound("Available through the Edit menu; use S then -1 on an axis.")},
+        {"nudge.left", unbound("Blender moves with G and typed values; no arrow-key nudge.")},
+        {"nudge.right", unbound("Blender moves with G and typed values; no arrow-key nudge.")},
+        {"nudge.up", unbound("Blender moves with G and typed values; no arrow-key nudge.")},
+        {"nudge.down", unbound("Blender moves with G and typed values; no arrow-key nudge.")},
     }};
     return preset;
 }
