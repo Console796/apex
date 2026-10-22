@@ -2,6 +2,9 @@
 #include <doctest/doctest.h>
 
 #include <QApplication>
+#include <QAction>
+#include <QMouseEvent>
+#include <QKeyEvent>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
@@ -11,6 +14,7 @@
 #include "core/log.hpp"
 #include "document/document.hpp"
 #include "ui/log_panel.hpp"
+#include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
 #include "ui/outliner_panel.hpp"
 #include "ui/theme.hpp"
@@ -178,4 +182,109 @@ TEST_CASE("map views load into and save from the open viewports") {
     REQUIRE(f.open(QIODevice::ReadOnly));
     const auto saved = f.readAll();
     CHECK(saved.contains("\"position\" \"(0 -300 100)\""));
+}
+
+TEST_CASE("selection menu preset switch and outliner share the editor session") {
+    app();
+    QSettings().setValue("editor/preset", "Hammer");
+    QSettings().setValue("editor/marqueeTouching", false);
+    QTemporaryDir dir;
+    const auto path = dir.filePath("selection.vmf");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write(kVmf);
+    }
+    apex::ui::MainWindow window;
+    window.show();
+    REQUIRE(window.openFile(path));
+    QCoreApplication::processEvents();
+    auto& session = window.editorSession();
+    const auto action = [&](const char* id) {
+        auto* a = window.findChild<QAction*>(QString::fromLatin1(id));
+        REQUIRE(a != nullptr);
+        return a;
+    };
+    const auto perform = [&](const char* id) { action(id)->trigger(); };
+    perform("selection.mode.objects");
+    CHECK(session.selection().mode() == apex::editor::SelectionMode::Objects);
+    perform("selection.all");
+    CHECK(session.selection().ordered().size() == 2);
+    CHECK(window.document()->undoCount() == 0);
+    perform("selection.none");
+    CHECK(session.selection().ordered().empty());
+    perform("selection.invert");
+    CHECK(session.selection().ordered().size() == 2);
+    perform("selection.marquee_toggle");
+    CHECK(session.marqueeMode() == apex::editor::MarqueeMode::Touching);
+    CHECK(action("selection.marquee_toggle")->isChecked());
+    CHECK(QSettings().value("editor/marqueeTouching").toBool());
+    perform("selection.ignore_groups");
+    CHECK(session.selection().ignoreGroups());
+    const auto hammer = action("selection.all")->shortcut();
+    CHECK(hammer == QKeySequence("Ctrl+A"));
+    perform("preset.Blender");
+    CHECK(action("selection.all")->shortcut() == QKeySequence("A"));
+    CHECK(action("selection.all")->shortcut() != hammer);
+    CHECK(session.preset().name == "Blender");
+    CHECK(QSettings().value("editor/preset").toString() == "Blender");
+    {
+        apex::ui::MainWindow reopened;
+        CHECK(reopened.editorSession().preset().name == "Blender");
+        CHECK(reopened.editorSession().marqueeMode() == apex::editor::MarqueeMode::Touching);
+    }
+
+    perform("selection.none");
+    auto* tree = window.outliner();
+    auto* row = tree->topLevelItem(1)->child(0);
+    tree->scrollToItem(row);
+    QCoreApplication::processEvents();
+    const auto point = tree->visualItemRect(row).center();
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(point), QPointF(tree->viewport()->mapToGlobal(point)),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(point), QPointF(tree->viewport()->mapToGlobal(point)),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(tree->viewport(), &press);
+    QCoreApplication::sendEvent(tree->viewport(), &release);
+    const apex::document::NodeId node = row->data(0, Qt::UserRole).toULongLong();
+    CHECK(session.selection().ordered() == std::vector<apex::editor::Target>{node});
+    CHECK(row->isSelected());
+    session.edit("Delete entity", [&](apex::document::Transaction& tx) {
+        tx.destroy(*window.document()->handle(node));
+    });
+    CHECK(session.selection().ordered().empty());
+    REQUIRE(action("edit.undo")->isEnabled());
+    perform("edit.undo");
+    CHECK(session.selection().ordered() == std::vector<apex::editor::Target>{node});
+    REQUIRE(tree->selectedItems().size() == 1);
+    CHECK(tree->selectedItems().front()->data(0, Qt::UserRole).toULongLong() == node);
+    perform("edit.redo");
+    CHECK(session.selection().ordered().empty());
+    CHECK(tree->selectedItems().empty());
+    perform("selection.mode.faces");
+    CHECK(action("selection.mode.faces")->isChecked());
+    CHECK_FALSE(action("selection.mode.objects")->isChecked());
+
+    // Reopening detaches every observer before the old document is destroyed.
+    REQUIRE(window.openFile(path));
+    CHECK(session.selection().ordered().empty());
+    perform("preset.Hammer");
+}
+
+TEST_CASE("UI key chord conversion round trips preset shortcuts") {
+    app();
+    for (const auto* preset : {&apex::editor::hammerPreset(), &apex::editor::blenderPreset()}) {
+        for (const auto& [id, binding] : preset->bindings) {
+            const auto* chords = std::get_if<std::vector<apex::editor::KeyChord>>(&binding.value);
+            if (!chords) continue;
+            for (const auto& chord : *chords) {
+                if (chord.key == "Ctrl" || chord.key == "Alt") continue;
+                const auto sequence = apex::ui::keySequence(chord);
+                REQUIRE_FALSE(sequence.isEmpty());
+                const auto combination = sequence[0];
+                QKeyEvent event(QEvent::KeyPress, combination.key(), combination.keyboardModifiers());
+                CHECK(apex::ui::keyChord(event) == chord);
+            }
+        }
+    }
 }

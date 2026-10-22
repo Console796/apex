@@ -18,7 +18,7 @@ DEPS = {
     "assets": ["core"],
     "render": ["document", "assets"],
     "viewport": ["render", "document"],
-    "ui": ["viewport"],
+    "ui": ["viewport", "editor"],
     "app": ["ui"],
 }
 QT_LAYERS = {"ui", "app"}

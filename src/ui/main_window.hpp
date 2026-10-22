@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "assets/game_profile.hpp"
+#include "editor/editor_session.hpp"
 #include "ui/theme.hpp"
 
 class QAction;
@@ -41,6 +42,7 @@ public:
 
     bool openFile(const QString& path);
     bool saveFile(const QString& path);
+    editor::EditorSession& editorSession() { return session_; }
     document::Document* document() const { return document_.get(); }
     const QString& documentPath() const { return path_; }
 
@@ -58,6 +60,8 @@ private slots:
 
 private:
     void buildMenus();
+    void updateEditorActions();
+    void applyPreset(const editor::Preset& preset);
     void buildDocks();
     void buildStatusBar();
     void addRecent(const QString& path);
@@ -67,6 +71,10 @@ private:
     void closeEvent(QCloseEvent* event) override;
 
     std::unique_ptr<document::Document> document_;
+    editor::EditorSession session_;
+    std::size_t sessionObserver_ = 0;
+    std::optional<bool> savedMarqueeTouching_;
+    std::map<editor::ActionId, QAction*> editorActions_;
     QString path_;
     std::vector<assets::GameProfile> profiles_;
 

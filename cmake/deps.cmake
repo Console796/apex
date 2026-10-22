@@ -96,6 +96,16 @@ if(APEX_BUILD_APP)
     DOWNLOAD_ONLY YES
   )
   if(qtads_ADDED)
+    # The pinned ADS connects a contextless lambda capturing its manager to qApp.
+    # Give it an owner so closing a shell cannot leave a dangling focus callback.
+    set(_dock_manager "${qtads_SOURCE_DIR}/src/DockManager.cpp")
+    file(READ "${_dock_manager}" _dock_source)
+    string(REPLACE "connect(qApp, &QApplication::focusWindowChanged, [this]"
+                   "connect(qApp, &QApplication::focusWindowChanged, this, [this]"
+                   _dock_fixed "${_dock_source}")
+    if(NOT _dock_source STREQUAL _dock_fixed)
+      file(WRITE "${_dock_manager}" "${_dock_fixed}")
+    endif()
     add_subdirectory(${qtads_SOURCE_DIR} ${qtads_BINARY_DIR} EXCLUDE_FROM_ALL SYSTEM)
   endif()
 endif()

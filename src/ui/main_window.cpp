@@ -29,6 +29,7 @@
 #include "document/document.hpp"
 #include "document/vmf.hpp"
 #include "ui/log_panel.hpp"
+#include "ui/key_chord.hpp"
 #include "ui/outliner_panel.hpp"
 #include "ui/viewport_area.hpp"
 #include "viewport/map_views.hpp"
@@ -54,11 +55,23 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     buildMenus();
     buildStatusBar();
     buildDocks();
+    viewport_->setEditorSession(&session_);
+    outliner_->setEditorSession(&session_);
+    sessionObserver_ = session_.observe([this] { updateEditorActions(); });
+    const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
+    const bool touching = QSettings().value(QStringLiteral("editor/marqueeTouching"), false).toBool();
+    session_.setMarqueeMode(touching ? editor::MarqueeMode::Touching : editor::MarqueeMode::Enclosed);
+    const auto* preset = editor::findPreset(presetName.toStdString());
+    applyPreset(preset ? *preset : editor::hammerPreset());
     updateTitle();
     restoreLayout();
 }
 
 MainWindow::~MainWindow() {
+    session_.unobserve(sessionObserver_);
+    viewport_->setEditorSession(nullptr);
+    outliner_->setEditorSession(nullptr);
+    session_.detach();
     // The viewport area holds a raw pointer to the document.
     if (viewport_) viewport_->setDocument(nullptr);
     if (outliner_) outliner_->setDocument(nullptr);
@@ -80,6 +93,42 @@ void MainWindow::buildMenus() {
     file->addSeparator();
     file->addAction(tr("&Quit"), QKeySequence::Quit, this, &QWidget::close);
     rebuildRecentMenu();
+
+    auto* edit = menuBar()->addMenu(tr("&Edit"));
+    edit->setObjectName(QStringLiteral("menuEdit"));
+    auto* selectionBar = addToolBar(tr("Selection"));
+    selectionBar->setObjectName(QStringLiteral("toolbarSelection"));
+    auto* modes = new QActionGroup(this);
+    for (const auto& entry : editor::actionRegistry().entries()) {
+        if (entry.id != "edit.undo" && entry.id != "edit.redo" &&
+            (!entry.id.starts_with("selection.") || entry.id == "selection.box")) continue;
+        auto* action = edit->addAction(fromStd(entry.name));
+        action->setObjectName(fromStd(entry.id));
+        action->setToolTip(fromStd(entry.description));
+        editorActions_.emplace(entry.id, action);
+        if (entry.id.starts_with("selection.mode.")) {
+            action->setCheckable(true);
+            modes->addAction(action);
+            selectionBar->addAction(action);
+        } else if (entry.id == "selection.ignore_groups" || entry.id == "selection.marquee_toggle") {
+            action->setCheckable(true);
+            selectionBar->addAction(action);
+        }
+        connect(action, &QAction::triggered, this, [this, id = entry.id] {
+            session_.perform(id);
+            updateEditorActions();
+        });
+    }
+    auto* settings = menuBar()->addMenu(tr("&Settings"));
+    auto* presets = settings->addMenu(tr("Binding preset"));
+    auto* presetGroup = new QActionGroup(presets);
+    for (const auto name : editor::presetNames()) {
+        auto* action = presets->addAction(fromStd(name));
+        action->setObjectName(QStringLiteral("preset.") + fromStd(name));
+        action->setCheckable(true);
+        presetGroup->addAction(action);
+        connect(action, &QAction::triggered, this, [this, name] { applyPreset(*editor::findPreset(name)); });
+    }
 
     viewMenu_ = menuBar()->addMenu(tr("&View"));
     viewMenu_->setObjectName(QStringLiteral("menuView"));
@@ -108,6 +157,51 @@ void MainWindow::buildMenus() {
         QSettings().setValue(QStringLiteral("profile/last"), QString::fromStdString(profiles_[static_cast<std::size_t>(i)].name));
         log::info("game profile: {}", profiles_[static_cast<std::size_t>(i)].name);
     });
+}
+
+void MainWindow::applyPreset(const editor::Preset& preset) {
+    session_.setPreset(preset);
+    // SelectToolActive is always active until tools land. All shortcuts come from
+    // the registry; native pane key delivery uses this same session Keymap.
+    for (const auto& [id, action] : editorActions_) {
+        QList<QKeySequence> sequences;
+        const auto& binding = session_.preset().bindings.at(id);
+        if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
+            for (const auto& chord : *chords) sequences.push_back(keySequence(chord));
+        }
+        action->setShortcuts(sequences);
+    }
+    for (const auto name : editor::presetNames()) {
+        if (auto* action = findChild<QAction*>(QStringLiteral("preset.") + fromStd(name)))
+            action->setChecked(name == preset.name);
+    }
+    QSettings().setValue(QStringLiteral("editor/preset"), fromStd(preset.name));
+}
+
+void MainWindow::updateEditorActions() {
+    for (const auto& [id, action] : editorActions_) {
+        action->setEnabled(session_.document() != nullptr);
+        if (id == "edit.undo") action->setEnabled(document_ && document_->undoCount() != 0);
+        if (id == "edit.redo") action->setEnabled(document_ && document_->redoCount() != 0);
+        if (id == "selection.ignore_groups") action->setChecked(session_.selection().ignoreGroups());
+        if (id == "selection.marquee_toggle") {
+            const bool touching = session_.marqueeMode() == editor::MarqueeMode::Touching;
+            action->setChecked(touching);
+            action->setText(touching ? tr("Marquee: Touching") : tr("Marquee: Enclosed"));
+            if (savedMarqueeTouching_ != touching) {
+                QSettings().setValue(QStringLiteral("editor/marqueeTouching"), touching);
+                savedMarqueeTouching_ = touching;
+            }
+        }
+        const std::pair<const char*, editor::SelectionMode> modes[] = {
+            {"selection.mode.groups", editor::SelectionMode::Groups},
+            {"selection.mode.objects", editor::SelectionMode::Objects},
+            {"selection.mode.solids", editor::SelectionMode::Solids},
+            {"selection.mode.faces", editor::SelectionMode::Faces}};
+        for (const auto& [modeId, mode] : modes) {
+            if (id == modeId) action->setChecked(session_.selection().mode() == mode);
+        }
+    }
 }
 
 void MainWindow::buildDocks() {
@@ -297,7 +391,9 @@ bool MainWindow::openFile(const QString& path) {
     auto doc = std::make_unique<document::Document>(*parsed);
     viewport_->setDocument(nullptr);
     outliner_->setDocument(nullptr);
+    session_.detach();
     document_ = std::move(doc);
+    session_.attach(*document_);
     path_ = path;
     viewport_->setDocument(document_.get(), currentProfile());
     viewport_->applyMapViews(viewport::readMapViews(*parsed));

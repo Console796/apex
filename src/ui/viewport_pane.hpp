@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 
+#include "editor/editor_session.hpp"
 #include "render/renderer.hpp"
 #include "render/swapchain.hpp"
 #include "viewport/controllers.hpp"
@@ -45,6 +46,7 @@ public:
     bool failed() const { return failed_; }
 
     void releaseCapture();
+    void setEditorSession(editor::EditorSession* session) { session_ = session; }
 
 signals:
     void pressed();             // Any mouse press: the pane becomes active and takes focus.
@@ -55,12 +57,22 @@ protected:
 
 private:
     bool handleMouse(QMouseEvent* event);
+    void selectionMouse(QMouseEvent* event);
+    void cancelSelectionGesture();
+    void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);
     bool handleKey(QKeyEvent* event);
     QSize pixelSize() const;
     bool warping() const;
     void warp();
     void destroySwapchain();
     double draw();
+
+    editor::EditorSession* session_ = nullptr;
+    bool selectionPending_ = false, marqueeAllowed_ = false, marqueeDragging_ = false;
+    QPointF selectionStart_, lastClick_;
+    QSize lastClickSize_;
+    editor::Modifiers selectionModifiers_;
+    std::optional<viewport::Camera> clickCamera_, gestureCamera_;
 
     GpuHost& host_;
     viewport::NodeId pane_;

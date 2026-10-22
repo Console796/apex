@@ -8,6 +8,7 @@
 #include <map>
 
 #include "viewport/layout.hpp"
+#include "editor/editor_session.hpp"
 #include "viewport/map_views.hpp"
 
 class QSplitter;
@@ -41,6 +42,8 @@ public:
     // Not owned; may be null. The profile (may be null) selects materials and FGDs.
     void setDocument(document::Document* document, const assets::GameProfile* profile = nullptr);
     document::Document* document() const { return document_; }
+    void setEditorSession(editor::EditorSession* session);
+    void updateHighlight();
     int gridSize() const { return gridSize_; }
 
     const viewport::ViewportLayout& viewportLayout() const { return layout_; }
@@ -88,6 +91,8 @@ private:
     void emitCamera();
     double pixelHeight() const;
 
+    editor::EditorSession* session_ = nullptr;
+    std::size_t sessionObserver_ = 0;
     document::Document* document_ = nullptr;
     int gridSize_ = 64;
     viewport::ViewportLayout layout_ = viewport::ViewportLayout::quad();

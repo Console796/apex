@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QTreeWidget>
+#include "editor/editor_session.hpp"
 
 namespace apex::document {
 class Document;
@@ -8,18 +9,24 @@ class Document;
 
 namespace apex::ui {
 
-// Read-only outliner: World, Entities, Groups and Visgroups of the open document (plan 0.1,
-// 0.1.10). Rebuilt on setDocument() and refresh(); nothing is editable.
+// Selectable document tree; row IDs stay stable across document undo/redo.
 class OutlinerPanel : public QTreeWidget {
     Q_OBJECT
 public:
     explicit OutlinerPanel(QWidget* parent = nullptr);
+    ~OutlinerPanel() override;
+    void setEditorSession(editor::EditorSession* session);
+    void syncSelection();
 
-    void setDocument(const document::Document* document);
+    void setDocument(document::Document* document);
     void refresh();
 
 private:
-    const document::Document* document_ = nullptr;
+    document::Document* document_ = nullptr;
+    std::size_t documentObserver_ = 0;
+    editor::EditorSession* session_ = nullptr;
+    std::size_t sessionObserver_ = 0;
+    std::optional<std::uint64_t> syncedSelection_;
 };
 
 }  // namespace apex::ui

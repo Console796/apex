@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "core/log.hpp"
+#include "editor/selection_expand.hpp"
 #include "ui/gpu_host.hpp"
 #include "ui/theme.hpp"
 #include "ui/viewport_pane.hpp"
@@ -37,6 +38,7 @@ ViewportArea::ViewportArea(QWidget* parent) : QWidget(parent) {
 }
 
 ViewportArea::~ViewportArea() {
+    setEditorSession(nullptr);
     timer_.stop();
     // Panes (and their swapchains) must go before the GPU host.
     delete body_;
@@ -46,9 +48,35 @@ ViewportArea::~ViewportArea() {
 void ViewportArea::setDocument(document::Document* document, const assets::GameProfile* profile) {
     document_ = document;
     host_->setDocument(document, profile);
+    updateHighlight();
     forceDraw_ = true;
     for (auto& [id, f] : frames_)
         if (f && f->window()) f->window()->requestRedraw();
+}
+
+void ViewportArea::setEditorSession(editor::EditorSession* session) {
+    if (session_) session_->unobserve(sessionObserver_);
+    session_ = session;
+    if (session_) sessionObserver_ = session_->observe([this] { updateHighlight(); });
+    for (auto& [id, frame] : frames_)
+        if (frame && frame->window()) frame->window()->setEditorSession(session_);
+    updateHighlight();
+}
+
+void ViewportArea::updateHighlight() {
+    render::Highlight highlight;
+    if (session_ && session_->document()) {
+        auto expanded = editor::expandSelection(*session_->document(), session_->groups(), session_->selection());
+        highlight.selected = std::move(expanded.solidsAndEntities);
+        highlight.selectedSides = std::move(expanded.sides);
+        // E1 has one hover drawable: use the brush under the pointer, including
+        // in Groups/Faces mode, rather than an arbitrary member of its selection.
+        highlight.hover = session_->hoverDrawable();
+    }
+    if (auto* mirror = host_->mirror()) mirror->setHighlight(highlight);
+    forceDraw_ = true;
+    for (auto& [id, frame] : frames_)
+        if (frame && frame->window()) frame->window()->requestRedraw();
 }
 
 void ViewportArea::setLayout(viewport::ViewportLayout layout) {
@@ -130,6 +158,7 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     PaneWindow* window = nullptr;
     if (gpuReady_) {
         window = new PaneWindow(*host_, pane, accessor);
+        window->setEditorSession(session_);
         float clear[4];
         clearColourFor(currentTokens(), clear);
         window->setClearColour(clear);

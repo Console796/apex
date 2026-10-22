@@ -22,10 +22,17 @@
 #include "render/render_mirror.hpp"
 #include "render/view_math.hpp"
 #include "ui/gpu_host.hpp"
+#include "ui/key_chord.hpp"
+#include "viewport/pick_math.hpp"
 #include "ui/theme.hpp"
 
 namespace apex::ui {
 namespace {
+
+bool sameCamera(const viewport::Camera& a, const viewport::Camera& b) {
+    return a.position == b.position && a.angles == b.angles && a.projection == b.projection &&
+           a.fovYDegrees == b.fovYDegrees && a.orthoHeight == b.orthoHeight;
+}
 
 constexpr double kMaxDt = 0.1;  // Seconds; a hitch must not fling the fly camera.
 
@@ -72,11 +79,16 @@ public:
 
 protected:
     bool eventFilter(QObject*, QEvent* event) override {
-        if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) return false;
+        if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease &&
+            event->type() != QEvent::ShortcutOverride) return false;
         const auto* key = static_cast<QKeyEvent*>(event);
         QKeyEvent copy(key->type(), key->key(), key->modifiers(), key->text(), key->isAutoRepeat());
         QCoreApplication::sendEvent(window_, &copy);
-        return true;
+        if (event->type() == QEvent::ShortcutOverride) {
+            if (copy.isAccepted()) event->accept();
+            return copy.isAccepted();
+        }
+        return copy.isAccepted();
     }
 
 private:
@@ -124,7 +136,15 @@ void PaneWindow::destroySwapchain() {
     depth_ = render::SwapchainDepth(*host_.context());
 }
 
+void PaneWindow::cancelSelectionGesture() {
+    selectionPending_ = marqueeDragging_ = false;
+    gestureCamera_.reset();
+    dirty_ = true;
+}
+
 void PaneWindow::releaseCapture() {
+    cancelSelectionGesture();
+    clickCamera_.reset();
     if (grabbed_) setMouseGrabEnabled(false);
     grabbed_ = false;
     if (captured_) unsetCursor();
@@ -148,7 +168,19 @@ bool PaneWindow::event(QEvent* e) {
     case QEvent::MouseButtonRelease:
     case QEvent::MouseMove:
         return handleMouse(static_cast<QMouseEvent*>(e));
+    case QEvent::Leave:
+        if (session_) session_->clearHover();
+        break;
+    case QEvent::ShortcutOverride:
+        if (buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton)) {
+            e->accept();
+            return true;
+        }
+        break;
     case QEvent::Wheel: {
+        cancelSelectionGesture();
+        clickCamera_.reset();
+        if (session_) session_->clearHover();
         const auto* w = static_cast<QWheelEvent*>(e);
         scroll_ += w->angleDelta().y() / 120.0;
         modifiers_ = w->modifiers();
@@ -177,6 +209,7 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
     const bool press = e->type() == QEvent::MouseButtonPress;
     const bool release = e->type() == QEvent::MouseButtonRelease;
     cursor_ = e->position();
+    selectionMouse(e);
     if (press) {
         requestActivate();
         emit pressed();
@@ -210,10 +243,88 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
     return true;
 }
 
+void PaneWindow::selectionMouse(QMouseEvent* e) {
+    auto* vp = accessor_();
+    if (!session_ || !session_->document() || !vp || width() <= 0 || height() <= 0) return;
+    const auto buttons = e->buttons();
+    if (buttons.testFlag(Qt::RightButton) || buttons.testFlag(Qt::MiddleButton)) {
+        cancelSelectionGesture();
+        clickCamera_.reset();
+        session_->clearHover();
+        return;
+    }
+    // Releasing navigation must not become a hover or selection gesture.
+    if (e->type() == QEvent::MouseButtonRelease && e->button() != Qt::LeftButton) return;
+    const double aspect = static_cast<double>(width()) / height();
+    const auto ray = viewport::pixelRay(vp->camera, aspect, cursor_.x(), cursor_.y(), width(), height());
+    if (e->type() == QEvent::MouseButtonPress && e->button() == Qt::LeftButton) {
+        selectionPending_ = true;
+        selectionStart_ = cursor_;
+        selectionModifiers_ = {e->modifiers().testFlag(Qt::ControlModifier), e->modifiers().testFlag(Qt::ShiftModifier)};
+        gestureCamera_ = vp->camera;
+        session_->pointerHover(ray);
+        marqueeAllowed_ = !session_->hoverTarget() || selectionModifiers_.ctrl || selectionModifiers_.shift;
+    } else if (e->type() == QEvent::MouseMove && selectionPending_) {
+        if (!sameCamera(*gestureCamera_, vp->camera)) { cancelSelectionGesture(); return; }
+        const auto delta = cursor_ - selectionStart_;
+        if (marqueeAllowed_ && QPointF::dotProduct(delta, delta) > 9) {
+            marqueeDragging_ = true;
+            session_->clearHover();
+            dirty_ = true;
+        }
+    } else if (e->type() == QEvent::MouseButtonRelease && selectionPending_) {
+        if (sameCamera(*gestureCamera_, vp->camera)) {
+            if (marqueeDragging_) {
+                session_->marquee(viewport::rectFrustum(vp->camera, aspect, selectionStart_.x(), selectionStart_.y(),
+                                                        cursor_.x(), cursor_.y(), width(), height()), selectionModifiers_);
+                clickCamera_.reset();
+            } else {
+                const auto delta = cursor_ - lastClick_;
+                const bool sameSpot = clickCamera_ && sameCamera(*clickCamera_, vp->camera) &&
+                                      lastClickSize_ == size() && QPointF::dotProduct(delta, delta) <= 9;
+                session_->pointerClick(ray, selectionModifiers_, sameSpot);
+                lastClick_ = cursor_;
+                lastClickSize_ = size();
+                clickCamera_ = vp->camera;
+            }
+        }
+        cancelSelectionGesture();
+    } else if (e->type() == QEvent::MouseMove && buttons == Qt::NoButton) session_->pointerHover(ray);
+}
+
+void PaneWindow::drawMarquee(VkCommandBuffer commands, VkExtent2D extent) {
+    if (!marqueeDragging_) return;
+    const double scale = devicePixelRatio();
+    const auto rect = QRectF(selectionStart_, cursor_).normalized();
+    const int x0 = std::clamp(qRound(rect.left() * scale), 0, static_cast<int>(extent.width) - 1);
+    const int x1 = std::clamp(qRound(rect.right() * scale), x0, static_cast<int>(extent.width) - 1);
+    const int y0 = std::clamp(qRound(rect.top() * scale), 0, static_cast<int>(extent.height) - 1);
+    const int y1 = std::clamp(qRound(rect.bottom() * scale), y0, static_cast<int>(extent.height) - 1);
+    const auto w = static_cast<std::uint32_t>(x1 - x0 + 1), h = static_cast<std::uint32_t>(y1 - y0 + 1);
+    const VkClearRect borders[] = {{{{x0, y0}, {w, 1}}, 0, 1}, {{{x0, y1}, {w, 1}}, 0, 1},
+                                   {{{x0, y0}, {1, h}}, 0, 1}, {{{x1, y0}, {1, h}}, 0, 1}};
+    VkClearAttachment colour{};
+    colour.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    colour.clearValue.color = {{0.2f, 0.85f, 1.0f, 1.0f}};
+    vkCmdClearAttachments(commands, 1, &colour, 4, borders);
+}
+
 bool PaneWindow::handleKey(QKeyEvent* e) {
     modifiers_ = e->modifiers();
-    if (e->isAutoRepeat()) return true;
     const bool down = e->type() == QEvent::KeyPress;
+    const bool navigating = buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton);
+    if (!navigating) {
+        if (session_ && down && !e->isAutoRepeat()) {
+            if (const auto chord = keyChord(*e)) {
+                if (const auto action = session_->keymap().lookup(*chord, editor::BindingContext::SelectToolActive))
+                    return session_->perform(*action);
+            }
+        }
+        forward_ = back_ = left_ = right_ = up_ = down_ = false;
+        e->ignore();
+        return false;
+    }
+    if (e->isAutoRepeat()) return true;
     switch (e->key()) {
     case Qt::Key_W: case Qt::Key_Up: forward_ = down; return true;
     case Qt::Key_S: case Qt::Key_Down: back_ = down; return true;
@@ -245,6 +356,9 @@ double PaneWindow::tick(bool forceDraw) {
             in.moveForward = forward_; in.moveBack = back_; in.moveLeft = left_; in.moveRight = right_;
             in.moveUp = up_; in.moveDown = down_;
             if (viewport::navigate(vp->camera, in)) {
+                cancelSelectionGesture();
+                clickCamera_.reset();
+                if (session_) session_->clearHover();
                 dirty_ = true;
                 emit cameraChanged();
             }
@@ -318,6 +432,7 @@ double PaneWindow::draw() {
             return;
         }
         renderer->record(cb, list);
+        drawMarquee(cb, extent);
         depth_.end(cb);
     });
     if (!status) {
