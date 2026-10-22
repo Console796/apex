@@ -768,7 +768,7 @@ void Transaction::setSelection(SelectionBlob before, SelectionBlob after) {
     entry_.selectionBefore = std::move(before);
     entry_.selectionAfter = std::move(after);
 }
-ChangeSet Transaction::commit() {
+ChangeSet Transaction::commit(bool coalesce) {
     if (!doc_) throw std::logic_error("transaction already finished");
     doc_->restoredSelection_.reset();
     for (auto& delta : entry_.deltas) {
@@ -776,7 +776,7 @@ ChangeSet Transaction::commit() {
     }
     std::erase_if(entry_.deltas, [](const auto& d) { return !d.before && !d.after; });
     entry_.rootsAfter = doc_->roots_;
-    if (operations_ == 1) entry_.coalesce = key_;
+    if (coalesce && operations_ == 1) entry_.coalesce = key_;
     // Build the event from the before snapshots without disturbing live handles.
     ChangeSet changes;
     std::map<SideId, bool> previousSides;

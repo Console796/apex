@@ -197,7 +197,8 @@ public:
     void setSolidGeometry(Handle<Solid> solid, const geometry::SolidGeometry& geometry);
     // Opaque caller state; metadata alone does not create an undo entry.
     void setSelection(SelectionBlob before, SelectionBlob after);
-    ChangeSet commit(); // Consecutive single edits of the same node/key coalesce.
+    // Consecutive single edits of the same node/key coalesce unless disabled for a gesture.
+    ChangeSet commit(bool coalesce = true);
 
 private:
     friend class Document;
