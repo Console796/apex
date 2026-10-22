@@ -254,6 +254,14 @@ std::optional<TransformReadout> evaluateTransform(GizmoMode mode, GizmoHandle ha
                 plane.normal = glm::cross(plane.uAxis, plane.vAxis);
             }
             delta = snapTranslate(delta, c.bounds, grab, plane, snap);
+            // A screen-plane drag in perspective leaves the work plane, so the component along
+            // the plane normal needs the grid too (an ortho drag has none and keeps its depth).
+            if (handle == GizmoHandle::Screen && std::abs(glm::dot(delta, plane.normal)) > 1e-9) {
+                auto across = plane;
+                across.uAxis = plane.normal;
+                across.vAxis = glm::cross(plane.normal, plane.uAxis);
+                delta = snapTranslate(delta, c.bounds, grab, across, snap);
+            }
             result.delta = c.frame * ((transpose * delta) * active);
             result.transform = Transform::translate(result.delta);
             result.text = vectorText("Move: ", result.delta);

@@ -285,3 +285,17 @@ TEST_CASE("gizmo drag rejects absent handles and cancels") {
     // A ray parallel to the axis constraint cannot start the drag.
     CHECK_FALSE(drag.begin(GizmoMode::Translate, GizmoHandle::X, context(), view(), Ray{anchor(p), {1, 0, 0}}));
 }
+
+TEST_CASE("gizmo screen translate snaps the component along the work plane normal") {
+    auto c = context();
+    c.workPlane = SurfacePlane{{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}, std::nullopt};
+    const auto v = view();
+    // A camera-facing drag with a vertical component: every world axis must land on the grid.
+    const auto r = evaluateTransform(GizmoMode::Translate, GizmoHandle::Screen, c, c.bounds.max,
+                                     DVec3{21.3, -9.7, 13.1}, {}, false, -viewDir);
+    REQUIRE(r);
+    for (int i = 0; i < 3; ++i) {
+        const double corner = c.bounds.max[i] + r->delta[i];
+        CHECK(std::abs(corner / 16.0 - std::round(corner / 16.0)) < 1e-9);
+    }
+}
