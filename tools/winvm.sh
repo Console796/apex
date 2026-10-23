@@ -43,7 +43,7 @@ case "${1:-}" in
     cd "$dir"
     qemu-system-x86_64 -name win10-ci -machine q35,accel=kvm \
       -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time \
-      -smp "${CPUS:-8}" -m "${RAM:-8G}" \
+      -smp "${CPUS:-8}" -m "${RAM:-6G}" \
       -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
       -drive if=pflash,format=raw,file=OVMF_VARS.fd \
       -drive id=disk0,file=win10.qcow2,format=qcow2,if=none,cache=writeback,discard=unmap \
