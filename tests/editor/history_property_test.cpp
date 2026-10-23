@@ -2,6 +2,7 @@
 #include "editor/editor_session.hpp"
 
 #include <array>
+#include <limits>
 #include <numeric>
 #include <random>
 
@@ -115,6 +116,28 @@ struct Replay {
         case 13: REQUIRE(session.removeSelectionFromVisgroup(visgroup)); break;
         case 14: REQUIRE(session.setVisgroupShown(visgroup, serial % 2 == 0)); break;
         case 15: REQUIRE(session.placeEntity("info_target", DVec3{serial * 8, 32, 0}, std::nullopt)); break;
+        case 16: {
+            std::vector<Handle<Solid>> solids;
+            for (const auto h : nodes(doc))
+                if (const auto* solid = std::get_if<Handle<Solid>>(&h)) solids.push_back(*solid);
+            if (solids.empty()) break;
+            const auto handle = solids[rng() % solids.size()];
+            const auto geometry = geometry::solidGeometry(*doc.get(handle)->block);
+            REQUIRE(geometry);
+            auto planes = geometry_test::rederivedSides(geometry->poly);
+            const auto normal = glm::normalize(DVec3{serial % 2 ? 1 : -1, 2, 3});
+            double near = std::numeric_limits<double>::max();
+            double far = std::numeric_limits<double>::lowest();
+            for (const auto point : geometry->poly.vertices) {
+                near = std::min(near, glm::dot(normal, point));
+                far = std::max(far, glm::dot(normal, point));
+            }
+            planes.push_back(geometry_test::side(normal, far - (far - near) * 0.15, 0));
+            auto tx = doc.begin("random rebuild");
+            tx.rebuildSolid(handle, geometry_test::build(planes));
+            tx.commit();
+            break;
+        }
         }
         validSelection(doc, session);
     }
@@ -136,13 +159,13 @@ TEST_CASE("EditorSession seeded mixed edits replay byte exactly through undo red
             states.resize(count + 1);
             states[count] = saved(doc);
         });
-        std::array<unsigned, 16> operations;
+        std::array<unsigned, 17> operations;
         std::iota(operations.begin(), operations.end(), 0U);
-        for (int i = 0; i < 208; ++i) {
+        for (int i = 0; i < 221; ++i) {
             CAPTURE(i);
-            if (i % 16 == 0) std::shuffle(operations.begin(), operations.end(), rng);
-            CAPTURE(operations[i % 16]);
-            replay.step(operations[i % 16], rng, i);
+            if (i % operations.size() == 0) std::shuffle(operations.begin(), operations.end(), rng);
+            CAPTURE(operations[i % operations.size()]);
+            replay.step(operations[i % operations.size()], rng, i);
         }
         doc.unobserve(observer);
         REQUIRE(states.size() == doc.undoCount() + 1);

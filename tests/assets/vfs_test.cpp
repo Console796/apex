@@ -172,7 +172,7 @@ TEST_CASE("VFS resolves real P2CE loose and Portal 2 VPK material") {
     CHECK_FALSE(read(*vfs, material).empty());
 }
 
-TEST_CASE("P0 red: P2CE material enumeration includes subdirectories (D14)") {
+TEST_CASE("P0: P2CE material enumeration includes subdirectories (D14)") {
     const auto* install = std::getenv("APEX_P2CE_DIR");
     if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
     GameProfile game;
@@ -182,7 +182,7 @@ TEST_CASE("P0 red: P2CE material enumeration includes subdirectories (D14)") {
     auto vfs = Vfs::load(game, jobs);
     REQUIRE(vfs);
     REQUIRE(vfs->exists("materials/tools/toolsnodraw.vmt"));
-    const auto materials = vfs->list("materials", "*.vmt");
+    const auto materials = vfs->walk("materials", "*.vmt");
     CHECK_MESSAGE(std::ranges::any_of(materials, [](const auto& path) {
         return path.starts_with("materials/") && path.find('/', std::string_view("materials/").size()) != std::string::npos;
     }), "D14: material enumeration must include VMTs in subdirectories");

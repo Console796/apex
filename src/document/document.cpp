@@ -80,6 +80,115 @@ bool finiteUv(const geometry::FaceUv& uv) {
     return finite(uv.uaxis) && finite(uv.vaxis) && std::isfinite(uv.shiftU) &&
            std::isfinite(uv.shiftV) && std::isfinite(uv.scaleU) && std::isfinite(uv.scaleV);
 }
+void validatePolyhedron(const geometry::ConvexPolyhedron& poly) {
+    if (!poly.isValid()) throw std::invalid_argument("invalid solid geometry");
+    if (std::ranges::any_of(poly.faces, [](const auto& face) { return !finiteUv(face.uv); }))
+        throw std::invalid_argument("non-finite UV geometry");
+}
+template <typename T> std::set<std::uint32_t> sideIds(const T& sides) {
+    std::set<std::uint32_t> ids;
+    for (const auto& side : sides) {
+        if (!ids.insert(side.sideId).second)
+            throw std::invalid_argument("geometry requires unique side IDs");
+    }
+    return ids;
+}
+struct FacePlan {
+    std::optional<std::size_t> matched;
+    std::optional<std::size_t> inheritFrom;
+};
+std::vector<FacePlan> planFaces(const geometry::ConvexPolyhedron& before,
+                               const geometry::ConvexPolyhedron& poly,
+                               const geometry::FaceCorrespondence& correspondence) {
+    std::vector<FacePlan> plan(poly.faces.size());
+    if (correspondence) {
+        std::map<std::uint32_t, std::size_t> oldIndices;
+        for (std::size_t o = 0; o < before.faces.size(); ++o)
+            oldIndices.emplace(before.faces[o].sideId, o);
+        std::map<std::size_t, std::size_t> owners;
+        for (const auto& [n, side] : *correspondence) {
+            const auto found = oldIndices.find(side);
+            if (n >= poly.faces.size() || found == oldIndices.end())
+                throw std::invalid_argument("invalid face correspondence");
+            const auto o = found->second;
+            plan[n].inheritFrom = o;
+            const auto [owner, inserted] = owners.emplace(o, n);
+            if (!inserted && poly.faceArea(poly.faces[n]) >
+                             poly.faceArea(poly.faces[owner->second])) owner->second = n;
+        }
+        for (const auto& [o, n] : owners) plan[n].matched = o;
+    } else {
+        auto copy = poly;
+        const auto matches = geometry::matchFaces(before, copy);
+        for (const auto& match : matches.matched) plan[match.newIndex].matched = match.oldIndex;
+    }
+    std::set<std::size_t> survivors;
+    for (const auto& face : plan) if (face.matched) survivors.insert(*face.matched);
+    // If no plane survives (e.g. a wholly new shape), inherit from the source's faces.
+    if (survivors.empty())
+        for (std::size_t o = 0; o < before.faces.size(); ++o) survivors.insert(o);
+    for (std::size_t n = 0; n < plan.size(); ++n) {
+        if (plan[n].matched || plan[n].inheritFrom) continue;
+        double alignment = -2.0;
+        for (const auto o : survivors) {
+            const double dot = glm::dot(poly.faces[n].plane.normal, before.faces[o].plane.normal);
+            if (dot > alignment) {
+                alignment = dot;
+                plan[n].inheritFrom = o;
+            }
+        }
+    }
+    return plan;
+}
+void writeFace(kv1::Node& side, const geometry::ConvexPolyhedron& poly,
+               const geometry::Face& face) {
+    const auto points = poly.sourcePlanePoints(face);
+    if (!points) throw std::invalid_argument("face has no Source plane points");
+    vmf::PlanePoints plane;
+    for (std::size_t i = 0; i < plane.points.size(); ++i) plane.points[i] = vector((*points)[i]);
+    vmf::Value(side.find("plane")).set(plane).value();
+    auto data = kv1::Node::block("point_data");
+    data.append(kv1::Node::value("numpts", std::to_string(face.vertices.size()))).value();
+    // The kernel loop is counter-clockwise; Source point_data is clockwise.
+    std::size_t index = 0;
+    for (auto vertex = face.vertices.rbegin(); vertex != face.vertices.rend(); ++vertex) {
+        data.append(kv1::Node::value("point", std::to_string(index++) + " " +
+            geometryText(vector(poly.vertices[*vertex])))).value();
+    }
+    if (auto* existing = side.find("point_data")) *existing = std::move(data);
+    else side.append(std::move(data)).value();
+}
+kv1::Node newSide(const kv1::Node& parent, const geometry::ConvexPolyhedron& poly,
+                  const geometry::Face& face, int id, const geometry::FaceAttributes& defaults) {
+    auto side = kv1::Node::block("side");
+    side.append(kv1::Node::value("id", std::to_string(id))).value();
+    side.append(kv1::Node::value("plane", "")).value();
+    // Hammer saves point_data straight after plane; writeFace fills it in place.
+    side.append(kv1::Node::block("point_data")).value();
+    for (auto [key, fallback] : {
+             std::pair{"material", defaults.material},
+             {"uaxis", geometryText(vmf::UvAxis{vector(defaults.uv.uaxis), defaults.uv.shiftU,
+                                               defaults.uv.scaleU})},
+             {"vaxis", geometryText(vmf::UvAxis{vector(defaults.uv.vaxis), defaults.uv.shiftV,
+                                               defaults.uv.scaleV})},
+             {"rotation", std::string("0")},
+             {"lightmapscale", std::to_string(defaults.lightmapScale)},
+             {"smoothing_groups", std::to_string(defaults.smoothingGroups)}}) {
+        const auto* value = parent.find(key);
+        side.append(kv1::Node::value(key, value ? value->decodedValue().value() : fallback)).value();
+    }
+    writeFace(side, poly, face);
+    return side;
+}
+std::map<std::uint32_t, const kv1::Node*> sideBlocks(const kv1::Node& block) {
+    std::map<std::uint32_t, const kv1::Node*> sides;
+    for (const auto* side : block.findAll("side")) {
+        const auto id = static_cast<std::uint32_t>(side->find("id")->asInt().value());
+        if (!sides.emplace(id, side).second)
+            throw std::invalid_argument("geometry requires unique side IDs");
+    }
+    return sides;
+}
 bool identity(std::string_view key, const kv1::Node& block) {
     return ciEquals(key, "id") ||
            (ciEquals(block.key(), "visgroup") && ciEquals(key, "visgroupid"));
@@ -799,77 +908,115 @@ void Transaction::setSideKeyValue(SideId sideId, std::string key, std::string te
 }
 void Transaction::setSolidGeometry(Handle<Solid> h, const geometry::SolidGeometry& geometry) {
     const auto id = checked(h);
-    const auto& original = *doc_->node(id)->block;
-    auto before = geometry::solidGeometry(original);
+    const auto before = geometry::solidGeometry(*doc_->node(id)->block);
     if (!before) throw std::invalid_argument(before.error().what());
-    const auto sideIds = [](const auto& sides) {
-        std::set<std::uint32_t> ids;
-        for (const auto& side : sides) {
-            if (!ids.insert(side.sideId).second)
-                throw std::invalid_argument("geometry requires unique side IDs");
-        }
-        return ids;
-    };
     if (sideIds(before->sides) != sideIds(geometry.sides) ||
         sideIds(before->poly.faces) != sideIds(geometry.poly.faces))
         throw std::invalid_argument("geometry side IDs do not match solid");
-    if (!geometry.poly.isValid()) throw std::invalid_argument("invalid solid geometry");
-    if (std::ranges::any_of(geometry.poly.faces,
-                           [](const auto& face) { return !finiteUv(face.uv); }))
-        throw std::invalid_argument("non-finite UV geometry");
-
-    std::map<std::uint32_t, const geometry::Face*> oldFaces, newFaces;
-    for (const auto& face : before->poly.faces) oldFaces.emplace(face.sideId, &face);
-    for (const auto& face : geometry.poly.faces) newFaces.emplace(face.sideId, &face);
-    auto block = original;
+    geometry::FaceCorrespondence correspondence{std::in_place};
+    for (std::size_t n = 0; n < geometry.poly.faces.size(); ++n)
+        correspondence->emplace(n, geometry.poly.faces[n].sideId);
+    rebuildSolidImpl(h, geometry.poly, correspondence, true);
+}
+void Transaction::rebuildSolid(Handle<Solid> h, const geometry::ConvexPolyhedron& poly,
+                               const geometry::FaceCorrespondence& correspondence) {
+    rebuildSolidImpl(h, poly, correspondence, false);
+}
+void Transaction::rebuildSolidImpl(Handle<Solid> h, const geometry::ConvexPolyhedron& poly,
+                                   const geometry::FaceCorrespondence& correspondence, bool writeUv) {
+    const auto id = checked(h);
+    const auto& original = *doc_->node(id)->block;
+    const auto before = geometry::solidGeometry(original);
+    if (!before) throw std::invalid_argument(before.error().what());
+    validatePolyhedron(poly);
+    const auto sides = sideBlocks(original);
+    const auto plan = planFaces(before->poly, poly, correspondence);
+    std::map<std::uint32_t, std::size_t> survivors;
     bool changed = false;
-    for (auto* side : block.findAll("side")) {
-        const auto sideId = static_cast<std::uint32_t>(side->find("id")->asInt().value());
-        const auto found = newFaces.find(sideId);
-        // Redundant input planes have no boundary face; leave those source sides intact.
-        if (found == newFaces.end()) continue;
-        const auto& face = *found->second;
-        const auto& old = *oldFaces.at(sideId);
-        const bool polygonChanged = !samePolygon(before->poly, old, geometry.poly, face);
-        const bool uvChanged = !sameUv(old.uv, face.uv);
-        if (!polygonChanged && !uvChanged) continue;
-        if (polygonChanged) {
-            // A redundant source side has no vertices to transform. Identity is safe,
-            // but retaining its old plane during a move could clip the edited brush.
-            if (newFaces.size() != before->sides.size())
-                throw std::invalid_argument("geometry side IDs have no matching boundary faces");
-            const auto points = geometry.poly.sourcePlanePoints(face);
-            if (!points) throw std::invalid_argument("face has no Source plane points");
-            vmf::PlanePoints plane;
-            for (std::size_t i = 0; i < plane.points.size(); ++i) plane.points[i] = vector((*points)[i]);
-            vmf::Value(side->find("plane")).set(plane).value();
-            auto data = kv1::Node::block("point_data");
-            data.append(kv1::Node::value("numpts", std::to_string(face.vertices.size()))).value();
-            // The kernel loop is counter-clockwise; Source point_data is clockwise.
-            std::size_t index = 0;
-            for (auto vertex = face.vertices.rbegin(); vertex != face.vertices.rend(); ++vertex) {
-                data.append(kv1::Node::value("point", std::to_string(index++) + " " +
-                    geometryText(vector(geometry.poly.vertices[*vertex])))).value();
-            }
-            if (auto* existing = side->find("point_data")) *existing = std::move(data);
-            else side->append(std::move(data)).value();
+    for (std::size_t n = 0; n < plan.size(); ++n) {
+        if (!plan[n].matched) {
+            changed = true;
+            continue;
         }
-        if (old.uv.uaxis != face.uv.uaxis || old.uv.shiftU != face.uv.shiftU ||
-            old.uv.scaleU != face.uv.scaleU) {
-            set(*side, "uaxis", geometryText(vmf::UvAxis{vector(face.uv.uaxis), face.uv.shiftU,
-                                                        face.uv.scaleU}));
-        }
-        if (old.uv.vaxis != face.uv.vaxis || old.uv.shiftV != face.uv.shiftV ||
-            old.uv.scaleV != face.uv.scaleV) {
-            set(*side, "vaxis", geometryText(vmf::UvAxis{vector(face.uv.vaxis), face.uv.shiftV,
-                                                        face.uv.scaleV}));
-        }
-        changed = true;
+        const auto& old = before->poly.faces[*plan[n].matched];
+        survivors.emplace(old.sideId, n);
+        if (!samePolygon(before->poly, old, poly, poly.faces[n]) ||
+            (writeUv && !sameUv(old.uv, poly.faces[n].uv))) changed = true;
     }
+    if (survivors.size() != before->poly.faces.size()) changed = true;
+    // Preserve redundant source sides on a true identity write, including corpus sweeps.
     if (!changed) return;
+
+    auto block = original;
+    std::size_t insertAt = 0;
+    for (std::size_t i = 0; i < block.children().size();) {
+        auto& side = block.children()[i];
+        if (side.kind() != kv1::NodeKind::Block || !ciEquals(side.key(), "side")) {
+            ++i;
+            continue;
+        }
+        const auto sideId = static_cast<std::uint32_t>(side.find("id")->asInt().value());
+        const auto found = survivors.find(sideId);
+        if (found == survivors.end()) {
+            block.remove(i).value();
+            insertAt = i;
+            continue;
+        }
+        const auto n = found->second;
+        const auto& old = before->poly.faces[*plan[n].matched];
+        const auto& face = poly.faces[n];
+        if (!samePolygon(before->poly, old, poly, face)) writeFace(side, poly, face);
+        if (writeUv) {
+            if (old.uv.uaxis != face.uv.uaxis || old.uv.shiftU != face.uv.shiftU ||
+                old.uv.scaleU != face.uv.scaleU)
+                set(side, "uaxis", geometryText(vmf::UvAxis{vector(face.uv.uaxis), face.uv.shiftU,
+                                                         face.uv.scaleU}));
+            if (old.uv.vaxis != face.uv.vaxis || old.uv.shiftV != face.uv.shiftV ||
+                old.uv.scaleV != face.uv.scaleV)
+                set(side, "vaxis", geometryText(vmf::UvAxis{vector(face.uv.vaxis), face.uv.shiftV,
+                                                         face.uv.scaleV}));
+        }
+        insertAt = ++i;
+    }
+    for (std::size_t n = 0; n < plan.size(); ++n) {
+        if (plan[n].matched) continue;
+        const auto& parent = before->poly.faces[*plan[n].inheritFrom];
+        block.insert(insertAt++, newSide(*sides.at(parent.sideId), poly, poly.faces[n],
+                                       Document::allocate(doc_->nextSide_), parent)).value();
+    }
     touch(id, Dirty::Geometry);
+    doc_->updateSolidSides(id, false);
     doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
+    doc_->updateSolidSides(id, true);
     ++operations_;
+}
+Handle<Solid> Transaction::createFragment(Handle<Solid> source,
+                                         const geometry::ConvexPolyhedron& poly,
+                                         std::optional<NodeHandle> parent) {
+    const auto id = checked(source);
+    const auto& original = *doc_->node(id)->block;
+    const auto before = geometry::solidGeometry(original);
+    if (!before) throw std::invalid_argument(before.error().what());
+    validatePolyhedron(poly);
+    const auto sides = sideBlocks(original);
+    const auto plan = planFaces(before->poly, poly, {});
+    auto block = kv1::Node::block("solid");
+    block.append(kv1::Node::value("id", "0")).value();
+    for (std::size_t n = 0; n < plan.size(); ++n) {
+        const auto& face = poly.faces[n];
+        if (plan[n].matched) {
+            const auto& old = before->poly.faces[*plan[n].matched];
+            auto side = *sides.at(old.sideId);
+            if (!samePolygon(before->poly, old, poly, face)) writeFace(side, poly, face);
+            block.append(std::move(side)).value();
+        } else {
+            const auto& old = before->poly.faces[*plan[n].inheritFrom];
+            block.append(newSide(*sides.at(old.sideId), poly, face, 0, old)).value();
+        }
+    }
+    for (const auto* editor : original.findAll("editor")) block.append(*editor).value();
+    if (!parent && doc_->node(id)->parent) parent = doc_->handle(doc_->node(id)->parent);
+    return std::get<Handle<Solid>>(create(std::move(block), parent));
 }
 void Transaction::setSelection(SelectionBlob before, SelectionBlob after) {
     if (!doc_) throw std::logic_error("transaction already finished");
