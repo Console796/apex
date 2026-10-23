@@ -445,9 +445,9 @@ TEST_CASE("block drag corner uses shared feature snapping and suspend bypasses i
         REQUIRE(scene.session.input(move, viewAt({48, 48, 0}, floorPlane, true)));
         const auto overlay = scene.session.activeToolObject().overlay({}, 1);
         REQUIRE(overlay.worldPoints.size() == 1);
-        REQUIRE(overlay.labels.size() == 1);
+        REQUIRE(overlay.labels.size() == 3); // Two side lengths, then the snap kind.
         checkPoint(overlay.worldPoints[0].position, suspended ? DVec3{48, 48, 0} : DVec3{50, 50, 0});
-        CHECK(overlay.labels[0].text == (suspended ? "surface" : "vertex"));
+        CHECK(overlay.labels.back().text == (suspended ? "surface" : "vertex"));
         auto release = press; release.kind = InputKind::Release; release.left = false;
         REQUIRE(scene.session.input(release, viewAt({48, 48, 0}, floorPlane, true)));
         key(scene.session, "Enter");
@@ -521,7 +521,7 @@ TEST_CASE("block corners skip edges and off-grid midpoints") {
 }
 
 TEST_CASE("block remembers its committed plane with surface pin and ortho priority") {
-    for (int next = 0; next < 6; ++next) {
+    for (int next = 0; next < 7; ++next) {
         CAPTURE(next);
         Scene scene;
         const auto slope = addSurface(scene, 2);
@@ -531,8 +531,13 @@ TEST_CASE("block remembers its committed plane with surface pin and ortho priori
             REQUIRE(scene.session.perform("tool.select"));
             REQUIRE(scene.session.perform("tool.block"));
         }
-        auto target = slope.origin + slope.uAxis * 400.0 + slope.vAxis * 400.0;
+        // Looking up at the slope's plane above the horizon, so the ray never meets the world grid.
+        auto target = slope.origin - slope.uAxis * 400.0 + slope.vAxis * 400.0;
         auto view = viewAt(target, slope);
+        view.cursorRay.dir = glm::normalize(DVec3{-1, 0, 0.2});
+        view.cursorRay.origin = target - view.cursorRay.dir * 1000.0;
+        view.cameraPosition = view.cursorRay.origin;
+        view.cameraForward = view.cursorRay.dir;
         auto expected = slope;
         if (next == 1) {
             addBox(scene.doc, {300, 300, -64}, {500, 500, 0});
@@ -548,10 +553,19 @@ TEST_CASE("block remembers its committed plane with surface pin and ortho priori
             expected = floorPlane;
         } else if (next == 4) {
             key(scene.session, "Escape");
+        } else if (next == 6) {
+            // Over the visible world grid the grid wins, even though nothing is under the cursor.
+            view = viewAt({400, 400, 0}, floorPlane);
             expected = floorPlane;
         }
         scene.session.input(event(InputKind::Move), view);
         const auto hover = scene.session.activeToolObject().overlay(view, 1);
+        if (next == 4) {
+            // Cleared: looking above the horizon leaves nothing to draw on.
+            CHECK(hover.worldPoints.empty());
+            CHECK(scene.session.activeToolObject().readout().status == "Drag base");
+            continue;
+        }
         REQUIRE(hover.worldPoints.size() == 1);
         CHECK(glm::dot(hover.worldPoints[0].position - expected.origin, expected.normal) == doctest::Approx(0).epsilon(1e-6));
         if (next == 0 || next == 5)
@@ -635,4 +649,39 @@ TEST_CASE("block idle hover follows the preset snap suspension") {
         checkPoint(overlay.worldPoints[0].position, {29.25, 43.5, 0});
         CHECK(overlay.labels[0].text == "surface");
     }
+}
+
+TEST_CASE("block drag shows side lengths and colours edges by world axis") {
+    Scene scene;
+    const auto wall = addSurface(scene, 1); // u = +Y, v = +Z, normal = +X.
+    const auto at = [&](DVec2 uv) { return viewAt(wall.origin + uv.x * wall.uAxis + uv.y * wall.vAxis, wall); };
+    const auto red = Vec4{0.92f, 0.25f, 0.25f, 1.0f}, green = Vec4{0.35f, 0.82f, 0.3f, 1.0f},
+               blue = Vec4{0.3f, 0.5f, 1.0f, 1.0f};
+    scene.session.input(event(InputKind::Move), at({0, 0}));
+    auto overlay = scene.session.activeToolObject().overlay(at({0, 0}), 1);
+    REQUIRE(overlay.worldSegments.size() == 2);
+    CHECK(overlay.worldSegments[0].colour == green);
+    CHECK(overlay.worldSegments[1].colour == blue);
+    REQUIRE(scene.session.input(event(InputKind::Press), at({0, 0})));
+    auto move = event(InputKind::Move);
+    move.left = true;
+    REQUIRE(scene.session.input(move, at({-48, 32})));
+    overlay = scene.session.activeToolObject().overlay(at({-48, 32}), 1);
+    REQUIRE(overlay.worldSegments.size() == 4);
+    CHECK(overlay.worldSegments[0].colour == green);
+    CHECK(overlay.worldSegments[1].colour == blue);
+    const auto label = [&](const std::string& text) {
+        return std::ranges::find_if(overlay.labels, [&](const auto& l) { return l.text == text; });
+    };
+    REQUIRE(label("48") != overlay.labels.end());
+    CHECK(label("48")->colour == green);
+    REQUIRE(label("32") != overlay.labels.end());
+    CHECK(label("32")->colour == blue);
+    REQUIRE(scene.session.input(event(InputKind::Release), at({-48, 32})));
+    overlay = scene.session.activeToolObject().overlay(at({-48, 32}), 1);
+    REQUIRE(overlay.worldSegments.size() == 5);
+    CHECK(overlay.worldSegments[4].colour == red);
+    const auto height = std::ranges::find_if(overlay.labels, [](const auto& l) { return l.text.starts_with("Height: "); });
+    REQUIRE(height != overlay.labels.end());
+    CHECK(height->colour == red);
 }
