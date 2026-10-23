@@ -476,3 +476,28 @@ TEST_CASE("block parallel orthographic rays choose height by vertical screen mot
     checkPoint(poly.bounds().max, {32, 48, 0});
     checkVertices(ghost, poly);
 }
+
+// A pane's TransformInput destructor calls forgetInputSource while Qt tears the pane down; a notify
+// there reached half-destroyed widgets and crashed at startup (restoreLayout rebuilding the area).
+TEST_CASE("block forget and idle cancel never notify observers") {
+    Scene scene;
+    addSurface(scene, 0);
+    int notifications = 0;
+    scene.session.observe([&] { ++notifications; });
+    scene.session.forgetInputSource(7);
+    scene.session.activeToolObject().cancel();
+    CHECK(notifications == 0);
+    draw(scene.session, floorPlane, {-32, -32}, {32, 32});
+    REQUIRE(scene.session.preview().ghosts().size() == 1);
+    notifications = 0;
+    scene.session.forgetInputSource(1);
+    CHECK(notifications == 0);
+    CHECK(scene.session.preview().empty()); // Picked up by revision on the next frame.
+    CHECK_FALSE(scene.session.activeToolObject().owns(1));
+    // Input paths that drop a gesture still notify.
+    draw(scene.session, floorPlane, {-32, -32}, {32, 32});
+    notifications = 0;
+    key(scene.session, "Escape");
+    CHECK(notifications > 0);
+    CHECK(scene.session.preview().empty());
+}

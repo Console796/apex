@@ -67,23 +67,32 @@ void BlockTool::rebuild(Gesture& g) {
     }
     if (auto poly = geometry::ConvexPolyhedron::fromPlanes(sides)) g.poly = std::move(*poly);
 }
-void BlockTool::publish() {
+void BlockTool::updateGhosts() {
     std::vector<GhostSolid> ghosts;
     for (const auto& [source, g] : gestures_)
         if (g.poly) ghosts.push_back({*g.poly, session_.newSolidStyle().material});
     preview_.setGhosts(ghosts);
+}
+void BlockTool::publish() {
+    updateGhosts();
     session_.notify();
 }
 void BlockTool::cancel() {
+    if (gestures_.empty() && preview_.empty()) return;
     gestures_.clear();
     current_.reset();
     preview_.clear();
     session_.notify();
 }
+// Runs while a pane is being destroyed: never notify (observers may touch half-destroyed widgets).
+// The viewport picks the preview up by revision on its next frame.
 void BlockTool::forget(InputSource source) {
-    gestures_.erase(source);
     if (current_ == source) current_.reset();
-    publish();
+    if (gestures_.erase(source)) updateGhosts();
+}
+void BlockTool::drop(InputSource source) {
+    forget(source);
+    session_.notify();
 }
 bool BlockTool::owns(InputSource source) const {
     const auto it = gestures_.find(source);
@@ -101,26 +110,26 @@ bool BlockTool::commit(InputSource source) {
         session_.selection().replace(selected);
     });
     lastHeight_ = height;
-    forget(source);
+    drop(source);
     return true;
 }
 Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
     const auto source = event.source;
     if (event.kind == InputKind::Leave) {
         const auto it = gestures_.find(source);
-        if (it != gestures_.end() && it->second.stage == Stage::Base) forget(source);
+        if (it != gestures_.end() && it->second.stage == Stage::Base) drop(source);
         return true;
     }
     if (event.kind == InputKind::CancelPointer) return false;
     if (event.kind == InputKind::Cancel) {
-        forget(source);
+        drop(source);
         return true;
     }
     if (!session_.document()) return false;
     current_ = source;
     auto it = gestures_.find(source);
     if (event.kind == InputKind::KeyDown && event.key == "Escape") {
-        forget(source);
+        drop(source);
         return true;
     }
     if (event.kind == InputKind::Press && event.button == PointerButton::Right) {
@@ -128,7 +137,7 @@ Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
         if (it->second.stage == Stage::Height) {
             it->second = {};
             publish();
-        } else forget(source);
+        } else drop(source);
         return true;
     }
     if (event.navigating) return false;

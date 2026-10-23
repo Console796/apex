@@ -34,6 +34,8 @@ private:
     std::optional<double> lastHeight_;
     Preview preview_;
     void rebuild(Gesture& gesture);
+    void updateGhosts();
+    void drop(InputSource source); // forget() plus a notify, for input paths.
     void publish();
     bool commit(InputSource source);
 };
