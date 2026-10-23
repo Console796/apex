@@ -10,6 +10,7 @@
 #include "editor/selection_ops.hpp"
 #include "editor/visgroups.hpp"
 #include "editor/work_plane.hpp"
+#include "editor/snapper.hpp"
 
 #include <memory>
 
@@ -65,6 +66,7 @@ public:
     void unpinWorkPlane();
     double gridSize() const { return gridSize_; }
     void setGridSize(double units);
+    SnapResult snap(Ray ray, const ToolView& view, bool suspended = false) const;
     void pointerClick(Ray ray, Modifiers modifiers = {}, bool sameSpot = false);
     void marquee(std::span<const Plane> planes, Modifiers modifiers = {});
     void selectNode(NodeId node, Modifiers modifiers = {});

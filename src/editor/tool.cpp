@@ -16,6 +16,23 @@ ToolView cameraSnapshot(ToolView view) {
 }
 }
 
+std::optional<DVec2> worldToPixel(const ToolView& view, DVec3 point) {
+    if (!(view.size.x > 0.0 && view.size.y > 0.0)) return {};
+    const auto forward = glm::normalize(view.cameraForward);
+    const auto right = glm::normalize(glm::cross(forward, view.cameraUp));
+    const auto up = glm::cross(right, forward);
+    const auto delta = point - view.cameraPosition;
+    const double depth = glm::dot(delta, forward);
+    if (!view.orthographic && !(depth > 1e-6)) return {};
+    const double height = view.orthographic ? view.orthoHeight :
+        2.0 * depth * std::tan(glm::radians(view.fovYDegrees) * 0.5);
+    if (!(height > 0.0 && std::isfinite(height))) return {};
+    const auto pixel = view.size * 0.5 + DVec2{glm::dot(delta, right), -glm::dot(delta, up)} *
+        (view.size.y / height);
+    if (!std::isfinite(pixel.x) || !std::isfinite(pixel.y)) return {};
+    return pixel;
+}
+
 GizmoView gizmoViewFor(const ToolView& camera, DVec3 pivot, double sizePixels) {
     GizmoView view;
     view.sizePixels = sizePixels;

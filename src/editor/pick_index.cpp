@@ -1,6 +1,7 @@
 #include "editor/pick_index.hpp"
 
 #include "core/strings.hpp"
+#include "editor/tool.hpp"
 #include "geometry/tolerances.hpp"
 
 #include <algorithm>
@@ -402,6 +403,98 @@ std::vector<NearHit> PickIndex::nearest(DVec3 point, double radius) const {
     });
     std::ranges::sort(result, [](const NearHit& a, const NearHit& b) {
         return std::tie(a.distance, a.node) < std::tie(b.distance, b.node);
+    });
+    return result;
+}
+
+FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolView& view) const {
+    FeatureHits result;
+    if (!(pixelRadius >= 0.0 && std::isfinite(pixelRadius))) return result;
+    const auto forward = glm::normalize(view.cameraForward);
+    const auto right = glm::normalize(glm::cross(forward, view.cameraUp));
+    const auto up = glm::cross(right, forward);
+    const double along = glm::dot(ray.dir, forward);
+    if (!(along > 0.0)) return result;
+    const auto cursor = worldToPixel(view, ray.at(std::max(0.0,
+        (1.0 - glm::dot(ray.origin - view.cameraPosition, forward)) / along)));
+    if (!cursor) return result;
+    const double scale = view.orthographic ? view.orthoHeight / view.size.y :
+        2.0 * std::tan(glm::radians(view.fovYDegrees) * 0.5) / view.size.y;
+    const double left = (cursor->x - pixelRadius - view.size.x * 0.5) * scale;
+    const double rightLimit = (cursor->x + pixelRadius - view.size.x * 0.5) * scale;
+    const double bottom = (view.size.y * 0.5 - cursor->y - pixelRadius) * scale;
+    const double top = (view.size.y * 0.5 - cursor->y + pixelRadius) * scale;
+    std::array<Plane, 5> planes;
+    const auto boundary = [&](DVec3 axis, double limit) {
+        const auto normal = view.orthographic ? axis : axis - forward * limit;
+        return Plane{normal, glm::dot(normal, view.cameraPosition) +
+            (view.orthographic ? limit : 0.0)};
+    };
+    planes[0] = boundary(-right, -left);
+    planes[1] = boundary(right, rightLimit);
+    planes[2] = boundary(-up, -bottom);
+    planes[3] = boundary(up, top);
+    planes[4] = {-forward, -glm::dot(forward, view.orthographic ? ray.origin : view.cameraPosition) - 1e-6};
+
+    const auto consider = [&](DVec3 point, NodeId node, SideId side,
+                              std::optional<FeatureHit>& best) {
+        const auto pixel = worldToPixel(view, point);
+        if (!pixel) return;
+        const double distance = glm::length(*pixel - *cursor);
+        if (distance > pixelRadius) return;
+        const double depth = glm::dot(point - view.cameraPosition, forward);
+        const double rayDepth = glm::dot(point - ray.origin, forward);
+        if (view.orthographic && rayDepth < 0.0) return;
+        const auto origin = view.orthographic ? point - forward * rayDepth : view.cameraPosition;
+        const auto delta = point - origin;
+        const double length = glm::length(delta);
+        if (!(length > 0.0)) return;
+        const auto hit = first({origin, delta / length});
+        if (hit && hit->t < length - 1e-5) return;
+        const FeatureHit candidate{node, side, point, distance, depth};
+        if (!best || std::tie(candidate.pixels, candidate.depth, candidate.node, candidate.side) <
+                     std::tie(best->pixels, best->depth, best->node, best->side)) best = candidate;
+    };
+    tree_.queryPlanes(planes, [&](std::uint32_t leaf, bool) {
+        const auto node = leaves_.at(leaf);
+        const auto& item = items_.at(node);
+        if (item.entity) return;
+        const auto& poly = item.poly;
+        std::map<std::size_t, SideId> vertices;
+        std::map<std::pair<std::size_t, std::size_t>, SideId> edges;
+        for (const auto& face : poly.faces) {
+            const auto side = static_cast<SideId>(face.sideId);
+            for (std::size_t i = 0; i < face.vertices.size(); ++i) {
+                const auto a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.size()];
+                const auto add = [side](auto& map, auto key) {
+                    const auto [it, inserted] = map.emplace(key, side);
+                    if (!inserted) it->second = std::min(it->second, side);
+                };
+                add(vertices, a);
+                add(edges, std::pair{std::min(a, b), std::max(a, b)});
+            }
+        }
+        for (const auto& [index, side] : vertices) consider(poly.vertices[index], node, side, result.vertex);
+        for (const auto& [indices, side] : edges) {
+            auto a = poly.vertices[indices.first], b = poly.vertices[indices.second];
+            consider((a + b) * 0.5, node, side, result.midpoint);
+            // Clip at the ray origin plane (camera plane in perspective).
+            const auto clipOrigin = view.orthographic ? ray.origin : view.cameraPosition;
+            double za = glm::dot(a - clipOrigin, forward);
+            double zb = glm::dot(b - clipOrigin, forward);
+            constexpr double near = 1e-5;
+            if (za < near && zb < near) continue;
+            if (za < near) { a = a + (b - a) * ((near - za) / (zb - za)); za = near; }
+            if (zb < near) { b = b + (a - b) * ((near - zb) / (za - zb)); zb = near; }
+            const auto pa = worldToPixel(view, a), pb = worldToPixel(view, b);
+            if (!pa || !pb) continue;
+            const auto segment = *pb - *pa;
+            const double length2 = glm::dot(segment, segment);
+            const double t = length2 == 0.0 ? 0.0 :
+                std::clamp(glm::dot(*cursor - *pa, segment) / length2, 0.0, 1.0);
+            const double worldT = view.orthographic ? t : t * za / ((1.0 - t) * zb + t * za);
+            consider(a + (b - a) * worldT, node, side, result.edge);
+        }
     });
     return result;
 }
