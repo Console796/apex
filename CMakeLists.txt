@@ -87,6 +87,7 @@ apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_matching.cpp
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
+                           src/geometry/convex_hull.cpp src/geometry/solid_block.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
 apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
@@ -207,6 +208,13 @@ if(APEX_BUILD_FUZZ)
     target_compile_options(vmf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined
                            -fno-omit-frame-pointer)
     target_link_options(vmf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(hull_fuzz tests/fuzz/hull_fuzz.cpp src/geometry/convex_hull.cpp
+                   src/geometry/convex_polyhedron.cpp)
+    target_include_directories(hull_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(hull_fuzz PRIVATE glm::glm apex_warnings)
+    target_compile_options(hull_fuzz PRIVATE -fsanitize=fuzzer,address,undefined
+                           -fno-omit-frame-pointer)
+    target_link_options(hull_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
   else()
     message(STATUS "APEX_BUILD_FUZZ requires Clang; skipping fuzz targets")
   endif()
