@@ -69,7 +69,6 @@ protected:
 
 private:
     bool handleMouse(QMouseEvent* event);
-    void selectionMouse(QMouseEvent* event);
     void cancelSelectionGesture();
     void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);
     bool handleKey(QKeyEvent* event);
@@ -81,11 +80,6 @@ private:
     editor::EditorSession* session_ = nullptr;
     TransformInput transform_;
     bool pointerInside_ = false;
-    bool selectionPending_ = false, marqueeAllowed_ = false, marqueeDragging_ = false;
-    QPointF selectionStart_, lastClick_;
-    QSize lastClickSize_;
-    editor::Modifiers selectionModifiers_;
-    std::optional<viewport::Camera> clickCamera_, gestureCamera_;
 
     GpuHost& host_;
     viewport::NodeId pane_;

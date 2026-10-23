@@ -1,9 +1,7 @@
 #pragma once
 
-// Pointer and key routing for the transform gizmo and modal transforms of one viewport pane
-// (plan 0.2.5 K2). Kept out of PaneWindow so it can be driven with synthetic Qt events without a
-// Vulkan surface. The decisions live in editor::EditorSession; this class only turns Qt events
-// into rays, handles and key names, and the gizmo description into overlay primitives.
+// Thin Qt adapter for the active editor tool. Gesture state lives in editor/; this API also
+// remains available to the 0.2 synthetic-event tests without a Vulkan surface.
 
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -20,6 +18,7 @@ namespace apex::ui {
 
 // Screen-constant gizmo frame data for a pane of `logicalSize`. Perspective panes derive the
 // scale from the pivot depth; orthographic panes from the visible height.
+editor::ToolView toolViewFor(const viewport::Camera& camera, QSizeF logicalSize, QPointF cursor);
 editor::GizmoView gizmoViewFor(const viewport::Camera& camera, QSizeF logicalSize, DVec3 pivot,
                                double sizePixels = 80.0);
 
@@ -32,21 +31,28 @@ std::string modalKeyName(const QKeyEvent& event);
 
 class TransformInput {
 public:
+    TransformInput() = default;
+    ~TransformInput();
+    TransformInput(const TransformInput&) = delete;
+    TransformInput& operator=(const TransformInput&) = delete;
     void setSession(editor::EditorSession* session);
 
-    // Both return true when the event was consumed and must not reach selection or navigation.
+    // Both return true when a transform/action consumes the event before camera navigation.
+    // Selection input is dispatched too, retaining the 0.2 false return for ordinary clicks.
     // `size` is the pane's logical size; event positions are in the same units.
     bool mouse(const QMouseEvent& event, const viewport::Camera& camera, QSizeF size);
     // `allowStart` is false while the pane is navigating (a camera button is held).
     bool key(const QKeyEvent& event, const viewport::Camera& camera, QSizeF size, bool allowStart);
 
-    // Pointer left the pane or the pane lost focus: drops hover, and cancels a transform it drives.
+    // Leave drops gizmo hover; cancel aborts a transform driven by this pane.
     void leave();
     void cancel();
+    void cancelPointer(bool resetClickCycle = false);
+    editor::ToolOverlay overlay(const viewport::Camera& camera, QSizeF size) const;
     // True while this pane drives the session's gizmo drag or modal transform.
     bool owns() const;
-    std::optional<editor::GizmoHandle> hovered() const { return hovered_; }
-    std::optional<editor::GizmoHandle> dragged() const { return dragged_; }
+    std::optional<editor::GizmoHandle> hovered() const;
+    std::optional<editor::GizmoHandle> dragged() const;
     // True once after state that affects the pane's picture changed.
     bool takeDirty();
 
@@ -55,17 +61,10 @@ public:
     void appendOverlay(render::DrawList& list, const viewport::Camera& camera, QSizeF size, double dpr) const;
 
 private:
-    Ray rayAt(const viewport::Camera& camera, QSizeF size, QPointF at) const;
-    void normalise();
-    void refresh(const QKeyEvent& event);
-    bool updateFromCursor(Qt::KeyboardModifiers held);
-
+    editor::InputSource source() const { return reinterpret_cast<editor::InputSource>(this); }
     editor::EditorSession* session_ = nullptr;
-    bool owns_ = false, modal_ = false, dirty_ = false;
+    bool dirty_ = false;
     QPointF cursor_;
-    viewport::Camera camera_;
-    QSizeF size_;
-    std::optional<editor::GizmoHandle> hovered_, dragged_;
 };
 
 }  // namespace apex::ui

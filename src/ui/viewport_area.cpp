@@ -237,7 +237,7 @@ FloatingPanel* ViewportArea::popOut(viewport::AreaRole role) {
 
 void ViewportArea::updateModeBadges() {
     const QString text = session_ ? modeSummary(*session_) : QString();
-    const bool entity = session_ && session_->activeTool() == editor::EditorSession::Tool::Entity;
+    const bool entity = session_ && session_->activeToolObject().readout().warn;
     for (auto& [id, frame] : frames_)
         if (frame) frame->setModeText(text, entity);
 }
@@ -668,7 +668,7 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     }
     auto* frame = new PaneFrame(pane, accessor, window, gpuReason_, maximized, canClose);
     frames_[pane] = frame;
-    if (session_) frame->setModeText(modeSummary(*session_), session_->activeTool() == editor::EditorSession::Tool::Entity);
+    if (session_) frame->setModeText(modeSummary(*session_), session_->activeToolObject().readout().warn);
     connect(frame, &PaneFrame::activated, this, &ViewportArea::setActive);
     connect(frame, &PaneFrame::edited, this, [this](viewport::NodeId) { emit layoutChanged(); });
     connectArea(frame);

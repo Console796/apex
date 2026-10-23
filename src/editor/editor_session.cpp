@@ -1,6 +1,8 @@
 #include "editor/editor_session.hpp"
 
 #include "core/strings.hpp"
+#include "editor/select_tool.hpp"
+#include "editor/entity_tool.hpp"
 #include "editor/hide_ops.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/selection_undo.hpp"
@@ -13,6 +15,9 @@
 namespace apex::editor {
 
 EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
+    tools_.emplace(Tool::Select, std::make_unique<SelectTool>(*this));
+    tools_.emplace(Tool::Entity, std::make_unique<EntityTool>(*this));
+    activeToolObject().activate();
     selection_.observe([this](const Selection&) { notify(); });
 }
 EditorSession::~EditorSession() { detach(); }
@@ -41,7 +46,7 @@ void EditorSession::attach(document::Document& doc) {
         picks_->apply(changes);
         groups_->apply(changes);
         if (transformActive()) endTransform(); // Undo/redo/external edits invalidate a drag.
-        cycle_ = {};
+        selectTool().cycle_ = {};
         hover_.reset();
         hoverDrawable_.reset();
         hoverFace_.reset();
@@ -53,13 +58,14 @@ void EditorSession::attach(document::Document& doc) {
 }
 void EditorSession::detach() {
     if (transformActive()) endTransform();
+    activeToolObject().cancel();
     if (document_) document_->unobserve(documentObserver_);
     document_ = nullptr;
     visgroupHistory_.clear();
     visgroupVisibility_ = {};
     picks_.reset();
     groups_.reset();
-    cycle_ = {};
+    selectTool().cycle_ = {};
     view_ = {};
     hover_.reset();
     hoverDrawable_.reset();
@@ -71,7 +77,7 @@ void EditorSession::detach() {
 void EditorSession::setViewState(ViewState view) {
     view_ = std::move(view);
     if (picks_) picks_->setViewState(view_);
-    cycle_ = {};
+    selectTool().cycle_ = {};
     hover_.reset();
     hoverDrawable_.reset();
     hoverFace_.reset();
@@ -86,28 +92,7 @@ void EditorSession::clearHover() {
     workPlane_.setHovered(std::nullopt);
     notify();
 }
-void EditorSession::pointerHover(Ray ray) {
-    if (activeTool_ == Tool::Entity) { clearHover(); return; }
-    std::optional<Target> target;
-    std::optional<NodeId> drawable;
-    std::optional<std::pair<NodeId, SideId>> face;
-    if (picks_) {
-        if (const auto hit = picks_->first(ray); hit && hit->side) face = {{hit->node, *hit->side}};
-        for (const auto& hit : picks_->pick(ray)) {
-            target = resolveClick(hit, selection_.mode(), *groups_, selection_.ignoreGroups());
-            if (target) { drawable = hit.node; break; }
-        }
-    }
-    const bool faceChanged = face != hoverFace_;
-    if (target == hover_ && drawable == hoverDrawable_ && !faceChanged) return;
-    hover_ = target;
-    hoverDrawable_ = drawable;
-    if (faceChanged) {
-        hoverFace_ = face;
-        workPlane_.setHovered(face ? planeFromFace(*document_, face->first, face->second) : std::nullopt);
-    }
-    notify();
-}
+
 void EditorSession::pinWorkPlane() {
     if (!hoverFace_) return;
     workPlane_.pinHovered();
@@ -128,21 +113,10 @@ void EditorSession::setGridSize(double units) {
     gridSize_ = units;
     notify();
 }
-void EditorSession::pointerClick(Ray ray, Modifiers modifiers, bool sameSpot) {
-    if (activeTool_ == Tool::Entity) {
-        placeEntity(currentEntityClass_, ray, alignToSurface_);
-        return;
-    }
-    if (picks_) click(selection_, *picks_, *groups_, ray, modifiers, &cycle_, sameSpot);
-}
-void EditorSession::marquee(std::span<const Plane> planes, Modifiers modifiers) {
-    if (activeTool_ == Tool::Entity) return;
-    cycle_ = {};
-    if (picks_) editor::marquee(selection_, *picks_, *groups_, planes, marqueeMode_, modifiers);
-}
+
 void EditorSession::selectNode(NodeId node, Modifiers modifiers) {
     if (!document_ || !document_->handle(node)) return;
-    cycle_ = {};
+    selectTool().cycle_ = {};
     std::vector<Target> targets;
     const auto handle = *document_->handle(node);
     if (std::holds_alternative<Handle<document::Group>>(handle) &&
@@ -185,11 +159,12 @@ void EditorSession::setPreset(const Preset& preset) {
     keymap_ = std::move(keymap);
     notify();
 }
-void EditorSession::setActiveTool(Tool tool) {
-    if (activeTool_ == tool) return;
-    cancelTransform();
-    activeTool_ = tool;
-    cycle_ = {};
+void EditorSession::setActiveTool(ToolId tool) {
+    if (activeTool_ == tool || !tools_.contains(tool)) return;
+    activeToolObject().deactivate();
+    activeTool_ = std::move(tool);
+    activeToolObject().activate();
+    selectTool().cycle_ = {};
     clearHover();
     notify();
 }
@@ -204,8 +179,8 @@ void EditorSession::setAlignToSurface(bool align) {
     notify();
 }
 bool EditorSession::perform(const ActionId& action) {
-    if (action == "tool.select" || action == "tool.entity") {
-        setActiveTool(action == "tool.select" ? Tool::Select : Tool::Entity);
+    if (tools_.contains(action)) {
+        setActiveTool(action);
         return true;
     }
     if (!document_) return false;
@@ -264,8 +239,8 @@ bool EditorSession::perform(const ActionId& action) {
     if (action == "nudge.left" || action == "nudge.right" || action == "nudge.up" || action == "nudge.down")
         return nudgeSelection(action == "nudge.up" || action == "nudge.down",
                               action == "nudge.right" || action == "nudge.up" ? 1 : -1);
-    // transform.dialog, transform.modal.* and snap.suspend need pointer/UI state: the UI
-    // layer calls beginModal(), the dialog backend or TransformModifiers directly.
+    // Modal input is dispatched by the active tool; the dialog and held snap modifier
+    // use the dialog backend and TransformModifiers.
     if (action == "selection.none" && workPlane_.pinned()) {
         unpinWorkPlane();
         return true;
@@ -301,7 +276,7 @@ bool EditorSession::perform(const ActionId& action) {
         }
         if (!found) return false;
     }
-    cycle_ = {};
+    selectTool().cycle_ = {};
     clearHover();
     return true;
 }
@@ -334,134 +309,6 @@ void EditorSession::setTextureLock(bool lock) {
     if (lock == textureLock_) return;
     textureLock_ = lock;
     notify();
-}
-
-std::vector<NodeId> EditorSession::transformNodes() const {
-    if (!document_ || selection_.mode() == SelectionMode::Faces) return {};
-    return expandSelection(*document_, *groups_, selection_).solidsAndEntities;
-}
-std::optional<GizmoContext> EditorSession::gizmoContext() const {
-    if (activeTool_ != Tool::Select) return std::nullopt;
-    const auto nodes = transformNodes();
-    if (nodes.empty()) return std::nullopt;
-    GizmoContext context;
-    AABB bounds;
-    for (const auto node : nodes) {
-        if (const auto box = picks_->bounds(node)) bounds.expand(*box);
-    }
-    if (bounds.empty()) return std::nullopt;
-    context.bounds = bounds;
-    // Active object: its entity key values give the origin and basis; other nodes use bounds.
-    DVec3 activeOrigin = bounds.center(), activeAngles{0.0};
-    DMat3 local{1.0};
-    bool activeEntity = false;
-    if (const auto active = selection_.active(); active && std::holds_alternative<NodeId>(*active)) {
-        const auto node = std::get<NodeId>(*active);
-        if (const auto box = picks_->bounds(node)) activeOrigin = box->center();
-        const auto handle = document_->handle(node);
-        if (handle && std::holds_alternative<Handle<document::Entity>>(*handle)) {
-            const auto& block = *document_->get(*handle)->block;
-            const auto vector = [&](std::string_view key) -> std::optional<DVec3> {
-                const auto* entry = block.find(key);
-                const auto parsed = entry ? entry->asVec3() : Result<std::array<double, 3>>{};
-                if (!entry || !parsed) return std::nullopt;
-                return DVec3{(*parsed)[0], (*parsed)[1], (*parsed)[2]};
-            };
-            if (const auto origin = vector("origin")) activeOrigin = *origin;
-            if (const auto angles = vector("angles")) {
-                const auto basis = basisFromAngles(*angles);
-                local = DMat3{basis[0], -basis[1], basis[2]}; // Source's right-axis is -Y.
-                activeAngles = *angles;
-                activeEntity = true;
-            }
-        }
-    }
-    context.pivot = pivotMode_ == PivotMode::Custom ? customPivot_
-                    : pivotMode_ == PivotMode::ActiveOrigin ? activeOrigin : bounds.center();
-    context.localFrame = local;
-    context.frame = gizmoSpace_ == GizmoSpace::Local ? local : DMat3{1.0};
-    if (gizmoSpace_ == GizmoSpace::Global && activeEntity)
-        context.rotationStartDeg = {activeAngles.z, activeAngles.x, activeAngles.y}; // Roll, pitch, yaw.
-    const auto resolved = workPlane_.resolve();
-    context.workPlane = resolved ? resolved->plane : fallbackPlane_;
-    context.snap = snap_;
-    context.snap.gridSize = gridSize_;
-    return context;
-}
-
-void EditorSession::publishPreview(const Transform& transform) {
-    preview_ = fromTransform(activeNodes_, transform);
-    notify();
-}
-void EditorSession::endTransform() {
-    drag_.cancel();
-    modal_.cancel();
-    dragging_ = modalActive_ = false;
-    activeNodes_.clear();
-    preview_.clear();
-}
-void EditorSession::cancelTransform() {
-    if (!transformActive()) return;
-    endTransform();
-    notify();
-}
-bool EditorSession::commitNow(const Transform& transform, std::string label) {
-    const auto nodes = transformNodes();
-    if (nodes.empty()) return false;
-    if (transform.matrix() == DMat4{1.0}) return true;
-    return commitTransform(*document_, nodes, transform, {textureLock_}, std::move(label)).has_value();
-}
-bool EditorSession::commitActive(const Transform& transform, GizmoMode mode) {
-    endTransform(); // The preview is cleared in the same call as the commit.
-    const bool ok = commitNow(transform, mode == GizmoMode::Translate ? "Move"
-                                         : mode == GizmoMode::Rotate ? "Rotate" : "Scale");
-    notify();
-    return ok;
-}
-const TransformReadout& EditorSession::activeReadout() const {
-    return modalActive_ ? modal_.value() : drag_.value();
-}
-bool EditorSession::beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray) {
-    if (!document_ || transformActive()) return false;
-    const auto context = gizmoContext();
-    if (!context || !drag_.begin(gizmoMode_, handle, *context, view, ray)) return false;
-    dragging_ = true;
-    activeMode_ = gizmoMode_;
-    activeNodes_ = transformNodes();
-    publishPreview(Transform{});
-    return true;
-}
-bool EditorSession::updateGizmoDrag(Ray ray, TransformModifiers modifiers) {
-    if (!dragging_) return false;
-    publishPreview(drag_.update(ray, modifiers).transform);
-    return true;
-}
-bool EditorSession::endGizmoDrag() {
-    if (!dragging_) return false;
-    return commitActive(drag_.value().transform, activeMode_);
-}
-bool EditorSession::beginModal(GizmoMode mode, const GizmoView& view, Ray ray, DVec2 screenAnchor) {
-    if (!document_ || transformActive()) return false;
-    const auto context = gizmoContext();
-    if (!context || !modal_.start(mode, *context, view, ray, screenAnchor)) return false;
-    modalActive_ = true;
-    activeMode_ = mode;
-    activeNodes_ = transformNodes();
-    publishPreview(modal_.value().transform);
-    return true;
-}
-bool EditorSession::updateModal(Ray ray, TransformModifiers modifiers) {
-    if (!modalActive_) return false;
-    publishPreview(modal_.update(ray, modifiers).transform);
-    return true;
-}
-ModalEvent EditorSession::modalKey(std::string_view key, bool shift) {
-    if (!modalActive_) return ModalEvent::Ignored;
-    const auto event = modal_.key(key, shift);
-    if (event == ModalEvent::Commit) commitActive(modal_.value().transform, activeMode_);
-    else if (event == ModalEvent::Cancel) cancelTransform();
-    else if (event == ModalEvent::Updated) publishPreview(modal_.value().transform);
-    return event;
 }
 
 bool EditorSession::moveSelection(DVec3 value, bool relative) {
@@ -877,6 +724,76 @@ void EditorSession::notify() {
     for (const auto& [token, callback] : snapshot) {
         if (observers_.contains(token)) callback();
     }
+}
+
+void EditorSession::pointerHover(Ray ray) { activeToolObject().pointerHover(ray); }
+
+void EditorSession::pointerClick(Ray ray, Modifiers modifiers, bool sameSpot) {
+    activeToolObject().pointerClick(ray, modifiers, sameSpot);
+}
+
+void EditorSession::marquee(std::span<const Plane> planes, Modifiers modifiers) {
+    activeToolObject().marquee(planes, modifiers);
+}
+
+std::optional<GizmoContext> EditorSession::gizmoContext() const {
+    if (activeTool_ != Tool::Select) return {};
+    return selectTool().gizmoContext();
+}
+
+void EditorSession::endTransform() { selectTool().endTransform(); }
+
+void EditorSession::cancelTransform() { selectTool().cancelTransform(); }
+
+bool EditorSession::commitNow(const Transform& transform, std::string label) {
+    const auto nodes = selectTool().transformNodes();
+    if (nodes.empty()) return false;
+    if (transform.matrix() == DMat4{1.0}) return true;
+    return commitTransform(*document_, nodes, transform, {textureLock_}, std::move(label)).has_value();
+}
+
+const TransformReadout& EditorSession::activeReadout() const { return selectTool().activeReadout(); }
+
+bool EditorSession::beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray) {
+    return activeTool_ == Tool::Select && selectTool().beginGizmoDrag(handle, view, ray);
+}
+
+bool EditorSession::updateGizmoDrag(Ray ray, TransformModifiers modifiers) {
+    return selectTool().updateGizmoDrag(ray, modifiers);
+}
+
+bool EditorSession::endGizmoDrag() { return selectTool().endGizmoDrag(); }
+
+bool EditorSession::beginModal(GizmoMode mode, const GizmoView& view, Ray ray, DVec2 screenAnchor) {
+    return activeTool_ == Tool::Select && selectTool().beginModal(mode, view, ray, screenAnchor);
+}
+
+bool EditorSession::updateModal(Ray ray, TransformModifiers modifiers) {
+    return selectTool().updateModal(ray, modifiers);
+}
+
+ModalEvent EditorSession::modalKey(std::string_view key, bool shift) {
+    return selectTool().modalKey(key, shift);
+}
+
+editor::Tool& EditorSession::activeToolObject() { return *tools_.at(activeTool_); }
+const editor::Tool& EditorSession::activeToolObject() const { return *tools_.at(activeTool_); }
+SelectTool& EditorSession::selectTool() { return static_cast<SelectTool&>(*tools_.at(Tool::Select)); }
+const SelectTool& EditorSession::selectTool() const { return static_cast<const SelectTool&>(*tools_.at(Tool::Select)); }
+bool EditorSession::transformActive() const { return selectTool().transformActive(); }
+const ModalTransform& EditorSession::modal() const { return selectTool().modal(); }
+const CycleState& EditorSession::cycle() const { return selectTool().cycle_; }
+void EditorSession::forgetInputSource(InputSource source) {
+    for (auto& [id, tool] : tools_) tool->forget(source);
+}
+bool EditorSession::input(const InputEvent& event, const ToolView& view) {
+    if (activeToolObject().input(event, view)) return true;
+    if (event.kind != InputKind::KeyDown || event.autoRepeat || event.navigating || !event.chord) return false;
+    const auto action = keymap_.lookup(*event.chord, BindingContext::SelectToolActive);
+    if (!action) return false;
+    // Modal bindings still consume the key when the active tool has nothing transformable.
+    if (document_ && !transformActive() && action->starts_with("transform.modal.")) return true;
+    return perform(*action);
 }
 
 } // namespace apex::editor

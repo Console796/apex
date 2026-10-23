@@ -89,7 +89,7 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
-apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
+apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
                           src/editor/group_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
                           src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp

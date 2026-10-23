@@ -32,11 +32,6 @@
 namespace apex::ui {
 namespace {
 
-bool sameCamera(const viewport::Camera& a, const viewport::Camera& b) {
-    return a.position == b.position && a.angles == b.angles && a.projection == b.projection &&
-           a.fovYDegrees == b.fovYDegrees && a.orthoHeight == b.orthoHeight;
-}
-
 constexpr double kMaxDt = 0.1;  // Seconds; a hitch must not fling the fly camera.
 
 QString viewName(const viewport::Viewport& vp) {
@@ -172,14 +167,13 @@ void PaneWindow::destroySwapchain() {
 }
 
 void PaneWindow::cancelSelectionGesture() {
-    selectionPending_ = marqueeDragging_ = false;
-    gestureCamera_.reset();
+    transform_.cancelPointer();
     dirty_ = true;
 }
 
 void PaneWindow::releaseCapture() {
     cancelSelectionGesture();
-    clickCamera_.reset();
+    transform_.cancelPointer(true);
     if (grabbed_) setMouseGrabEnabled(false);
     grabbed_ = false;
     pointerLock_.cancel();
@@ -207,7 +201,6 @@ bool PaneWindow::event(QEvent* e) {
         return handleMouse(static_cast<QMouseEvent*>(e));
     case QEvent::Leave:
         pointerInside_ = false;
-        if (session_ && !transform_.owns()) session_->clearHover();
         transform_.leave();
         if (transform_.takeDirty()) dirty_ = true;
         break;
@@ -223,7 +216,7 @@ bool PaneWindow::event(QEvent* e) {
         break;
     case QEvent::Wheel: {
         cancelSelectionGesture();
-        clickCamera_.reset();
+        transform_.cancelPointer(true);
         if (session_) session_->clearHover();
         const auto* w = static_cast<QWheelEvent*>(e);
         scroll_ += w->angleDelta().y() / 120.0;
@@ -291,7 +284,6 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         }
         return true;
     }
-    selectionMouse(e);
     if (press) {
         requestActivate();
         emit pressed();
@@ -320,59 +312,14 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
     return true;
 }
 
-void PaneWindow::selectionMouse(QMouseEvent* e) {
-    auto* vp = accessor_();
-    if (!session_ || !session_->document() || !vp || width() <= 0 || height() <= 0) return;
-    const auto buttons = e->buttons();
-    if (buttons.testFlag(Qt::RightButton) || buttons.testFlag(Qt::MiddleButton)) {
-        cancelSelectionGesture();
-        clickCamera_.reset();
-        session_->clearHover();
-        return;
-    }
-    // Releasing navigation must not become a hover or selection gesture.
-    if (e->type() == QEvent::MouseButtonRelease && e->button() != Qt::LeftButton) return;
-    const double aspect = static_cast<double>(width()) / height();
-    const auto ray = viewport::pixelRay(vp->camera, aspect, cursor_.x(), cursor_.y(), width(), height());
-    if (e->type() == QEvent::MouseButtonPress && e->button() == Qt::LeftButton) {
-        selectionPending_ = true;
-        selectionStart_ = cursor_;
-        selectionModifiers_ = {e->modifiers().testFlag(Qt::ControlModifier), e->modifiers().testFlag(Qt::ShiftModifier)};
-        gestureCamera_ = vp->camera;
-        session_->pointerHover(ray);
-        marqueeAllowed_ = !session_->hoverTarget() || selectionModifiers_.ctrl || selectionModifiers_.shift;
-    } else if (e->type() == QEvent::MouseMove && selectionPending_) {
-        if (!sameCamera(*gestureCamera_, vp->camera)) { cancelSelectionGesture(); return; }
-        const auto delta = cursor_ - selectionStart_;
-        if (marqueeAllowed_ && QPointF::dotProduct(delta, delta) > 9) {
-            marqueeDragging_ = true;
-            session_->clearHover();
-            dirty_ = true;
-        }
-    } else if (e->type() == QEvent::MouseButtonRelease && selectionPending_) {
-        if (sameCamera(*gestureCamera_, vp->camera)) {
-            if (marqueeDragging_) {
-                session_->marquee(viewport::rectFrustum(vp->camera, aspect, selectionStart_.x(), selectionStart_.y(),
-                                                        cursor_.x(), cursor_.y(), width(), height()), selectionModifiers_);
-                clickCamera_.reset();
-            } else {
-                const auto delta = cursor_ - lastClick_;
-                const bool sameSpot = clickCamera_ && sameCamera(*clickCamera_, vp->camera) &&
-                                      lastClickSize_ == size() && QPointF::dotProduct(delta, delta) <= 9;
-                session_->pointerClick(ray, selectionModifiers_, sameSpot);
-                lastClick_ = cursor_;
-                lastClickSize_ = size();
-                clickCamera_ = vp->camera;
-            }
-        }
-        cancelSelectionGesture();
-    } else if (e->type() == QEvent::MouseMove && buttons == Qt::NoButton) session_->pointerHover(ray);
-}
-
 void PaneWindow::drawMarquee(VkCommandBuffer commands, VkExtent2D extent) {
-    if (!marqueeDragging_) return;
+    const auto* vp = accessor_();
+    if (!vp) return;
+    const auto overlay = transform_.overlay(vp->camera, QSizeF(width(), height()));
+    if (!overlay.rectangle) return;
+    const auto& [start, end] = *overlay.rectangle;
     const double scale = devicePixelRatio();
-    const auto rect = QRectF(selectionStart_, cursor_).normalized();
+    const auto rect = QRectF(QPointF(start.x, start.y), QPointF(end.x, end.y)).normalized();
     const int x0 = std::clamp(qRound(rect.left() * scale), 0, static_cast<int>(extent.width) - 1);
     const int x1 = std::clamp(qRound(rect.right() * scale), x0, static_cast<int>(extent.width) - 1);
     const int y0 = std::clamp(qRound(rect.top() * scale), 0, static_cast<int>(extent.height) - 1);
@@ -397,15 +344,6 @@ bool PaneWindow::handleKey(QKeyEvent* e) {
         if (consumed) return true;
     }
     if (!navigating) {
-        if (session_ && down && !e->isAutoRepeat()) {
-            if (const auto chord = keyChord(*e)) {
-                if (const auto action = session_->keymap().lookup(*chord, editor::BindingContext::SelectToolActive)) {
-                    if (session_->perform(*action)) return true;
-                    e->ignore(); // Window-level actions (cut, copy, paste) still get their shortcut.
-                    return false;
-                }
-            }
-        }
         forward_ = back_ = left_ = right_ = up_ = down_ = false;
         e->ignore();
         return false;
@@ -443,7 +381,7 @@ void PaneWindow::applyNavigation(double dt) {
             in.moveUp = up_; in.moveDown = down_;
             if (viewport::navigate(vp->camera, in)) {
                 cancelSelectionGesture();
-                clickCamera_.reset();
+                transform_.cancelPointer(true);
                 if (session_) session_->clearHover();
                 dirty_ = true;
                 emit cameraChanged();
@@ -596,26 +534,13 @@ double PaneWindow::draw() {
 // ---- PaneFrame ----
 
 QString modeSummary(const editor::EditorSession& session) {
-    const auto word = [](const char* text) { return QCoreApplication::translate("apex::ui::modes", text); };
+    const auto readout = session.activeToolObject().readout();
     const QString sep = QStringLiteral("  \u00b7  ");
-    if (session.activeTool() == editor::EditorSession::Tool::Entity) {
-        const auto& cls = session.currentEntityClass();
-        return word("Entity") + (cls.empty() ? QString() : sep + QString::fromStdString(cls));
-    }
-    QString selection;
-    switch (session.selection().mode()) {
-    case editor::SelectionMode::Groups: selection = word("Groups"); break;
-    case editor::SelectionMode::Objects: selection = word("Objects"); break;
-    case editor::SelectionMode::Solids: selection = word("Solids"); break;
-    case editor::SelectionMode::Faces: selection = word("Faces"); break;
-    }
-    QString gizmo;
-    switch (session.gizmoMode()) {
-    case editor::GizmoMode::Translate: gizmo = word("Move"); break;
-    case editor::GizmoMode::Rotate: gizmo = word("Rotate"); break;
-    case editor::GizmoMode::Scale: gizmo = word("Scale"); break;
-    }
-    return word("Select") + sep + selection + sep + gizmo;
+    QStringList words;
+    for (const auto& key : readout.badge)
+        words.push_back(QCoreApplication::translate("apex::ui::modes", key.c_str()));
+    if (!readout.detail.empty()) words.push_back(QString::fromStdString(readout.detail));
+    return words.join(sep);
 }
 
 PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindow* window,

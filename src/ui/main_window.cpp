@@ -357,8 +357,7 @@ void MainWindow::updateEditorActions() {
         if (id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
         if (id == "tool.select" || id == "tool.entity") {
             action->setEnabled(true);
-            const auto tool = id == "tool.select" ? editor::EditorSession::Tool::Select : editor::EditorSession::Tool::Entity;
-            action->setChecked(session_.activeTool() == tool);
+            action->setChecked(session_.activeTool() == id);
         }
         if (id.starts_with("edit.") && !id.starts_with("edit.flip.")) {
             const bool have = session_.document() != nullptr;
@@ -477,7 +476,7 @@ void MainWindow::updateGridStatus() {
         : resolved->source == editor::WorkPlaneSource::Pinned ? tr("Plane: pinned") : tr("Plane: face (hover)");
     if (gridLabel_->text() != grid) gridLabel_->setText(grid);
     if (planeLabel_->text() != plane) planeLabel_->setText(plane);
-    const auto readout = session_.transformActive() ? QString::fromStdString(session_.activeReadout().text) : QString();
+    const auto readout = QString::fromStdString(session_.activeToolObject().readout().status);
     if (readoutLabel_->text() != readout) readoutLabel_->setText(readout);
 }
 

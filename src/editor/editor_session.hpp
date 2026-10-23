@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/tool.hpp"
 #include "editor/clipboard.hpp"
 #include "editor/inspector_model.hpp"
 #include "editor/placement.hpp"
@@ -14,13 +15,25 @@
 
 namespace apex::editor {
 
+class SelectTool;
+class EntityTool;
+
 // One document's editor state. The attached document must outlive the session or
 // detach(). Selection-only gestures never write to Document or its undo history.
 class EditorSession {
 public:
-    enum class Tool { Select, Entity };
-    Tool activeTool() const { return activeTool_; }
-    void setActiveTool(Tool tool);
+    // 0.2 compatibility spellings; tool identity is now the registry action id.
+    struct Tool {
+        static constexpr const char* Select = "tool.select";
+        static constexpr const char* Entity = "tool.entity";
+    };
+    const ToolId& activeTool() const { return activeTool_; }
+    void setActiveTool(ToolId tool);
+    editor::Tool& activeToolObject();
+    const editor::Tool& activeToolObject() const;
+    bool input(const InputEvent& event, const ToolView& view);
+    // Every tool drops the per-pane state of a pane that is going away.
+    void forgetInputSource(InputSource source);
     const std::string& currentEntityClass() const { return currentEntityClass_; }
     void setCurrentEntityClass(std::string classname);
     bool alignToSurface() const { return alignToSurface_; }
@@ -38,7 +51,7 @@ public:
     const Selection& selection() const { return selection_; }
     const PickIndex& picks() const { return *picks_; }
     const GroupIndex& groups() const { return *groups_; }
-    const CycleState& cycle() const { return cycle_; }
+    const CycleState& cycle() const;
     const ViewState& viewState() const { return view_; }
     void setViewState(ViewState view);
     std::optional<Target> hoverTarget() const { return hover_; }
@@ -77,10 +90,10 @@ public:
     // Work plane used by nudge when nothing is hovered or pinned (the viewport supplies it).
     void setFallbackPlane(SurfacePlane plane) { fallbackPlane_ = std::move(plane); }
     const SurfacePlane& fallbackPlane() const { return fallbackPlane_; }
-    const Preview& preview() const { return preview_; }
+    const Preview& preview() const { return activeToolObject().preview(); }
     // Null while nothing transformable is selected (empty, or face mode).
     std::optional<GizmoContext> gizmoContext() const;
-    bool transformActive() const { return dragging_ || modalActive_; }
+    bool transformActive() const;
     // Gizmo drag: begin on a handle, update on pointer motion, end to commit.
     bool beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray);
     bool updateGizmoDrag(Ray ray, TransformModifiers modifiers = {});
@@ -89,7 +102,7 @@ public:
     bool beginModal(GizmoMode mode, const GizmoView& view, Ray ray, DVec2 screenAnchor = DVec2{0.0});
     bool updateModal(Ray ray, TransformModifiers modifiers = {});
     ModalEvent modalKey(std::string_view key, bool shift = false);
-    const ModalTransform& modal() const { return modal_; }
+    const ModalTransform& modal() const;
     const TransformReadout& activeReadout() const;
     // Aborts any active drag/modal: clears the preview, leaves document and undo untouched.
     void cancelTransform();
@@ -171,17 +184,20 @@ public:
     void unobserve(std::size_t token);
 
 private:
+    friend class SelectTool;
+    SelectTool& selectTool();
+    const SelectTool& selectTool() const;
     document::Document* document_ = nullptr;
     std::size_t documentObserver_ = 0;
     std::unique_ptr<PickIndex> picks_;
     std::unique_ptr<GroupIndex> groups_;
     Selection selection_;
-    Tool activeTool_ = Tool::Select;
+    std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
+    ToolId activeTool_ = Tool::Select;
     std::string currentEntityClass_;
     bool alignToSurface_ = false;
     assets::EntityClassTable entityClasses_;
     std::uint64_t entityClassesRevision_ = 0;
-    CycleState cycle_;
     ViewState view_;
     std::optional<Target> hover_;
     std::optional<NodeId> hoverDrawable_;
@@ -196,12 +212,6 @@ private:
     SnapSettings snap_;
     bool textureLock_ = true;
     SurfacePlane fallbackPlane_{{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}, {}};
-    Preview preview_;
-    GizmoDrag drag_;
-    ModalTransform modal_;
-    bool dragging_ = false, modalActive_ = false;
-    GizmoMode activeMode_ = GizmoMode::Translate;
-    std::vector<NodeId> activeNodes_;
     Preset preset_;
     Keymap keymap_;
     std::map<std::size_t, Observer> observers_;
@@ -217,9 +227,6 @@ private:
                          const std::function<Result<EditedObjects>(document::Transaction&)>& stage,
                          std::string coalesceKey = {});
     std::string inspectorCoalesceKey(std::size_t row, std::string_view focusKey, bool raw = false) const;
-    std::vector<NodeId> transformNodes() const;
-    void publishPreview(const Transform& transform);
-    bool commitActive(const Transform& transform, GizmoMode mode);
     bool commitNow(const Transform& transform, std::string label);
     void endTransform();
 };
