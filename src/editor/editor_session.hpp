@@ -11,6 +11,7 @@
 #include "editor/visgroups.hpp"
 #include "editor/work_plane.hpp"
 #include "editor/snapper.hpp"
+#include "geometry/solid_block.hpp"
 
 #include <memory>
 
@@ -27,6 +28,7 @@ public:
     struct Tool {
         static constexpr const char* Select = "tool.select";
         static constexpr const char* Entity = "tool.entity";
+        static constexpr const char* Block = "tool.block";
     };
     const ToolId& activeTool() const { return activeTool_; }
     void setActiveTool(ToolId tool);
@@ -39,6 +41,10 @@ public:
     void setCurrentEntityClass(std::string classname);
     bool alignToSurface() const { return alignToSurface_; }
     void setAlignToSurface(bool align);
+
+    const geometry::NewSolidStyle& newSolidStyle() const { return newSolidStyle_; }
+    void setNewSolidMaterial(std::string material);
+    void setNewSolidUvAlignment(geometry::UvAlignment alignment);
 
     EditorSession();
     ~EditorSession();
@@ -66,7 +72,8 @@ public:
     void unpinWorkPlane();
     double gridSize() const { return gridSize_; }
     void setGridSize(double units);
-    SnapResult snap(Ray ray, const ToolView& view, bool suspended = false) const;
+    SnapResult snap(Ray ray, const ToolView& view, bool suspended = false,
+                    std::optional<SurfacePlane> plane = {}) const;
     void pointerClick(Ray ray, Modifiers modifiers = {}, bool sameSpot = false);
     void marquee(std::span<const Plane> planes, Modifiers modifiers = {});
     void selectNode(NodeId node, Modifiers modifiers = {});
@@ -187,6 +194,7 @@ public:
 
 private:
     friend class SelectTool;
+    friend class BlockTool;
     SelectTool& selectTool();
     const SelectTool& selectTool() const;
     document::Document* document_ = nullptr;
@@ -198,6 +206,7 @@ private:
     ToolId activeTool_ = Tool::Select;
     std::string currentEntityClass_;
     bool alignToSurface_ = false;
+    geometry::NewSolidStyle newSolidStyle_{"dev/dev_measuregeneric01"};
     assets::EntityClassTable entityClasses_;
     std::uint64_t entityClassesRevision_ = 0;
     ViewState view_;

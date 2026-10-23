@@ -20,14 +20,14 @@ SnapResult Snapper::snap(Ray ray, const ToolView& view, const SnapRequest& reque
         if (features.midpoint) return result(*features.midpoint, SnapKind::EdgeMidpoint);
         if (features.edge) return result(*features.edge, SnapKind::Edge);
     }
-    if (suspended && hit) return {hit->point, SnapKind::Surface, hit->node, hit->side};
+    if (suspended && hit && !request.plane) return {hit->point, SnapKind::Surface, hit->node, hit->side};
 
     auto resolved = workPlane_.resolve();
-    SurfacePlane plane = resolved ? resolved->plane : fallback_;
+    SurfacePlane plane = request.plane ? *request.plane : resolved ? resolved->plane : fallback_;
     std::optional<NodeId> node;
     std::optional<SideId> side;
     // A pin owns the drawing plane; otherwise use this ray's surface rather than stale hover.
-    if (!workPlane_.pinned() && hit && hit->side) {
+    if (!request.plane && !workPlane_.pinned() && hit && hit->side) {
         if (const auto surface = planeFromFace(document_, hit->node, *hit->side)) {
             plane = *surface;
             node = hit->node;
@@ -47,7 +47,7 @@ SnapResult Snapper::snap(Ray ray, const ToolView& view, const SnapRequest& reque
             return {snapped, SnapKind::Grid, node, side};
         }
     }
-    if (hit) return {hit->point, SnapKind::Surface, hit->node, hit->side};
+    if (hit && !request.plane) return {hit->point, SnapKind::Surface, hit->node, hit->side};
     return {};
 }
 

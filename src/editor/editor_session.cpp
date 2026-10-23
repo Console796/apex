@@ -3,6 +3,7 @@
 #include "core/strings.hpp"
 #include "editor/select_tool.hpp"
 #include "editor/entity_tool.hpp"
+#include "editor/block_tool.hpp"
 #include "editor/hide_ops.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/selection_undo.hpp"
@@ -17,6 +18,7 @@ namespace apex::editor {
 EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Select, std::make_unique<SelectTool>(*this));
     tools_.emplace(Tool::Entity, std::make_unique<EntityTool>(*this));
+    tools_.emplace(Tool::Block, std::make_unique<BlockTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) { notify(); });
 }
@@ -107,11 +109,13 @@ void EditorSession::unpinWorkPlane() {
     workPlane_.unpin();
     notify();
 }
-SnapResult EditorSession::snap(Ray ray, const ToolView& view, bool suspended) const {
+SnapResult EditorSession::snap(Ray ray, const ToolView& view, bool suspended,
+                               std::optional<SurfacePlane> plane) const {
     if (!document_ || !picks_) return {};
     auto settings = snap_;
     settings.gridSize = gridSize_;
-    return Snapper(*document_, *picks_, workPlane_, settings, fallbackPlane_).snap(ray, view, {suspended});
+    return Snapper(*document_, *picks_, workPlane_, settings, fallbackPlane_).snap(
+        ray, view, {suspended, std::move(plane)});
 }
 
 void EditorSession::setGridSize(double units) {
@@ -183,6 +187,16 @@ void EditorSession::setCurrentEntityClass(std::string classname) {
 void EditorSession::setAlignToSurface(bool align) {
     if (alignToSurface_ == align) return;
     alignToSurface_ = align;
+    notify();
+}
+void EditorSession::setNewSolidMaterial(std::string material) {
+    if (newSolidStyle_.material == material) return;
+    newSolidStyle_.material = std::move(material);
+    notify();
+}
+void EditorSession::setNewSolidUvAlignment(geometry::UvAlignment alignment) {
+    if (newSolidStyle_.alignment == alignment) return;
+    newSolidStyle_.alignment = alignment;
     notify();
 }
 bool EditorSession::perform(const ActionId& action) {

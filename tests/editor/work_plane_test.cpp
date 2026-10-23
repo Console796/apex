@@ -83,7 +83,7 @@ TEST_CASE("work_plane GridLadder steps through every power of two and clamps") {
     CHECK(GridLadder::clamp(65.0) == 64.0);
 }
 
-TEST_CASE("work_plane box faces use ordered world axes and centroid-relative rectangles") {
+TEST_CASE("work_plane box faces use ordered world axes and world-anchored rectangles") {
     Document doc(parsed());
     const DVec3 min{-12.0, -20.0, -8.0}, max{28.0, 60.0, 16.0};
     const auto solid = addBox(doc, min, max);
@@ -104,16 +104,14 @@ TEST_CASE("work_plane box faces use ordered world axes and centroid-relative rec
         CHECK(plane->uAxis == u);
         CHECK(plane->vAxis == v);
         CHECK(plane->normal == face.plane.normal);
-        auto center = (min + max) * 0.5;
-        for (int axis = 0; axis < 3; ++axis) {
-            if (face.plane.normal[axis] != 0.0)
-                center[axis] = face.plane.normal[axis] > 0.0 ? max[axis] : min[axis];
-        }
-        CHECK(glm::length(plane->origin - center) < 1e-9);
-        const DVec2 half{glm::dot(glm::abs(u), max - min) * 0.5,
-                         glm::dot(glm::abs(v), max - min) * 0.5};
-        CHECK(glm::length(plane->bounds->min + half) < 1e-9);
-        CHECK(glm::length(plane->bounds->max - half) < 1e-9);
+        // Anchored at the world origin's projection, so plane coordinates are world u/v coordinates.
+        checkPoint(plane->origin, face.plane.normal * face.plane.dist);
+        const DVec2 lo{glm::dot(u, glm::dot(u, DVec3{1.0}) > 0.0 ? min : max),
+                       glm::dot(v, glm::dot(v, DVec3{1.0}) > 0.0 ? min : max)};
+        const DVec2 hi{glm::dot(u, glm::dot(u, DVec3{1.0}) > 0.0 ? max : min),
+                       glm::dot(v, glm::dot(v, DVec3{1.0}) > 0.0 ? max : min)};
+        CHECK(glm::length(plane->bounds->min - lo) < 1e-9);
+        CHECK(glm::length(plane->bounds->max - hi) < 1e-9);
     }
     CHECK_FALSE(planeFromFace(doc, id(doc, solid), SideId{999}));
     CHECK_FALSE(planeFromFace(doc, NodeId{999}, SideId{11}));

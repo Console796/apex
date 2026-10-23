@@ -378,7 +378,7 @@ TEST_CASE("pane grids use surface bounds pinned precedence and every axis fallba
     session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
     grid = ui::makeGridSettings(perspective, &session);
     CHECK(grid.normal == DVec3{-1, 0, 0});
-    CHECK(grid.origin == DVec3{0, 10, 15});
+    CHECK(grid.origin == DVec3{0, 0, 0}); // World-anchored (0.2 D9).
     const auto plane = session.resolvedWorkPlane()->plane;
     REQUIRE(grid.bounds);
     CHECK(grid.bounds->uMin == plane.bounds->min.x);
@@ -2169,4 +2169,66 @@ TEST_CASE("scripted 200-step splitter drag preserves frames between resize inter
         CHECK(window->recreateCount() == count + 1);
     }
     if (initial.empty()) MESSAGE("No native GPU panes on this platform; run with QT_QPA_PLATFORM=xcb for frame measurements");
+}
+
+TEST_CASE("block tool draws through the pane's TransformInput path despite CancelPointer after consumed events") {
+    app();
+    TransformScene scene;
+    auto& session = scene.session();
+    REQUIRE(session.perform("tool.block"));
+    session.selection().clear();
+    const auto camera = cameraLooking({37, -60, 260}, {37, 37, 69});
+    ui::TransformInput input;
+    input.setSession(&session);
+    // PaneWindow::handleMouse sends CancelPointer whenever the active tool consumes an event.
+    const auto send = [&](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        auto event = mouseEvent(type, at, button, buttons);
+        const bool consumed = input.mouse(event, camera, kPane);
+        if (consumed) input.cancelPointer();
+        return consumed;
+    };
+    // Pixel whose ray meets the plane z = target.z closest to target.
+    const auto pixelFor = [&](DVec3 target) {
+        QPointF best;
+        double bestDistance = 1e18;
+        for (double y = 0; y < kPane.height(); y += 1)
+            for (double x = 0; x < kPane.width(); x += 1) {
+                const auto ray = rayAtPixel(camera, {x, y});
+                if (std::abs(ray.dir.z) < 1e-9) continue;
+                const double t = (target.z - ray.origin.z) / ray.dir.z;
+                if (t <= 0) continue;
+                const double d = glm::length(ray.at(t) - target);
+                if (d < bestDistance) { bestDistance = d; best = {x, y}; }
+            }
+        return best;
+    };
+    const QPointF a = pixelFor({20, 20, 69}), b = pixelFor({55, 50, 69}), up = b - QPointF(0, 80);
+    const auto before = scene.undo();
+    send(QEvent::MouseMove, a, Qt::NoButton, Qt::NoButton);
+    CHECK(send(QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::LeftButton));
+    CHECK(send(QEvent::MouseMove, b, Qt::NoButton, Qt::LeftButton));
+    CHECK(send(QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::NoButton));
+    CHECK(send(QEvent::MouseMove, up, Qt::NoButton, Qt::NoButton));
+    REQUIRE(session.preview().ghosts().size() == 1);
+    CHECK(scene.undo() == before);
+    CHECK(send(QEvent::MouseButtonPress, up, Qt::LeftButton, Qt::LeftButton));
+    send(QEvent::MouseButtonRelease, up, Qt::LeftButton, Qt::NoButton);
+    CHECK(scene.undo() == before + 1);
+    CHECK(session.preview().empty());
+    REQUIRE(session.selection().ordered().size() == 1);
+    const auto handle = scene.window.document()->handle(std::get<document::NodeId>(session.selection().ordered().front()));
+    REQUIRE(handle);
+    const auto solid = geometry::solidGeometry(*scene.window.document()->get(*handle)->block);
+    REQUIRE(solid);
+    CHECK(solid->poly.bounds().min.z == doctest::Approx(69));  // Drawn on the box's top face.
+    CHECK(solid->poly.bounds().max.z > 69);
+
+    // Esc through the key path drops a gesture without touching the document.
+    send(QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::LeftButton);
+    send(QEvent::MouseMove, b, Qt::NoButton, Qt::LeftButton);
+    send(QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::NoButton);
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    input.key(esc, camera, kPane, true);
+    CHECK(session.preview().empty());
+    CHECK(scene.undo() == before + 1);
 }

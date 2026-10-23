@@ -111,6 +111,11 @@ MainWindow::MainWindow(QWidget* parent)
                    "keymaps") {
     resize(1280, 800);
     LogPanel::startCapture();
+    const auto material = QSettings().value(QStringLiteral("editor/newSolidMaterial"),
+                                           QStringLiteral("dev/dev_measuregeneric01")).toString();
+    const bool worldUv = QSettings().value(QStringLiteral("editor/newSolidWorldUv"), false).toBool();
+    session_.setNewSolidMaterial(material.toStdString());
+    session_.setNewSolidUvAlignment(worldUv ? geometry::UvAlignment::World : geometry::UvAlignment::Face);
     buildMenus();
     buildStatusBar();
     buildTransformUi();
@@ -345,6 +350,15 @@ void MainWindow::setUndoCapMiB(int mib) {
     updateEditorActions();
 }
 
+void MainWindow::setNewSolidStyle(std::string material, geometry::UvAlignment alignment) {
+    session_.setNewSolidMaterial(std::move(material));
+    session_.setNewSolidUvAlignment(alignment);
+    QSettings settings;
+    settings.setValue(QStringLiteral("editor/newSolidMaterial"), fromStd(session_.newSolidStyle().material));
+    settings.setValue(QStringLiteral("editor/newSolidWorldUv"),
+                      session_.newSolidStyle().alignment == geometry::UvAlignment::World);
+}
+
 void MainWindow::openPreferences() {
     auto* dialog = new SettingsDialog(*this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -355,7 +369,7 @@ void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
         if (id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
-        if (id == "tool.select" || id == "tool.entity") {
+        if (id == "tool.select" || id == "tool.entity" || id == "tool.block") {
             action->setEnabled(true);
             action->setChecked(session_.activeTool() == id);
         }
@@ -470,6 +484,10 @@ void MainWindow::buildAreas() {
 }
 
 void MainWindow::updateGridStatus() {
+    const auto& style = session_.newSolidStyle();
+    const bool world = style.alignment == geometry::UvAlignment::World;
+    uvAlignmentAction_->setChecked(world);
+    uvAlignmentAction_->setText(world ? tr("UV: World") : tr("UV: Face"));
     const auto grid = tr("Grid: %1").arg(session_.gridSize(), 0, 'g', 12);
     const auto resolved = session_.resolvedWorkPlane();
     const auto plane = !resolved ? tr("Plane: ground")
@@ -496,6 +514,19 @@ void MainWindow::buildStatusBar() {
     frameLabel_ = new QLabel(tr("- ms"));
     gpuLabel_ = new QLabel(tr("GPU: -"));
     for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
+    uvAlignmentAction_ = new QAction(tr("UV: Face"), this);
+    uvAlignmentAction_->setObjectName(QStringLiteral("newSolidWorldUv"));
+    uvAlignmentAction_->setCheckable(true);
+    uvAlignmentAction_->setToolTip(tr("Texture alignment for new solids"));
+    connect(uvAlignmentAction_, &QAction::triggered, this, [this](bool world) {
+        setNewSolidStyle(session_.newSolidStyle().material,
+                         world ? geometry::UvAlignment::World : geometry::UvAlignment::Face);
+    });
+    auto* uvButton = new QToolButton;
+    uvButton->setObjectName(QStringLiteral("statusUvAlignment"));
+    uvButton->setDefaultAction(uvAlignmentAction_);
+    uvButton->setAutoRaise(true);
+    statusBar()->addPermanentWidget(uvButton);
     updateGridStatus();
     modeLabel_->setText(modeSummary(session_));
     statusBar()->showMessage(tr("Ready"));
@@ -572,7 +603,7 @@ void MainWindow::buildEntityUi() {
     auto* bar = findChild<QToolBar*>(QStringLiteral("toolbarTransform"));
     bar->addSeparator();
     auto* group = new QActionGroup(this);
-    for (const char* id : {"tool.select", "tool.entity"}) {
+    for (const char* id : {"tool.select", "tool.entity", "tool.block"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = new QAction(fromStd(entry->name), this);
         action->setObjectName(fromStd(entry->id));

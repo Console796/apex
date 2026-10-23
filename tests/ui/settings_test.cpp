@@ -6,6 +6,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QKeyEvent>
+#include <QDialogButtonBox>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
@@ -119,4 +121,50 @@ TEST_CASE("preferences edit and apply general settings and a saved keybinding pr
     window.refreshPresetMenu();
     CHECK(window.findChild<QAction*>("preset.Test Keys") == nullptr);
     CHECK(window.presetStore().list() == before);
+}
+
+TEST_CASE("new solid preferences and status toggle persist material and UV alignment") {
+    ui_test::app();
+    QSettings settings;
+    const auto oldMaterial = settings.value("editor/newSolidMaterial");
+    const auto oldWorld = settings.value("editor/newSolidWorldUv");
+    settings.setValue("editor/newSolidMaterial", "test/loaded");
+    settings.setValue("editor/newSolidWorldUv", true);
+    {
+        ui::MainWindow window;
+        CHECK(window.editorSession().newSolidStyle().material == "test/loaded");
+        CHECK(window.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World);
+        auto* toggle = window.findChild<QAction*>("newSolidWorldUv");
+        REQUIRE(toggle);
+        CHECK(toggle->isChecked());
+        toggle->trigger();
+        CHECK(window.editorSession().newSolidStyle().alignment == geometry::UvAlignment::Face);
+        CHECK_FALSE(settings.value("editor/newSolidWorldUv").toBool());
+        ui::SettingsDialog dialog(window);
+        auto* material = dialog.findChild<QLineEdit*>("settingsNewSolidMaterial");
+        auto* alignment = dialog.findChild<QComboBox*>("settingsUvAlignment");
+        REQUIRE(material);
+        REQUIRE(alignment);
+        material->setText("test/changed");
+        alignment->setCurrentIndex(1);
+        auto* buttons = dialog.findChild<QDialogButtonBox*>();
+        REQUIRE(buttons);
+        buttons->button(QDialogButtonBox::Apply)->click();
+        CHECK(window.editorSession().newSolidStyle().material == "test/changed");
+        CHECK(toggle->isChecked());
+    }
+    {
+        ui::MainWindow window;
+        CHECK(window.editorSession().newSolidStyle().material == "test/changed");
+        CHECK(window.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World);
+        auto* action = window.findChild<QAction*>("tool.block");
+        REQUIRE(action);
+        action->trigger();
+        CHECK(window.editorSession().activeTool() == "tool.block");
+        CHECK(action->isChecked());
+    }
+    if (oldMaterial.isValid()) settings.setValue("editor/newSolidMaterial", oldMaterial);
+    else settings.remove("editor/newSolidMaterial");
+    if (oldWorld.isValid()) settings.setValue("editor/newSolidWorldUv", oldWorld);
+    else settings.remove("editor/newSolidWorldUv");
 }

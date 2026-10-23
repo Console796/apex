@@ -126,7 +126,7 @@ TEST_CASE("EditorSession surface hover is independent of selection mode and cach
         REQUIRE(plane);
         CHECK(plane->source == WorkPlaneSource::Hovered);
         checkPoint(plane->plane.normal, {-1, 0, 0});
-        checkPoint(plane->plane.origin, {0, 10, 15});
+        checkPoint(plane->plane.origin, {0, 0, 0}); // The world origin projected onto x = 0 (0.2 D9).
         REQUIRE(plane->plane.bounds);
         const auto before = notifications;
         session.pointerHover({{-100, 6, 6}, {1, 0, 0}});
@@ -160,7 +160,7 @@ TEST_CASE("EditorSession surface hover is independent of selection mode and cach
     CHECK_FALSE(session.resolvedWorkPlane());
     session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
     REQUIRE(session.resolvedWorkPlane());
-    checkPoint(session.resolvedWorkPlane()->plane.origin, {2, 10, 15});
+    checkPoint(session.resolvedWorkPlane()->plane.origin, {2, 0, 0});
 }
 
 TEST_CASE("EditorSession pinned planes survive hover and Esc unpins before clearing selection") {

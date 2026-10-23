@@ -73,6 +73,8 @@ private:
     editor::Preset original_;
     bool baseIsBuiltin_ = true;
 
+    QLineEdit* newSolidMaterial_ = nullptr;
+    QComboBox* uvAlignment_ = nullptr;
     QComboBox* theme_ = nullptr;
     QCheckBox* autosave_ = nullptr;
     QSpinBox* autosaveMinutes_ = nullptr;

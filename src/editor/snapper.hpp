@@ -3,11 +3,17 @@
 #include "editor/pick_index.hpp"
 #include "editor/transform.hpp"
 
+#include <utility>
+
 namespace apex::editor {
 
 enum class SnapKind { Vertex, EdgeMidpoint, Edge, Grid, Surface, None };
 struct SnapRequest {
+    SnapRequest(bool suspend = false, std::optional<SurfacePlane> lockedPlane = {})
+        : suspended(suspend), plane(std::move(lockedPlane)) {}
     bool suspended = false;
+    // Locks grid/surface fallback to this plane; feature priority is unchanged.
+    std::optional<SurfacePlane> plane;
 };
 struct SnapResult {
     DVec3 point{0.0};

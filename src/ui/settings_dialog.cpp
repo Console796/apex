@@ -186,6 +186,15 @@ QWidget* SettingsDialog::buildGeneralPage() {
     inspectorOpens_->setToolTip(tr("Where Object properties shows the inspector. Without an inspector area in the "
                                    "workspace it always opens a window."));
     form->addRow(tr("Object properties opens in"), inspectorOpens_);
+    newSolidMaterial_ = new QLineEdit(fromStd(window_.editorSession().newSolidStyle().material));
+    newSolidMaterial_->setObjectName(QStringLiteral("settingsNewSolidMaterial"));
+    form->addRow(tr("New solid material"), newSolidMaterial_);
+    uvAlignment_ = new QComboBox;
+    uvAlignment_->setObjectName(QStringLiteral("settingsUvAlignment"));
+    uvAlignment_->addItem(tr("Face"), static_cast<int>(geometry::UvAlignment::Face));
+    uvAlignment_->addItem(tr("World"), static_cast<int>(geometry::UvAlignment::World));
+    uvAlignment_->setCurrentIndex(window_.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World ? 1 : 0);
+    form->addRow(tr("New solid UV alignment"), uvAlignment_);
     return page;
 }
 
@@ -525,6 +534,8 @@ bool SettingsDialog::confirmDiscard() {
 }
 
 bool SettingsDialog::applyAll() {
+    window_.setNewSolidStyle(newSolidMaterial_->text().toStdString(),
+                             static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
     const bool darkChosen = theme_->currentData().toInt() == static_cast<int>(Theme::Dark);
     if ((currentTheme() == Theme::Dark) != darkChosen) window_.setTheme(darkChosen ? Theme::Dark : Theme::Light);
     window_.setAutosave(autosave_->isChecked(), autosaveMinutes_->value());

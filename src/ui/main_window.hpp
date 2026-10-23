@@ -83,6 +83,7 @@ public:
     void refreshPresetMenu();
     void setAutosave(bool enabled, int intervalMinutes);
     void setUndoCapMiB(int mib);
+    void setNewSolidStyle(std::string material, geometry::UvAlignment alignment);
     void openPreferences();
 
 private slots:
@@ -144,6 +145,7 @@ private:
     QMenu* viewMenu_ = nullptr;
     QAction* saveAction_ = nullptr;
     QAction* saveAsAction_ = nullptr;
+    QAction* uvAlignmentAction_ = nullptr;
     QAction* darkAction_ = nullptr;
     QAction* lightAction_ = nullptr;
     QLabel* gridLabel_ = nullptr;
