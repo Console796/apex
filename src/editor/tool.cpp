@@ -49,18 +49,22 @@ GizmoView gizmoViewFor(const ToolView& camera, DVec3 pivot, double sizePixels) {
     return view;
 }
 
-TransformModifiers transformModifiers(const Preset& preset, const InputEvent& event) {
-    TransformModifiers result;
-    const auto it = preset.bindings.find("snap.suspend");
+bool actionModifier(const Preset& preset, const InputEvent& event, ActionId action) {
+    const auto it = preset.bindings.find(action);
     if (it != preset.bindings.end()) {
         if (const auto* chords = std::get_if<std::vector<KeyChord>>(&it->second.value)) {
             for (const auto& chord : *chords) {
-                if (chord.key == "Ctrl") { result.suspend = event.ctrl; break; }
-                if (chord.key == "Alt") { result.suspend = event.alt; break; }
-                if (chord.key == "Shift") { result.suspend = event.shift; break; }
+                if (chord.key == "Ctrl") return event.ctrl;
+                if (chord.key == "Alt") return event.alt;
+                if (chord.key == "Shift") return event.shift;
             }
         }
     }
+    return false;
+}
+TransformModifiers transformModifiers(const Preset& preset, const InputEvent& event) {
+    TransformModifiers result;
+    result.suspend = actionModifier(preset, event, "snap.suspend");
     result.fine = event.shift;
     return result;
 }

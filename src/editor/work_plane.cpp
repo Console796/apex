@@ -90,6 +90,7 @@ std::optional<SurfacePlane> planeFromFace(const document::Document& doc, NodeId 
 
 void WorkPlaneState::setHovered(std::optional<SurfacePlane> plane) { hovered_ = std::move(plane); }
 void WorkPlaneState::pinHovered() { if (hovered_) pinned_ = hovered_; }
+void WorkPlaneState::pin(const SurfacePlane& plane) { pinned_ = plane; }
 void WorkPlaneState::pinAxisPlane(Axis axis, DVec3 through) {
     DVec3 normal{0.0};
     normal[axis == Axis::X ? 0 : axis == Axis::Y ? 1 : 2] = 1.0;

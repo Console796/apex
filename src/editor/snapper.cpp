@@ -17,8 +17,8 @@ SnapResult Snapper::snap(Ray ray, const ToolView& view, const SnapRequest& reque
             return SnapResult{feature.point, kind, feature.node, feature.side};
         };
         if (features.vertex) return result(*features.vertex, SnapKind::Vertex);
-        if (features.midpoint) return result(*features.midpoint, SnapKind::EdgeMidpoint);
-        if (features.edge) return result(*features.edge, SnapKind::Edge);
+        if (request.edges && features.midpoint) return result(*features.midpoint, SnapKind::EdgeMidpoint);
+        if (request.edges && features.edge) return result(*features.edge, SnapKind::Edge);
     }
     if (suspended && hit && !request.plane) return {hit->point, SnapKind::Surface, hit->node, hit->side};
 

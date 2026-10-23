@@ -32,7 +32,11 @@ private:
     std::map<InputSource, Gesture> gestures_;
     std::optional<InputSource> current_;
     std::optional<double> lastHeight_;
+    std::optional<SurfacePlane> lastPlane_;
+    std::map<InputSource, bool> hoverSuspended_;
+    bool hoveringLastPlane_ = false;
     Preview preview_;
+    SurfacePlane basePlane(const ToolView& view, bool* remembered = nullptr) const;
     void rebuild(Gesture& gesture);
     void updateGhosts();
     void drop(InputSource source); // forget() plus a notify, for input paths.

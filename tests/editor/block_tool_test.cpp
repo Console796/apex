@@ -505,3 +505,134 @@ TEST_CASE("block forget and idle cancel never notify observers") {
     CHECK(notifications > 0);
     CHECK(scene.session.preview().empty());
 }
+
+TEST_CASE("block corners skip edges and off-grid midpoints") {
+    for (const auto target : {DVec3{48, 12, 0}, DVec3{48, 30, 0}}) {
+        Scene scene;
+        addBox(scene.doc, {50, 2, -16}, {90, 58, 0});
+        auto press = event(InputKind::Press);
+        REQUIRE(scene.session.input(press, viewAt({0, -32, 0}, floorPlane, true)));
+        auto release = event(InputKind::Release);
+        REQUIRE(scene.session.input(release, viewAt(target, floorPlane, true)));
+        key(scene.session, "Enter");
+        const auto bounds = selectedPoly(scene.session).bounds();
+        checkPoint(bounds.max, {48, std::round(target.y / 8) * 8, 64});
+    }
+}
+
+TEST_CASE("block remembers its committed plane with surface pin and ortho priority") {
+    for (int next = 0; next < 6; ++next) {
+        CAPTURE(next);
+        Scene scene;
+        const auto slope = addSurface(scene, 2);
+        draw(scene.session, slope, {0, 0}, {32, 48});
+        key(scene.session, "Enter");
+        if (next == 5) {
+            REQUIRE(scene.session.perform("tool.select"));
+            REQUIRE(scene.session.perform("tool.block"));
+        }
+        auto target = slope.origin + slope.uAxis * 400.0 + slope.vAxis * 400.0;
+        auto view = viewAt(target, slope);
+        auto expected = slope;
+        if (next == 1) {
+            addBox(scene.doc, {300, 300, -64}, {500, 500, 0});
+            target = {400, 400, 0};
+            view = viewAt(target, floorPlane);
+            expected = floorPlane;
+        } else if (next == 2) {
+            expected = floorPlane;
+            expected.origin.z = 200;
+            scene.session.pinWorkPlane(expected);
+        } else if (next == 3) {
+            view = viewAt({400, 400, 0}, floorPlane, true);
+            expected = floorPlane;
+        } else if (next == 4) {
+            key(scene.session, "Escape");
+            expected = floorPlane;
+        }
+        scene.session.input(event(InputKind::Move), view);
+        const auto hover = scene.session.activeToolObject().overlay(view, 1);
+        REQUIRE(hover.worldPoints.size() == 1);
+        CHECK(glm::dot(hover.worldPoints[0].position - expected.origin, expected.normal) == doctest::Approx(0).epsilon(1e-6));
+        if (next == 0 || next == 5)
+            CHECK(scene.session.activeToolObject().readout().status == "Drag base (last plane; Esc clears)");
+        REQUIRE(scene.session.input(event(InputKind::Press), view));
+        const auto start = scene.session.activeToolObject().overlay(view, 1);
+        REQUIRE(start.worldPoints.size() == 1);
+        checkPoint(start.worldPoints[0].position, hover.worldPoints[0].position);
+        view.cursorRay.origin += expected.uAxis * 32.0 + expected.vAxis * 48.0;
+        REQUIRE(scene.session.input(event(InputKind::Release), view));
+        REQUIRE(scene.session.preview().ghosts().size() == 1);
+        const auto& poly = scene.session.preview().ghosts()[0].poly;
+        const auto base = std::ranges::find_if(poly.faces, [&](const auto& face) {
+            return glm::dot(face.plane.normal, -expected.normal) > 1.0 - 1e-6 &&
+                std::abs(face.plane.dist + glm::dot(expected.origin, expected.normal)) < 1e-6;
+        });
+        CHECK(base != poly.faces.end());
+    }
+}
+
+TEST_CASE("block plane pick follows the preset pins the clicked face and unpins empty space") {
+    for (const auto* preset : {&hammerPreset(), &blenderPreset()}) {
+        Scene scene;
+        scene.session.setPreset(*preset);
+        const auto slope = addSurface(scene, 2);
+        // Deliberately leave hover on another plane: the click ray owns the pick.
+        scene.session.pointerHover(viewAt({1000, 1000, 0}, floorPlane).cursorRay);
+        const auto undo = scene.doc.undoCount();
+        auto pick = event(InputKind::Press);
+        pick.ctrl = preset == &hammerPreset();
+        pick.alt = preset == &blenderPreset();
+        REQUIRE(scene.session.input(pick, viewAt({0, 0, 0}, slope)));
+        REQUIRE(scene.session.resolvedWorkPlane());
+        CHECK(scene.session.resolvedWorkPlane()->source == WorkPlaneSource::Pinned);
+        checkPoint(scene.session.resolvedWorkPlane()->plane.normal, slope.normal);
+        CHECK_FALSE(scene.session.activeToolObject().owns(1));
+        CHECK(scene.session.preview().empty());
+        CHECK(scene.doc.undoCount() == undo);
+        addBox(scene.doc, {300, 300, -64}, {500, 500, 0});
+        auto view = viewAt({400, 400, 0}, floorPlane);
+        REQUIRE(scene.session.input(event(InputKind::Press), view));
+        const auto overlay = scene.session.activeToolObject().overlay(view, 1);
+        REQUIRE(overlay.worldPoints.size() == 1);
+        CHECK(glm::dot(overlay.worldPoints[0].position, slope.normal) == doctest::Approx(0).epsilon(1e-6));
+        view.cursorRay.origin += slope.uAxis * 32.0 + slope.vAxis * 48.0;
+        REQUIRE(scene.session.input(event(InputKind::Release), view));
+        REQUIRE(scene.session.preview().ghosts().size() == 1);
+        const auto& poly = scene.session.preview().ghosts()[0].poly;
+        CHECK(std::ranges::any_of(poly.faces, [&](const auto& face) {
+            return glm::dot(face.plane.normal, -slope.normal) > 1.0 - 1e-6 && std::abs(face.plane.dist) < 1e-6;
+        }));
+        key(scene.session, "Escape"); // Gesture first, pin remains.
+        CHECK(scene.session.workPlane().pinned());
+        REQUIRE(scene.session.input(pick, viewAt({2000, 2000, 0}, floorPlane)));
+        CHECK_FALSE(scene.session.workPlane().pinned());
+        CHECK_FALSE(scene.session.activeToolObject().owns(1));
+        REQUIRE(scene.session.input(pick, viewAt({0, 0, 0}, slope)));
+        auto escape = event(InputKind::KeyDown);
+        escape.key = "Escape";
+        escape.chord = *KeyChord::parse("Escape");
+        REQUIRE(scene.session.input(escape, {}));
+        CHECK_FALSE(scene.session.workPlane().pinned());
+    }
+}
+
+TEST_CASE("block idle hover follows the preset snap suspension") {
+    for (const auto* preset : {&hammerPreset(), &blenderPreset()}) {
+        Scene scene;
+        scene.session.setPreset(*preset);
+        const auto view = viewAt({29.25, 43.5, 0}, floorPlane);
+        auto move = event(InputKind::Move);
+        scene.session.input(move, view);
+        auto overlay = scene.session.activeToolObject().overlay(view, 1);
+        REQUIRE(overlay.worldPoints.size() == 1);
+        checkPoint(overlay.worldPoints[0].position, {32, 40, 0});
+        CHECK(overlay.labels[0].text == "grid");
+        suspend(move, *preset);
+        scene.session.input(move, view);
+        overlay = scene.session.activeToolObject().overlay(view, 1);
+        REQUIRE(overlay.worldPoints.size() == 1);
+        checkPoint(overlay.worldPoints[0].position, {29.25, 43.5, 0});
+        CHECK(overlay.labels[0].text == "surface");
+    }
+}

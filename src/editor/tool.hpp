@@ -49,6 +49,7 @@ struct ToolView {
 // Logical pixels, y down; perspective rejects points on or behind the camera plane.
 std::optional<DVec2> worldToPixel(const ToolView& view, DVec3 point);
 GizmoView gizmoViewFor(const ToolView& view, DVec3 pivot, double sizePixels = 80.0);
+bool actionModifier(const Preset& preset, const InputEvent& event, ActionId action);
 TransformModifiers transformModifiers(const Preset& preset, const InputEvent& event);
 
 // Pixel sizes and offsets are logical pixels. Existing segments/triangles stay always on top.

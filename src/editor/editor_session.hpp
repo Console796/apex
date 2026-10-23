@@ -68,12 +68,13 @@ public:
     const WorkPlaneState& workPlane() const { return workPlane_; }
     std::optional<WorkPlaneState::Resolved> resolvedWorkPlane() const { return workPlane_.resolve(); }
     void pinWorkPlane();
+    void pinWorkPlane(const SurfacePlane& plane);
     void pinAxisWorkPlane(Axis axis, DVec3 through);
     void unpinWorkPlane();
     double gridSize() const { return gridSize_; }
     void setGridSize(double units);
     SnapResult snap(Ray ray, const ToolView& view, bool suspended = false,
-                    std::optional<SurfacePlane> plane = {}) const;
+                    std::optional<SurfacePlane> plane = {}, bool edges = true) const;
     void pointerClick(Ray ray, Modifiers modifiers = {}, bool sameSpot = false);
     void marquee(std::span<const Plane> planes, Modifiers modifiers = {});
     void selectNode(NodeId node, Modifiers modifiers = {});

@@ -19,7 +19,7 @@ struct Corner {
 };
 std::optional<Corner> corner(EditorSession& session, Ray ray, const ToolView& view,
                              const SurfacePlane& plane, bool suspended) {
-    const auto snapped = session.snap(ray, view, suspended, plane);
+    const auto snapped = session.snap(ray, view, suspended, plane, false);
     if (snapped.kind == SnapKind::None) return {};
     const auto projected = snapped.point - plane.normal * glm::dot(snapped.point - plane.origin, plane.normal);
     const auto relative = projected - plane.origin;
@@ -41,6 +41,35 @@ std::string number(double value) {
     text << value;
     return text.str();
 }
+}
+
+SurfacePlane BlockTool::basePlane(const ToolView& view, bool* remembered) const {
+    auto resolved = session_.workPlane().resolve();
+    auto plane = resolved && session_.workPlane().pinned() ? resolved->plane : session_.fallbackPlane();
+    if (remembered) *remembered = false;
+    if (view.orthographic && !session_.workPlane().pinned() &&
+        glm::dot(plane.normal, -view.cameraForward) < 1.0 - 1e-6) {
+        const auto forward = glm::abs(view.cameraForward);
+        const auto axis = forward.z >= forward.x && forward.z >= forward.y ? Axis::Z
+            : forward.x >= forward.y ? Axis::X : Axis::Y;
+        WorkPlaneState fallback;
+        fallback.pinAxisPlane(axis, session_.fallbackPlane().origin);
+        plane = fallback.resolve()->plane;
+        if (glm::dot(plane.normal, view.cameraForward) > 0.0) {
+            plane.normal = -plane.normal;
+            plane.vAxis = -plane.vAxis;
+        }
+    }
+    if (!view.orthographic && !session_.workPlane().pinned()) {
+        if (const auto hit = session_.picks().first(view.cursorRay); hit && hit->side) {
+            if (auto surface = planeFromFace(*session_.document(), hit->node, *hit->side)) return *surface;
+        }
+        if (lastPlane_) {
+            plane = *lastPlane_;
+            if (remembered) *remembered = true;
+        }
+    }
+    return plane;
 }
 
 void BlockTool::rebuild(Gesture& g) {
@@ -88,6 +117,7 @@ void BlockTool::cancel() {
 // The viewport picks the preview up by revision on its next frame.
 void BlockTool::forget(InputSource source) {
     if (current_ == source) current_.reset();
+    hoverSuspended_.erase(source);
     if (gestures_.erase(source)) updateGhosts();
 }
 void BlockTool::drop(InputSource source) {
@@ -111,6 +141,7 @@ bool BlockTool::commit(InputSource source) {
         session_.selection().replace(selected);
     });
     lastHeight_ = height;
+    lastPlane_ = it->second.plane;
     drop(source);
     return true;
 }
@@ -130,7 +161,13 @@ Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
     current_ = source;
     auto it = gestures_.find(source);
     if (event.kind == InputKind::KeyDown && event.key == "Escape") {
-        drop(source);
+        if (it != gestures_.end()) drop(source);
+        else if (session_.workPlane().pinned()) return false;
+        else if (lastPlane_) {
+            lastPlane_.reset();
+            hoveringLastPlane_ = false;
+            publish();
+        }
         return true;
     }
     if (event.kind == InputKind::Press && event.button == PointerButton::Right) {
@@ -142,6 +179,20 @@ Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
         return true;
     }
     if (event.navigating) return false;
+    if (event.kind == InputKind::Press && event.button == PointerButton::Left &&
+        actionModifier(session_.preset(), event, "block.pick_plane")) {
+        drop(source);
+        if (const auto hit = session_.picks().first(view.cursorRay); hit && hit->side) {
+            if (const auto plane = planeFromFace(*session_.document(), hit->node, *hit->side))
+                session_.pinWorkPlane(*plane);
+        } else session_.unpinWorkPlane();
+        return true;
+    }
+    if (it == gestures_.end()) {
+        hoverSuspended_[source] = transformModifiers(session_.preset(), event).suspend;
+        basePlane(view, &hoveringLastPlane_);
+        if (event.kind == InputKind::Move || event.modifierKey) publish();
+    }
     if (it != gestures_.end() && it->second.stage == Stage::Height) {
         auto& g = it->second;
         if ((event.kind == InputKind::Press && event.button == PointerButton::Left) ||
@@ -185,26 +236,7 @@ Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
     }
     const bool suspended = transformModifiers(session_.preset(), event).suspend;
     if (event.kind == InputKind::Press && event.button == PointerButton::Left) {
-        auto resolved = session_.workPlane().resolve();
-        auto plane = resolved && (!view.orthographic || session_.workPlane().pinned())
-            ? resolved->plane : session_.fallbackPlane();
-        if (view.orthographic && !session_.workPlane().pinned() &&
-            glm::dot(plane.normal, -view.cameraForward) < 1.0 - 1e-6) {
-            const auto forward = glm::abs(view.cameraForward);
-            const auto axis = forward.z >= forward.x && forward.z >= forward.y ? Axis::Z
-                : forward.x >= forward.y ? Axis::X : Axis::Y;
-            WorkPlaneState fallback;
-            fallback.pinAxisPlane(axis, session_.fallbackPlane().origin);
-            plane = fallback.resolve()->plane;
-            if (glm::dot(plane.normal, view.cameraForward) > 0.0) {
-                plane.normal = -plane.normal;
-                plane.vAxis = -plane.vAxis;
-            }
-        }
-        if (!view.orthographic && !session_.workPlane().pinned()) {
-            if (const auto hit = session_.picks().first(view.cursorRay); hit && hit->side)
-                if (auto surface = planeFromFace(*session_.document(), hit->node, *hit->side)) plane = *surface;
-        }
+        const auto plane = basePlane(view);
         const auto start = corner(session_, view.cursorRay, view, plane, suspended);
         if (!start) return true;
         Gesture g;
@@ -247,10 +279,19 @@ Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
     }
     return false;
 }
-ToolOverlay BlockTool::overlay(const ToolView&, InputSource source) const {
+ToolOverlay BlockTool::overlay(const ToolView& view, InputSource source) const {
     ToolOverlay result;
     const auto it = gestures_.find(source);
-    if (it == gestures_.end()) return result;
+    if (it == gestures_.end()) {
+        if (!session_.document()) return result;
+        const auto hover = hoverSuspended_.find(source);
+        if (const auto start = corner(session_, view.cursorRay, view, basePlane(view),
+                                      hover != hoverSuspended_.end() && hover->second)) {
+            result.worldPoints.push_back({start->projected, {1.0f, 0.65f, 0.15f, 1.0f}, 7.0f});
+            result.labels.push_back({start->projected, snapName(start->kind), {8, -8}});
+        }
+        return result;
+    }
     const auto& g = it->second;
     if (!g.dragging && g.stage == Stage::Base) return result;
     const std::array<DVec2, 4> corners{g.start, {g.end.x, g.start.y}, g.end, {g.start.x, g.end.y}};
@@ -268,7 +309,8 @@ ToolOverlay BlockTool::overlay(const ToolView&, InputSource source) const {
 }
 ToolReadout BlockTool::readout() const {
     const auto it = current_ ? gestures_.find(*current_) : gestures_.end();
-    std::string status = "Drag base";
+    std::string status = it == gestures_.end() && hoveringLastPlane_ && lastPlane_ && !session_.workPlane().pinned()
+        ? "Drag base (last plane; Esc clears)" : "Drag base";
     if (it != gestures_.end() && it->second.stage == Stage::Height) {
         const auto& g = it->second;
         status = "Height: " + (g.typed.empty() ? number(g.height) : g.typed);

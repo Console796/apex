@@ -100,6 +100,10 @@ void EditorSession::pinWorkPlane() {
     workPlane_.pinHovered();
     notify();
 }
+void EditorSession::pinWorkPlane(const SurfacePlane& plane) {
+    workPlane_.pin(plane);
+    notify();
+}
 void EditorSession::pinAxisWorkPlane(Axis axis, DVec3 through) {
     workPlane_.pinAxisPlane(axis, through);
     notify();
@@ -110,12 +114,12 @@ void EditorSession::unpinWorkPlane() {
     notify();
 }
 SnapResult EditorSession::snap(Ray ray, const ToolView& view, bool suspended,
-                               std::optional<SurfacePlane> plane) const {
+                               std::optional<SurfacePlane> plane, bool edges) const {
     if (!document_ || !picks_) return {};
     auto settings = snap_;
     settings.gridSize = gridSize_;
     return Snapper(*document_, *picks_, workPlane_, settings, fallbackPlane_).snap(
-        ray, view, {suspended, std::move(plane)});
+        ray, view, {suspended, std::move(plane), edges});
 }
 
 void EditorSession::setGridSize(double units) {

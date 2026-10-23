@@ -31,7 +31,7 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 58);
+    REQUIRE(registry.entries().size() == 59);
     CHECK(registry.entries().front().id == "edit.undo");
     CHECK(registry.entries().back().id == "workspace.previous");
     std::set<ActionId> ids;
@@ -110,7 +110,7 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
         {"Ctrl+W", "selection.ignore_groups"}, {"H", "view.hide"},
         {"Ctrl+M", "transform.dialog"}, {"[", "grid.smaller"}, {"]", "grid.larger"},
         {"Alt+P", "workplane.pin"},
-        {"Ctrl+Z", "edit.undo"}, {"Ctrl+Y", "edit.redo"}, {"Alt", "snap.suspend"},
+        {"Ctrl+Z", "edit.undo"}, {"Ctrl+Y", "edit.redo"}, {"Alt", "snap.suspend"}, {"Ctrl", "block.pick_plane"},
     });
     checkBindings(hammerPreset(), {
         {"W", "gizmo.mode.translate"}, {"E", "gizmo.mode.rotate"}, {"R", "gizmo.mode.scale"},
@@ -145,7 +145,7 @@ TEST_CASE("Blender preset follows D15 including alternatives and held snap modif
         {"Shift+D", "edit.duplicate"}, {"X", "edit.delete"}, {"Delete", "edit.delete"},
         {"Ctrl+G", "edit.group"}, {"G", "transform.modal.grab"},
         {"R", "transform.modal.rotate"}, {"S", "transform.modal.scale"},
-        {"Ctrl", "snap.suspend"}, {"Ctrl+Z", "edit.undo"}, {"Ctrl+Shift+Z", "edit.redo"},
+        {"Ctrl", "snap.suspend"}, {"Alt", "block.pick_plane"}, {"Ctrl+Z", "edit.undo"}, {"Ctrl+Shift+Z", "edit.redo"},
         {"Alt+Space", "gizmo.space.toggle"}, {"Shift+Tab", "snap.mode.toggle"},
     });
     for (const auto& [id, binding] : blenderPreset().bindings) {
