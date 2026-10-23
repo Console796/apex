@@ -31,9 +31,9 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 54);
+    REQUIRE(registry.entries().size() == 57);
     CHECK(registry.entries().front().id == "edit.undo");
-    CHECK(registry.entries().back().id == "nudge.down");
+    CHECK(registry.entries().back().id == "workspace.previous");
     std::set<ActionId> ids;
     for (std::size_t i = 0; i < registry.entries().size(); ++i) {
         const auto& action = registry.entries()[i];

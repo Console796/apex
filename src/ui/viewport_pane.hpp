@@ -114,8 +114,13 @@ private:
     std::uint32_t lastTraceRecreates_ = 0;
 };
 
-// A pane in the splitter tree: a header strip (title and the pane menu) above the Vulkan
-// container. When no GPU is available the body is an explanatory label instead.
+// "Select · Objects · Move" / "Entity · info_player_start": the editor's current mode, shown in
+// the pane badge and the status bar.
+QString modeSummary(const editor::EditorSession& session);
+
+// A viewport area in the splitter tree: a header strip (role switcher, title, mode badge, collapse
+// and the pane menu) above the Vulkan container. When no GPU is available the body is an
+// explanatory label instead.
 class PaneFrame final : public QFrame {
     Q_OBJECT
 public:
@@ -130,6 +135,7 @@ public:
     QWidget* container() const { return container_; }
     void setActive(bool active);
     void refreshTitle();
+    void setModeText(const QString& text, bool entityTool);
     void restyle();
     QMenu* menu() const { return menu_; }
 
@@ -139,6 +145,8 @@ signals:
     void closeRequested(viewport::NodeId pane);
     void maximizeToggled(viewport::NodeId pane);
     void activated(viewport::NodeId pane);
+    void roleRequested(viewport::NodeId pane, viewport::AreaRole role);
+    void collapseRequested(viewport::NodeId pane);
 
 private:
     void buildMenu();
@@ -148,6 +156,7 @@ private:
     PaneWindow* window_;
     QWidget* container_ = nullptr;
     QLabel* title_ = nullptr;
+    QLabel* mode_ = nullptr;
     QToolButton* menuButton_ = nullptr;
     QMenu* menu_ = nullptr;
     bool active_ = false;

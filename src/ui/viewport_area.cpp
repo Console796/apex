@@ -21,6 +21,7 @@
 
 #include "core/log.hpp"
 #include "editor/selection_expand.hpp"
+#include "ui/area_frame.hpp"
 #include "ui/gpu_host.hpp"
 #include "ui/input_log.hpp"
 #include "ui/theme.hpp"
@@ -65,6 +66,11 @@ void clearColourFor(const Tokens& t, float out[4]) {
     out[3] = 1.0f;
 }
 
+bool fullyCollapsed(const viewport::LayoutNode& node) {
+    if (node.leaf) return node.collapsed;
+    return std::ranges::all_of(node.children, fullyCollapsed);
+}
+
 }  // namespace
 
 class AreaSplitter final : public QSplitter {
@@ -73,6 +79,7 @@ public:
     using QSplitter::moveSplitter;
     ViewportArea* area() const { return area_; }
     viewport::NodeId node = 0;
+    bool locked = false;  // One side is a collapsed strip: the bar stays put.
 
 protected:
     QSplitterHandle* createHandle() override;
@@ -89,6 +96,10 @@ public:
 
 protected:
     void mousePressEvent(QMouseEvent* e) override {
+        if (splitter_->locked) {
+            e->accept();
+            return;
+        }
         if (e->button() == Qt::LeftButton &&
             splitter_->area()->beginHandleDrag(splitter_, this, *e)) {
             e->accept();
@@ -97,7 +108,7 @@ protected:
         QSplitterHandle::mousePressEvent(e);
     }
     void mouseMoveEvent(QMouseEvent* e) override {
-        if (splitter_->area()->handleDragging()) return;
+        if (splitter_->area()->handleDragging() || splitter_->locked) return;
         if (e->buttons() == Qt::NoButton) {
             const bool junction = !splitter_->area()->junctionAt(splitter_, this, e->position()).empty();
             setCursor(junction ? Qt::SizeAllCursor : orientation() == Qt::Horizontal ? Qt::SplitHCursor : Qt::SplitVCursor);
@@ -130,6 +141,7 @@ ViewportArea::~ViewportArea() {
     endHandleDrag();
     setEditorSession(nullptr);
     timer_.stop();
+    for (auto& [role, window] : floating_) delete window.data();
     // Panes (and their swapchains) must go before the GPU host.
     delete body_;
     body_ = nullptr;
@@ -143,16 +155,91 @@ void ViewportArea::setDocument(document::Document* document, const assets::GameP
     forceDraw_ = true;
     for (auto& [id, f] : frames_)
         if (f && f->window()) f->window()->requestRedraw();
+    for (auto& [id, p] : panels_) setPanelDocument(p, document_);
+    for (auto& [role, w] : floating_)
+        if (w) setPanelDocument(w->panel(), document_);
 }
 
 void ViewportArea::setEditorSession(editor::EditorSession* session) {
     if (session_) session_->unobserve(sessionObserver_);
     session_ = session;
     previewRevision_ = kNoPreview;
-    if (session_) sessionObserver_ = session_->observe([this] { updateHighlight(); });
+    if (session_) sessionObserver_ = session_->observe([this] {
+        updateHighlight();
+        updateModeBadges();
+    });
     for (auto& [id, frame] : frames_)
         if (frame && frame->window()) frame->window()->setEditorSession(session_);
+    for (auto& [id, p] : panels_) setPanelSession(p, session_);
+    for (auto& [role, w] : floating_)
+        if (w) setPanelSession(w->panel(), session_);
     updateHighlight();
+    updateModeBadges();
+}
+
+void ViewportArea::setRole(viewport::NodeId pane, viewport::AreaRole role) {
+    if (layout_.role(pane) == role || !layout_.setRole(pane, role)) return;
+    scheduleRebuild();
+    emit layoutChanged();
+}
+
+void ViewportArea::setCollapsed(viewport::NodeId pane, bool collapsed) {
+    if (layout_.collapsed(pane) == collapsed) return;
+    if (!layout_.setCollapsed(pane, collapsed)) {
+        log::info("areas: the last expanded area cannot be collapsed");
+        return;
+    }
+    scheduleRebuild();
+    emit layoutChanged();
+}
+
+QWidget* ViewportArea::panel(viewport::NodeId pane) const {
+    const auto it = panels_.find(pane);
+    return it == panels_.end() ? nullptr : it->second.data();
+}
+
+FloatingPanel* ViewportArea::floating(viewport::AreaRole role) const {
+    const auto it = floating_.find(role);
+    return it == floating_.end() ? nullptr : it->second.data();
+}
+
+QWidget* ViewportArea::showRole(viewport::AreaRole role, bool window) {
+    if (role == viewport::AreaRole::Viewport) return nullptr;
+    if (const auto ids = layout_.paneIds(role); !window && !ids.empty()) {
+        const auto pane = ids.front();
+        bool changed = false;
+        if (layout_.collapsed(pane)) changed = layout_.setCollapsed(pane, false).has_value();
+        if (const auto max = layout_.maximized(); max && *max != pane) {
+            layout_.restore();
+            changed = true;
+        }
+        if (changed) {
+            rebuild();
+            emit layoutChanged();
+        }
+        auto* shown = panel(pane);
+        if (shown) shown->setFocus(Qt::OtherFocusReason);
+        return shown;
+    }
+    auto* w = popOut(role);
+    return w ? w->panel() : nullptr;
+}
+
+FloatingPanel* ViewportArea::popOut(viewport::AreaRole role) {
+    if (role == viewport::AreaRole::Viewport) return nullptr;  // Native Vulkan windows stay docked (D15).
+    auto& slot = floating_[role];
+    if (!slot) slot = new FloatingPanel(role, createPanel(role, document_, session_), window());
+    slot->show();
+    slot->raise();
+    slot->activateWindow();
+    return slot;
+}
+
+void ViewportArea::updateModeBadges() {
+    const QString text = session_ ? modeSummary(*session_) : QString();
+    const bool entity = session_ && session_->activeTool() == editor::EditorSession::Tool::Entity;
+    for (auto& [id, frame] : frames_)
+        if (frame) frame->setModeText(text, entity);
 }
 
 void ViewportArea::updateHighlight() {
@@ -240,15 +327,37 @@ void ViewportArea::rebuild() {
         gpuReason_ = gpuReady_ ? QString() : host_->error();
         if (!gpuReady_) log::warn("viewports: no GPU rendering ({})", gpuReason_.toStdString());
     }
+    // Take the panels back before the frames go; drop those whose leaf is gone or changed role.
+    for (auto it = panels_.begin(); it != panels_.end();) {
+        auto* p = it->second.data();
+        const bool keep = p && layout_.hasPane(it->first) &&
+                          p->property("areaRole").toString() == QLatin1String(viewport::nameOf(layout_.role(it->first)));
+        if (p) {
+            p->hide();
+            p->setParent(this);
+        }
+        if (!keep) {
+            delete p;
+            it = panels_.erase(it);
+        } else {
+            ++it;
+        }
+    }
     delete body_;
     body_ = nullptr;
     frames_.clear();
 
     const auto tree = layout_.tree();
     if (const auto max = layout_.maximized(); max && layout_.hasPane(*max)) {
-        body_ = makeFrame(*max, true, true);
+        const auto find = [](const auto& self, const viewport::LayoutNode& n, viewport::NodeId id) -> const viewport::LayoutNode* {
+            if (n.id == id) return &n;
+            for (const auto& c : n.children)
+                if (const auto* hit = self(self, c, id)) return hit;
+            return nullptr;
+        };
+        body_ = makeArea(*find(find, tree, *max), true, true, false);
     } else {
-        body_ = build(tree, layout_.paneCount() > 1);
+        body_ = build(tree, layout_.paneCount() > 1, false);
     }
     layout()->addWidget(body_);
     body_->show();
@@ -256,16 +365,27 @@ void ViewportArea::rebuild() {
     forceDraw_ = true;
 }
 
-QWidget* ViewportArea::build(const viewport::LayoutNode& node, bool canClose) {
-    if (node.leaf) return makeFrame(node.id, false, canClose);
-    auto* splitter = new AreaSplitter(node.orientation == viewport::Orientation::Horizontal ? Qt::Horizontal : Qt::Vertical, this);
+QWidget* ViewportArea::build(const viewport::LayoutNode& node, bool canClose, bool verticalStrip) {
+    if (node.leaf) return makeArea(node, false, canClose, verticalStrip);
+    const bool horizontal = node.orientation == viewport::Orientation::Horizontal;
+    auto* splitter = new AreaSplitter(horizontal ? Qt::Horizontal : Qt::Vertical, this);
     splitter->node = node.id;
     splitter->setChildrenCollapsible(false);
     splitter->setHandleWidth(currentTokens().splitterWidth);
     const viewport::NodeId id = node.id;
-    for (const auto& child : node.children) splitter->addWidget(build(child, canClose));
+    const bool folded[2] = {fullyCollapsed(node.children[0]), fullyCollapsed(node.children[1])};
+    for (int i = 0; i < 2; ++i) {
+        // A side that collapses entirely, beside one that does not, folds along this split's axis.
+        const bool strip = folded[i] && !folded[1 - i] ? horizontal : verticalStrip;
+        splitter->addWidget(build(node.children[static_cast<std::size_t>(i)], canClose, strip));
+    }
     const int total = 10000;
     const int first = std::clamp(static_cast<int>(node.ratio * total), 1, total - 1);
+    if (folded[0] != folded[1]) {
+        splitter->locked = true;  // The ratio is kept for when the side expands again.
+        splitter->setSizes(folded[0] ? QList<int>{0, total} : QList<int>{total, 0});
+        return splitter;
+    }
     splitter->setSizes({first, total - first});
     connect(splitter, &QSplitter::splitterMoved, this, [this, splitter, id] {
         const auto sizes = splitter->sizes();
@@ -493,6 +613,49 @@ bool ViewportArea::eventFilter(QObject* watched, QEvent* event) {
     }
 }
 
+// The area signals PaneFrame and PanelFrame share.
+template <typename Frame> void ViewportArea::connectArea(Frame* frame) {
+    connect(frame, &Frame::splitRequested, this, [this](viewport::NodeId p, viewport::Orientation o) {
+        if (layout_.split(p, o)) {
+            scheduleRebuild();
+            emit layoutChanged();
+        }
+    });
+    connect(frame, &Frame::closeRequested, this, [this](viewport::NodeId p) {
+        if (layout_.close(p)) {
+            scheduleRebuild();
+            emit layoutChanged();
+        }
+    });
+    connect(frame, &Frame::maximizeToggled, this, [this](viewport::NodeId p) {
+        layout_.toggleMaximize(p);
+        scheduleRebuild();
+        emit layoutChanged();
+    });
+    connect(frame, &Frame::roleRequested, this, &ViewportArea::setRole);
+    connect(frame, &Frame::collapseRequested, this, [this](viewport::NodeId p) { setCollapsed(p, true); });
+}
+
+QWidget* ViewportArea::makeArea(const viewport::LayoutNode& node, bool maximized, bool canClose, bool verticalStrip) {
+    if (node.collapsed && !maximized) {
+        if (node.role != viewport::AreaRole::Viewport) (void)panelFor(node.id, node.role);  // Kept hidden.
+        auto* strip = new CollapsedStrip(node.id, node.role, verticalStrip);
+        connect(strip, &CollapsedStrip::expandRequested, this, [this](viewport::NodeId p) { setCollapsed(p, false); });
+        return strip;
+    }
+    if (node.role == viewport::AreaRole::Viewport) return makeFrame(node.id, maximized, canClose);
+    auto* frame = new PanelFrame(node.id, node.role, panelFor(node.id, node.role), maximized, canClose);
+    connectArea(frame);
+    connect(frame, &PanelFrame::popOutRequested, this, [this](viewport::AreaRole role) { popOut(role); });
+    return frame;
+}
+
+QWidget* ViewportArea::panelFor(viewport::NodeId pane, viewport::AreaRole role) {
+    auto& slot = panels_[pane];
+    if (!slot) slot = createPanel(role, document_, session_);
+    return slot;
+}
+
 PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool canClose) {
     auto accessor = [this, pane]() -> viewport::Viewport* { return layout_.viewport(pane); };
     PaneWindow* window = nullptr;
@@ -505,25 +668,10 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     }
     auto* frame = new PaneFrame(pane, accessor, window, gpuReason_, maximized, canClose);
     frames_[pane] = frame;
+    if (session_) frame->setModeText(modeSummary(*session_), session_->activeTool() == editor::EditorSession::Tool::Entity);
     connect(frame, &PaneFrame::activated, this, &ViewportArea::setActive);
     connect(frame, &PaneFrame::edited, this, [this](viewport::NodeId) { emit layoutChanged(); });
-    connect(frame, &PaneFrame::splitRequested, this, [this](viewport::NodeId p, viewport::Orientation o) {
-        if (layout_.split(p, o)) {
-            scheduleRebuild();
-            emit layoutChanged();
-        }
-    });
-    connect(frame, &PaneFrame::closeRequested, this, [this](viewport::NodeId p) {
-        if (layout_.close(p)) {
-            scheduleRebuild();
-            emit layoutChanged();
-        }
-    });
-    connect(frame, &PaneFrame::maximizeToggled, this, [this](viewport::NodeId p) {
-        layout_.toggleMaximize(p);
-        scheduleRebuild();
-        emit layoutChanged();
-    });
+    connectArea(frame);
     if (window) connect(window, &PaneWindow::cameraChanged, this, &ViewportArea::emitCamera);
     return frame;
 }
@@ -574,7 +722,7 @@ void ViewportArea::resetCameras() {
     const viewport::Preset presets[] = {viewport::Preset::Camera, viewport::Preset::Top, viewport::Preset::Front,
                                       viewport::Preset::Side};
     std::size_t i = 0;
-    for (const auto id : layout_.paneIds()) {
+    for (const auto id : layout_.viewportIds()) {
         if (auto* vp = layout_.viewport(id)) *vp = viewport::makePreset(presets[i % 4]);
         ++i;
     }

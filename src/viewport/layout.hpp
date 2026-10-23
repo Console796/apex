@@ -1,7 +1,8 @@
 #pragma once
 
-// Split-tree layout of viewport panes (plan 0.1, D15/D16). Pure data model: the UI mirrors it
-// into splitters and native child windows. Orientation uses Qt's meaning so the UI maps 1:1:
+// Split-tree layout of the window's areas (plan 0.1, D15/D16; roles in 0.2.12). Pure data model: the
+// UI mirrors it into splitters, native child windows and panels. Orientation uses Qt's meaning so
+// the UI maps 1:1:
 //   Horizontal = children side by side (first left, second right), Vertical = stacked (first top).
 
 #include "core/json.hpp"
@@ -10,6 +11,7 @@
 
 #include <memory>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 namespace apex::viewport {
@@ -17,6 +19,14 @@ namespace apex::viewport {
 using NodeId = int; // Panes and splits share one id space; ids are never reused in a layout.
 
 enum class Orientation { Horizontal, Vertical };
+
+// What a leaf area shows, as in Blender's editor types. Every leaf keeps its Viewport settings
+// whatever its role, so switching an area to a panel and back restores its camera.
+enum class AreaRole { Viewport, Outliner, Inspector, Visgroups, History, Log };
+inline constexpr AreaRole kAreaRoles[] = {AreaRole::Viewport, AreaRole::Outliner, AreaRole::Inspector,
+                                          AreaRole::Visgroups, AreaRole::History, AreaRole::Log};
+const char* nameOf(AreaRole role); // Stable JSON name: "viewport", "outliner", ...
+std::optional<AreaRole> roleFromName(std::string_view name);
 
 struct Rect {
     double x = 0, y = 0, w = 1, h = 1;
@@ -42,6 +52,8 @@ struct LayoutNode {
     bool leaf = true;
     Orientation orientation = Orientation::Horizontal;
     double ratio = 0.5;
+    AreaRole role = AreaRole::Viewport; // Leaf.
+    bool collapsed = false;              // Leaf.
     std::vector<LayoutNode> children;
 };
 
@@ -59,10 +71,20 @@ public:
     static ViewportLayout quad();
 
     std::vector<NodeId> paneIds() const; // Depth-first, first child before second.
+    std::vector<NodeId> paneIds(AreaRole role) const;
+    std::vector<NodeId> viewportIds() const { return paneIds(AreaRole::Viewport); }
     std::size_t paneCount() const;
     bool hasPane(NodeId id) const;
+    // The viewport of a Viewport-role pane; null for other roles (their settings are kept).
     Viewport* viewport(NodeId pane);
     const Viewport* viewport(NodeId pane) const;
+
+    AreaRole role(NodeId pane) const;
+    Result<void> setRole(NodeId pane, AreaRole role);
+    // A collapsed area shows only a strip; its split ratio is kept for when it expands. At least
+    // one area always stays expanded.
+    bool collapsed(NodeId pane) const;
+    Result<void> setCollapsed(NodeId pane, bool collapsed);
 
     // Splits `pane`; the new pane (returned) is a copy of it and comes second. Clears maximize.
     Result<NodeId> split(NodeId pane, Orientation orientation, double ratio = 0.5);
@@ -76,8 +98,9 @@ public:
     std::optional<NodeId> maximized() const { return maximized_; }
     void toggleMaximize(NodeId pane);
 
+    // The active viewport (status bar camera, map views); 0 when no area is a viewport.
     NodeId active() const { return active_; }
-    Result<void> setActive(NodeId pane);
+    Result<void> setActive(NodeId pane); // Viewport-role panes only.
 
     // Pane rectangles inside `area` (only the maximized pane while maximized) and splitters.
     std::vector<PaneRect> layout(Rect area = {0, 0, 1, 1}) const;
@@ -91,6 +114,7 @@ public:
 
 private:
     struct Node;
+    void fixActive();
     std::unique_ptr<Node> root_;
     NodeId nextId_ = 1;
     NodeId active_ = 0;

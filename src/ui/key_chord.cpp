@@ -7,6 +7,9 @@ QKeySequence keySequence(const editor::KeyChord& chord) {
     auto key = chord.key;
     if (key == "BracketLeft") key = "[";
     if (key == "BracketRight") key = "]";
+    if (key == "PageUp") key = "PgUp";      // Qt's portable names.
+    if (key == "PageDown") key = "PgDown";
+    if (key == "Enter") key = "Return";     // The main key; Qt's "Enter" is the keypad one.
     const auto text = std::string(chord.ctrl ? "Ctrl+" : "") + (chord.shift ? "Shift+" : "") +
                       (chord.alt ? "Alt+" : "") + key;
     return QKeySequence(QString::fromStdString(text), QKeySequence::PortableText);

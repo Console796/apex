@@ -177,6 +177,15 @@ QWidget* SettingsDialog::buildGeneralPage() {
     const auto cap = QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt(&valid);
     undoMiB_->setValue(valid ? std::clamp(cap, 16, 8192) : 512);
     form->addRow(tr("Undo memory limit"), undoMiB_);
+
+    inspectorOpens_ = new QComboBox;
+    inspectorOpens_->setObjectName(QStringLiteral("settingsInspectorOpens"));
+    inspectorOpens_->addItem(tr("Workspace area"), false);
+    inspectorOpens_->addItem(tr("Floating window"), true);
+    inspectorOpens_->setCurrentIndex(MainWindow::inspectorInWindow() ? 1 : 0);
+    inspectorOpens_->setToolTip(tr("Where Object properties shows the inspector. Without an inspector area in the "
+                                   "workspace it always opens a window."));
+    form->addRow(tr("Object properties opens in"), inspectorOpens_);
     return page;
 }
 
@@ -519,6 +528,7 @@ bool SettingsDialog::applyAll() {
     const bool darkChosen = theme_->currentData().toInt() == static_cast<int>(Theme::Dark);
     if ((currentTheme() == Theme::Dark) != darkChosen) window_.setTheme(darkChosen ? Theme::Dark : Theme::Light);
     window_.setAutosave(autosave_->isChecked(), autosaveMinutes_->value());
+    MainWindow::setInspectorInWindow(inspectorOpens_->currentData().toBool());
     if (undoMiB_->value() != QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt())
         window_.setUndoCapMiB(undoMiB_->value());
 

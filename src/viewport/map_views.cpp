@@ -204,7 +204,7 @@ double orthoHeightFromZoom(double zoom, double px) { return px / std::max(zoom, 
 double zoomFromOrthoHeight(double height, double px) { return px / std::max(height, 1e-9); }
 
 void applyMapViews(ViewportLayout& layout, const MapViews& views, double px) {
-    const auto ids = layout.paneIds();
+    const auto ids = layout.viewportIds();
     for (std::size_t i = 0; i < views.size() && i < ids.size(); ++i) {
         if (!views[i]) continue;
         auto* vp = layout.viewport(ids[i]);
@@ -228,7 +228,7 @@ void applyMapViews(ViewportLayout& layout, const MapViews& views, double px) {
 
 MapViews captureMapViews(const ViewportLayout& layout, double px) {
     MapViews out;
-    const auto ids = layout.paneIds();
+    const auto ids = layout.viewportIds();
     for (std::size_t i = 0; i < out.size() && i < ids.size(); ++i) {
         const auto& cam = layout.viewport(ids[i])->camera;
         MapView mv;

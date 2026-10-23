@@ -2,6 +2,8 @@
 
 #include "ui/viewport_pane.hpp"
 
+#include "ui/area_frame.hpp"
+
 #include <QActionGroup>
 #include <QCoreApplication>
 #include <QHBoxLayout>
@@ -10,6 +12,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPlatformSurfaceEvent>
+#include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QVulkanInstance>
@@ -592,6 +595,29 @@ double PaneWindow::draw() {
 
 // ---- PaneFrame ----
 
+QString modeSummary(const editor::EditorSession& session) {
+    const auto word = [](const char* text) { return QCoreApplication::translate("apex::ui::modes", text); };
+    const QString sep = QStringLiteral("  \u00b7  ");
+    if (session.activeTool() == editor::EditorSession::Tool::Entity) {
+        const auto& cls = session.currentEntityClass();
+        return word("Entity") + (cls.empty() ? QString() : sep + QString::fromStdString(cls));
+    }
+    QString selection;
+    switch (session.selection().mode()) {
+    case editor::SelectionMode::Groups: selection = word("Groups"); break;
+    case editor::SelectionMode::Objects: selection = word("Objects"); break;
+    case editor::SelectionMode::Solids: selection = word("Solids"); break;
+    case editor::SelectionMode::Faces: selection = word("Faces"); break;
+    }
+    QString gizmo;
+    switch (session.gizmoMode()) {
+    case editor::GizmoMode::Translate: gizmo = word("Move"); break;
+    case editor::GizmoMode::Rotate: gizmo = word("Rotate"); break;
+    case editor::GizmoMode::Scale: gizmo = word("Scale"); break;
+    }
+    return word("Select") + sep + selection + sep + gizmo;
+}
+
 PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindow* window,
                      const QString& unavailableReason, bool maximized, bool canClose, QWidget* parent)
     : QFrame(parent), pane_(pane), accessor_(std::move(accessor)), window_(window),
@@ -604,11 +630,19 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     auto* header = new QWidget;
     header->setObjectName(QStringLiteral("PaneHeader"));
     auto* row = new QHBoxLayout(header);
-    row->setContentsMargins(8, 2, 2, 2);
+    row->setContentsMargins(2, 2, 2, 2);
+    row->addWidget(makeRoleButton(viewport::AreaRole::Viewport,
+                                  [this](viewport::AreaRole role) { emit roleRequested(pane_, role); }, header));
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("PaneTitle"));
     title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);  // A long title must not set the pane's minimum width.
     row->addWidget(title_, 1);
+    mode_ = new QLabel;
+    mode_->setObjectName(QStringLiteral("PaneMode"));
+    mode_->setToolTip(tr("Current editing mode"));
+    mode_->hide();
+    row->addWidget(mode_);
+    row->addWidget(makeCollapseButton([this] { emit collapseRequested(pane_); }, header));
     menuButton_ = new QToolButton;
     menuButton_->setObjectName(QStringLiteral("PaneMenuButton"));
     menuButton_->setText(QString(QChar(0x2630)));
@@ -658,9 +692,11 @@ void PaneFrame::restyle() {
         "#ViewportPane { border: 1px solid %1; background: %2; }"
         "#PaneHeader { background: %2; }"
         "#PaneTitle { color: %3; }"
-        "#PaneUnavailable { color: %3; background: %4; }")
+        "#PaneUnavailable { color: %3; background: %4; }"
+        "#PaneMode { color: %5; background: %6; border-radius: 3px; padding: 1px 8px; margin-right: 4px; }"
+        "#PaneMode[entity=\"true\"] { background: %7; }")
         .arg((active_ ? t.accent : t.border).name(), t.panel.name(), (active_ ? t.text : t.textDim).name(),
-             t.base.name()));
+             t.base.name(), t.textOnAccent.name(), t.accent.name(), t.warn.name()));
 }
 
 void PaneFrame::refreshTitle() {
@@ -669,6 +705,14 @@ void PaneFrame::refreshTitle() {
     QString text = viewName(*vp) + QStringLiteral("  |  ") + modeName(vp->mode);
     if (maximized_) text += tr("  (maximized)");
     title_->setText(text);
+}
+
+void PaneFrame::setModeText(const QString& text, bool entityTool) {
+    mode_->setText(text);
+    mode_->setProperty("entity", entityTool);
+    mode_->style()->unpolish(mode_);
+    mode_->style()->polish(mode_);
+    mode_->setVisible(!text.isEmpty());
 }
 
 void PaneFrame::buildMenu() {
@@ -751,14 +795,9 @@ void PaneFrame::buildMenu() {
     }
 
     menu_->addSeparator();
-    menu_->addAction(tr("Split horizontally (side by side)"), this,
-                     [this] { emit splitRequested(pane_, viewport::Orientation::Horizontal); });
-    menu_->addAction(tr("Split vertically (stacked)"), this,
-                     [this] { emit splitRequested(pane_, viewport::Orientation::Vertical); });
-    menu_->addSeparator();
-    menu_->addAction(maximized_ ? tr("Restore") : tr("Maximize"), this, [this] { emit maximizeToggled(pane_); });
-    auto* close = menu_->addAction(tr("Close pane"), this, [this] { emit closeRequested(pane_); });
-    close->setEnabled(canClose_);
+    addAreaActions(*menu_, {[this](viewport::Orientation o) { emit splitRequested(pane_, o); },
+                            [this] { emit maximizeToggled(pane_); }, {},
+                            [this] { emit closeRequested(pane_); }, maximized_, canClose_});
 }
 
 }  // namespace apex::ui

@@ -19,10 +19,6 @@ class QMenu;
 class QToolButton;
 class QTimer;
 
-namespace ads {
-class CDockManager;
-}
-
 namespace apex::document {
 class Document;
 }
@@ -31,10 +27,8 @@ namespace apex::ui {
 
 class LogPanel;
 class OutlinerPanel;
-class VisgroupPanel;
-class HistoryPanel;
-class InspectorPanel;
 class ViewportArea;
+class WorkspaceBar;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -57,9 +51,16 @@ public:
     const QString& documentPath() const { return path_; }
 
     void setTheme(Theme theme);
-    OutlinerPanel* outliner() const { return outliner_; }
-    LogPanel* logPanel() const { return log_; }
+    // The first outliner/log area of the active workspace (null when it has none).
+    OutlinerPanel* outliner() const;
+    LogPanel* logPanel() const;
     ViewportArea* viewportArea() const { return viewport_; }
+    WorkspaceBar* workspaceBar() const { return workspaces_; }
+    // Preferences: whether Object properties opens the inspector in a floating window rather than
+    // the workspace's inspector area.
+    static bool inspectorInWindow();
+    static void setInspectorInWindow(bool window);
+    void showInspector();
     QComboBox* profilePicker() const { return profileCombo_; }
     QStringList recentFiles() const;
 
@@ -110,7 +111,7 @@ private:
     void refreshClipboardState();
     void updateEditorActions();
     void updateGridStatus();
-    void buildDocks();
+    void buildAreas();
     void buildStatusBar();
     void addRecent(const QString& path);
     void rebuildRecentMenu();
@@ -134,16 +135,10 @@ private:
     QString path_;
     std::vector<assets::GameProfile> profiles_;
 
-    ads::CDockManager* dockManager_ = nullptr;     // Left: outliner.
-    ads::CDockManager* logDockManager_ = nullptr;  // Bottom: log.
     ViewportArea* viewport_ = nullptr;
-    OutlinerPanel* outliner_ = nullptr;
-    VisgroupPanel* visgroups_ = nullptr;
-    HistoryPanel* history_ = nullptr;
-    InspectorPanel* inspector_ = nullptr;
+    WorkspaceBar* workspaces_ = nullptr;
     QComboBox* entityClass_ = nullptr;
     QCheckBox* alignToSurface_ = nullptr;
-    LogPanel* log_ = nullptr;
     QComboBox* profileCombo_ = nullptr;
     QMenu* recentMenu_ = nullptr;
     QMenu* viewMenu_ = nullptr;
@@ -154,6 +149,7 @@ private:
     QLabel* gridLabel_ = nullptr;
     QLabel* planeLabel_ = nullptr;
     QLabel* readoutLabel_ = nullptr;
+    QLabel* modeLabel_ = nullptr;
     QLabel* cameraLabel_ = nullptr;
     QLabel* frameLabel_ = nullptr;
     QLabel* gpuLabel_ = nullptr;

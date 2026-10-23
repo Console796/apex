@@ -36,11 +36,15 @@ namespace apex::ui {
 class GpuHost;
 class PaneFrame;
 class AreaSplitter;
+class FloatingPanel;
 
-// The central viewport area (plan 0.1, D15/D16): the viewport::ViewportLayout split tree mirrored
-// into nested QSplitters, one PaneFrame (header + native Vulkan window) per leaf. It is a plain
-// widget in the main window's central slot, never an ADS dock.
+// The window's area tree (plan 0.1, D15/D16; area roles 0.2.12): the viewport::ViewportLayout split
+// tree mirrored into nested QSplitters. Each leaf takes a role, as in Blender: a Viewport leaf is a
+// PaneFrame (header + native Vulkan window), any other role a PanelFrame around a panel widget,
+// and a collapsed leaf a CollapsedStrip. Panels can also open in their own tool windows.
 //
+// Panel widgets are plain widgets and survive rebuilds (they are kept per leaf while its role
+// stays), so a split or a collapse elsewhere keeps an outliner's expansion and scroll position.
 // Structural changes (split, close, maximize, restoring a layout) rebuild the whole widget tree
 // on the next event-loop turn instead of reparenting: native windows must not be reparented or
 // hidden (the swapchain surface is destroyed silently), and rebuilding keeps the tree exact.
@@ -56,6 +60,18 @@ public:
     document::Document* document() const { return document_; }
     void setEditorSession(editor::EditorSession* session);
     void updateHighlight();
+    void updateModeBadges();
+
+    // Area roles and collapse (rebuild on the next event-loop turn).
+    void setRole(viewport::NodeId pane, viewport::AreaRole role);
+    void setCollapsed(viewport::NodeId pane, bool collapsed);
+    // Reveals a role: its first area (expanded, un-maximizing others), or, with `window` or when the
+    // layout has none, its floating window. Returns the panel widget shown.
+    QWidget* showRole(viewport::AreaRole role, bool window);
+    FloatingPanel* popOut(viewport::AreaRole role);
+    FloatingPanel* floating(viewport::AreaRole role) const;
+    // The panel widget of a leaf (null for viewports, collapsed leaves keep theirs once created).
+    QWidget* panel(viewport::NodeId pane) const;
 
     const viewport::ViewportLayout& viewportLayout() const { return layout_; }
     viewport::ViewportLayout& mutableLayout() { return layout_; }
@@ -112,8 +128,11 @@ private:
     void syncPreview(render::RenderMirror& mirror);
     void scheduleRebuild();
     void rebuild();
-    QWidget* build(const viewport::LayoutNode& node, bool canClose);
+    QWidget* build(const viewport::LayoutNode& node, bool canClose, bool verticalStrip);
+    QWidget* makeArea(const viewport::LayoutNode& node, bool maximized, bool canClose, bool verticalStrip);
     PaneFrame* makeFrame(viewport::NodeId pane, bool maximized, bool canClose);
+    QWidget* panelFor(viewport::NodeId pane, viewport::AreaRole role);
+    template <typename Frame> void connectArea(Frame* frame);  // Defined in the .cpp; used there only.
     void tick();
     void setActive(viewport::NodeId pane);
     void emitCamera();
@@ -153,6 +172,8 @@ private:
     QWidget* root_ = nullptr;
     QWidget* body_ = nullptr;
     std::map<viewport::NodeId, QPointer<PaneFrame>> frames_;
+    std::map<viewport::NodeId, QPointer<QWidget>> panels_;
+    std::map<viewport::AreaRole, QPointer<FloatingPanel>> floating_;
     QTimer timer_;
     bool rebuildPending_ = false;
     bool gpuTried_ = false;

@@ -83,12 +83,15 @@ QToolBar { background: @window@; border: none; border-bottom: 1px solid @border@
 QToolBar QLabel { background: transparent; color: @textDim@; }
 QStatusBar { background: @window@; border-top: 1px solid @border@; }
 QStatusBar QLabel { background: transparent; color: @textDim@; padding: 0 @spacing@px; }
+QStatusBar QLabel#statusMode { color: @accent@; font-weight: bold; }
 QStatusBar::item { border: none; }
 
 QPushButton, QToolButton { background: @raised@; border: 1px solid @border@; border-radius: @radius@px; padding: 3px 10px; min-height: @controlHeight@px; }
 QToolButton { min-height: 0; padding: 3px 6px; }
 QPushButton:hover, QToolButton:hover { background: @hover@; }
 QPushButton:pressed, QToolButton:pressed { background: @pressed@; }
+QToolButton:checked { background: @accent@; color: @textOnAccent@; border-color: @accent@; }
+QToolButton:checked:hover { background: @accentHover@; }
 QPushButton:default { border-color: @accent@; }
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: @base@; border: 1px solid @border@; border-radius: @radius@px; padding: 2px 6px; min-height: @controlHeight@px; }
@@ -113,17 +116,23 @@ QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QSplitter::handle { background: @window@; }
 QSplitter::handle:hover { background: @accent@; }
 
-/* Qt-ADS (side panels): the dock manager's own stylesheet is cleared so these rules apply. */
-ads--CDockContainerWidget { background: @window@; }
-ads--CDockAreaWidget { background: @panel@; border: 1px solid @border@; border-radius: @radius@px; }
-ads--CDockAreaTitleBar { background: @panel@; border-bottom: 1px solid @border@; }
-ads--CDockWidgetTab { background: @panel@; border: none; padding: 0 @spacing@px; }
-ads--CDockWidgetTab[activeTab="true"] { background: @raised@; }
-ads--CDockWidgetTab QLabel { background: transparent; color: @textDim@; }
-ads--CDockWidgetTab[activeTab="true"] QLabel { color: @text@; }
-ads--CDockWidget { background: @panel@; border: none; }
-ads--CDockSplitter::handle { background: @window@; }
-ads--CDockSplitter::handle:hover { background: @accent@; }
+/* Areas (0.2.12): every panel is a role of a leaf in the area tree. */
+QFrame#AreaFrame { background: @panel@; border: 1px solid @border@; }
+QWidget#AreaHeader { background: @panel@; }
+QToolButton#AreaRoleButton { background: transparent; border: none; font-weight: bold; padding: 1px 6px; }
+QToolButton#AreaRoleButton:hover { background: @hover@; }
+QToolButton#AreaRoleButton::menu-indicator { image: none; width: 0; }
+QToolButton#AreaCollapseButton, QToolButton#AreaMenuButton, QToolButton#PaneMenuButton { background: transparent; border: none; padding: 1px 5px; }
+QToolButton#AreaCollapseButton:hover, QToolButton#AreaMenuButton:hover, QToolButton#PaneMenuButton:hover { background: @hover@; }
+QToolButton#AreaMenuButton::menu-indicator, QToolButton#PaneMenuButton::menu-indicator { image: none; width: 0; }
+QWidget#WorkspaceBar { background: @window@; border-bottom: 1px solid @border@; }
+QTabBar#WorkspaceTabs { background: transparent; }
+QTabBar#WorkspaceTabs::tab { background: transparent; color: @textDim@; border: none; border-bottom: 2px solid transparent; padding: 3px 12px; }
+QTabBar#WorkspaceTabs::tab:hover { color: @text@; background: @hover@; }
+QTabBar#WorkspaceTabs::tab:selected { color: @text@; border-bottom-color: @accent@; }
+QToolButton#WorkspaceAdd { background: transparent; border: none; padding: 1px 6px; }
+QToolButton#WorkspaceAdd:hover { background: @hover@; }
+QToolButton#WorkspaceAdd::menu-indicator { image: none; width: 0; }
 
 QWidget#ViewportArea { background: @base@; }
 )");

@@ -79,33 +79,11 @@ target_include_directories(VulkanMemoryAllocator SYSTEM INTERFACE
                            "${VulkanMemoryAllocator_SOURCE_DIR}/include")
 
 if(APEX_BUILD_APP)
-  # Qt Advanced Docking System 4.4.1 (LGPL-2.1; plan 0.1, D16), static. Needs Qt6 (found by the
-  # caller) and qt6-base-private-dev. Side panels only: never host native Vulkan windows (D15).
-  set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(BUILD_STATIC ON CACHE BOOL "" FORCE)
-  # Done in a function so Qt's directory-scope flag changes (it drops /EHsc on MSVC) don't leak.
+  # Qt GuiPrivate (qt6-base-private-dev) for Wayland pointer lock. Qt-ADS was dropped in 0.2.12:
+  # panels are area roles in the central split tree. Done in a function so Qt's directory-scope flag changes (it drops /EHsc on MSVC) don't leak.
   function(apex_find_qt_private)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets GuiPrivate)
   endfunction()
   apex_find_qt_private()
   set(QT_NO_PRIVATE_MODULE_WARNING ON)
-  CPMAddPackage(
-    NAME qtads
-    GITHUB_REPOSITORY githubuser0xFFFF/Qt-Advanced-Docking-System
-    GIT_TAG 258340842056271ec207f9b112ac5efc45d9b5f5
-    DOWNLOAD_ONLY YES
-  )
-  if(qtads_ADDED)
-    # The pinned ADS connects a contextless lambda capturing its manager to qApp.
-    # Give it an owner so closing a shell cannot leave a dangling focus callback.
-    set(_dock_manager "${qtads_SOURCE_DIR}/src/DockManager.cpp")
-    file(READ "${_dock_manager}" _dock_source)
-    string(REPLACE "connect(qApp, &QApplication::focusWindowChanged, [this]"
-                   "connect(qApp, &QApplication::focusWindowChanged, this, [this]"
-                   _dock_fixed "${_dock_source}")
-    if(NOT _dock_source STREQUAL _dock_fixed)
-      file(WRITE "${_dock_manager}" "${_dock_fixed}")
-    endif()
-    add_subdirectory(${qtads_SOURCE_DIR} ${qtads_BINARY_DIR} EXCLUDE_FROM_ALL SYSTEM)
-  endif()
 endif()

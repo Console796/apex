@@ -16,6 +16,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QSettings>
+#include <QTabBar>
 #include <QTemporaryDir>
 
 #include "core/log.hpp"
@@ -166,7 +167,7 @@ TEST_CASE("pane menu offers the full set of view controls") {
     emit frame->menu()->aboutToShow();
     QStringList titles;
     for (auto* act : frame->menu()->actions()) titles << act->text();
-    for (const char* want : {"Preset", "Projection", "Axis", "Display mode", "Overlays", "Maximize", "Close pane"})
+    for (const char* want : {"Preset", "Projection", "Axis", "Display mode", "Overlays", "Maximize", "Close area"})
         CHECK(titles.contains(QString::fromLatin1(want)));
     CHECK(titles.filter("Split").size() == 2);
 }
@@ -187,7 +188,7 @@ TEST_CASE("map views load into and save from the open viewports") {
     apex::ui::MainWindow w;
     w.show();
     REQUIRE(w.openFile(in));
-    const auto* cam = w.viewportArea()->viewportLayout().viewport(w.viewportArea()->viewportLayout().paneIds()[0]);
+    const auto* cam = w.viewportArea()->viewportLayout().viewport(w.viewportArea()->viewportLayout().viewportIds()[0]);
     REQUIRE(cam != nullptr);
     CHECK(cam->camera.position == apex::DVec3{0, -300, 100});
 
@@ -486,6 +487,21 @@ Ray rayAtPixel(const viewport::Camera& camera, QPointF at) {
 }
 }  // namespace
 
+TEST_CASE("mode summary tracks tool, selection mode and gizmo") {
+    TransformScene scene;
+    auto& session = scene.session();
+    const auto* label = scene.window.findChild<QLabel*>("statusMode");
+    REQUIRE(label);
+    CHECK(label->text().startsWith("Select"));
+    CHECK(label->text().endsWith("Move"));
+    scene.action("selection.mode.faces")->trigger();
+    scene.action("gizmo.mode.rotate")->trigger();
+    CHECK(label->text() == QString("Select  \u00b7  Faces  \u00b7  Rotate"));
+    CHECK(ui::modeSummary(session) == label->text());
+    REQUIRE(session.perform("tool.entity"));
+    CHECK(label->text().startsWith("Entity"));
+}
+
 TEST_CASE("transform actions route through the session, menus, toolbar and status bar") {
     TransformScene scene;
     auto& session = scene.session();
@@ -505,8 +521,7 @@ TEST_CASE("transform actions route through the session, menus, toolbar and statu
     for (const char* id : {"gizmo.mode.translate", "gizmo.mode.rotate", "gizmo.mode.scale", "snap.mode.toggle",
                            "transform.texture_lock.toggle"})
         CHECK(toolbar->actions().contains(scene.action(id)));
-    for (const char* name : {"statusGizmoTranslate", "statusGizmoRotate", "statusGizmoScale", "statusSnapMode",
-                             "statusTextureLock"})
+    for (const char* name : {"statusSnapMode", "statusTextureLock"})
         CHECK(scene.window.findChild<QToolButton*>(name));
     CHECK(scene.window.findChild<QLabel*>("statusGrid"));
 
@@ -516,9 +531,10 @@ TEST_CASE("transform actions route through the session, menus, toolbar and statu
     CHECK(session.gizmoMode() == editor::GizmoMode::Rotate);
     CHECK(scene.action("gizmo.mode.rotate")->isChecked());
     CHECK_FALSE(scene.action("gizmo.mode.translate")->isChecked());
-    CHECK(scene.window.findChild<QToolButton*>("statusGizmoRotate")->isChecked());
-    scene.window.findChild<QToolButton*>("statusGizmoScale")->click();
+    CHECK(scene.window.findChild<QLabel*>("statusMode")->text().contains("Rotate"));
+    scene.action("gizmo.mode.scale")->trigger();
     CHECK(session.gizmoMode() == editor::GizmoMode::Scale);
+    CHECK(scene.window.findChild<QLabel*>("statusMode")->text().contains("Scale"));
     scene.action("gizmo.mode.translate")->trigger();
 
     // Snap mode and texture lock toggles.
@@ -1142,8 +1158,9 @@ TEST_CASE("quad splitter bars stay aligned and the crossing drags both axes") {
     CHECK(area.viewportLayout().tree().ratio == doctest::Approx(ratio(root)).epsilon(0.01));
 }
 
-#include <DockManager.h>
-#include <DockWidget.h>
+#include "ui/area_frame.hpp"
+#include "ui/inspector_panel.hpp"
+#include "ui/workspace_bar.hpp"
 #include "ui/visgroup_panel.hpp"
 #include "ui/history_panel.hpp"
 #include "editor/visibility.hpp"
@@ -1364,56 +1381,119 @@ TEST_CASE("view actions hide unhide isolate and track selection") {
     scene.action("view.hide_unselected")->trigger();
     CHECK(editor::isVisible(doc, scene.boxId));
     CHECK(doc.undoCount() > count);
-    for (const auto& title : {QStringLiteral("Inspector"), QStringLiteral("Visgroups"), QStringLiteral("Undo History")}) {
-        QAction* toggle = nullptr;
-        for (auto* action : menu->actions()) if (action->text() == title) toggle = action;
-        REQUIRE(toggle);
-        CHECK(toggle->isCheckable());
-        CHECK(toggle->isChecked());
-        toggle->trigger();
-        CHECK_FALSE(toggle->isChecked());
-        toggle->trigger();
-        CHECK(toggle->isChecked());
+    // Every panel role has a Show area entry that expands its collapsed area.
+    auto* area = scene.window.viewportArea();
+    for (const auto role : {viewport::AreaRole::Inspector, viewport::AreaRole::Visgroups, viewport::AreaRole::History}) {
+        auto* show = scene.window.findChild<QAction*>(QStringLiteral("actionShowArea_") + QString::fromLatin1(viewport::nameOf(role)));
+        REQUIRE(show);
+        const auto pane = area->viewportLayout().paneIds(role).front();
+        area->setCollapsed(pane, true);
+        area->flush();
+        CHECK(area->viewportLayout().collapsed(pane));
+        show->trigger();
+        CHECK_FALSE(area->viewportLayout().collapsed(pane));
     }
 }
 
-TEST_CASE("new docks restore their saved visibility and empty view actions are disabled") {
+TEST_CASE("areas take any role, collapse, pop out, and workspaces persist") {
     app();
+    using viewport::AreaRole;
     QSettings settings;
-    const auto saved = settings.value("ui/docks");
+    settings.remove("ui/workspaces");
+    settings.remove("ui/inspectorWindow");
     {
         ui::MainWindow window;
         window.show();
-        const auto* menu = window.findChild<QMenu*>("menuView");
-        REQUIRE(menu);
+        auto* area = window.viewportArea();
+        area->flush();
         for (const char* id : {"view.hide", "view.unhide", "view.isolate", "view.hide_unselected"}) {
             auto* action = window.findChild<QAction*>(id);
             REQUIRE(action);
             CHECK_FALSE(action->isEnabled());
         }
-        for (auto* action : menu->actions()) if (action->text() == "Undo History") action->trigger();
+        // The default "Layout" workspace: every panel is an area beside a quad.
+        CHECK(window.findChild<QTabBar*>("WorkspaceTabs")->count() == 3);
+        CHECK(area->findChildren<ui::PaneFrame*>().size() == 4);
+        CHECK(area->findChildren<ui::HistoryPanel*>().size() == 1);
+        CHECK(area->findChildren<ui::VisgroupPanel*>().size() == 1);
+        CHECK(area->findChildren<ui::InspectorPanel*>().size() == 1);
+        REQUIRE(window.outliner());
+        REQUIRE(window.logPanel());
+
+        // Collapse keeps the panel widget; the strip expands it again.
+        const auto outlinerPane = area->viewportLayout().paneIds(AreaRole::Outliner).front();
+        auto* outliner = area->panel(outlinerPane);
+        area->setCollapsed(outlinerPane, true);
+        area->flush();
+        auto strips = area->findChildren<ui::CollapsedStrip*>();
+        REQUIRE(strips.size() == 1);
+        CHECK(strips.front()->paneId() == outlinerPane);
+        CHECK(area->panel(outlinerPane) == outliner);
+        CHECK_FALSE(outliner->isVisible());
+        emit strips.front()->expandRequested(outlinerPane);
+        area->flush();
+        CHECK(area->findChildren<ui::CollapsedStrip*>().empty());
+        CHECK(area->panel(outlinerPane) == outliner);
+        CHECK(outliner->isVisible());
+
+        // Switching a role: the history area becomes a fifth viewport.
+        const auto historyPane = area->viewportLayout().paneIds(AreaRole::History).front();
+        area->setRole(historyPane, AreaRole::Viewport);
+        area->flush();
+        CHECK(area->findChildren<ui::PaneFrame*>().size() == 5);
+        CHECK(area->findChildren<ui::HistoryPanel*>().empty());
+        // Without a history area, showing it opens a floating window.
+        window.findChild<QAction*>("actionShowArea_history")->trigger();
+        REQUIRE(area->floating(AreaRole::History));
+        CHECK(qobject_cast<ui::HistoryPanel*>(area->floating(AreaRole::History)->panel()));
+
+        // Object properties: the collapsed inspector area expands, or a window opens by preference.
+        const auto inspectorPane = area->viewportLayout().paneIds(AreaRole::Inspector).front();
+        area->setCollapsed(inspectorPane, true);
+        area->flush();
+        window.findChild<QAction*>("view.properties")->trigger();
+        CHECK_FALSE(area->viewportLayout().collapsed(inspectorPane));
+        CHECK_FALSE(area->floating(AreaRole::Inspector));
+        ui::MainWindow::setInspectorInWindow(true);
+        window.findChild<QAction*>("view.properties")->trigger();
+        REQUIRE(area->floating(AreaRole::Inspector));
+        CHECK(area->floating(AreaRole::Inspector)->isVisible());
+        ui::MainWindow::setInspectorInWindow(false);
+
+        // Workspaces keep their own layouts across switches.
+        auto* bar = window.workspaceBar();
+        bar->switchTo(2);
+        area->flush();
+        CHECK(area->viewportLayout().viewportIds().size() == 4);
+        CHECK(area->findChildren<ui::CollapsedStrip*>().size() == 1);
+        bar->switchTo(0);
+        area->flush();
+        CHECK(area->viewportLayout().viewportIds().size() == 5);  // The history pane is still a viewport.
+        bar->addFromTemplate("Modeling");
+        CHECK(bar->workspaces().workspaces.back().name == "Modeling 2");
+        CHECK(bar->active() == 3);
+        bar->rename(3, "Mine");
         window.close();
     }
     {
         ui::MainWindow window;
         window.show();
-        const auto* menu = window.findChild<QMenu*>("menuView");
-        REQUIRE(menu);
-        for (auto* action : menu->actions()) {
-            if (action->text() == "Undo History") CHECK_FALSE(action->isChecked());
-            if (action->text() == "Visgroups") CHECK(action->isChecked());
-        }
-        ads::CDockManager* manager = nullptr;
-        for (auto* candidate : window.findChildren<ads::CDockManager*>())
-            if (candidate->findDockWidget("dockHistory")) manager = candidate;
-        REQUIRE(manager);
-        REQUIRE(manager->findDockWidget("dockHistory"));
-        REQUIRE(manager->findDockWidget("dockVisgroups"));
-        CHECK(qobject_cast<ui::HistoryPanel*>(manager->findDockWidget("dockHistory")->widget()));
-        CHECK(qobject_cast<ui::VisgroupPanel*>(manager->findDockWidget("dockVisgroups")->widget()));
+        auto* bar = window.workspaceBar();
+        REQUIRE(bar->workspaces().workspaces.size() == 4);
+        CHECK(bar->active() == 3);
+        CHECK(bar->workspaces().workspaces[3].name == "Mine");
+        CHECK(bar->workspaces().workspaces[3].base == "Modeling");
+        CHECK(bar->workspaces().workspaces[0].layout.viewportIds().size() == 5);
+        bar->remove(3);
+        CHECK(bar->active() == 2);
+        bar->resetActive();
+        bar->switchTo(0);
+        bar->resetActive();
+        CHECK(window.viewportArea()->viewportLayout().viewportIds().size() == 4);
+        bar->step(-1);
+        CHECK(bar->active() == 2);
     }
-    if (saved.isValid()) settings.setValue("ui/docks", saved);
-    else settings.remove("ui/docks");
+    settings.remove("ui/workspaces");
 }
 
 TEST_CASE("editable outliner commits names, drops, visibility and persistent filtering") {

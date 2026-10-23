@@ -77,6 +77,7 @@ private:
     QCheckBox* autosave_ = nullptr;
     QSpinBox* autosaveMinutes_ = nullptr;
     QSpinBox* undoMiB_ = nullptr;
+    QComboBox* inspectorOpens_ = nullptr;
 
     QComboBox* presetCombo_ = nullptr;
     QLabel* modified_ = nullptr;

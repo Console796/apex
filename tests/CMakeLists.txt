@@ -19,7 +19,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp
                render/view_math_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
                render/p0_point_data_test.cpp
-               viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp)
+               viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
 target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
                                          sourcepp::vtfpp sourcepp::toolpp
                                          apex_editor apex_document apex_geometry apex_core apex_warnings

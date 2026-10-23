@@ -80,6 +80,10 @@ Actions::Actions()
         {"nudge.right", "Nudge right", "Transform", "Move the selection one grid step along +U of the work plane."},
         {"nudge.up", "Nudge up", "Transform", "Move the selection one grid step along +V of the work plane."},
         {"nudge.down", "Nudge down", "Transform", "Move the selection one grid step along -V of the work plane."},
+        {"view.properties", "Object properties", "Window",
+         "Show the inspector: in its workspace area, or in a floating window (see Preferences)."},
+        {"workspace.next", "Next workspace", "Window", "Switch to the next workspace tab."},
+        {"workspace.previous", "Previous workspace", "Window", "Switch to the previous workspace tab."},
       } {}
 
 Actions::Actions(std::vector<Action> entries) : entries_(std::move(entries)) {}
@@ -210,6 +214,9 @@ const Preset& hammerPreset() {
         {"nudge.right", bound({"Right"}, BindingContext::SelectToolActive, true)},
         {"nudge.up", bound({"Up"}, BindingContext::SelectToolActive, true)},
         {"nudge.down", bound({"Down"}, BindingContext::SelectToolActive, true)},
+        {"view.properties", bound({"Alt+Enter"})},
+        {"workspace.next", bound({"Ctrl+PageDown"})},
+        {"workspace.previous", bound({"Ctrl+PageUp"})},
     }};
     return preset;
 }
@@ -270,6 +277,9 @@ const Preset& blenderPreset() {
         {"nudge.right", unbound("Blender moves with G and typed values; no arrow-key nudge.")},
         {"nudge.up", unbound("Blender moves with G and typed values; no arrow-key nudge.")},
         {"nudge.down", unbound("Blender moves with G and typed values; no arrow-key nudge.")},
+        {"view.properties", bound({"N"})},
+        {"workspace.next", bound({"Ctrl+PageDown"})},
+        {"workspace.previous", bound({"Ctrl+PageUp"})},
     }};
     return preset;
 }

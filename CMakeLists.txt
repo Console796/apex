@@ -114,15 +114,15 @@ apex_compile_shaders(TARGET apex_render DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/rend
                      HEADER render/shaders_spv.hpp)
 apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
                          src/viewport/controllers.cpp src/viewport/view_context.cpp
-                         src/viewport/layout.cpp src/viewport/map_views.cpp src/viewport/pick_math.cpp
+                         src/viewport/layout.cpp src/viewport/map_views.cpp src/viewport/workspace.cpp src/viewport/pick_math.cpp
            DEPS apex_render apex_document)
 
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
   apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
                         src/ui/pointer_lock.cpp src/ui/input_log.cpp
-                        src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp
-             DEPS apex_viewport apex_editor Qt6::Widgets ads::qtadvanceddocking-qt6)
+                        src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
+             DEPS apex_viewport apex_editor Qt6::Widgets)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
   # Pointer lock is optional: other platforms and minimal Linux builds retain local input.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

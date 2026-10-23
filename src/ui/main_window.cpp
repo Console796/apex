@@ -1,8 +1,5 @@
 #include "ui/main_window.hpp"
 
-#include <DockAreaWidget.h>
-#include <DockManager.h>
-#include <DockWidget.h>
 
 #include <QAction>
 #include <QActionGroup>
@@ -24,12 +21,12 @@
 #include <QMimeData>
 #include <QSaveFile>
 #include <QSettings>
-#include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QDialogButtonBox>
@@ -59,6 +56,9 @@
 #include "ui/tie_dialog.hpp"
 #include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
+#include "ui/workspace_bar.hpp"
+#include "ui/area_frame.hpp"
+#include "ui/viewport_pane.hpp"
 #include "viewport/map_views.hpp"
 
 namespace apex::ui {
@@ -82,7 +82,8 @@ bool isTransformAction(const editor::ActionId& id) {
 
 // Actions whose plain (unmodified) default keys belong to the focused pane.
 bool isPaneKeyAction(const editor::ActionId& id) {
-    return isTransformAction(id) || id.starts_with("view.") || id == "edit.delete" || id == "edit.duplicate";
+    return isTransformAction(id) || (id.starts_with("view.") && id != "view.properties") || id == "edit.delete" ||
+           id == "edit.duplicate";
 }
 
 bool looksLikeFragment(std::string_view text) {
@@ -109,22 +110,20 @@ MainWindow::MainWindow(QWidget* parent)
       presetStore_(std::filesystem::path(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation).toStdString()) /
                    "keymaps") {
     resize(1280, 800);
+    LogPanel::startCapture();
     buildMenus();
     buildStatusBar();
     buildTransformUi();
     buildClipboardUi();
     buildEntityUi();
-    buildDocks();
+    buildAreas();
     viewport_->setEditorSession(&session_);
-    outliner_->setEditorSession(&session_);
-    visgroups_->setEditorSession(&session_);
-    history_->setEditorSession(&session_);
-    inspector_->setEditorSession(&session_);
     sessionObserver_ = session_.observe([this] {
         updateEditorActions();
         updateGridStatus();
         updateTitle();
         refreshEntityUi();
+        modeLabel_->setText(modeSummary(session_));
     });
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
     const bool touching = QSettings().value(QStringLiteral("editor/marqueeTouching"), false).toBool();
@@ -146,19 +145,21 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow() {
     session_.unobserve(sessionObserver_);
-    viewport_->setEditorSession(nullptr);
-    outliner_->setEditorSession(nullptr);
-    visgroups_->setEditorSession(nullptr);
-    history_->setEditorSession(nullptr);
-    inspector_->setEditorSession(nullptr);
+    viewport_->setEditorSession(nullptr);  // Also its panels and floating windows.
     session_.detach();
-    // The viewport area holds a raw pointer to the document.
+    // The area and its panels hold raw pointers to the document.
     if (viewport_) viewport_->setDocument(nullptr);
-    if (outliner_) outliner_->setDocument(nullptr);
-    if (visgroups_) visgroups_->setDocument(nullptr);
-    if (history_) history_->setDocument(nullptr);
-    if (inspector_) inspector_->setDocument(nullptr);
 }
+
+OutlinerPanel* MainWindow::outliner() const { return viewport_->findChild<OutlinerPanel*>(); }
+
+LogPanel* MainWindow::logPanel() const { return viewport_->findChild<LogPanel*>(); }
+
+bool MainWindow::inspectorInWindow() { return QSettings().value(QStringLiteral("ui/inspectorWindow"), false).toBool(); }
+
+void MainWindow::setInspectorInWindow(bool window) { QSettings().setValue(QStringLiteral("ui/inspectorWindow"), window); }
+
+void MainWindow::showInspector() { viewport_->showRole(viewport::AreaRole::Inspector, inspectorInWindow()); }
 
 void MainWindow::buildMenus() {
     auto* file = menuBar()->addMenu(tr("&File"));
@@ -195,6 +196,7 @@ void MainWindow::buildMenus() {
     auto* selectionBar = addToolBar(tr("Selection"));
     selectionBar->setObjectName(QStringLiteral("toolbarSelection"));
     auto* modes = new QActionGroup(this);
+    selectionBar->addWidget(new QLabel(tr("Select")));
     for (const auto& entry : editor::actionRegistry().entries()) {
         if (entry.id != "edit.undo" && entry.id != "edit.redo" &&
             (!entry.id.starts_with("selection.") || entry.id == "selection.box")) continue;
@@ -208,6 +210,7 @@ void MainWindow::buildMenus() {
             selectionBar->addAction(action);
         } else if (entry.id == "selection.ignore_groups" || entry.id == "selection.marquee_toggle") {
             action->setCheckable(true);
+            if (entry.id == "selection.ignore_groups") selectionBar->addSeparator();
             selectionBar->addAction(action);
         }
         connect(action, &QAction::triggered, this, [this, id = entry.id] {
@@ -249,7 +252,7 @@ void MainWindow::buildMenus() {
     help->addAction(tr("&About Apex"), this, [this] {
         const auto& v = version();
         QMessageBox::about(this, tr("About Apex"),
-                           tr("Apex %1\nA Source engine map editor.\nQt %2 (LGPL-3.0), Qt-ADS (LGPL-2.1).")
+                           tr("Apex %1\nA Source engine map editor.\nQt %2 (LGPL-3.0).")
                                .arg(fromStd(v.string), QString::fromLatin1(qVersion())));
     });
 
@@ -338,7 +341,7 @@ void MainWindow::setAutosave(bool enabled, int intervalMinutes) {
 void MainWindow::setUndoCapMiB(int mib) {
     QSettings().setValue(QStringLiteral("history/undoCapMiB"), mib);
     if (document_) document_->setUndoCap(static_cast<std::size_t>(mib) * 1024 * 1024);
-    history_->refresh();
+    for (auto* history : findChildren<HistoryPanel*>()) history->refresh();
     updateEditorActions();
 }
 
@@ -351,6 +354,7 @@ void MainWindow::openPreferences() {
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
+        if (id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
         if (id == "tool.select" || id == "tool.entity") {
             action->setEnabled(true);
             const auto tool = id == "tool.select" ? editor::EditorSession::Tool::Select : editor::EditorSession::Tool::Entity;
@@ -407,83 +411,40 @@ void MainWindow::updateEditorActions() {
     }
 }
 
-void MainWindow::buildDocks() {
-    // Side panels only (D15/D16). Floating is off: panels are plain widgets, but a floating
-    // window is the case the Wayland spike showed crashing, so keep everything in the main window.
-    using ads::CDockManager;
-    CDockManager::setConfigFlags(CDockManager::DefaultNonOpaqueConfig);
-    CDockManager::setConfigFlag(CDockManager::OpaqueSplitterResize, true);
-    CDockManager::setConfigFlag(CDockManager::DockAreaHasUndockButton, false);
-    CDockManager::setConfigFlag(CDockManager::DockAreaHasTabsMenuButton, false);
-    CDockManager::setConfigFlag(CDockManager::HideSingleCentralWidgetTitleBar, true);
-    CDockManager::setConfigFlag(CDockManager::FloatingContainerForceNativeTitleBar, true);
-
-    // The central widget is a plain splitter: [panels | viewports] over [log]. The left
-    // panels share an ADS manager; the viewports are never inside ADS.
-    auto* vertical = new QSplitter(Qt::Vertical);
-    vertical->setObjectName(QStringLiteral("splitMain"));
-    auto* horizontal = new QSplitter(Qt::Horizontal);
-    horizontal->setObjectName(QStringLiteral("splitTop"));
-    horizontal->setChildrenCollapsible(false);
-    vertical->setChildrenCollapsible(false);
-
-    dockManager_ = new CDockManager;
-    dockManager_->setStyleSheet(QString());  // Use the application QSS (theme tokens).
-    logDockManager_ = new CDockManager;
-    logDockManager_->setStyleSheet(QString());
-
+void MainWindow::buildAreas() {
+    // The central widget is the workspace tabs over the area tree (0.2.12). Every panel is an
+    // area role, so there are no docks: the outliner, inspector, visgroups, history and log are
+    // areas the user can split, switch, collapse or open in their own window.
+    auto* central = new QWidget;
+    central->setObjectName(QStringLiteral("centralAreas"));
+    auto* column = new QVBoxLayout(central);
+    column->setContentsMargins(0, 0, 0, 0);
+    column->setSpacing(0);
     viewport_ = new ViewportArea;
-    horizontal->addWidget(dockManager_);
-    horizontal->addWidget(viewport_);
-    horizontal->setStretchFactor(0, 0);
-    horizontal->setStretchFactor(1, 1);
-    horizontal->setSizes({260, 1000});
-    vertical->addWidget(horizontal);
-    vertical->addWidget(logDockManager_);
-    vertical->setStretchFactor(0, 1);
-    vertical->setStretchFactor(1, 0);
-    vertical->setSizes({700, 160});
-    setCentralWidget(vertical);
+    workspaces_ = new WorkspaceBar(*viewport_);
+    column->addWidget(workspaces_);
+    column->addWidget(viewport_, 1);
+    setCentralWidget(central);
 
-    outliner_ = new OutlinerPanel;
-    auto* outlinerDock = new ads::CDockWidget(dockManager_, tr("Outliner"));
-    outlinerDock->setObjectName(QStringLiteral("dockOutliner"));
-    outlinerDock->setWidget(outliner_);
-    outlinerDock->setFeature(ads::CDockWidget::DockWidgetFloatable, false);
-    outlinerDock->setFeature(ads::CDockWidget::DockWidgetClosable, true);
-    auto* leftArea = dockManager_->addDockWidget(ads::CenterDockWidgetArea, outlinerDock);
-    visgroups_ = new VisgroupPanel;
-    history_ = new HistoryPanel;
-    inspector_ = new InspectorPanel;
-    std::vector<ads::CDockWidget*> leftDocks{outlinerDock};
-    for (const auto& [name, title, panel] : std::vector<std::tuple<const char*, QString, QWidget*>>{
-             {"dockInspector", tr("Inspector"), inspector_}, {"dockVisgroups", tr("Visgroups"), visgroups_},
-             {"dockHistory", tr("Undo History"), history_}}) {
-        auto* dock = new ads::CDockWidget(dockManager_, title);
-        dock->setObjectName(QString::fromLatin1(name));
-        dock->setWidget(panel);
-        dock->setFeature(ads::CDockWidget::DockWidgetFloatable, false);
-        dockManager_->addDockWidget(ads::CenterDockWidgetArea, dock, leftArea);
-        leftDocks.push_back(dock);
-        viewMenu_->addAction(dock->toggleViewAction());
+    auto* areas = viewMenu_->addMenu(tr("Show area"));
+    areas->setObjectName(QStringLiteral("menuShowArea"));
+    for (const auto role : viewport::kAreaRoles) {
+        if (role == viewport::AreaRole::Viewport) continue;
+        auto* action = areas->addAction(roleTitle(role), this, [this, role] { viewport_->showRole(role, false); });
+        action->setObjectName(QStringLiteral("actionShowArea_") + QString::fromLatin1(viewport::nameOf(role)));
+        action->setToolTip(tr("Expand this workspace's %1 area, or open it in a window if it has none").arg(roleTitle(role)));
     }
-    for (auto* dock : leftDocks) {
-        connect(dock, &ads::CDockWidget::viewToggled, this, [this, leftDocks] {
-            const bool open = std::any_of(leftDocks.begin(), leftDocks.end(), [](auto* d) { return !d->isClosed(); });
-            dockManager_->setVisible(open);
+    for (const char* id : {"view.properties", "workspace.next", "workspace.previous"}) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = viewMenu_->addAction(fromStd(entry->name));
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        editorActions_.emplace(entry->id, action);
+        connect(action, &QAction::triggered, this, [this, id = entry->id] {
+            if (id == "view.properties") showInspector();
+            else workspaces_->step(id == "workspace.next" ? 1 : -1);
         });
     }
-
-    log_ = new LogPanel;
-    auto* logDock = new ads::CDockWidget(logDockManager_, tr("Log"));
-    logDock->setObjectName(QStringLiteral("dockLog"));
-    logDock->setWidget(log_);
-    logDock->setFeature(ads::CDockWidget::DockWidgetFloatable, false);
-    logDockManager_->addDockWidget(ads::CenterDockWidgetArea, logDock);
-    connect(logDock, &ads::CDockWidget::viewToggled, logDockManager_, &QWidget::setVisible);
-
-    viewMenu_->addAction(outlinerDock->toggleViewAction());
-    viewMenu_->addAction(logDock->toggleViewAction());
     viewMenu_->addSeparator();
     auto* themes = new QActionGroup(this);
     darkAction_ = viewMenu_->addAction(tr("Dark theme"), this, [this] { setTheme(Theme::Dark); });
@@ -497,7 +458,8 @@ void MainWindow::buildDocks() {
     (currentTheme() == Theme::Dark ? darkAction_ : lightAction_)->setChecked(true);
     viewMenu_->addSeparator();
     viewMenu_->addAction(tr("Reset cameras"), viewport_, &ViewportArea::resetCameras);
-    viewMenu_->addAction(tr("Reset viewport layout"), viewport_, &ViewportArea::resetLayout);
+    viewMenu_->addAction(tr("Reset workspace"), workspaces_, &WorkspaceBar::resetActive)
+        ->setObjectName(QStringLiteral("actionResetWorkspace"));
 
     connect(viewport_, &ViewportArea::cameraPositionChanged, this, [this](double x, double y, double z) {
         cameraLabel_->setText(tr("Cam: %1 %2 %3").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1).arg(z, 0, 'f', 1));
@@ -526,12 +488,17 @@ void MainWindow::buildStatusBar() {
     planeLabel_->setObjectName(QStringLiteral("statusPlane"));
     readoutLabel_ = new QLabel;
     readoutLabel_->setObjectName(QStringLiteral("statusReadout"));
+    modeLabel_ = new QLabel;
+    modeLabel_->setObjectName(QStringLiteral("statusMode"));
+    modeLabel_->setToolTip(tr("Current editing mode"));
+    statusBar()->addPermanentWidget(modeLabel_);
     statusBar()->addWidget(readoutLabel_);
     cameraLabel_ = new QLabel(tr("Cam: -"));
     frameLabel_ = new QLabel(tr("- ms"));
     gpuLabel_ = new QLabel(tr("GPU: -"));
     for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
     updateGridStatus();
+    modeLabel_->setText(modeSummary(session_));
     statusBar()->showMessage(tr("Ready"));
 }
 
@@ -592,8 +559,7 @@ void MainWindow::buildTransformUi() {
     // The same actions as checkable buttons in the status bar (always visible, even with the
     // toolbar hidden).
     const std::pair<const char*, QAction*> buttons[] = {
-        {"statusGizmoTranslate", modeActions[0]}, {"statusGizmoRotate", modeActions[1]},
-        {"statusGizmoScale", modeActions[2]}, {"statusSnapMode", snap}, {"statusTextureLock", textureLock}};
+        {"statusSnapMode", snap}, {"statusTextureLock", textureLock}};
     for (const auto& [name, action] : buttons) {
         auto* button = new QToolButton;
         button->setObjectName(QString::fromLatin1(name));
@@ -819,26 +785,15 @@ void MainWindow::openTransformDialog() {
 void MainWindow::restoreLayout() {
     QSettings s;
     if (const auto geo = s.value(QStringLiteral("ui/geometry")).toByteArray(); !geo.isEmpty()) restoreGeometry(geo);
-    if (const auto st = s.value(QStringLiteral("ui/docks")).toByteArray(); !st.isEmpty()) dockManager_->restoreState(st);
-    if (const auto st = s.value(QStringLiteral("ui/docksLog")).toByteArray(); !st.isEmpty()) logDockManager_->restoreState(st);
-    for (const char* name : {"splitMain", "splitTop"}) {
-        auto* splitter = findChild<QSplitter*>(QString::fromLatin1(name));
-        const auto st = s.value(QStringLiteral("ui/") + QString::fromLatin1(name)).toByteArray();
-        if (splitter && !st.isEmpty()) splitter->restoreState(st);
-    }
-    // The viewport layout is per user; a missing or unreadable value keeps the default quad.
-    viewport_->restoreLayoutJson(s.value(QStringLiteral("ui/viewports")).toByteArray());
+    // Workspaces are per user; a missing or unreadable value gives the built-in set. The pre-0.2.12
+    // keys (ui/docks, ui/viewports, splitter states) are no longer read.
+    workspaces_->load();
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     QSettings s;
     s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
-    s.setValue(QStringLiteral("ui/docks"), dockManager_->saveState());
-    s.setValue(QStringLiteral("ui/docksLog"), logDockManager_->saveState());
-    for (const char* name : {"splitMain", "splitTop"})
-        if (auto* splitter = findChild<QSplitter*>(QString::fromLatin1(name)))
-            s.setValue(QStringLiteral("ui/") + QString::fromLatin1(name), splitter->saveState());
-    s.setValue(QStringLiteral("ui/viewports"), viewport_->layoutJson());
+    workspaces_->save();
     s.setValue(QStringLiteral("ui/theme"), currentTheme() == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
     QMainWindow::closeEvent(event);
     if (event->isAccepted()) {
@@ -849,8 +804,6 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::setTheme(Theme theme) {
     applyTheme(*qApp, theme);
-    dockManager_->setStyleSheet(QString());
-    logDockManager_->setStyleSheet(QString());
     (theme == Theme::Dark ? darkAction_ : lightAction_)->setChecked(true);
     viewport_->setThemeChanged();
 }
@@ -930,10 +883,6 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
                                  const QString& path, bool unsaved) {
     autosave_.reset();
     viewport_->setDocument(nullptr);
-    outliner_->setDocument(nullptr);
-    visgroups_->setDocument(nullptr);
-    history_->setDocument(nullptr);
-    inspector_->setDocument(nullptr);
     session_.detach();
     document_ = std::move(doc);
     document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
@@ -943,10 +892,6 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     savedState_ = document_->historyState();
     viewport_->setDocument(document_.get(), currentProfile());
     viewport_->applyMapViews(viewport::readMapViews(parsed));
-    outliner_->setDocument(document_.get());
-    visgroups_->setDocument(document_.get());
-    history_->setDocument(document_.get());
-    inspector_->setDocument(document_.get());
     saveAction_->setEnabled(true);
     saveAsAction_->setEnabled(true);
     startAutosave();

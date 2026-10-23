@@ -9,6 +9,8 @@ struct ViewportLayout::Node {
     NodeId id = 0;
     bool leaf = true;
     Viewport viewport;                       // Leaf.
+    AreaRole role = AreaRole::Viewport;      // Leaf.
+    bool collapsed = false;                  // Leaf.
     Orientation orientation = Orientation::Horizontal; // Split.
     double ratio = 0.5;
     std::unique_ptr<Node> first, second;
@@ -18,6 +20,8 @@ struct ViewportLayout::Node {
         copy->id = id;
         copy->leaf = leaf;
         copy->viewport = viewport;
+        copy->role = role;
+        copy->collapsed = collapsed;
         copy->orientation = orientation;
         copy->ratio = ratio;
         if (first) copy->first = first->clone();
@@ -59,9 +63,28 @@ Rect secondRect(const Rect& r, Orientation o, double ratio) {
 }
 
 json::Value num(double v) { json::Value r; r.data = v; return r; }
+json::Value boolean(bool v) { json::Value r; r.data = v; return r; }
 json::Value str(std::string v) { json::Value r; r.data = std::move(v); return r; }
 
 } // namespace
+
+const char* nameOf(AreaRole role) {
+    switch (role) {
+    case AreaRole::Viewport: return "viewport";
+    case AreaRole::Outliner: return "outliner";
+    case AreaRole::Inspector: return "inspector";
+    case AreaRole::Visgroups: return "visgroups";
+    case AreaRole::History: return "history";
+    case AreaRole::Log: return "log";
+    }
+    return "viewport";
+}
+
+std::optional<AreaRole> roleFromName(std::string_view name) {
+    for (const auto role : kAreaRoles)
+        if (name == nameOf(role)) return role;
+    return std::nullopt;
+}
 
 ViewportLayout::ViewportLayout() : ViewportLayout(makePreset(Preset::Camera)) {}
 
@@ -109,6 +132,8 @@ LayoutNode ViewportLayout::tree() const {
         out.leaf = n.leaf;
         out.orientation = n.orientation;
         out.ratio = n.ratio;
+        out.role = n.role;
+        out.collapsed = n.collapsed;
         if (!n.leaf) {
             out.children.push_back(self(self, *n.first));
             out.children.push_back(self(self, *n.second));
@@ -124,6 +149,12 @@ std::vector<NodeId> ViewportLayout::paneIds() const {
     return ids;
 }
 
+std::vector<NodeId> ViewportLayout::paneIds(AreaRole role) const {
+    std::vector<NodeId> ids;
+    walk(root_.get(), [&](const auto& n) { if (n.leaf && n.role == role) ids.push_back(n.id); });
+    return ids;
+}
+
 std::size_t ViewportLayout::paneCount() const {
     return paneIds().size();
 }
@@ -135,12 +166,49 @@ bool ViewportLayout::hasPane(NodeId id) const {
 
 Viewport* ViewportLayout::viewport(NodeId pane) {
     auto* n = findNode(root_.get(), pane);
-    return n && n->leaf ? &n->viewport : nullptr;
+    return n && n->leaf && n->role == AreaRole::Viewport ? &n->viewport : nullptr;
 }
 
 const Viewport* ViewportLayout::viewport(NodeId pane) const {
     const auto* n = findNode(root_.get(), pane);
-    return n && n->leaf ? &n->viewport : nullptr;
+    return n && n->leaf && n->role == AreaRole::Viewport ? &n->viewport : nullptr;
+}
+
+AreaRole ViewportLayout::role(NodeId pane) const {
+    const auto* n = findNode(root_.get(), pane);
+    return n && n->leaf ? n->role : AreaRole::Viewport;
+}
+
+Result<void> ViewportLayout::setRole(NodeId pane, AreaRole role) {
+    auto* n = findNode(root_.get(), pane);
+    if (!n || !n->leaf) return std::unexpected(bad("setRole: no such pane"));
+    n->role = role;
+    fixActive();
+    return {};
+}
+
+bool ViewportLayout::collapsed(NodeId pane) const {
+    const auto* n = findNode(root_.get(), pane);
+    return n && n->leaf && n->collapsed;
+}
+
+Result<void> ViewportLayout::setCollapsed(NodeId pane, bool collapsed) {
+    auto* n = findNode(root_.get(), pane);
+    if (!n || !n->leaf) return std::unexpected(bad("setCollapsed: no such pane"));
+    if (collapsed && !n->collapsed) {
+        std::size_t expanded = 0;
+        walk(root_.get(), [&](const auto& m) { if (m.leaf && !m.collapsed) ++expanded; });
+        if (expanded <= 1) return std::unexpected(bad("setCollapsed: one area must stay expanded"));
+        if (maximized_ == pane) maximized_.reset();
+    }
+    n->collapsed = collapsed;
+    return {};
+}
+
+void ViewportLayout::fixActive() {
+    if (viewport(active_)) return;
+    const auto ids = viewportIds();
+    active_ = ids.empty() ? 0 : ids.front();
 }
 
 Result<NodeId> ViewportLayout::split(NodeId pane, Orientation orientation, double ratio) {
@@ -149,13 +217,19 @@ Result<NodeId> ViewportLayout::split(NodeId pane, Orientation orientation, doubl
     auto first = std::make_unique<Node>();
     first->id = pane; // The original pane keeps its id.
     first->viewport = leaf->viewport;
+    first->role = leaf->role;
     auto second = std::make_unique<Node>();
     second->id = nextId_++;
     second->viewport = leaf->viewport;
+    second->role = leaf->role;
+    const bool wasCollapsed = leaf->collapsed;
+    first->collapsed = wasCollapsed;
     const NodeId newPane = second->id;
     leaf->id = nextId_++; // The split node takes a fresh id.
     leaf->leaf = false;
     leaf->viewport = {};
+    leaf->role = AreaRole::Viewport;
+    leaf->collapsed = false;
     leaf->orientation = orientation;
     leaf->ratio = std::clamp(ratio, kMinRatio, kMaxRatio);
     leaf->first = std::move(first);
@@ -178,7 +252,11 @@ Result<void> ViewportLayout::close(NodeId pane) {
     (void)removed;
     *parent = std::move(*survivor); // The sibling subtree takes the parent's place.
     if (maximized_ == pane) maximized_.reset();
-    if (active_ == pane) active_ = paneIds().front();
+    fixActive();
+    // The survivor must not leave every area collapsed.
+    bool anyExpanded = false;
+    walk(root_.get(), [&](const auto& m) { if (m.leaf && !m.collapsed) anyExpanded = true; });
+    if (!anyExpanded) findNode(root_.get(), paneIds().front())->collapsed = false;
     return {};
 }
 
@@ -192,7 +270,7 @@ Result<void> ViewportLayout::setRatio(NodeId id, double ratio) {
 Result<void> ViewportLayout::maximize(NodeId pane) {
     if (!hasPane(pane)) return std::unexpected(bad("maximize: no such pane"));
     maximized_ = pane;
-    active_ = pane;
+    if (viewport(pane)) active_ = pane;
     return {};
 }
 
@@ -202,7 +280,7 @@ void ViewportLayout::toggleMaximize(NodeId pane) {
 }
 
 Result<void> ViewportLayout::setActive(NodeId pane) {
-    if (!hasPane(pane)) return std::unexpected(bad("setActive: no such pane"));
+    if (!viewport(pane)) return std::unexpected(bad("setActive: no such pane"));
     active_ = pane;
     return {};
 }
@@ -244,6 +322,8 @@ json::Value ViewportLayout::toJson() const {
         o["id"] = num(n.id);
         if (n.leaf) {
             o["type"] = str("pane");
+            o["role"] = str(nameOf(n.role));
+            if (n.collapsed) o["collapsed"] = boolean(true);
             o["viewport"] = viewport::toJson(n.viewport);
         } else {
             o["type"] = str("split");
@@ -257,7 +337,7 @@ json::Value ViewportLayout::toJson() const {
         return v;
     };
     json::Value::Object o;
-    o["version"] = num(1);
+    o["version"] = num(2); // 2: leaves carry a role and a collapsed flag (absent in 1: a viewport).
     o["active"] = num(active_);
     if (maximized_) o["maximized"] = num(*maximized_);
     o["root"] = node(node, *root_);
@@ -301,6 +381,17 @@ Result<ViewportLayout> ViewportLayout::fromJson(const json::Value& value) {
             auto parsed = viewportFromJson(vp->second);
             if (!parsed) { error = parsed.error().what(); return nullptr; }
             n->viewport = std::move(*parsed);
+            if (const auto r = o->find("role"); r != o->end()) {
+                const auto* name = r->second.get<std::string>();
+                const auto role = name ? roleFromName(*name) : std::nullopt;
+                if (!role) { error = "unknown area role"; return nullptr; }
+                n->role = *role;
+            }
+            if (const auto c = o->find("collapsed"); c != o->end()) {
+                const auto* flag = c->second.get<bool>();
+                if (!flag) { error = "bad collapsed flag"; return nullptr; }
+                n->collapsed = *flag;
+            }
             return n;
         }
         if (type && *type == "split") {
@@ -329,9 +420,12 @@ Result<ViewportLayout> ViewportLayout::fromJson(const json::Value& value) {
     layout.root_ = build(build, rootIt->second, 0);
     if (!layout.root_) return fail(error.value_or("invalid tree"));
     layout.nextId_ = maxId + 1;
-    const auto ids = layout.paneIds();
-    layout.active_ = ids.front();
-    if (const auto a = integer(*top, "active"); a && layout.hasPane(*a)) layout.active_ = *a;
+    layout.active_ = 0;
+    if (const auto a = integer(*top, "active"); a && layout.viewport(*a)) layout.active_ = *a;
+    layout.fixActive();
+    bool anyExpanded = false;
+    walk(layout.root_.get(), [&](const auto& m) { if (m.leaf && !m.collapsed) anyExpanded = true; });
+    if (!anyExpanded) findNode(layout.root_.get(), layout.paneIds().front())->collapsed = false;
     if (const auto m = integer(*top, "maximized"); m && layout.hasPane(*m)) layout.maximized_ = *m;
     return layout;
 }

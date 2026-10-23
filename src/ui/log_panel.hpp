@@ -1,24 +1,21 @@
 #pragma once
 
 #include <QPlainTextEdit>
-#include <cstdint>
-
-#include "core/log.hpp"
 
 namespace apex::ui {
 
-// Log console: a core/log sink whose lines are copied and marshalled to the UI thread.
+// Log console. One process-wide core/log sink copies lines to the UI thread and keeps the recent
+// ones, so any number of Log areas (and one opened later) show the same history.
 class LogPanel : public QPlainTextEdit {
     Q_OBJECT
 public:
     explicit LogPanel(QWidget* parent = nullptr);
     ~LogPanel() override;
+    // Starts keeping lines before the first panel exists (the main window calls it first thing).
+    static void startCapture();
 
 public slots:
     void append(int level, const QString& line);
-
-private:
-    log::SinkId sink_ = 0;
 };
 
 }  // namespace apex::ui
