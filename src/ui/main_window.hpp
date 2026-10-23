@@ -51,6 +51,12 @@ public:
     const QString& documentPath() const { return path_; }
 
     void setTheme(Theme theme);
+    // Applies a registry theme by id and checks it in the View > Theme menu.
+    void setThemeId(const QString& id);
+    // Applies unsaved tokens (theme editor live preview).
+    void previewTokens(const Tokens& tokens);
+    // Rebuilds View > Theme from the theme registry (after custom themes changed).
+    void refreshThemeMenu();
     // The first outliner/log area of the active workspace (null when it has none).
     OutlinerPanel* outliner() const;
     LogPanel* logPanel() const;
@@ -146,8 +152,7 @@ private:
     QAction* saveAction_ = nullptr;
     QAction* saveAsAction_ = nullptr;
     QAction* uvAlignmentAction_ = nullptr;
-    QAction* darkAction_ = nullptr;
-    QAction* lightAction_ = nullptr;
+    QMenu* themeMenu_ = nullptr;
     QLabel* gridLabel_ = nullptr;
     QLabel* planeLabel_ = nullptr;
     QLabel* readoutLabel_ = nullptr;

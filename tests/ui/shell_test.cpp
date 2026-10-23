@@ -18,6 +18,8 @@
 #include <QSettings>
 #include <QTabBar>
 #include <QTemporaryDir>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "core/log.hpp"
 #include "../editor/fixtures.hpp"
@@ -61,6 +63,51 @@ TEST_CASE("theme tokens expand into QSS with no placeholders left") {
         CHECK(qss.contains(apex::ui::tokens(theme).window.name()));
     }
     CHECK(apex::ui::tokens(apex::ui::Theme::Dark).window != apex::ui::tokens(apex::ui::Theme::Light).window);
+}
+
+TEST_CASE("built-in themes are distinct and fully expand") {
+    app();
+    const auto& all = apex::ui::themes();
+    REQUIRE(all.size() >= 6);
+    for (const auto& t : all) {
+        CHECK_FALSE(apex::ui::renderQss(t.tokens).contains(QLatin1Char('@')));
+        for (const auto& u : all)
+            if (&t != &u) CHECK(t.id != u.id);
+    }
+    CHECK(apex::ui::findTheme("solarized-light") != nullptr);
+}
+
+TEST_CASE("custom themes round-trip through files and inherit from a base") {
+    auto& a = app();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    auto custom = *apex::ui::findTheme("midnight");
+    custom.name = "My Theme!";
+    custom.tokens.accent = QColor("#12ab34");
+    custom.tokens.radius = 9;
+    QString error;
+    const QString id = apex::ui::saveCustomTheme(custom, dir.path(), &error);
+    CHECK(id == "custom:my-theme");
+    const auto* loaded = apex::ui::findTheme(id);
+    REQUIRE(loaded);
+    CHECK_FALSE(loaded->builtin);
+    CHECK(loaded->name == "My Theme!");
+    CHECK(loaded->tokens.accent == QColor("#12ab34"));
+    CHECK(loaded->tokens.radius == 9);
+    CHECK(loaded->tokens.window == custom.tokens.window);
+
+    // A sparse file inherits everything else from its base; a bad colour is rejected.
+    apex::ui::ThemeEntry sparse;
+    CHECK(apex::ui::themeFromJson(QJsonDocument::fromJson(R"({"name":"S","base":"light","colors":{"accent":"#ff0000"}})").object(), sparse));
+    CHECK(sparse.tokens.accent == QColor("#ff0000"));
+    CHECK(sparse.tokens.window == apex::ui::tokens(apex::ui::Theme::Light).window);
+    CHECK_FALSE(apex::ui::themeFromJson(QJsonDocument::fromJson(R"({"name":"B","colors":{"accent":"nope"}})").object(), sparse, &error));
+
+    CHECK(apex::ui::applyThemeId(a, id) == id);
+    CHECK(apex::ui::currentThemeId() == id);
+    CHECK(apex::ui::removeCustomTheme(id, dir.path()));
+    CHECK(apex::ui::findTheme(id) == nullptr);
+    CHECK(apex::ui::applyThemeId(a, "gone") == "dark");
 }
 
 TEST_CASE("shell opens a VMF, fills the outliner and round-trips on save") {

@@ -27,6 +27,7 @@
 #include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
 #include "ui/theme.hpp"
+#include "ui/theme_editor.hpp"
 
 namespace apex::ui {
 namespace {
@@ -145,15 +146,102 @@ SettingsDialog::SettingsDialog(MainWindow& window) : QDialog(&window), window_(w
     loadPreset(window_.editorSession().preset().name);
 }
 
+void SettingsDialog::refreshThemeCombo(const QString& select) {
+    const QSignalBlocker block(theme_);
+    theme_->clear();
+    for (const ThemeEntry& t : themes()) theme_->addItem(t.builtin ? t.name : tr("%1 (custom)").arg(t.name), t.id);
+    const int i = theme_->findData(select);
+    theme_->setCurrentIndex(i < 0 ? 0 : i);
+}
+
+void SettingsDialog::updateThemeButtons() {
+    const ThemeEntry* t = findTheme(theme_->currentData().toString());
+    const bool custom = t && !t->builtin;
+    themeEdit_->setEnabled(custom);
+    themeDelete_->setEnabled(custom);
+}
+
+void SettingsDialog::editTheme(bool fromSelected) {
+    const ThemeEntry* sel = findTheme(theme_->currentData().toString());
+    if (!sel) return;
+    ThemeEntry initial = *sel;
+    if (fromSelected || sel->builtin) {
+        initial.id.clear();
+        initial.builtin = false;
+        initial.name = tr("%1 copy").arg(sel->name);
+    }
+    ThemeEditorDialog dlg(window_, initial, this);
+    const bool accepted = dlg.exec() == QDialog::Accepted;
+    window_.refreshThemeMenu();
+    refreshThemeCombo(accepted ? dlg.savedId() : currentThemeId());
+    updateThemeButtons();
+}
+
+void SettingsDialog::deleteTheme() {
+    const QString id = theme_->currentData().toString();
+    const ThemeEntry* t = findTheme(id);
+    if (!t || t->builtin) return;
+    if (QMessageBox::question(this, tr("Delete theme"), tr("Delete the theme \"%1\"?").arg(t->name)) != QMessageBox::Yes) return;
+    const bool wasCurrent = id == currentThemeId();
+    removeCustomTheme(id);
+    if (wasCurrent) window_.setThemeId(QStringLiteral("dark"));
+    window_.refreshThemeMenu();
+    refreshThemeCombo(currentThemeId());
+    updateThemeButtons();
+}
+
+void SettingsDialog::importTheme() {
+    const QString path = QFileDialog::getOpenFileName(this, tr("Import theme"), {}, tr("Theme files (*.json)"));
+    if (path.isEmpty()) return;
+    QString error;
+    const QString id = importThemeFile(path, themesDir(), &error);
+    if (id.isEmpty()) {
+        QMessageBox::warning(this, tr("Import theme"), tr("Cannot import %1: %2").arg(path, error));
+        return;
+    }
+    window_.refreshThemeMenu();
+    refreshThemeCombo(id);
+    updateThemeButtons();
+}
+
+void SettingsDialog::exportTheme() {
+    const QString id = theme_->currentData().toString();
+    const ThemeEntry* t = findTheme(id);
+    if (!t) return;
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export theme"), t->name + QStringLiteral(".json"), tr("Theme files (*.json)"));
+    if (path.isEmpty()) return;
+    if (!apex::ui::exportTheme(id, path)) QMessageBox::warning(this, tr("Export theme"), tr("Cannot write %1").arg(path));
+}
+
 QWidget* SettingsDialog::buildGeneralPage() {
     auto* page = new QWidget;
     auto* form = new QFormLayout(page);
     theme_ = new QComboBox;
     theme_->setObjectName(QStringLiteral("settingsTheme"));
-    theme_->addItem(tr("Dark"), static_cast<int>(Theme::Dark));
-    theme_->addItem(tr("Light"), static_cast<int>(Theme::Light));
-    theme_->setCurrentIndex(currentTheme() == Theme::Dark ? 0 : 1);
+    refreshThemeCombo(currentThemeId());
     form->addRow(tr("Theme"), theme_);
+
+    auto* themeButtons = new QHBoxLayout;
+    const auto themeButton = [&](const QString& text, const char* name) {
+        auto* b = new QPushButton(text);
+        b->setObjectName(QString::fromLatin1(name));
+        themeButtons->addWidget(b);
+        return b;
+    };
+    auto* newTheme = themeButton(tr("New from selected…"), "themeNew");
+    themeEdit_ = themeButton(tr("Edit…"), "themeEdit");
+    themeDelete_ = themeButton(tr("Delete"), "themeDelete");
+    auto* importTheme = themeButton(tr("Import…"), "themeImport");
+    themeExport_ = themeButton(tr("Export…"), "themeExport");
+    themeButtons->addStretch(1);
+    form->addRow(QString(), themeButtons);
+    connect(theme_, &QComboBox::currentIndexChanged, this, [this] { updateThemeButtons(); });
+    connect(newTheme, &QPushButton::clicked, this, [this] { editTheme(true); });
+    connect(themeEdit_, &QPushButton::clicked, this, [this] { editTheme(false); });
+    connect(themeDelete_, &QPushButton::clicked, this, &SettingsDialog::deleteTheme);
+    connect(importTheme, &QPushButton::clicked, this, &SettingsDialog::importTheme);
+    connect(themeExport_, &QPushButton::clicked, this, &SettingsDialog::exportTheme);
+    updateThemeButtons();
 
     autosave_ = new QCheckBox(tr("Enable autosave"));
     autosave_->setObjectName(QStringLiteral("settingsAutosave"));
@@ -536,8 +624,7 @@ bool SettingsDialog::confirmDiscard() {
 bool SettingsDialog::applyAll() {
     window_.setNewSolidStyle(newSolidMaterial_->text().toStdString(),
                              static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
-    const bool darkChosen = theme_->currentData().toInt() == static_cast<int>(Theme::Dark);
-    if ((currentTheme() == Theme::Dark) != darkChosen) window_.setTheme(darkChosen ? Theme::Dark : Theme::Light);
+    if (theme_->currentData().toString() != currentThemeId()) window_.setThemeId(theme_->currentData().toString());
     window_.setAutosave(autosave_->isChecked(), autosaveMinutes_->value());
     MainWindow::setInspectorInWindow(inspectorOpens_->currentData().toBool());
     if (undoMiB_->value() != QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt())
