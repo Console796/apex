@@ -20,6 +20,7 @@
 #include "core/job_pool.hpp"
 #include "document/document.hpp"
 #include "render/renderer.hpp"
+#include "geometry/convex_polyhedron.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -33,6 +34,17 @@ namespace apex::render {
 // Render-owned input: no editor dependency. Container transforms cover descendants; a named
 // child overrides its ancestor, so overlapping selections never apply a transform twice.
 using PreviewTransforms = std::map<document::NodeId, DMat4>;
+
+struct PreviewGhost {
+    geometry::ConvexPolyhedron poly;
+    std::string material;
+    float opacity = 0.35f;
+    Vec4 outline{1.0f, 0.65f, 0.15f, 1.0f};
+};
+struct PreviewGeometry {
+    std::map<document::NodeId, geometry::ConvexPolyhedron> replacements;
+    std::vector<PreviewGhost> ghosts;
+};
 
 struct MirrorStats {
     std::size_t jobsSubmitted = 0;
@@ -90,6 +102,11 @@ class RenderMirror {
     // Changes only draw state; never schedules meshing or uploads geometry.
     void setHighlight(const Highlight& highlight);
     void setPreview(const PreviewTransforms& preview);
+    // A revision identifies the whole snapshot. One solid is always attempted per tick, even
+    // with a zero budget; a single mesh/upload can exceed the budget. pump() continues the queue.
+    void setPreview(const PreviewTransforms& transforms, const PreviewGeometry& geometry, std::uint64_t revision);
+    void setPreviewBudget(std::chrono::nanoseconds budget);
+    std::size_t pendingPreviewCount() const;
     void clearPreview();
     bool pending() const;
 

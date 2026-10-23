@@ -475,6 +475,7 @@ double PaneWindow::draw() {
         list.view = options.view;
         list.grid = options.grid;
     }
+    list.viewportSize = Vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
     transform_.appendOverlay(list, camera, QSizeF(width(), height()), devicePixelRatio());
 
     QElapsedTimer timer;

@@ -49,13 +49,18 @@ struct ToolView {
 GizmoView gizmoViewFor(const ToolView& view, DVec3 pivot, double sizePixels = 80.0);
 TransformModifiers transformModifiers(const Preset& preset, const InputEvent& event);
 
-// Same always-on-top primitives as the 0.2 gizmo; widths are logical pixels. D16 adds world
-// overlays here later. rectangle retains the pane's existing pixel-aligned marquee drawing.
+// Pixel sizes and offsets are logical pixels. Existing segments/triangles stay always on top.
 struct ToolOverlay {
     struct Segment { DVec3 a, b; Vec4 colour; float width; };
     struct Triangle { DVec3 a, b, c; Vec4 colour; };
     std::vector<Segment> segments;
     std::vector<Triangle> triangles;
+    struct Point { DVec3 position; Vec4 colour; float size = 7.0f; };
+    struct Label { DVec3 position; std::string text; DVec2 offset{0.0}; Vec4 colour{1.0f}; };
+    std::vector<Segment> worldSegments;
+    std::vector<Point> worldPoints;
+    std::vector<Triangle> worldTriangles;
+    std::vector<Label> labels;
     std::optional<std::pair<DVec2, DVec2>> rectangle;
 };
 struct ToolReadout {
