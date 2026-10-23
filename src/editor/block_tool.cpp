@@ -91,6 +91,7 @@ void BlockTool::forget(InputSource source) {
     if (gestures_.erase(source)) updateGhosts();
 }
 void BlockTool::drop(InputSource source) {
+    if (!gestures_.contains(source)) return;
     forget(source);
     session_.notify();
 }

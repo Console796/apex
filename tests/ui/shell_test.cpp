@@ -2232,3 +2232,33 @@ TEST_CASE("block tool draws through the pane's TransformInput path despite Cance
     CHECK(session.preview().empty());
     CHECK(scene.undo() == before + 1);
 }
+
+// Destroying a native pane hides its window, which cancels tool input and can notify session
+// observers mid-teardown; updateModeBadges then wrote to a frame being destroyed (segfault switching
+// layouts with the block tool active). Offscreen panes never hide natively, so notify from a child.
+TEST_CASE("viewport area survives session notifications while it destroys panes") {
+    app();
+    ui::MainWindow window;
+    window.show();
+    auto* area = window.viewportArea();
+    area->flush();
+    auto& session = window.editorSession();
+    REQUIRE(session.perform("tool.block"));
+    const auto frames = area->findChildren<ui::PaneFrame*>();
+    REQUIRE(frames.size() == 4);
+    int notified = 0;
+    for (auto* frame : frames) {
+        auto* spy = new QObject(frame);  // Created last, so destroyed after the frame's labels.
+        QObject::connect(spy, &QObject::destroyed, [&session, &notified] {
+            session.setAlignToSurface(!session.alignToSurface());  // Any change notifies observers.
+            ++notified;
+        });
+    }
+    auto maximized = viewport::ViewportLayout(area->viewportLayout());
+    maximized.toggleMaximize(maximized.paneIds().front());
+    area->setLayout(std::move(maximized));
+    area->flush();
+    CHECK(notified == 4);
+    area->setLayout(viewport::ViewportLayout(area->viewportLayout()));  // Rebuilt frames take badge updates.
+    session.setAlignToSurface(!session.alignToSurface());
+}

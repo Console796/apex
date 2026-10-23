@@ -349,9 +349,11 @@ void ViewportArea::rebuild() {
             ++it;
         }
     }
+    // Clear first: destroying panes hides their windows, which cancels tool input and notifies
+    // session observers; updateModeBadges must not reach frames that are mid-destruction.
+    frames_.clear();
     delete body_;
     body_ = nullptr;
-    frames_.clear();
 
     const auto tree = layout_.tree();
     if (const auto max = layout_.maximized(); max && layout_.hasPane(*max)) {

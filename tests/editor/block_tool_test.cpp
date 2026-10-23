@@ -486,6 +486,10 @@ TEST_CASE("block forget and idle cancel never notify observers") {
     scene.session.observe([&] { ++notifications; });
     scene.session.forgetInputSource(7);
     scene.session.activeToolObject().cancel();
+    // A pane hidden during teardown sends Cancel (and Leave) with no gesture in progress.
+    REQUIRE(scene.session.input(event(InputKind::Cancel, 7), {}));
+    scene.session.input(event(InputKind::Leave, 7), {});
+    key(scene.session, "Escape", 7);
     CHECK(notifications == 0);
     draw(scene.session, floorPlane, {-32, -32}, {32, 32});
     REQUIRE(scene.session.preview().ghosts().size() == 1);
