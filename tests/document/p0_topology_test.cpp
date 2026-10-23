@@ -1,4 +1,4 @@
-// 0.3.1 P0 red tests (plan 0.3 D2, D3). Committed failing; 0.3.1 turns them green.
+// 0.3.1 topology write regressions (plan 0.3 D2, D3).
 #include "../editor/fixtures.hpp"
 #include "editor/editor_session.hpp"
 #include "geometry/face_matching.hpp"
@@ -27,7 +27,7 @@ Handle<Solid> solid(const Document& doc) {
 }
 } // namespace
 
-TEST_CASE("P0 red: diagonal cube clip writes a new cap face in place (D2)") {
+TEST_CASE("P0: diagonal cube clip writes a new cap face in place (D2)") {
     Document doc(fixture("p0_cube.vmf"));
     const auto handle = solid(doc);
     auto geometry = geometry::solidGeometry(*doc.get(handle)->block);
@@ -43,7 +43,7 @@ TEST_CASE("P0 red: diagonal cube clip writes a new cap face in place (D2)") {
     REQUIRE(geometry->poly.faces.size() == 7);
     {
         auto tx = doc.begin("clip cube");
-        CHECK_NOTHROW(tx.setSolidGeometry(handle, *geometry));
+        CHECK_NOTHROW(tx.rebuildSolid(handle, geometry->poly));
         tx.commit();
     }
     const auto written = geometry::solidGeometry(*doc.get(handle)->block);
@@ -56,7 +56,7 @@ TEST_CASE("P0 red: diagonal cube clip writes a new cap face in place (D2)") {
     CHECK(vmf::parse(*bytes).has_value());
 }
 
-TEST_CASE("P0 red: session move accepts a redundant source side (D2)") {
+TEST_CASE("P0: session move accepts a redundant source side (D2)") {
     Document doc(fixture("p0_redundant_side.vmf"));
     const auto handle = solid(doc);
     const auto before = geometry::solidGeometry(*doc.get(handle)->block);
@@ -78,7 +78,7 @@ TEST_CASE("P0 red: session move accepts a redundant source side (D2)") {
     checkPoint(after->poly.bounds().max, before->poly.bounds().max + delta);
 }
 
-TEST_CASE("P0 red: moved cube vertex keeps adjacent face identities (D3)") {
+TEST_CASE("P0: moved cube vertex keeps adjacent face identities (D3)") {
     Document doc(fixture("p0_cube.vmf"));
     const auto geometry = geometry::solidGeometry(*doc.get(solid(doc))->block);
     REQUIRE(geometry);
@@ -110,14 +110,43 @@ TEST_CASE("P0 red: moved cube vertex keeps adjacent face identities (D3)") {
         return glm::length(point - moved) < 1e-6;
     }));
     // Plane matching loses every tilted face, which is why D3 needs explicit correspondence.
-    // 0.3.1 turns this green by rebuilding through rebuildSolid with a FaceCorrespondence.
     const auto matches = geometry::matchFaces(original, rebuilt);
-    CHECK(matches.matched.size() == 6);
+    CHECK(matches.matched.size() == 3);
+    for (const auto i : adjacent) {
+        CHECK(std::ranges::none_of(matches.matched, [&](const auto& match) {
+            return match.oldIndex == i;
+        }));
+    }
+    // The vertex tool knows the move: a new face is the old face holding most of its unmoved vertices.
+    geometry::FaceCorrespondence correspondence{std::in_place};
+    for (std::size_t n = 0; n < rebuilt.faces.size(); ++n) {
+        std::size_t best = 0, bestCount = 0;
+        for (std::size_t o = 0; o < original.faces.size(); ++o) {
+            const auto count = std::ranges::count_if(rebuilt.faces[n].vertices, [&](auto index) {
+                auto point = rebuilt.vertices[index];
+                if (glm::length(point - moved) < 1e-6) point = corner;
+                return std::ranges::any_of(original.faces[o].vertices, [&](auto old) {
+                    return glm::length(original.vertices[old] - point) < 1e-6;
+                });
+            });
+            if (static_cast<std::size_t>(count) > bestCount) {
+                best = o;
+                bestCount = static_cast<std::size_t>(count);
+            }
+        }
+        correspondence->emplace(n, original.faces[best].sideId);
+    }
+    auto tx = doc.begin("move vertex");
+    tx.rebuildSolid(solid(doc), rebuilt, correspondence);
+    CHECK(tx.commit().vanishedSides.empty());
+    const auto written = geometry::solidGeometry(*doc.get(solid(doc))->block);
+    REQUIRE(written);
+    CHECK(written->poly.faces.size() == 6);
     for (std::size_t i = 0; i < original.faces.size(); ++i) {
         CAPTURE(original.faces[i].sideId);
-        CAPTURE(std::ranges::find(adjacent, i) != adjacent.end());
-        CHECK(std::ranges::any_of(matches.matched, [&](const auto& match) {
-            return match.oldIndex == i && rebuilt.faces[match.newIndex].sideId == original.faces[i].sideId;
-        }));
+        const auto face = std::ranges::find(written->poly.faces, original.faces[i].sideId,
+                                            &geometry::Face::sideId);
+        REQUIRE(face != written->poly.faces.end());
+        CHECK(glm::length(face->plane.normal - planes[i].plane.normal) < 1e-6);
     }
 }

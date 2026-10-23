@@ -36,6 +36,10 @@ public:
     // Immediate files only, sorted canonical virtual paths, duplicates removed. '*' and '?'
     // match filenames case-insensitively; directories themselves are not returned.
     std::vector<std::string> list(std::string_view directory, std::string_view glob = "*") const;
+    // Recursive files across all mounts, with list's filename glob and canonical ordering.
+    // May run concurrently on workers while Vfs is immutable: no refresh, move or destruction
+    // until readers finish. Reads only indices, never the archive objects.
+    std::vector<std::string> walk(std::string_view directory, std::string_view glob = "*") const;
 
 private:
     struct Impl;

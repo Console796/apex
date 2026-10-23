@@ -435,4 +435,25 @@ std::vector<std::string> Vfs::list(std::string_view directory, std::string_view 
     return {paths.begin(), paths.end()};
 }
 
+std::vector<std::string> Vfs::walk(std::string_view directory, std::string_view glob) const {
+    auto prefix = lookupKey(directory);
+    if (!prefix.empty() && !virtualPath(prefix)) return {};
+    if (!prefix.empty()) prefix += '/';
+    const auto pattern = toLowerAscii(glob);
+    std::set<std::string> paths;
+    const auto append = [&](const auto& entries) {
+        for (auto it = entries.lower_bound(prefix);
+             it != entries.end() && it->first.starts_with(prefix); ++it) {
+            const auto& key = it->first;
+            const auto slash = key.rfind('/');
+            const auto filename = std::string_view(key).substr(
+                slash == std::string::npos ? 0 : slash + 1);
+            if (matches(pattern, filename)) paths.insert(key);
+        }
+    };
+    append(impl_->loose);
+    for (const auto& mount : impl_->mounts) append(mount.entries);
+    return {paths.begin(), paths.end()};
+}
+
 } // namespace apex::assets

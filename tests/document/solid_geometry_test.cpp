@@ -277,7 +277,7 @@ TEST_CASE("setSolidGeometry adds Strata point_data only when a plane-only brush 
     CHECK(saved(doc) == bytes);
 }
 
-TEST_CASE("setSolidGeometry retains redundant sides on identity and rejects unsafe transforms") {
+TEST_CASE("setSolidGeometry retains redundant sides on identity and drops them on transforms") {
     auto file = parse(read(fs::path(APEX_FIXTURE_DIR) / "vmf/render_map.vmf"));
     auto& solid = file.world->solids[0];
     auto duplicate = *solid.sides[0].node;
@@ -294,9 +294,14 @@ TEST_CASE("setSolidGeometry retains redundant sides on identity and rejects unsa
     CHECK(saved(doc) == bytes);
     for (auto& point : geometry.poly.vertices) point += DVec3{300, 0, 0};
     for (auto& face : geometry.poly.faces) face.plane = geometry.poly.derivePlane(face).value();
+    // D2: a transform goes through the rebuild path, so the redundant side vanishes.
     auto move = doc.begin("redundant side transform");
-    CHECK_THROWS_AS(move.setSolidGeometry(handle, geometry), std::invalid_argument);
-    CHECK(move.commit().empty());
+    move.setSolidGeometry(handle, geometry);
+    const auto changes = move.commit();
+    CHECK(changes.vanishedSides.size() == 1);
+    CHECK(doc.get(handle)->block->findAll("side").size() == geometry.poly.faces.size());
+    for (const auto& face : geometry.poly.faces) CHECK(doc.side(static_cast<SideId>(face.sideId)));
+    REQUIRE(doc.undo());
     CHECK(saved(doc) == bytes);
 }
 
