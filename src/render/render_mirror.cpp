@@ -360,6 +360,9 @@ struct RenderMirror::Impl {
             auto edges = upload(batch.edges, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, flush);
             if (!vertices || !indices || !edges) {
                 log::error("render mirror: mesh upload failed");
+                // Copies into the buffers that did upload may still be recorded and unsubmitted.
+                for (auto* buffer : {&vertices, &indices, &edges})
+                    if (*buffer) garbage.push_back(std::move(**buffer));
                 retire(solid);
                 return;
             }
@@ -629,7 +632,7 @@ void RenderMirror::setPreview(const PreviewTransforms& transforms, const Preview
         state.shape = ghost;
         impl_->previewGeometry.push_back(std::move(state));
     }
-    impl_->meshPreviews();
+    // Meshing waits for pump(), so several revisions between ticks share one budget and one submit.
 }
 
 void RenderMirror::setPreviewBudget(std::chrono::nanoseconds budget) {

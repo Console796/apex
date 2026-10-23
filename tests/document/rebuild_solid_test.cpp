@@ -126,6 +126,34 @@ TEST_CASE("rebuildSolid identity preserves every P2CE corpus solid byte") {
     MESSAGE("Identity rebuild corpus: ", files, " VMFs, ", count, " solids");
 }
 
+TEST_CASE("rebuildSolid cap without correspondence inherits from the face it replaces") {
+    auto doc = cube();
+    const auto handle = solids(doc)[0];
+    const auto oldPoly = geometry::solidGeometry(*doc.get(handle)->block)->poly;
+    const auto replaced = std::ranges::find_if(oldPoly.faces, [](const auto& face) {
+        return face.plane.normal.x > 0.999;
+    });
+    REQUIRE(replaced != oldPoly.faces.end());
+    const auto donor = side(doc, static_cast<SideId>(replaced->sideId));
+    const auto poly = clipped(oldPoly, {1, 0, 0}, 0.0);
+    REQUIRE(poly.faces.size() == 6);
+    auto tx = doc.begin("axis clip");
+    tx.rebuildSolid(handle, poly);
+    const auto changes = tx.commit();
+    REQUIRE(changes.vanishedSides.size() == 1);
+    CHECK(changes.vanishedSides[0] == static_cast<SideId>(replaced->sideId));
+    const auto rebuilt = geometry::solidGeometry(*doc.get(handle)->block);
+    REQUIRE(rebuilt);
+    const auto cap = std::ranges::find_if(rebuilt->poly.faces, [](const auto& face) {
+        return face.plane.normal.x > 0.999;
+    });
+    REQUIRE(cap != rebuilt->poly.faces.end());
+    CHECK(cap->sideId != replaced->sideId);
+    const auto& written = side(doc, static_cast<SideId>(cap->sideId));
+    for (const auto key : {"material", "uaxis", "vaxis"})
+        CHECK(written.find(key)->decodedValue() == donor.find(key)->decodedValue().value());
+}
+
 TEST_CASE("rebuildSolid cap inherits Hammer ordered keys and replaces colliding caller IDs") {
     auto doc = cube();
     const auto handle = solids(doc)[0];

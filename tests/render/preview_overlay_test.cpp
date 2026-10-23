@@ -117,6 +117,8 @@ TEST_CASE("preview geometry: tiny budget continues across ticks and revision res
     for (int i = 0; i < 12; ++i)
         preview.ghosts.push_back({box({0, double(i * 4), 0}, {8, double(i * 4 + 2), 8}, "test/missing"), "test/missing"});
     mirror.setPreview({}, preview, 1);
+    CHECK(mirror.pendingPreviewCount() == 12); // Meshing waits for the tick's pump.
+    mirror.pump();
     CHECK(mirror.pendingPreviewCount() == 11);
     auto list = mirror.buildDrawList(options());
     CHECK(list.ghosts.size() == 1);
@@ -133,6 +135,9 @@ TEST_CASE("preview geometry: tiny budget continues across ticks and revision res
     preview.ghosts.resize(4);
     preview.ghosts[0].poly = box({0, -60, 0}, {8, -52, 8}, "test/missing");
     mirror.setPreview({}, preview, 2);
+    mirror.setPreview({}, preview, 3); // Revisions between ticks share one budget.
+    CHECK(mirror.pendingPreviewCount() == 4);
+    mirror.pump();
     CHECK(mirror.pendingPreviewCount() == 3);
     list = mirror.buildDrawList(options());
     CHECK(list.ghosts.size() == 1);
@@ -148,8 +153,8 @@ TEST_CASE("preview geometry: tiny budget continues across ticks and revision res
     mirror.clearPreview();
     CHECK(mirror.pendingPreviewCount() == 0);
     CHECK(mirror.buildDrawList(options()).ghosts.empty());
-    mirror.setPreview({}, preview, 2); // The same revision is valid after a clear.
-    CHECK(mirror.pendingPreviewCount() == 3);
+    mirror.setPreview({}, preview, 3); // The same revision is valid after a clear.
+    CHECK(mirror.pendingPreviewCount() == 4);
     mirror.clearPreview();
     CHECK(g.context->validation().errorCount() == 0);
 }
@@ -169,6 +174,7 @@ TEST_CASE("preview geometry: replacement hides original even while waiting for m
     preview.replacements.emplace(doc.get(first)->id, box({0, -12, -12}, {32, 12, 12}, "test/missing"));
     preview.replacements.emplace(doc.get(second)->id, box({0, 44, 44}, {8, 52, 52}, "test/missing"));
     mirror.setPreview({}, preview, 1);
+    mirror.pump();
     auto list = mirror.buildDrawList(options());
     CHECK(mirror.pendingPreviewCount() == 1);
     CHECK(list.meshes.size() == 1);

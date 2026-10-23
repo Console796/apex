@@ -149,7 +149,9 @@ std::vector<OverlayVertex> expandLabels(const DrawList& list, const GlyphAtlasDa
                     }
                     code = (code << 6) | (static_cast<unsigned char>(label.text[i++]) & 0x3F);
                 }
-                if (!valid || code < 0x80 || code > 255) code = '?';
+                // Reject overlong forms: each length has a smallest code point it may encode.
+                constexpr unsigned minimum[] = {0, 0x80, 0x800, 0x10000};
+                if (!valid || code < minimum[count] || code > 255) code = '?';
             }
             if (code == '\n') { pen.x = label.offset.x; pen.y += atlas.lineHeight * list.labelScale; continue; }
             const auto& glyph = atlas.glyphs[code];

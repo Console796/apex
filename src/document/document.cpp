@@ -122,15 +122,12 @@ std::vector<FacePlan> planFaces(const geometry::ConvexPolyhedron& before,
         const auto matches = geometry::matchFaces(before, copy);
         for (const auto& match : matches.matched) plan[match.newIndex].matched = match.oldIndex;
     }
-    std::set<std::size_t> survivors;
-    for (const auto& face : plan) if (face.matched) survivors.insert(*face.matched);
-    // If no plane survives (e.g. a wholly new shape), inherit from the source's faces.
-    if (survivors.empty())
-        for (std::size_t o = 0; o < before.faces.size(); ++o) survivors.insert(o);
+    // Any source face may donate, vanished ones included: a clip cap's best donor is usually the
+    // face it replaces.
     for (std::size_t n = 0; n < plan.size(); ++n) {
         if (plan[n].matched || plan[n].inheritFrom) continue;
         double alignment = -2.0;
-        for (const auto o : survivors) {
+        for (std::size_t o = 0; o < before.faces.size(); ++o) {
             const double dot = glm::dot(poly.faces[n].plane.normal, before.faces[o].plane.normal);
             if (dot > alignment) {
                 alignment = dot;
