@@ -22,17 +22,21 @@ they land, so versions only ever go up. A milestone's release is **not** a numbe
 and is never given a number in advance: it is the milestone's closing step, planned as
 "0.M release", and when it lands it takes the number of the last sub-milestone that landed before
 it, plus `-release`. If 0.2.11 is the last sub-milestone, the release is **0.2.11-release**; if
-0.2.12 lands first, the release becomes 0.2.12-release. Nothing of 0.M lands after its release;
-the next landed work is 0.(M+1).1.
+0.2.12 lands first, the release becomes 0.2.12-release. Nothing of 0.M lands after its release
+unless the project owner asks for it: such a post-release sub-milestone takes the next number in
+that milestone (`0.2.12`), is tagged like any sub-milestone (`v0.2.12`), and does not create a new
+release (`v0.2.11-release` stays the 0.2 release). Either way, the next milestone's first
+sub-milestone is 0.(M+1).1 (plan 0.3, D18).
 
 `version.txt` holds `MAJOR.MILESTONE.SUB` or `MAJOR.MILESTONE.SUB-release`; the full version
 string puts the suffix last (`0.2.11.42-release`). Git tags mark completed sub-milestones
 (`v0.1.3`) and releases (`v0.2.11-release`) and carry no build number. 0.1 predates this policy:
 its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 
-**Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`
-(`version.txt` reads `0.2.11-release`; see [plans/0.2.md](plans/0.2.md)). The next landed work
-is 0.3.1; 0.3 needs its own plan before work starts.
+**Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`, and the
+post-release sub-milestone 0.2.12 (Preferences, keybinding editor, areas and workspaces) followed
+at the owner's request (see [plans/0.2.md](plans/0.2.md)). 0.3 is planned
+([plans/0.3.md](plans/0.3.md)); its first sub-milestone, 0.3.1, is in progress.
 
 ## Principles that hold across every milestone
 

@@ -3,7 +3,7 @@ include(doctest)
 add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core/handle_test.cpp
                core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp
-               document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp
+               document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
                document/geometry_number_test.cpp document/solid_geometry_test.cpp
                assets/vfs_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
@@ -27,8 +27,8 @@ target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets s
 doctest_discover_tests(apex_tests)
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
-add_executable(apex_measure_tests main.cpp editor/measure_test.cpp)
-target_link_libraries(apex_measure_tests PRIVATE apex_editor apex_warnings doctest::doctest)
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp)
+target_link_libraries(apex_measure_tests PRIVATE apex_editor apex_assets sourcepp::vpkpp sourcepp::steampp apex_warnings doctest::doctest)
 doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")
 
