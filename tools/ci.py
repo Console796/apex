@@ -4,7 +4,7 @@
     tools/ci.py [--fast] [--windows {auto,always,never}] [--fixtures-only]
                 [--fuzz-seconds N]
 
-Stages: preflight, BUILD counter, Linux presets (build + unit tests), KV1 corpus and fuzz,
+Stages: preflight, BUILD counter, Linux presets (build + unit tests), KV1 corpus and fuzz (plus a fixed-seed hull fuzz),
 srctools crosscheck, GPU render tests on lavapipe (required) and RADV (skipped without a device),
 Windows VM, licence + layer checks. Writes
 build/ci/<build>/report.md and exits non-zero on any failure. Fuzzing defaults to 600 seconds;
@@ -211,7 +211,7 @@ def fuzz_stage(build, seconds, report):
 
     log = report.dir / "fuzz.log"
     configure = ["cmake", "--preset", "linux-fuzz", f"-DAPEX_BUILD_NUMBER={build}"]
-    build_cmd = ["cmake", "--build", "--preset", "linux-fuzz", "--target", "kv1_fuzz"]
+    build_cmd = ["cmake", "--build", "--preset", "linux-fuzz", "--target", "kv1_fuzz", "hull_fuzz"]
     try:
         with open(log, "w", encoding="utf-8") as f:
             for cmd in (configure, build_cmd):
@@ -240,6 +240,14 @@ def fuzz_stage(build, seconds, report):
                 f.write("$ " + shlex.join(fuzz) + "\n")
                 f.flush()
                 result = subprocess.run(fuzz, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+            if result.returncode == 0:
+                # Hull/split/subtract: a fixed seed and run budget, so the stage is reproducible (0.3 D8).
+                with tempfile.TemporaryDirectory(prefix="hull-corpus-", dir=ROOT / "build") as corpus:
+                    hull = [str(ROOT / "build" / "linux-fuzz" / "hull_fuzz"), corpus, "-seed=1",
+                            "-runs=20000", f"-artifact_prefix={artifact_dir}{os.sep}"]
+                    f.write("$ " + shlex.join(hull) + "\n")
+                    f.flush()
+                    result = subprocess.run(hull, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
     except OSError as error:
         report.add("fuzz", "FAIL", time.time() - t, f"could not run fuzz stage: {error}")
         return
@@ -251,7 +259,7 @@ def fuzz_stage(build, seconds, report):
     elif result.returncode != 0:
         report.add("fuzz", "FAIL", time.time() - t, f"libFuzzer exited {result.returncode}; see {log}")
     else:
-        report.add("fuzz", "ok", time.time() - t, f"{seconds}s, warm corpus: {persistent}")
+        report.add("fuzz", "ok", time.time() - t, f"kv1 {seconds}s, hull 20000 runs, warm corpus: {persistent}")
 
 
 def gpu_stage(name, device_filter, report):
