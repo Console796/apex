@@ -24,6 +24,8 @@ namespace apex::ui {
 class GpuHost;
 
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session);
+// Red X, green Y and blue Z from the world origin while the grid overlay is on.
+void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view);
 
 // The native Vulkan child window of one pane (plan 0.1, D15; pattern from spikes/wayland-vulkan).
 // Renders on demand into its own swapchain through the shared Renderer and RenderMirror, and turns

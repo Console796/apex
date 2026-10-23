@@ -17,6 +17,7 @@
 #include <QVBoxLayout>
 #include <QVulkanInstance>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "core/log.hpp"
@@ -96,6 +97,16 @@ private:
 };
 
 }  // namespace
+
+void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view) {
+    if (!view.overlays.grid) return;
+    // Source's map bounds; the gizmo's handle colours.
+    constexpr double kReach = 16384.0;
+    const std::array<std::pair<DVec3, Vec4>, 3> axes{{{{1, 0, 0}, {0.92f, 0.25f, 0.25f, 1.0f}},
+                                                      {{0, 1, 0}, {0.35f, 0.82f, 0.3f, 1.0f}},
+                                                      {{0, 0, 1}, {0.3f, 0.5f, 1.0f, 1.0f}}}};
+    for (const auto& [axis, colour] : axes) list.worldSegments.push_back({DVec3(0.0), axis * kReach, colour, 2.0f});
+}
 
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session) {
     render::GridSettings grid;
@@ -476,6 +487,7 @@ double PaneWindow::draw() {
         list.grid = options.grid;
     }
     list.viewportSize = Vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+    appendWorldAxes(list, *vp);
     transform_.appendOverlay(list, camera, QSizeF(width(), height()), devicePixelRatio());
 
     QElapsedTimer timer;

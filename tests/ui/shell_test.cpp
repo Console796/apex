@@ -406,6 +406,25 @@ TEST_CASE("grid shortcuts and work plane session changes update shell status") {
     }
 }
 
+TEST_CASE("pane world axes run from the origin in axis colours and follow the grid overlay") {
+    using namespace editor_test;
+    auto view = viewport::makePreset(viewport::Preset::Camera);
+    render::DrawList list;
+    ui::appendWorldAxes(list, view);
+    REQUIRE(list.worldSegments.size() == 3);
+    const std::array<DVec3, 3> directions{DVec3{1, 0, 0}, DVec3{0, 1, 0}, DVec3{0, 0, 1}};
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(list.worldSegments[i].a == DVec3{0});
+        CHECK(glm::normalize(list.worldSegments[i].b) == directions[i]);
+        CHECK(list.worldSegments[i].colour[static_cast<int>(i)] ==
+              std::max({list.worldSegments[i].colour.r, list.worldSegments[i].colour.g, list.worldSegments[i].colour.b}));
+    }
+    view.overlays.grid = false;
+    list = {};
+    ui::appendWorldAxes(list, view);
+    CHECK(list.worldSegments.empty());
+}
+
 TEST_CASE("pane grids use surface bounds pinned precedence and every axis fallback") {
     using namespace editor_test;
     Document doc(parsed());

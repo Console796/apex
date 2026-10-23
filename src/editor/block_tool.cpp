@@ -51,13 +51,6 @@ bool overWorldGrid(Ray ray, const SurfacePlane& plane) {
     const auto offset = ray.at(t) - ray.origin;
     return glm::length(offset - plane.normal * glm::dot(offset, plane.normal)) <= kWorldGridReach;
 }
-// Matches the gizmo's handle colours; the dominant world axis names a direction.
-Vec4 axisColour(DVec3 direction) {
-    const auto a = glm::abs(direction);
-    if (a.x >= a.y && a.x >= a.z) return {0.92f, 0.25f, 0.25f, 1.0f};
-    if (a.y >= a.z) return {0.35f, 0.82f, 0.3f, 1.0f};
-    return {0.3f, 0.5f, 1.0f, 1.0f};
-}
 }
 
 SurfacePlane BlockTool::basePlane(const ToolView& view, bool* remembered) const {
@@ -307,40 +300,27 @@ ToolOverlay BlockTool::overlay(const ToolView& view, InputSource source) const {
                                       hover != hoverSuspended_.end() && hover->second)) {
             result.worldPoints.push_back({start->projected, {1.0f, 0.65f, 0.15f, 1.0f}, 7.0f});
             result.labels.push_back({start->projected, snapName(start->kind), {8, -8}});
-            // The plane's u/v basis, so the user can see which plane a press would draw on.
-            const auto plane = basePlane(view);
-            const double reach = session_.gridSize() * 2.0;
-            for (const auto axis : {plane.uAxis, plane.vAxis})
-                result.worldSegments.push_back({start->projected, start->projected + axis * reach, axisColour(axis), 2.0f});
         }
         return result;
     }
     const auto& g = it->second;
     if (!g.dragging && g.stage == Stage::Base) return result;
     const std::array<DVec2, 4> corners{g.start, {g.end.x, g.start.y}, g.end, {g.start.x, g.end.y}};
-    for (std::size_t i = 0; i < corners.size(); ++i) {
-        const auto axis = i % 2 == 0 ? g.plane.uAxis : g.plane.vAxis;
+    for (std::size_t i = 0; i < corners.size(); ++i)
         result.worldSegments.push_back({point(g.plane, corners[i]), point(g.plane, corners[(i + 1) % 4]),
-                                       axisColour(axis), 2.0f});
-    }
-    // Side lengths at the middle of the first u and v edges, in their axis colours.
+                                       {1.0f, 0.65f, 0.15f, 1.0f}, 2.0f});
+    // Side lengths at the middle of the first u and v edges.
     for (std::size_t i = 0; i < 2; ++i) {
-        const auto axis = i == 0 ? g.plane.uAxis : g.plane.vAxis;
         const auto mid = (point(g.plane, corners[i]) + point(g.plane, corners[i + 1])) * 0.5;
-        result.labels.push_back({mid, number(std::abs(i == 0 ? g.end.x - g.start.x : g.end.y - g.start.y)),
-                                 {8, 8}, axisColour(axis)});
+        result.labels.push_back({mid, number(std::abs(i == 0 ? g.end.x - g.start.x : g.end.y - g.start.y)), {8, 8}});
     }
-    if (g.stage == Stage::Height)
-        result.worldSegments.push_back({point(g.plane, g.end), point(g.plane, g.end) + g.plane.normal * g.height,
-                                       axisColour(g.plane.normal), 2.0f});
     if (g.dragging && g.cornerSnap) {
         result.worldPoints.push_back({g.cornerSnap->first, {1.0f, 0.65f, 0.15f, 1.0f}, 7.0f});
         result.labels.push_back({g.cornerSnap->first, snapName(g.cornerSnap->second), {8, -8}});
     }
     if (g.stage == Stage::Height)
         result.labels.push_back({point(g.plane, (g.start + g.end) * 0.5) + g.plane.normal * g.height,
-                                 "Height: " + (g.typed.empty() ? number(g.height) : g.typed), {8, -8},
-                                 axisColour(g.plane.normal)});
+                                 "Height: " + (g.typed.empty() ? number(g.height) : g.typed), {8, -8}});
     return result;
 }
 ToolReadout BlockTool::readout() const {

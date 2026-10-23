@@ -651,37 +651,23 @@ TEST_CASE("block idle hover follows the preset snap suspension") {
     }
 }
 
-TEST_CASE("block drag shows side lengths and colours edges by world axis") {
+TEST_CASE("block drag labels its side lengths and height") {
     Scene scene;
-    const auto wall = addSurface(scene, 1); // u = +Y, v = +Z, normal = +X.
+    const auto wall = addSurface(scene, 1);
     const auto at = [&](DVec2 uv) { return viewAt(wall.origin + uv.x * wall.uAxis + uv.y * wall.vAxis, wall); };
-    const auto red = Vec4{0.92f, 0.25f, 0.25f, 1.0f}, green = Vec4{0.35f, 0.82f, 0.3f, 1.0f},
-               blue = Vec4{0.3f, 0.5f, 1.0f, 1.0f};
-    scene.session.input(event(InputKind::Move), at({0, 0}));
-    auto overlay = scene.session.activeToolObject().overlay(at({0, 0}), 1);
-    REQUIRE(overlay.worldSegments.size() == 2);
-    CHECK(overlay.worldSegments[0].colour == green);
-    CHECK(overlay.worldSegments[1].colour == blue);
     REQUIRE(scene.session.input(event(InputKind::Press), at({0, 0})));
     auto move = event(InputKind::Move);
     move.left = true;
     REQUIRE(scene.session.input(move, at({-48, 32})));
-    overlay = scene.session.activeToolObject().overlay(at({-48, 32}), 1);
-    REQUIRE(overlay.worldSegments.size() == 4);
-    CHECK(overlay.worldSegments[0].colour == green);
-    CHECK(overlay.worldSegments[1].colour == blue);
-    const auto label = [&](const std::string& text) {
-        return std::ranges::find_if(overlay.labels, [&](const auto& l) { return l.text == text; });
+    auto overlay = scene.session.activeToolObject().overlay(at({-48, 32}), 1);
+    const auto has = [&](const std::string& text) {
+        return std::ranges::any_of(overlay.labels, [&](const auto& l) { return l.text == text; });
     };
-    REQUIRE(label("48") != overlay.labels.end());
-    CHECK(label("48")->colour == green);
-    REQUIRE(label("32") != overlay.labels.end());
-    CHECK(label("32")->colour == blue);
+    CHECK(has("48"));
+    CHECK(has("32"));
     REQUIRE(scene.session.input(event(InputKind::Release), at({-48, 32})));
     overlay = scene.session.activeToolObject().overlay(at({-48, 32}), 1);
-    REQUIRE(overlay.worldSegments.size() == 5);
-    CHECK(overlay.worldSegments[4].colour == red);
-    const auto height = std::ranges::find_if(overlay.labels, [](const auto& l) { return l.text.starts_with("Height: "); });
-    REQUIRE(height != overlay.labels.end());
-    CHECK(height->colour == red);
+    CHECK(overlay.worldSegments.size() == 4);
+    CHECK(has("48"));
+    CHECK(std::ranges::any_of(overlay.labels, [](const auto& l) { return l.text.starts_with("Height: "); }));
 }
