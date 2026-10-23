@@ -261,7 +261,7 @@ void ViewportArea::updateHighlight() {
         if (frame && frame->window()) frame->window()->requestRedraw();
 }
 
-// The session owns the transient transform channel; the mirror only draws it. Equal revisions
+// The session owns the transient preview channel; the mirror only draws it. Equal revisions
 // are skipped, and the session clearing it (commit, cancel) clears the mirror in the same call.
 void ViewportArea::syncPreview(render::RenderMirror& mirror) {
     if (!session_) {
@@ -273,7 +273,13 @@ void ViewportArea::syncPreview(render::RenderMirror& mirror) {
     const bool changed = preview.revision() != previewRevision_ || previewEmpty_ != preview.empty();
     if (!changed) return;
     if (preview.empty()) mirror.clearPreview();
-    else mirror.setPreview(preview.transforms());
+    else {
+        render::PreviewGeometry geometry;
+        geometry.replacements = preview.replacements();
+        for (const auto& ghost : preview.ghosts())
+            geometry.ghosts.push_back({ghost.poly, ghost.material, ghost.opacity, ghost.outline});
+        mirror.setPreview(preview.transforms(), geometry, preview.revision());
+    }
     previewRevision_ = preview.revision();
     previewEmpty_ = preview.empty();
 }

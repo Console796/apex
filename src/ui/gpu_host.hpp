@@ -74,6 +74,7 @@ private:
     std::unique_ptr<JobPool> jobs_;
     QTemporaryDir emptyGame_;
     std::unique_ptr<render::TextureHeap> heap_;
+    std::shared_ptr<render::GlyphAtlas> glyphAtlas_;
     std::map<VkFormat, std::unique_ptr<render::Renderer>> renderers_;
     std::unique_ptr<assets::Vfs> vfs_;
     std::unique_ptr<assets::MaterialCache> materials_;

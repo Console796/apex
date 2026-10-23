@@ -13,6 +13,6 @@ void main() {
     uint slot = pushSlot() == 0xFFFFFFFFu ? vMaterial : pushSlot();
     float shade = 0.65 + 0.35 * abs(dot(normalize(vNormal), normalize(vec3(0.3, 0.5, 0.8))));
     vec4 texel = sampleSlot(slot, vUv);
-    outColor = vec4(texel.rgb * push.colour.rgb * shade, 1.0);
+    outColor = vec4(texel.rgb * push.colour.rgb * shade, push.colour.a);
     outColor.rgb = mix(outColor.rgb, push.p0.rgb, push.p0.a);
 }

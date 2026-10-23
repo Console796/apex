@@ -24,7 +24,7 @@ namespace {
 enum class Kind : std::uint32_t {
     Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid,
     Outline, OutlineAlways, BoxOutline, BoxOutlineAlways, SpriteOutline, SpriteOutlineAlways,
-    DepthOnly, BoxDepthOnly, Overlay, Count
+    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Count
 };
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
@@ -41,6 +41,7 @@ struct Spec {
     bool depthBias;
     bool depthTest = true;
     bool colourWrite = true;
+    VkCompareOp compare = VK_COMPARE_OP_GREATER_OR_EQUAL;
 };
 
 constexpr Spec kSpecs[kKindCount] = {
@@ -61,19 +62,27 @@ constexpr Spec kSpecs[kKindCount] = {
     {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
     {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
     {"overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {"overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {"overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, true, true, VK_COMPARE_OP_LESS},
+    {"brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {"brush_vert", "brush_flat_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {"overlay_vert", "label_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
-                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert"};
+                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag"};
 
 struct OverlayVertex {
     Vec4 position;
     Vec4 colour;
+    Vec4 uv{0.0f};
 };
 
 // Expands the overlay primitives to clip-space triangles. Primitives behind the near plane are
 // clipped in clip space (w = kNearW), so a gizmo straddling the camera plane stays sane.
-std::vector<OverlayVertex> expandOverlay(const DrawList& list) {
+std::vector<OverlayVertex> expandOverlay(const DrawList& list, std::span<const OverlaySegment> segments,
+                                          std::span<const OverlayTriangle> triangles,
+                                          std::span<const OverlayPoint> points = {}) {
     constexpr float kNearW = 1e-3f;
     std::vector<OverlayVertex> out;
     const Vec2 size = list.viewportSize;
@@ -82,7 +91,7 @@ std::vector<OverlayVertex> expandOverlay(const DrawList& list) {
         return list.view.viewProjection * Vec4(toCameraRelative(world, list.view.cameraPosition), 1.0f);
     };
     const auto lerp = [](Vec4 a, Vec4 b, float t) { return a + (b - a) * t; };
-    for (const OverlaySegment& seg : list.overlaySegments) {
+    for (const OverlaySegment& seg : segments) {
         Vec4 a = clip(seg.a), b = clip(seg.b);
         if (a.w < kNearW && b.w < kNearW) continue;
         if (a.w < kNearW) a = lerp(a, b, (kNearW - a.w) / (b.w - a.w));
@@ -99,11 +108,66 @@ std::vector<OverlayVertex> expandOverlay(const DrawList& list) {
         const OverlayVertex q[4] = {vertex(a, pa, n), vertex(a, pa, -n), vertex(b, pb, -n), vertex(b, pb, n)};
         for (const int i : {0, 1, 2, 0, 2, 3}) out.push_back(q[i]);
     }
-    for (const OverlayTriangle& tri : list.overlayTriangles) {
+    for (const OverlayTriangle& tri : triangles) {
         Vec4 v[3] = {clip(tri.a), clip(tri.b), clip(tri.c)};
         // Skip anything touching the near plane; filled handles are small and in front of the camera.
         if (v[0].w < kNearW || v[1].w < kNearW || v[2].w < kNearW) continue;
         for (const Vec4& c : v) out.push_back({c, tri.colour});
+    }
+    for (const auto& point : points) {
+        const Vec4 c = clip(point.position);
+        if (c.w < kNearW) continue;
+        const Vec2 half = Vec2(point.sizePixels) / size * c.w;
+        const OverlayVertex q[] = {
+            {c + Vec4(-half.x, -half.y, 0, 0), point.colour},
+            {c + Vec4( half.x, -half.y, 0, 0), point.colour},
+            {c + Vec4( half.x,  half.y, 0, 0), point.colour},
+            {c + Vec4(-half.x,  half.y, 0, 0), point.colour}};
+        for (const int i : {0, 1, 2, 0, 2, 3}) out.push_back(q[i]);
+    }
+    return out;
+}
+
+std::vector<OverlayVertex> expandLabels(const DrawList& list, const GlyphAtlasData& atlas) {
+    std::vector<OverlayVertex> out;
+    if (list.viewportSize.x <= 0 || list.viewportSize.y <= 0) return out;
+    for (const auto& label : list.labels) {
+        const Vec4 anchor = list.view.viewProjection * Vec4(toCameraRelative(label.position, list.view.cameraPosition), 1);
+        if (anchor.w < 1e-3f || anchor.z < 0 || anchor.z > anchor.w) continue;
+        Vec2 pen = label.offset;
+        for (std::size_t i = 0; i < label.text.size();) {
+            const auto first = static_cast<unsigned char>(label.text[i++]);
+            unsigned code = first;
+            if (first >= 0x80) {
+                unsigned count = first >= 0xF0 ? 3 : first >= 0xE0 ? 2 : first >= 0xC2 ? 1 : 0;
+                code = count ? first & ((1u << (6 - count)) - 1) : '?';
+                bool valid = count != 0;
+                for (unsigned j = 0; j < count; ++j) {
+                    if (i >= label.text.size() || (static_cast<unsigned char>(label.text[i]) & 0xC0) != 0x80) {
+                        valid = false;
+                        break;
+                    }
+                    code = (code << 6) | (static_cast<unsigned char>(label.text[i++]) & 0x3F);
+                }
+                if (!valid || code < 0x80 || code > 255) code = '?';
+            }
+            if (code == '\n') { pen.x = label.offset.x; pen.y += atlas.lineHeight * list.labelScale; continue; }
+            const auto& glyph = atlas.glyphs[code];
+            const auto& r = glyph.rect;
+            const Vec2 lo = pen + glyph.bearing * list.labelScale;
+            const Vec2 hi = lo + Vec2(r[2], r[3]) * list.labelScale;
+            const Vec2 uvLo = Vec2(r[0], r[1]) / Vec2(atlas.width, atlas.height);
+            const Vec2 uvHi = Vec2(r[0] + r[2], r[1] + r[3]) / Vec2(atlas.width, atlas.height);
+            const auto vertex = [&](Vec2 pixel, Vec2 uv) {
+                return OverlayVertex{anchor + Vec4(pixel * 2.0f / list.viewportSize * anchor.w, 0, 0), label.colour, Vec4(uv, 0, 0)};
+            };
+            if (r[2] && r[3]) {
+                const OverlayVertex q[] = {vertex(lo, uvLo), vertex({hi.x, lo.y}, {uvHi.x, uvLo.y}),
+                                           vertex(hi, uvHi), vertex({lo.x, hi.y}, {uvLo.x, uvHi.y})};
+                for (const int index : {0, 1, 2, 0, 2, 3}) out.push_back(q[index]);
+            }
+            pen.x += glyph.advance * list.labelScale;
+        }
     }
     return out;
 }
@@ -132,6 +196,7 @@ struct Renderer::Impl {
     // Swapchains have one frame in flight and distinct command buffers. A slot is reused only
     // after its fence, so host writes cannot race another viewport or an earlier submission.
     std::map<VkCommandBuffer, Buffer> previewBuffers;
+    std::shared_ptr<const GlyphAtlas> atlas;
     std::map<VkCommandBuffer, Buffer> overlayBuffers; // Same slot discipline as previewBuffers.
 #ifdef APEX_SHADER_DIR
     std::map<std::string, std::filesystem::file_time_type> stamps;
@@ -242,7 +307,7 @@ struct Renderer::Impl {
         VkPipelineDepthStencilStateCreateInfo depth = vkStruct<VkPipelineDepthStencilStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
         depth.depthTestEnable = spec.depthTest ? VK_TRUE : VK_FALSE;
         depth.depthWriteEnable = spec.depthWrite ? VK_TRUE : VK_FALSE;
-        depth.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Reversed-Z.
+        depth.depthCompareOp = spec.compare; // Reversed-Z.
         VkPipelineColorBlendAttachmentState attachment{};
         attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         if (!spec.colourWrite) attachment.colorWriteMask = 0;
@@ -314,6 +379,11 @@ struct Renderer::Impl {
 
 Renderer::Renderer(std::unique_ptr<Impl> impl, bool wireFill) : impl_(std::move(impl)), wireFill_(wireFill) {}
 Renderer::~Renderer() = default;
+void Renderer::setGlyphAtlas(std::shared_ptr<const GlyphAtlas> atlas) {
+    if (impl_->atlas == atlas) return;
+    impl_->context->waitIdle();
+    impl_->atlas = std::move(atlas);
+}
 
 Result<std::unique_ptr<Renderer>> Renderer::create(Context& context, TextureHeap& heap, VkFormat colorFormat,
                                                    VkFormat depthFormat) {
@@ -497,6 +567,9 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
         break;
     }
     }
+    if (list.mode != DisplayMode::Wireframe)
+        drawMeshes(list.mode == DisplayMode::Textured ? Kind::GhostTextured : Kind::GhostFlat,
+                   list.ghosts, brushColour, trianglesOf, trianglesBuf, false);
     if (list.edgeOverlay && list.mode != DisplayMode::Wireframe && s.has(Kind::Edges)) {
         vkCmdSetDepthBias(commands, list.edgeDepthBias, 0.0f, 1.0f);
         drawMeshes(Kind::Edges, list.meshes, [&](PushConstants& p, const MeshDraw&) { p.colour = list.edgeColour; }, edgesOf, edgesBuf, true);
@@ -578,7 +651,8 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     }
     // Wireframe keeps its normal hollow appearance, but outlines use surface occlusion.
     if (list.mode == DisplayMode::Wireframe &&
-        (!list.outlines.empty() || !list.boxOutlines.empty() || !list.spriteOutlines.empty())) {
+        (!list.outlines.empty() || !list.boxOutlines.empty() || !list.spriteOutlines.empty() ||
+         !list.worldSegments.empty() || !list.worldPoints.empty() || !list.worldTriangles.empty())) {
         drawMeshes(Kind::DepthOnly, list.meshes, [](PushConstants&, const MeshDraw&) {},
                    trianglesOf, trianglesBuf, false);
         for (const BoxDraw& box : list.boxes) {
@@ -638,29 +712,48 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     }
     vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
 
-    if (!list.overlaySegments.empty() || !list.overlayTriangles.empty()) {
-        const auto vertices = expandOverlay(list);
-        if (!vertices.empty() && s.has(Kind::Overlay)) {
-            const VkDeviceSize size = vertices.size() * sizeof(OverlayVertex);
-            Buffer& buffer = s.overlayBuffers[commands];
-            if (buffer.size() < size) {
-                auto created = Buffer::create(*s.context, {std::max(size, buffer.size() * 2),
-                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
-                if (!created) {
-                    log::error("overlay buffer: {}", created.error().what());
-                    return;
-                }
-                buffer = std::move(*created);
+    auto vertices = expandOverlay(list, list.worldSegments, list.worldTriangles, list.worldPoints);
+    const auto worldCount = static_cast<std::uint32_t>(vertices.size());
+    auto screen = expandOverlay(list, list.overlaySegments, list.overlayTriangles);
+    const auto screenCount = static_cast<std::uint32_t>(screen.size());
+    vertices.insert(vertices.end(), screen.begin(), screen.end());
+    if (s.atlas) {
+        auto labels = expandLabels(list, s.atlas->data());
+        vertices.insert(vertices.end(), labels.begin(), labels.end());
+    }
+    if (!vertices.empty()) {
+        const VkDeviceSize size = vertices.size() * sizeof(OverlayVertex);
+        Buffer& buffer = s.overlayBuffers[commands];
+        if (buffer.size() < size) {
+            auto created = Buffer::create(*s.context, {std::max(size, buffer.size() * 2),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+            if (!created) {
+                log::error("overlay buffer: {}", created.error().what());
+                return;
             }
-            std::memcpy(buffer.mapped(), vertices.data(), size);
-            buffer.flush(0, size);
-            const VkDeviceAddress address = buffer.deviceAddress();
-            s.bind(commands, Kind::Overlay);
-            PushConstants push = basePush(list);
-            push.p1 = Vec4(std::bit_cast<float>(static_cast<std::uint32_t>(address)),
-                           std::bit_cast<float>(static_cast<std::uint32_t>(address >> 32)), 0.0f, 0.0f);
+            buffer = std::move(*created);
+        }
+        std::memcpy(buffer.mapped(), vertices.data(), size);
+        buffer.flush(0, size);
+        const VkDeviceAddress address = buffer.deviceAddress();
+        PushConstants push = basePush(list);
+        push.p1 = Vec4(std::bit_cast<float>(static_cast<std::uint32_t>(address)),
+                       std::bit_cast<float>(static_cast<std::uint32_t>(address >> 32)), 0.0f, 0.0f);
+        const auto draw = [&](Kind kind, std::uint32_t count, std::uint32_t first, float alpha) {
+            if (!count) return;
+            push.colour.a = alpha;
+            s.bind(commands, kind);
             s.pushAll(commands, push);
-            vkCmdDraw(commands, static_cast<std::uint32_t>(vertices.size()), 1, 0, 0);
+            vkCmdDraw(commands, count, 1, first, 0);
+        };
+        // Disjoint depth comparisons preserve the requested alpha of translucent triangles.
+        draw(Kind::WorldOccluded, worldCount, 0, list.occludedAlpha);
+        draw(Kind::WorldOverlay, worldCount, 0, 1.0f);
+        draw(Kind::Overlay, screenCount, worldCount, 1.0f);
+        if (s.atlas) {
+            push.offsetSlot.w = std::bit_cast<float>(s.atlas->slot());
+            draw(Kind::Label, static_cast<std::uint32_t>(vertices.size()) - worldCount - screenCount,
+                 worldCount + screenCount, 1.0f);
         }
     }
 }
@@ -710,7 +803,8 @@ void SwapchainDepth::end(VkCommandBuffer commands) {
     vkCmdEndRendering(commands);
 }
 
-Result<Buffer> uploadBuffer(Context& context, UploadRing& ring, std::span<const std::byte> data, VkBufferUsageFlags usage) {
+Result<Buffer> uploadBuffer(Context& context, UploadRing& ring, std::span<const std::byte> data, VkBufferUsageFlags usage,
+                            bool flush) {
     auto buffer = Buffer::create(context, {std::max<VkDeviceSize>(data.size(), 4), usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                            MemoryUsage::GpuOnly});
     if (!buffer) return std::unexpected(buffer.error());
@@ -730,6 +824,7 @@ Result<Buffer> uploadBuffer(Context& context, UploadRing& ring, std::span<const 
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &barrier;
     vkCmdPipelineBarrier2(*commands, &dep);
+    if (!flush) return buffer;
     if (auto flushed = ring.flush(); !flushed) return std::unexpected(flushed.error());
     return buffer;
 }

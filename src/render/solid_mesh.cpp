@@ -36,7 +36,14 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
                             const std::function<TextureSize(std::string_view)>& sizeOf) {
     auto geometry = geometry::solidGeometry(solidBlock);
     if (!geometry) return std::unexpected(geometry.error());
-    const auto* polyhedron = &geometry->poly;
+    return meshSolid(geometry->poly, sizeOf);
+}
+
+Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
+                            const std::function<TextureSize(std::string_view)>& sizeOf) {
+    const auto problems = poly.validate();
+    if (!problems.empty()) return fail(problems.front().message);
+    const auto* polyhedron = &poly;
 
     SolidMesh mesh;
     mesh.bounds = polyhedron->bounds();

@@ -7,6 +7,7 @@
 #include "core/math.hpp"
 #include "core/result.hpp"
 #include "document/document.hpp"
+#include "geometry/convex_polyhedron.hpp"
 #include "render/renderer.hpp"
 
 #include <cstdint>
@@ -51,6 +52,11 @@ std::vector<std::string> solidMaterials(const kv1::Node& solidBlock);
 // `sizeOf` maps a lower-case material name to its texture size (for UV normalization).
 // Fails when the sides do not bound a valid convex solid.
 Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
+                            const std::function<TextureSize(std::string_view)>& sizeOf);
+
+// Same mesher for preview values and parsed committed solids. Face material and UV data are used
+// verbatim; invalid polyhedra fail before any vertices are emitted.
+Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                             const std::function<TextureSize(std::string_view)>& sizeOf);
 
 } // namespace apex::render

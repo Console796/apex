@@ -183,6 +183,15 @@ void TransformInput::appendOverlay(render::DrawList& list, const viewport::Camer
         list.overlaySegments.push_back({p.a, p.b, p.colour, p.width * static_cast<float>(dpr)});
     for (const auto& p : primitives.triangles)
         list.overlayTriangles.push_back({p.a, p.b, p.c, p.colour});
+    for (const auto& p : primitives.worldSegments)
+        list.worldSegments.push_back({p.a, p.b, p.colour, p.width * static_cast<float>(dpr)});
+    for (const auto& p : primitives.worldPoints)
+        list.worldPoints.push_back({p.position, p.colour, p.size * static_cast<float>(dpr)});
+    for (const auto& p : primitives.worldTriangles)
+        list.worldTriangles.push_back({p.a, p.b, p.c, p.colour});
+    list.labelScale = static_cast<float>(dpr);
+    for (const auto& p : primitives.labels)
+        list.labels.push_back({p.position, p.text, Vec2(p.offset * dpr), p.colour});
 }
 
 } // namespace apex::ui
