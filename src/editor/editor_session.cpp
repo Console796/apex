@@ -107,6 +107,13 @@ void EditorSession::unpinWorkPlane() {
     workPlane_.unpin();
     notify();
 }
+SnapResult EditorSession::snap(Ray ray, const ToolView& view, bool suspended) const {
+    if (!document_ || !picks_) return {};
+    auto settings = snap_;
+    settings.gridSize = gridSize_;
+    return Snapper(*document_, *picks_, workPlane_, settings, fallbackPlane_).snap(ray, view, {suspended});
+}
+
 void EditorSession::setGridSize(double units) {
     units = GridLadder::clamp(units);
     if (units == gridSize_) return;

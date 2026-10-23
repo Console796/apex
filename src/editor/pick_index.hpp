@@ -13,6 +13,7 @@
 namespace apex::editor {
 
 using document::SideId;
+struct ToolView;
 
 struct LocalBox {
     DVec3 mins{-4.0}, maxs{4.0};
@@ -29,6 +30,15 @@ struct NearHit {
     NodeId node;
     DVec3 point;
     double distance;
+};
+struct FeatureHit {
+    NodeId node;
+    SideId side;
+    DVec3 point;
+    double pixels, depth;
+};
+struct FeatureHits {
+    std::optional<FeatureHit> vertex, midpoint, edge;
 };
 enum class Mode { Enclosed, Touching };
 
@@ -64,6 +74,10 @@ public:
     std::vector<NodeId> frustum(std::span<const Plane> outwardPlanes, Mode mode) const;
     // Distance to the surface, including for interior points; point lies on a face.
     std::vector<NearHit> nearest(DVec3 point, double radius) const;
+
+    // Solid features only. Occlusion is tested along each feature's camera ray: occluded
+    // geometry is never a fallback. Equal pixel distances prefer depth, then node/side.
+    FeatureHits nearestFeature(Ray ray, double pixelRadius, const ToolView& view) const;
 
 private:
     struct Item {

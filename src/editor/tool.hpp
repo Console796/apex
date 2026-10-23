@@ -46,6 +46,8 @@ struct ToolView {
     double fovYDegrees = 75.0, orthoHeight = 1024.0;
     std::function<std::array<Plane, 4>(DVec2, DVec2)> rectFrustum;
 };
+// Logical pixels, y down; perspective rejects points on or behind the camera plane.
+std::optional<DVec2> worldToPixel(const ToolView& view, DVec3 point);
 GizmoView gizmoViewFor(const ToolView& view, DVec3 pivot, double sizePixels = 80.0);
 TransformModifiers transformModifiers(const Preset& preset, const InputEvent& event);
 
