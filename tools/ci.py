@@ -279,7 +279,7 @@ def fuzz_configure_stage(build, report):
 
 
 def fuzz_build_stage(jobs, report):
-    return run(["cmake", "--build", "--preset", "linux-fuzz", "--target", "kv1_fuzz", "-j", str(jobs)],
+    return run(["cmake", "--build", "--preset", "linux-fuzz", "--target", "kv1_fuzz", "hull_fuzz", "-j", str(jobs)],
                report, "fuzz-build")
 
 
@@ -317,6 +317,33 @@ def fuzz_run_stage(seconds, report):
         report.add("fuzz", "FAIL", time.time() - t, f"libFuzzer exited {result.returncode}; see {log}")
     else:
         report.add("fuzz", "ok", time.time() - t, f"{seconds}s, warm corpus: {persistent}")
+
+
+def hull_fuzz_stage(report):
+    """Hull/split/subtract fuzz on a fixed seed and run budget, so the stage is reproducible (0.3 D8)."""
+    t = time.time()
+    log = report.dir / "hull-fuzz.log"
+    artifact_dir = Path(tempfile.mkdtemp(prefix="hull-artifacts-", dir=report.dir))
+    try:
+        with open(log, "w", encoding="utf-8") as f, \
+                tempfile.TemporaryDirectory(prefix="hull-corpus-", dir=ROOT / "build") as corpus:
+            fuzz = [str(ROOT / "build" / "linux-fuzz" / "hull_fuzz"), corpus, "-seed=1", "-runs=20000",
+                    f"-artifact_prefix={artifact_dir}{os.sep}"]
+            f.write("$ " + shlex.join(fuzz) + "\n")
+            f.flush()
+            result = subprocess.run(fuzz, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+    except OSError as error:
+        report.add("hull-fuzz", "FAIL", time.time() - t, f"could not run hull fuzz: {error}")
+        return
+
+    artifacts = sorted(path for path in artifact_dir.rglob("*") if path.is_file())
+    if artifacts:
+        paths = ", ".join(str(path) for path in artifacts)
+        report.add("hull-fuzz", "FAIL", time.time() - t, f"artifact: {paths}; see {log}")
+    elif result.returncode != 0:
+        report.add("hull-fuzz", "FAIL", time.time() - t, f"libFuzzer exited {result.returncode}; see {log}")
+    else:
+        report.add("hull-fuzz", "ok", time.time() - t, "seed 1, 20000 runs")
 
 
 def gpu_stage(name, device_filter, report):
@@ -559,6 +586,7 @@ def main():
             g.add("fuzz-configure", lambda: fuzz_configure_stage(build, rep), slot="configure")
             g.add("fuzz-build", lambda: fuzz_build_stage(jobs, rep), ["fuzz-configure"], "build")
             g.add("fuzz", lambda: fuzz_run_stage(a.fuzz_seconds, rep), ["fuzz-build"])
+            g.add("hull-fuzz", lambda: hull_fuzz_stage(rep), ["fuzz-build"])
         if not run_win:
             rep.add("windows-msvc", "skipped", 0, win_why)
     g.add("check-licenses", lambda: run([sys.executable, str(ROOT / "tools" / "check_licenses.py")],
