@@ -38,7 +38,9 @@ its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 **Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`, and the
 post-release sub-milestone 0.2.12 (Preferences, keybinding editor, areas and workspaces) followed
 at the owner's request (see [plans/0.2.md](plans/0.2.md)). 0.3 is planned
-([plans/0.3.md](plans/0.3.md)); its first sub-milestone, 0.3.1, is in progress.
+([plans/0.3.md](plans/0.3.md)); 0.3.1 (tool interface, hull/CSG kernel, topology write path,
+snapper, preview geometry and world overlays) has landed (`version.txt` reads 0.3.1). The next
+landed work is 0.3.2, the block tool; Track B (0.3.7 → 0.3.9) can start alongside.
 
 ## Principles that hold across every milestone
 
