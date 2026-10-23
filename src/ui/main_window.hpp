@@ -8,6 +8,7 @@
 #include "assets/game_profile.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/autosave.hpp"
+#include "editor/preset_io.hpp"
 #include "ui/theme.hpp"
 
 class QAction;
@@ -73,6 +74,16 @@ public:
     // Handles the edit.* clipboard, duplicate, group and tie actions (menus and shortcuts).
     bool performEditAction(const editor::ActionId& id);
 
+    // Settings (the Preferences dialog drives these; each persists its own value).
+    const editor::PresetStore& presetStore() const { return presetStore_; }
+    // Makes the preset the active keymap, rebinds the menu shortcuts and remembers its name.
+    void applyPreset(const editor::Preset& preset);
+    // Rebuilds Settings > Binding preset after user presets were saved or deleted.
+    void refreshPresetMenu();
+    void setAutosave(bool enabled, int intervalMinutes);
+    void setUndoCapMiB(int mib);
+    void openPreferences();
+
 private slots:
     void openDialog();
     void save();
@@ -99,7 +110,6 @@ private:
     void refreshClipboardState();
     void updateEditorActions();
     void updateGridStatus();
-    void applyPreset(const editor::Preset& preset);
     void buildDocks();
     void buildStatusBar();
     void addRecent(const QString& path);
@@ -119,6 +129,8 @@ private:
     std::optional<std::uint64_t> shownClassesRevision_;
     std::optional<bool> savedMarqueeTouching_;
     std::map<editor::ActionId, QAction*> editorActions_;
+    editor::PresetStore presetStore_;
+    QMenu* presetMenu_ = nullptr;
     QString path_;
     std::vector<assets::GameProfile> profiles_;
 

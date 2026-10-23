@@ -93,7 +93,7 @@ apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp 
                           src/editor/group_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
                           src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
-                          src/editor/transform.cpp src/editor/preview.cpp
+                          src/editor/transform.cpp src/editor/preview.cpp src/editor/preset_io.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/inspector_model.cpp src/editor/placement.cpp
            DEPS apex_document apex_geometry apex_core)
@@ -121,7 +121,7 @@ if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
   apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
                         src/ui/pointer_lock.cpp src/ui/input_log.cpp
-                        src/ui/key_chord.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp
+                        src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets ads::qtadvanceddocking-qt6)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
   # Pointer lock is optional: other platforms and minimal Linux builds retain local input.
@@ -161,7 +161,7 @@ if(APEX_BUILD_APP)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
   if(APEX_BUILD_TESTS)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
-    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp)
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp)
     target_link_libraries(apex_ui_tests PRIVATE apex_ui apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

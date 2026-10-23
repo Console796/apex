@@ -35,6 +35,8 @@
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include "ui/recovery_dialog.hpp"
+#include "ui/settings_dialog.hpp"
+#include <filesystem>
 
 #include <algorithm>
 #include <tuple>
@@ -102,7 +104,10 @@ QString profileDir() {
 
 }  // namespace
 
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+MainWindow::MainWindow(QWidget* parent)
+    : QMainWindow(parent),
+      presetStore_(std::filesystem::path(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation).toStdString()) /
+                   "keymaps") {
     resize(1280, 800);
     buildMenus();
     buildStatusBar();
@@ -124,7 +129,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
     const bool touching = QSettings().value(QStringLiteral("editor/marqueeTouching"), false).toBool();
     session_.setMarqueeMode(touching ? editor::MarqueeMode::Touching : editor::MarqueeMode::Enclosed);
-    const auto* preset = editor::findPreset(presetName.toStdString());
+    const auto preset = presetStore_.find(presetName.toStdString());
+    if (!preset) log::warn("keybinding preset '{}' unavailable: {}", presetName.toStdString(), preset.error().what());
     applyPreset(preset ? *preset : editor::hammerPreset());
     updateTitle();
     restoreLayout();
@@ -210,28 +216,21 @@ void MainWindow::buildMenus() {
         });
     }
     auto* settings = menuBar()->addMenu(tr("&Settings"));
+    auto* preferences = settings->addAction(tr("&Preferences..."), QKeySequence(Qt::CTRL | Qt::Key_Comma), this,
+                                            &MainWindow::openPreferences);
+    preferences->setObjectName(QStringLiteral("actionPreferences"));
+    settings->addSeparator();
     auto* autosaveSettings = settings->addAction(tr("Autosave..."), this, &MainWindow::configureAutosave);
     autosaveSettings->setObjectName(QStringLiteral("actionAutosaveSettings"));
     auto* undoMemory = settings->addAction(tr("Undo Memory Limit..."), this, [this] {
         bool accepted = false;
         const int limit = QInputDialog::getInt(this, tr("Undo Memory Limit"), tr("Memory limit (MiB):"),
                                                undoCapMiB(), 16, 8192, 16, &accepted);
-        if (!accepted) return;
-        QSettings().setValue(QStringLiteral("history/undoCapMiB"), limit);
-        if (document_) document_->setUndoCap(static_cast<std::size_t>(limit) * 1024 * 1024);
-        history_->refresh();
-        updateEditorActions();
+        if (accepted) setUndoCapMiB(limit);
     });
     undoMemory->setObjectName(QStringLiteral("actionUndoMemoryLimit"));
-    auto* presets = settings->addMenu(tr("Binding preset"));
-    auto* presetGroup = new QActionGroup(presets);
-    for (const auto name : editor::presetNames()) {
-        auto* action = presets->addAction(fromStd(name));
-        action->setObjectName(QStringLiteral("preset.") + fromStd(name));
-        action->setCheckable(true);
-        presetGroup->addAction(action);
-        connect(action, &QAction::triggered, this, [this, name] { applyPreset(*editor::findPreset(name)); });
-    }
+    presetMenu_ = settings->addMenu(tr("Binding preset"));
+    refreshPresetMenu();
 
     viewMenu_ = menuBar()->addMenu(tr("&View"));
     viewMenu_->setObjectName(QStringLiteral("menuView"));
@@ -298,11 +297,55 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
             action->setShortcutContext(plain ? Qt::WidgetShortcut : Qt::WindowShortcut);
         }
     }
-    for (const auto name : editor::presetNames()) {
-        if (auto* action = findChild<QAction*>(QStringLiteral("preset.") + fromStd(name)))
-            action->setChecked(name == preset.name);
+    if (presetMenu_) {
+        for (auto* action : presetMenu_->actions())
+            action->setChecked(action->data().toString() == fromStd(preset.name));
     }
     QSettings().setValue(QStringLiteral("editor/preset"), fromStd(preset.name));
+}
+
+void MainWindow::refreshPresetMenu() {
+    presetMenu_->clear();
+    auto* group = new QActionGroup(presetMenu_);
+    std::vector<std::string> names;
+    for (const auto name : editor::presetNames()) names.emplace_back(name);
+    const auto saved = presetStore_.list();
+    const auto addPreset = [&](const std::string& name) {
+        auto* action = presetMenu_->addAction(fromStd(name));
+        action->setObjectName(QStringLiteral("preset.") + fromStd(name));
+        action->setData(fromStd(name));
+        action->setCheckable(true);
+        action->setChecked(name == session_.preset().name);
+        group->addAction(action);
+        connect(action, &QAction::triggered, this, [this, name] {
+            if (const auto preset = presetStore_.find(name)) applyPreset(*preset);
+            else log::warn("keybinding preset '{}': {}", name, preset.error().what());
+        });
+    };
+    for (const auto& name : names) addPreset(name);
+    if (!saved.empty()) presetMenu_->addSeparator();
+    for (const auto& name : saved) addPreset(name);
+}
+
+void MainWindow::setAutosave(bool enabled, int intervalMinutes) {
+    QSettings settings;
+    settings.setValue("autosave/enabled", enabled);
+    settings.setValue("autosave/intervalMinutes", intervalMinutes);
+    autosaveTimer_->stop();
+    if (enabled) autosaveTimer_->start(intervalMinutes * 60000);
+}
+
+void MainWindow::setUndoCapMiB(int mib) {
+    QSettings().setValue(QStringLiteral("history/undoCapMiB"), mib);
+    if (document_) document_->setUndoCap(static_cast<std::size_t>(mib) * 1024 * 1024);
+    history_->refresh();
+    updateEditorActions();
+}
+
+void MainWindow::openPreferences() {
+    auto* dialog = new SettingsDialog(*this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void MainWindow::updateEditorActions() {
@@ -972,11 +1015,7 @@ void MainWindow::configureAutosave() {
     form->addRow(buttons);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, enabled, interval] {
-        QSettings settings;
-        settings.setValue("autosave/enabled", enabled->isChecked());
-        settings.setValue("autosave/intervalMinutes", interval->value());
-        autosaveTimer_->stop();
-        if (enabled->isChecked()) autosaveTimer_->start(interval->value() * 60000);
+        setAutosave(enabled->isChecked(), interval->value());
         dialog->accept();
     });
     dialog->show();
