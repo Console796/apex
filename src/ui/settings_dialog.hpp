@@ -73,7 +73,17 @@ private:
     editor::Preset original_;
     bool baseIsBuiltin_ = true;
 
+    void refreshThemeCombo(const QString& select);
+    void updateThemeButtons();
+    void editTheme(bool fromSelected);
+    void deleteTheme();
+    void importTheme();
+    void exportTheme();
+
     QComboBox* theme_ = nullptr;
+    QPushButton* themeEdit_ = nullptr;
+    QPushButton* themeDelete_ = nullptr;
+    QPushButton* themeExport_ = nullptr;
     QCheckBox* autosave_ = nullptr;
     QSpinBox* autosaveMinutes_ = nullptr;
     QSpinBox* undoMiB_ = nullptr;

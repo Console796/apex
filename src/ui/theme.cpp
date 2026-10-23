@@ -1,9 +1,18 @@
 #include "ui/theme.hpp"
 
 #include <QApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QFont>
+#include <QJsonDocument>
 #include <QPalette>
+#include <QSaveFile>
+#include <QStandardPaths>
 #include <QStyleOption>
+
+#include <algorithm>
+#include <cstring>
 
 namespace apex::ui {
 namespace {
@@ -48,19 +57,240 @@ Tokens makeLight() {
     return t;
 }
 
-Theme g_theme = Theme::Dark;
+// Colour order: window panel base raised hover pressed border text textDim textOnAccent accent
+// accentHover selection warn error.
+Tokens makeColours(const char* const (&c)[15]) {
+    Tokens t;
+    QColor* fields[] = {&t.window, &t.panel,  &t.base,        &t.raised,      &t.hover,
+                        &t.pressed, &t.border, &t.text,       &t.textDim,     &t.textOnAccent,
+                        &t.accent, &t.accentHover, &t.selection, &t.warn,      &t.error};
+    for (int i = 0; i < 15; ++i) *fields[i] = QColor(QLatin1StringView(c[i]));
+    return t;
+}
+
+Tokens makeMidnight() {
+    const char* const c[15] = {"#0b0e14", "#11151d", "#080a0f", "#18202c", "#212b3a", "#2b3749", "#222c3b", "#c9d1e0",
+                               "#6f7b91", "#ffffff", "#7c5cff", "#977dff", "#2d2a6e", "#e0b341", "#f0707a"};
+    return makeColours(c);
+}
+
+Tokens makeSolarizedDark() {
+    const char* const c[15] = {"#00212b", "#002b36", "#001f27", "#073642", "#0d4452", "#14566a", "#0f4655", "#93a1a1",
+                               "#657b83", "#fdf6e3", "#268bd2", "#4aa3e3", "#124f66", "#b58900", "#dc322f"};
+    return makeColours(c);
+}
+
+Tokens makeSolarizedLight() {
+    const char* const c[15] = {"#eee8d5", "#f5efdc", "#fdf6e3", "#e6dfc8", "#ddd5ba", "#d2c9ab", "#d3cbb0", "#586e75",
+                               "#93a1a1", "#fdf6e3", "#268bd2", "#4aa3e3", "#cfe0d8", "#b58900", "#dc322f"};
+    return makeColours(c);
+}
+
+Tokens makeHighContrast() {
+    const char* const c[15] = {"#000000", "#0a0a0a", "#000000", "#1a1a1a", "#2e2e2e", "#454545", "#ffffff", "#ffffff",
+                               "#c8c8c8", "#000000", "#ffd400", "#ffe45c", "#0b4fa8", "#ffd400", "#ff5c5c"};
+    return makeColours(c);
+}
+
+QList<ThemeEntry>& registry() {
+    static QList<ThemeEntry> r = [] {
+        QList<ThemeEntry> l;
+        const auto add = [&](const char* id, const char* name, Tokens t) {
+            l.append({QString::fromLatin1(id), QString::fromLatin1(name), true, std::move(t)});
+        };
+        add("dark", "Dark", makeDark());
+        add("light", "Light", makeLight());
+        add("midnight", "Midnight", makeMidnight());
+        add("solarized-dark", "Solarized Dark", makeSolarizedDark());
+        add("solarized-light", "Solarized Light", makeSolarizedLight());
+        add("high-contrast", "High Contrast", makeHighContrast());
+        return l;
+    }();
+    return r;
+}
+
+Tokens& current() {
+    static Tokens t = makeDark();
+    return t;
+}
+QString g_themeId = QStringLiteral("dark");
 ApexStyle* g_style = nullptr;
+
+QString slugOf(const QString& name) {
+    QString out;
+    for (const QChar ch : name.toLower()) out += ch.isLetterOrNumber() ? ch : QLatin1Char('-');
+    while (out.contains(QStringLiteral("--"))) out.replace(QStringLiteral("--"), QStringLiteral("-"));
+    while (out.startsWith(QLatin1Char('-'))) out.remove(0, 1);
+    while (out.endsWith(QLatin1Char('-'))) out.chop(1);
+    return out.isEmpty() ? QStringLiteral("theme") : out;
+}
+
+const char* const kCustomPrefix = "custom:";
 
 }  // namespace
 
-const Tokens& tokens(Theme theme) {
-    static const Tokens dark = makeDark();
-    static const Tokens light = makeLight();
-    return theme == Theme::Dark ? dark : light;
+const Tokens& tokens(Theme theme) { return registry()[theme == Theme::Dark ? 0 : 1].tokens; }
+
+const Tokens& currentTokens() { return current(); }
+Theme currentTheme() { return current().window.lightness() < 128 ? Theme::Dark : Theme::Light; }
+QString currentThemeId() { return g_themeId; }
+
+const QStringList& colourTokenNames() {
+    static const QStringList names = {"window", "panel",  "base",         "raised",      "hover",
+                                      "pressed", "border", "text",         "textDim",     "textOnAccent",
+                                      "accent", "accentHover", "selection", "warn",       "error"};
+    return names;
 }
 
-const Tokens& currentTokens() { return tokens(g_theme); }
-Theme currentTheme() { return g_theme; }
+const QColor& colourToken(const Tokens& t, const QString& name) {
+    const int i = colourTokenNames().indexOf(name);
+    const QColor* fields[] = {&t.window, &t.panel,  &t.base,        &t.raised,      &t.hover,
+                              &t.pressed, &t.border, &t.text,       &t.textDim,     &t.textOnAccent,
+                              &t.accent, &t.accentHover, &t.selection, &t.warn,      &t.error};
+    return *fields[i < 0 ? 0 : i];
+}
+
+QColor& colourToken(Tokens& t, const QString& name) {
+    return const_cast<QColor&>(colourToken(static_cast<const Tokens&>(t), name));
+}
+
+const QList<ThemeEntry>& themes() { return registry(); }
+
+const ThemeEntry* findTheme(const QString& id) {
+    for (const auto& e : registry())
+        if (e.id == id) return &e;
+    return nullptr;
+}
+
+QString themesDir() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/themes");
+}
+
+QJsonObject themeToJson(const ThemeEntry& theme) {
+    QJsonObject colors;
+    for (const auto& n : colourTokenNames()) colors[n] = colourToken(theme.tokens, n).name(QColor::HexRgb);
+    QJsonObject metrics;
+    metrics[QStringLiteral("spacing")] = theme.tokens.spacing;
+    metrics[QStringLiteral("radius")] = theme.tokens.radius;
+    metrics[QStringLiteral("controlHeight")] = theme.tokens.controlHeight;
+    metrics[QStringLiteral("splitterWidth")] = theme.tokens.splitterWidth;
+    metrics[QStringLiteral("fontPointSize")] = theme.tokens.fontPointSize;
+    if (!theme.tokens.fontFamily.isEmpty()) metrics[QStringLiteral("fontFamily")] = theme.tokens.fontFamily;
+    QJsonObject o;
+    o[QStringLiteral("name")] = theme.name;
+    o[QStringLiteral("base")] = theme.tokens.window.lightness() < 128 ? QStringLiteral("dark") : QStringLiteral("light");
+    o[QStringLiteral("colors")] = colors;
+    o[QStringLiteral("metrics")] = metrics;
+    return o;
+}
+
+bool themeFromJson(const QJsonObject& json, ThemeEntry& out, QString* error) {
+    const auto fail = [&](const QString& msg) {
+        if (error) *error = msg;
+        return false;
+    };
+    const QString name = json.value(QStringLiteral("name")).toString().trimmed();
+    if (name.isEmpty()) return fail(QStringLiteral("missing \"name\""));
+    const QString baseId = json.value(QStringLiteral("base")).toString(QStringLiteral("dark"));
+    const ThemeEntry* base = findTheme(baseId);
+    if (!base || !base->builtin) return fail(QStringLiteral("unknown base theme \"%1\"").arg(baseId));
+    ThemeEntry t;
+    t.name = name;
+    t.builtin = false;
+    t.tokens = base->tokens;
+    const QJsonObject colors = json.value(QStringLiteral("colors")).toObject();
+    for (auto it = colors.begin(); it != colors.end(); ++it) {
+        if (!colourTokenNames().contains(it.key())) continue;  // Unknown keys are ignored (forward compatible).
+        const QString text = it.value().toString();
+        if (!QColor::isValidColorName(text)) return fail(QStringLiteral("bad colour \"%1\" for %2").arg(text, it.key()));
+        colourToken(t.tokens, it.key()) = QColor(text);
+    }
+    const QJsonObject m = json.value(QStringLiteral("metrics")).toObject();
+    const auto metric = [&](const char* key, int& field, int lo, int hi) {
+        if (m.contains(QLatin1StringView(key))) field = std::clamp(m.value(QLatin1StringView(key)).toInt(field), lo, hi);
+    };
+    metric("spacing", t.tokens.spacing, 0, 24);
+    metric("radius", t.tokens.radius, 0, 16);
+    metric("controlHeight", t.tokens.controlHeight, 16, 48);
+    metric("splitterWidth", t.tokens.splitterWidth, 1, 12);
+    metric("fontPointSize", t.tokens.fontPointSize, 6, 24);
+    if (m.contains(QStringLiteral("fontFamily"))) t.tokens.fontFamily = m.value(QStringLiteral("fontFamily")).toString();
+    out = std::move(t);
+    return true;
+}
+
+void loadCustomThemes(const QString& dir, QStringList* errors) {
+    auto& r = registry();
+    r.erase(std::remove_if(r.begin(), r.end(), [](const ThemeEntry& e) { return !e.builtin; }), r.end());
+    const auto files = QDir(dir).entryInfoList({QStringLiteral("*.json")}, QDir::Files, QDir::Name);
+    for (const QFileInfo& fi : files) {
+        QFile f(fi.absoluteFilePath());
+        QString err;
+        ThemeEntry t;
+        QJsonParseError pe;
+        if (!f.open(QIODevice::ReadOnly)) {
+            err = QStringLiteral("cannot open");
+        } else {
+            const auto doc = QJsonDocument::fromJson(f.readAll(), &pe);
+            if (!doc.isObject()) err = pe.errorString();
+            else themeFromJson(doc.object(), t, &err);
+        }
+        if (!err.isEmpty()) {
+            if (errors) errors->append(QStringLiteral("%1: %2").arg(fi.fileName(), err));
+            continue;
+        }
+        t.id = QLatin1StringView(kCustomPrefix) + fi.completeBaseName();
+        r.append(std::move(t));
+    }
+}
+
+QString saveCustomTheme(const ThemeEntry& theme, const QString& dir, QString* error) {
+    const QString stem = slugOf(theme.name);
+    if (!QDir().mkpath(dir)) {
+        if (error) *error = QStringLiteral("cannot create %1").arg(dir);
+        return {};
+    }
+    QSaveFile f(dir + QLatin1Char('/') + stem + QStringLiteral(".json"));
+    if (!f.open(QIODevice::WriteOnly) || f.write(QJsonDocument(themeToJson(theme)).toJson()) < 0 || !f.commit()) {
+        if (error) *error = f.errorString();
+        return {};
+    }
+    loadCustomThemes(dir);
+    return QLatin1StringView(kCustomPrefix) + stem;
+}
+
+bool removeCustomTheme(const QString& id, const QString& dir) {
+    if (!id.startsWith(QLatin1StringView(kCustomPrefix))) return false;
+    const QString stem = id.mid(static_cast<int>(std::strlen(kCustomPrefix)));
+    if (stem.isEmpty() || stem.contains(QLatin1Char('/')) || stem.contains(QLatin1Char('\\'))) return false;
+    const bool ok = QFile::remove(dir + QLatin1Char('/') + stem + QStringLiteral(".json"));
+    loadCustomThemes(dir);
+    return ok;
+}
+
+QString importThemeFile(const QString& path, const QString& dir, QString* error) {
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        if (error) *error = QStringLiteral("cannot open %1").arg(path);
+        return {};
+    }
+    QJsonParseError pe;
+    const auto doc = QJsonDocument::fromJson(f.readAll(), &pe);
+    ThemeEntry t;
+    if (!doc.isObject()) {
+        if (error) *error = pe.errorString();
+        return {};
+    }
+    if (!themeFromJson(doc.object(), t, error)) return {};
+    return saveCustomTheme(t, dir, error);
+}
+
+bool exportTheme(const QString& id, const QString& path) {
+    const ThemeEntry* t = findTheme(id);
+    if (!t) return false;
+    QSaveFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(QJsonDocument(themeToJson(*t)).toJson()) >= 0 && f.commit();
+}
 
 QString qssTemplate() {
     return QStringLiteral(R"(
@@ -192,8 +422,20 @@ void ApexStyle::drawPrimitive(PrimitiveElement element, const QStyleOption* opti
 }
 
 void applyTheme(QApplication& app, Theme theme) {
-    g_theme = theme;
-    const Tokens& t = tokens(theme);
+    applyThemeId(app, theme == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
+}
+
+QString applyThemeId(QApplication& app, const QString& id) {
+    const ThemeEntry* e = findTheme(id);
+    if (!e) e = &registry().front();
+    applyTokens(app, e->tokens, e->id);
+    return e->id;
+}
+
+void applyTokens(QApplication& app, const Tokens& tokens, const QString& id) {
+    g_themeId = id;
+    current() = tokens;
+    const Tokens& t = current();
     if (!g_style) {
         g_style = new ApexStyle(&t);  // Owned by QApplication once set.
         app.setStyle(g_style);

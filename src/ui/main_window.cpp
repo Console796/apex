@@ -445,16 +445,9 @@ void MainWindow::buildAreas() {
         });
     }
     viewMenu_->addSeparator();
-    auto* themes = new QActionGroup(this);
-    darkAction_ = viewMenu_->addAction(tr("Dark theme"), this, [this] { setTheme(Theme::Dark); });
-    lightAction_ = viewMenu_->addAction(tr("Light theme"), this, [this] { setTheme(Theme::Light); });
-    for (auto* a : {darkAction_, lightAction_}) {
-        a->setCheckable(true);
-        themes->addAction(a);
-    }
-    darkAction_->setObjectName(QStringLiteral("actionDark"));
-    lightAction_->setObjectName(QStringLiteral("actionLight"));
-    (currentTheme() == Theme::Dark ? darkAction_ : lightAction_)->setChecked(true);
+    themeMenu_ = viewMenu_->addMenu(tr("Theme"));
+    themeMenu_->setObjectName(QStringLiteral("themeMenu"));
+    refreshThemeMenu();
     viewMenu_->addSeparator();
     viewMenu_->addAction(tr("Reset cameras"), viewport_, &ViewportArea::resetCameras);
     viewMenu_->addAction(tr("Reset workspace"), workspaces_, &WorkspaceBar::resetActive)
@@ -793,7 +786,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     QSettings s;
     s.setValue(QStringLiteral("ui/geometry"), saveGeometry());
     workspaces_->save();
-    s.setValue(QStringLiteral("ui/theme"), currentTheme() == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
+    s.setValue(QStringLiteral("ui/theme"), currentThemeId());
     QMainWindow::closeEvent(event);
     if (event->isAccepted()) {
         autosaveTimer_->stop();
@@ -802,9 +795,35 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 void MainWindow::setTheme(Theme theme) {
-    applyTheme(*qApp, theme);
-    (theme == Theme::Dark ? darkAction_ : lightAction_)->setChecked(true);
+    setThemeId(theme == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
+}
+
+void MainWindow::setThemeId(const QString& id) {
+    applyThemeId(*qApp, id);
+    refreshThemeMenu();
     viewport_->setThemeChanged();
+}
+
+void MainWindow::previewTokens(const Tokens& tokens) {
+    applyTokens(*qApp, tokens, currentThemeId());
+    viewport_->setThemeChanged();
+}
+
+void MainWindow::refreshThemeMenu() {
+    themeMenu_->clear();
+    auto* group = new QActionGroup(themeMenu_);
+    bool separated = false;
+    for (const ThemeEntry& t : themes()) {
+        if (!t.builtin && !separated) {
+            themeMenu_->addSeparator();
+            separated = true;
+        }
+        auto* a = themeMenu_->addAction(t.name, this, [this, id = t.id] { setThemeId(id); });
+        a->setCheckable(true);
+        a->setChecked(t.id == currentThemeId());
+        a->setObjectName(QStringLiteral("theme_%1").arg(t.id));
+        group->addAction(a);
+    }
 }
 
 void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {

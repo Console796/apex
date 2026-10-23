@@ -120,7 +120,7 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
 
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
-  apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
+  apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
                         src/ui/pointer_lock.cpp src/ui/input_log.cpp
                         src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets)
