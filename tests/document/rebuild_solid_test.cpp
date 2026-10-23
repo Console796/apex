@@ -178,8 +178,8 @@ TEST_CASE("rebuildSolid cap inherits Hammer ordered keys and replaces colliding 
     REQUIRE(cap != rebuilt->poly.faces.end());
     CHECK(cap->sideId > *ids.rbegin());
     const auto& capBlock = side(doc, static_cast<SideId>(cap->sideId));
-    CHECK(keys(capBlock) == std::vector<std::string>{"id", "plane", "material", "uaxis", "vaxis",
-          "rotation", "lightmapscale", "smoothing_groups", "point_data"});
+    CHECK(keys(capBlock) == std::vector<std::string>{"id", "plane", "point_data", "material", "uaxis", "vaxis",
+          "rotation", "lightmapscale", "smoothing_groups"});
     for (const auto key : {"material", "uaxis", "vaxis", "rotation", "lightmapscale", "smoothing_groups"})
         CHECK(capBlock.find(key)->decodedValue() == side(doc, static_cast<SideId>(parent)).find(key)->decodedValue().value());
     CHECK_FALSE(capBlock.find("dispinfo"));

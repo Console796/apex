@@ -163,6 +163,8 @@ kv1::Node newSide(const kv1::Node& parent, const geometry::ConvexPolyhedron& pol
     auto side = kv1::Node::block("side");
     side.append(kv1::Node::value("id", std::to_string(id))).value();
     side.append(kv1::Node::value("plane", "")).value();
+    // Hammer saves point_data straight after plane; writeFace fills it in place.
+    side.append(kv1::Node::block("point_data")).value();
     for (auto [key, fallback] : {
              std::pair{"material", defaults.material},
              {"uaxis", geometryText(vmf::UvAxis{vector(defaults.uv.uaxis), defaults.uv.shiftU,
