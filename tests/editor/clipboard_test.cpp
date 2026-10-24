@@ -721,6 +721,11 @@ TEST_CASE("Corpus maps paste across documents keeping every connections block") 
         return;
     }
     const fs::path root = fs::path(install) / "sdk_content/maps";
+    // These two maps ship with the SDK content, not with the instances clone; skip without them.
+    if (!fs::exists(root / "test1.vmf") || !fs::exists(root / "hammertest.vmf")) {
+        MESSAGE("test1.vmf or hammertest.vmf is absent; skipping clipboard corpus paste");
+        return;
+    }
     const auto load = [&](const char* name) {
         std::ifstream stream(root / name, std::ios::binary);
         REQUIRE(stream.good());
