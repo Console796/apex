@@ -173,12 +173,8 @@ TEST_CASE("VMF optional loose P2CE corpus round trips") {
             largestTime = elapsed;
         }
     }
-    // hammertest.vmf is a loose map outside the instances clone; an install without it is still a
-    // valid corpus. test1.vmf was never corpus: it was the owner's own test map.
-    std::size_t expectedFiles = 510;
-    for (const char* name : {"hammertest.vmf"})
-        if (std::filesystem::exists(std::filesystem::path(root) / "sdk_content/maps" / name)) ++expectedFiles;
-    CHECK(files.size() == expectedFiles);
+    // The corpus is the 510 P2CE instances. Keep personal test maps out of sdk_content/maps.
+    CHECK(files.size() == 510);
     const auto milliseconds =
         std::chrono::duration<double, std::milli>(largestTime).count();
     MESSAGE("VMF corpus: ", files.size(), " files, ", bytes, " bytes; largest ",

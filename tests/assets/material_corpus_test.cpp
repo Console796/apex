@@ -59,12 +59,8 @@ TEST_CASE("Materials referenced by all corpus VMF sides match reviewed missing l
         collect(*vmf, materials);
         ++maps;
     }
-    // hammertest.vmf is a loose map outside the instances clone; an install without it is still a
-    // valid corpus. test1.vmf was never corpus: it was the owner's own test map.
-    std::size_t expectedMaps = 510;
-    for (const char* name : {"hammertest.vmf"})
-        if (std::filesystem::exists(root / "sdk_content/maps" / name)) ++expectedMaps;
-    REQUIRE(maps == expectedMaps);
+    // The corpus is the 510 P2CE instances. Keep personal test maps out of sdk_content/maps.
+    REQUIRE(maps == 510);
     REQUIRE_FALSE(materials.empty());
     GameProfile profile;
     profile.gameDirectory = root / "p2ce";
@@ -103,8 +99,6 @@ TEST_CASE("Materials referenced by all corpus VMF sides match reviewed missing l
     std::string line, baseline;
     while (std::getline(lines, line)) {
         if (line.empty() || line.front() == '#') continue;
-        // Without the two loose maps, baseline materials only they reference are not in the corpus.
-        if (expectedMaps < 512 && !materials.contains(line.substr(0, line.find(" | ")))) continue;
         baseline += line + '\n';
     }
     CHECK(actual.str() == baseline);

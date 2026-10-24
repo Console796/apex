@@ -7,10 +7,11 @@ the test. There is no automatic acceptance/update switch.
 
 ## Corpus observations
 
-**Correction, 2026-10-24:** `test1.vmf` never shipped with P2CE. It was the owner's own Strata
-Hammer test map, saved in `sdk_content/maps`, so it was wrongly counted below. Its 44 inventory
-entries were removed, and the counts below still include it. The corpus is the 510 instances,
-plus `hammertest.vmf` where an install has it.
+**Correction, 2026-10-24:** `test1.vmf` and `hammertest.vmf` never shipped with P2CE. They were
+the owner's own Strata Hammer test maps, saved in `sdk_content/maps`, so they were wrongly counted
+below. `test1.vmf`'s 44 inventory entries were removed (`hammertest.vmf` had none), and the counts
+below still include both. The corpus is the 510 P2CE instances; keep personal test maps outside
+`sdk_content/maps`, since the corpus tests scan all of it.
 
 On the 512-file P2CE corpus available on 2026-10-20:
 
