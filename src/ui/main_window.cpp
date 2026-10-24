@@ -369,7 +369,7 @@ void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
         if (id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
-        if (id == "tool.select" || id == "tool.entity" || id == "tool.block") {
+        if (id == "tool.select" || id == "tool.entity" || id == "tool.block" || id == "tool.clip") {
             action->setEnabled(true);
             action->setChecked(session_.activeTool() == id);
         }
@@ -596,7 +596,7 @@ void MainWindow::buildEntityUi() {
     auto* bar = findChild<QToolBar*>(QStringLiteral("toolbarTransform"));
     bar->addSeparator();
     auto* group = new QActionGroup(this);
-    for (const char* id : {"tool.select", "tool.entity", "tool.block"}) {
+    for (const char* id : {"tool.select", "tool.entity", "tool.block", "tool.clip"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = new QAction(fromStd(entry->name), this);
         action->setObjectName(fromStd(entry->id));

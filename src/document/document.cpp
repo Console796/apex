@@ -929,18 +929,18 @@ void Transaction::rebuildSolidImpl(Handle<Solid> h, const geometry::ConvexPolyhe
     const auto sides = sideBlocks(original);
     const auto plan = planFaces(before->poly, poly, correspondence);
     std::map<std::uint32_t, std::size_t> survivors;
-    bool changed = false;
+    bool changed = false, shapeChanged = false;
     for (std::size_t n = 0; n < plan.size(); ++n) {
         if (!plan[n].matched) {
-            changed = true;
+            changed = shapeChanged = true;
             continue;
         }
         const auto& old = before->poly.faces[*plan[n].matched];
         survivors.emplace(old.sideId, n);
-        if (!samePolygon(before->poly, old, poly, poly.faces[n]) ||
-            (writeUv && !sameUv(old.uv, poly.faces[n].uv))) changed = true;
+        if (!samePolygon(before->poly, old, poly, poly.faces[n])) changed = shapeChanged = true;
+        if (writeUv && !sameUv(old.uv, poly.faces[n].uv)) changed = true;
     }
-    if (survivors.size() != before->poly.faces.size()) changed = true;
+    if (survivors.size() != before->poly.faces.size()) changed = shapeChanged = true;
     // Preserve redundant source sides on a true identity write, including corpus sweeps.
     if (!changed) return;
 
@@ -962,7 +962,9 @@ void Transaction::rebuildSolidImpl(Handle<Solid> h, const geometry::ConvexPolyhe
         const auto n = found->second;
         const auto& old = before->poly.faces[*plan[n].matched];
         const auto& face = poly.faces[n];
-        if (!samePolygon(before->poly, old, poly, face)) writeFace(side, poly, face);
+        // A source side may have rounded point_data that required plane fallback. Once the
+        // shape changes, write every surviving loop from the same polyhedron, including intact faces.
+        if (shapeChanged) writeFace(side, poly, face);
         if (writeUv) {
             if (old.uv.uaxis != face.uv.uaxis || old.uv.shiftU != face.uv.shiftU ||
                 old.uv.scaleU != face.uv.scaleU)
@@ -1004,7 +1006,7 @@ Handle<Solid> Transaction::createFragment(Handle<Solid> source,
         if (plan[n].matched) {
             const auto& old = before->poly.faces[*plan[n].matched];
             auto side = *sides.at(old.sideId);
-            if (!samePolygon(before->poly, old, poly, face)) writeFace(side, poly, face);
+            writeFace(side, poly, face);
             block.append(std::move(side)).value();
         } else {
             const auto& old = before->poly.faces[*plan[n].inheritFrom];

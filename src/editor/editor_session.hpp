@@ -29,6 +29,7 @@ public:
         static constexpr const char* Select = "tool.select";
         static constexpr const char* Entity = "tool.entity";
         static constexpr const char* Block = "tool.block";
+        static constexpr const char* Clip = "tool.clip";
     };
     const ToolId& activeTool() const { return activeTool_; }
     void setActiveTool(ToolId tool);
@@ -196,6 +197,7 @@ public:
 private:
     friend class SelectTool;
     friend class BlockTool;
+    friend class ClipTool;
     SelectTool& selectTool();
     const SelectTool& selectTool() const;
     document::Document* document_ = nullptr;

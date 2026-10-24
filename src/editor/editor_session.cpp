@@ -4,6 +4,7 @@
 #include "editor/select_tool.hpp"
 #include "editor/entity_tool.hpp"
 #include "editor/block_tool.hpp"
+#include "editor/clip_tool.hpp"
 #include "editor/hide_ops.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/selection_undo.hpp"
@@ -19,6 +20,7 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Select, std::make_unique<SelectTool>(*this));
     tools_.emplace(Tool::Entity, std::make_unique<EntityTool>(*this));
     tools_.emplace(Tool::Block, std::make_unique<BlockTool>(*this));
+    tools_.emplace(Tool::Clip, std::make_unique<ClipTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) { notify(); });
 }
@@ -204,6 +206,7 @@ void EditorSession::setNewSolidUvAlignment(geometry::UvAlignment alignment) {
     notify();
 }
 bool EditorSession::perform(const ActionId& action) {
+    if (activeToolObject().perform(action)) return true;
     if (tools_.contains(action)) {
         setActiveTool(action);
         return true;

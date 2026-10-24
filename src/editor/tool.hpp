@@ -84,6 +84,7 @@ public:
     virtual ToolOverlay overlay(const ToolView& view, InputSource source) const = 0;
     virtual ToolReadout readout() const = 0;
     virtual void cancel() = 0;
+    virtual bool perform(const ActionId&) { return false; }
     virtual std::vector<ActionId> actions() const { return {}; }
 
     // 0.2 session compatibility entry points, dispatched to the active tool. New tools take input().
