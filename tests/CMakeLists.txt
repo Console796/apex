@@ -9,9 +9,9 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/material_corpus_test.cpp core/json_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
-               geometry/face_matching_test.cpp geometry/kernel_test.cpp
+               geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
-editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/clip_tool_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
+editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
                editor/snapper_test.cpp editor/pick_index_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp editor/preset_io_test.cpp
                editor/group_index_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
                editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/hide_corpus_test.cpp editor/history_property_test.cpp editor/work_plane_test.cpp
@@ -34,4 +34,5 @@ doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")
 
 target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+                                              APEX_PRIMITIVE_VMF_OUT="${CMAKE_BINARY_DIR}/primitives.vmf"
                                               APEX_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/golden")

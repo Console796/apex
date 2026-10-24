@@ -1,4 +1,4 @@
-#include "editor/block_tool.hpp"
+#include "editor/draw_extrude_tool.hpp"
 #include "editor/editor_session.hpp"
 #include "geometry/solid_block.hpp"
 
@@ -53,7 +53,7 @@ bool overWorldGrid(Ray ray, const SurfacePlane& plane) {
 }
 }
 
-SurfacePlane BlockTool::basePlane(const ToolView& view, bool* remembered) const {
+SurfacePlane DrawExtrudeTool::basePlane(const ToolView& view, bool* remembered) const {
     auto resolved = session_.workPlane().resolve();
     auto plane = resolved && session_.workPlane().pinned() ? resolved->plane : session_.fallbackPlane();
     if (remembered) *remembered = false;
@@ -83,7 +83,7 @@ SurfacePlane BlockTool::basePlane(const ToolView& view, bool* remembered) const 
     return plane;
 }
 
-void BlockTool::rebuild(Gesture& g) {
+void DrawExtrudeTool::rebuild(Gesture& g) {
     g.poly.reset();
     g.height = g.mouseHeight;
     if (!g.typed.empty()) {
@@ -107,17 +107,18 @@ void BlockTool::rebuild(Gesture& g) {
     }
     if (auto poly = geometry::ConvexPolyhedron::fromPlanes(sides)) g.poly = std::move(*poly);
 }
-void BlockTool::updateGhosts() {
+void DrawExtrudeTool::updateGhosts() {
     std::vector<GhostSolid> ghosts;
     for (const auto& [source, g] : gestures_)
-        if (g.poly) ghosts.push_back({*g.poly, session_.newSolidStyle().material});
+        for (const auto& poly : shapes(g))
+            ghosts.push_back({poly, session_.newSolidStyle().material, 0.35f});
     preview_.setGhosts(ghosts);
 }
-void BlockTool::publish() {
+void DrawExtrudeTool::publish() {
     updateGhosts();
     session_.notify();
 }
-void BlockTool::cancel() {
+void DrawExtrudeTool::cancel() {
     if (gestures_.empty() && preview_.empty()) return;
     gestures_.clear();
     current_.reset();
@@ -126,37 +127,44 @@ void BlockTool::cancel() {
 }
 // Runs while a pane is being destroyed: never notify (observers may touch half-destroyed widgets).
 // The viewport picks the preview up by revision on its next frame.
-void BlockTool::forget(InputSource source) {
+void DrawExtrudeTool::forget(InputSource source) {
     if (current_ == source) current_.reset();
     hoverSuspended_.erase(source);
     if (gestures_.erase(source)) updateGhosts();
 }
-void BlockTool::drop(InputSource source) {
+void DrawExtrudeTool::drop(InputSource source) {
     if (!gestures_.contains(source)) return;
     forget(source);
     session_.notify();
 }
-bool BlockTool::owns(InputSource source) const {
+bool DrawExtrudeTool::owns(InputSource source) const {
     const auto it = gestures_.find(source);
     return it != gestures_.end() && (it->second.dragging || it->second.stage == Stage::Height);
 }
-bool BlockTool::commit(InputSource source) {
+bool DrawExtrudeTool::commit(InputSource source) {
     auto it = gestures_.find(source);
     if (it == gestures_.end() || !it->second.poly || !session_.document()) return false;
-    const auto block = geometry::solidBlock(*it->second.poly, session_.newSolidStyle());
+    if (!commitShape(it->second)) return false;
     const double height = it->second.height;
+    lastHeight_ = height;
+    lastPlane_ = it->second.plane;
+    drop(source);
+    return true;
+}
+std::vector<geometry::ConvexPolyhedron> DrawExtrudeTool::shapes(const Gesture& g) const {
+    return g.poly ? std::vector{*g.poly} : std::vector<geometry::ConvexPolyhedron>{};
+}
+bool DrawExtrudeTool::commitShape(const Gesture& g) {
+    const auto block = geometry::solidBlock(*g.poly, session_.newSolidStyle());
     session_.edit("Create block", [&](document::Transaction& tx) {
         const auto handle = tx.create(block);
         if (session_.selection().mode() == SelectionMode::Faces) session_.selection().setMode(SelectionMode::Solids);
         const std::array<Target, 1> selected{session_.document()->get(handle)->id};
         session_.selection().replace(selected);
     });
-    lastHeight_ = height;
-    lastPlane_ = it->second.plane;
-    drop(source);
     return true;
 }
-Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
+Handled DrawExtrudeTool::input(const InputEvent& event, const ToolView& view) {
     const auto source = event.source;
     if (event.kind == InputKind::Leave) {
         const auto it = gestures_.find(source);
@@ -250,6 +258,7 @@ Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
         const auto plane = basePlane(view);
         const auto start = corner(session_, view.cursorRay, view, plane, suspended);
         if (!start) return true;
+        gestureStarted();
         Gesture g;
         g.plane = plane;
         g.start = g.end = start->uv;
@@ -290,7 +299,7 @@ Handled BlockTool::input(const InputEvent& event, const ToolView& view) {
     }
     return false;
 }
-ToolOverlay BlockTool::overlay(const ToolView& view, InputSource source) const {
+ToolOverlay DrawExtrudeTool::overlay(const ToolView& view, InputSource source) const {
     ToolOverlay result;
     const auto it = gestures_.find(source);
     if (it == gestures_.end()) {
@@ -323,7 +332,7 @@ ToolOverlay BlockTool::overlay(const ToolView& view, InputSource source) const {
                                  "Height: " + (g.typed.empty() ? number(g.height) : g.typed), {8, -8}});
     return result;
 }
-ToolReadout BlockTool::readout() const {
+ToolReadout DrawExtrudeTool::readout() const {
     const auto it = current_ ? gestures_.find(*current_) : gestures_.end();
     std::string status = it == gestures_.end() && hoveringLastPlane_ && lastPlane_ && !session_.workPlane().pinned()
         ? "Drag base (last plane; Esc clears)" : "Drag base";

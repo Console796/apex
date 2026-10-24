@@ -32,6 +32,7 @@ public:
         static constexpr const char* Entity = "tool.entity";
         static constexpr const char* Block = "tool.block";
         static constexpr const char* Clip = "tool.clip";
+        static constexpr const char* Primitive = "tool.primitive";
         static constexpr const char* Vertex = "tool.vertex";
     };
     const ToolId& activeTool() const { return activeTool_; }
@@ -196,7 +197,8 @@ public:
     bool perform(const ActionId& action);
     // Document edits go through this seam to capture before/after selection metadata.
     // Direct Document edits still update indices and prune dead selection targets.
-    void edit(std::string label, const std::function<void(document::Transaction&)>& operation);
+    void edit(std::string label, const std::function<void(document::Transaction&)>& operation,
+              std::string coalesceKey = {});
 
     using Observer = std::function<void()>;
     std::size_t observe(Observer observer);
@@ -204,7 +206,8 @@ public:
 
 private:
     friend class SelectTool;
-    friend class BlockTool;
+    friend class DrawExtrudeTool;
+    friend class PrimitiveTool;
     friend class ClipTool;
     friend class VertexTool;
     SelectTool& selectTool();

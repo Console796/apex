@@ -22,6 +22,7 @@ class QMenu;
 namespace apex::ui {
 
 class GpuHost;
+class ToolParameterStrip;
 
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session);
 // Red X, green Y and blue Z from the world origin while the grid overlay is on.
@@ -131,6 +132,7 @@ public:
     QWidget* container() const { return container_; }
     void setActive(bool active);
     void refreshTitle();
+    void setTool(editor::Tool& tool);
     void setModeText(const QString& text, bool entityTool);
     void restyle();
     QMenu* menu() const { return menu_; }
@@ -153,6 +155,7 @@ private:
     QWidget* container_ = nullptr;
     QLabel* title_ = nullptr;
     QLabel* mode_ = nullptr;
+    ToolParameterStrip* parameters_ = nullptr;
     QToolButton* menuButton_ = nullptr;
     QMenu* menu_ = nullptr;
     bool active_ = false;

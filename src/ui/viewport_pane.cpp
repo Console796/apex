@@ -1,6 +1,7 @@
 #include "render/vk.hpp"  // volk before Qt's Vulkan header.
 
 #include "ui/viewport_pane.hpp"
+#include "ui/tool_parameter_strip.hpp"
 
 #include "ui/area_frame.hpp"
 
@@ -594,6 +595,8 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     connect(menu_, &QMenu::aboutToShow, this, &PaneFrame::buildMenu);
     row->addWidget(menuButton_);
     column->addWidget(header);
+    parameters_ = new ToolParameterStrip(this);
+    column->addWidget(parameters_);
 
     if (window_) {
         container_ = QWidget::createWindowContainer(window_, this);
@@ -645,6 +648,8 @@ void PaneFrame::refreshTitle() {
     if (maximized_) text += tr("  (maximized)");
     title_->setText(text);
 }
+
+void PaneFrame::setTool(editor::Tool& tool) { parameters_->update(tool); }
 
 void PaneFrame::setModeText(const QString& text, bool entityTool) {
     mode_->setText(text);

@@ -66,11 +66,19 @@ struct ToolOverlay {
     std::vector<Label> labels;
     std::optional<std::pair<DVec2, DVec2>> rectangle;
 };
+struct ToolParameter {
+    enum class Kind { Choice, Integer, Number };
+    std::string id, label;
+    Kind kind = Kind::Number;
+    double value = 0.0, minimum = 0.0, maximum = 0.0;
+    std::vector<std::string> choices;
+};
 struct ToolReadout {
     std::vector<std::string> badge; // Translation keys in the existing ui::modes context.
     std::string detail; // Literal suffix (e.g. the entity classname).
     std::string status;
     bool warn = false;
+    std::vector<ToolParameter> parameters{};
 };
 
 class Tool {
@@ -88,6 +96,7 @@ public:
     virtual void cancelTransform() { cancel(); }
     virtual void endTransform() {}
     virtual void documentChanged() {}
+    virtual bool setParameter(std::string_view, double) { return false; }
     virtual bool perform(const ActionId&) { return false; }
     virtual std::vector<ActionId> actions() const { return {}; }
 

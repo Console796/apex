@@ -4,6 +4,7 @@
 #include "editor/select_tool.hpp"
 #include "editor/entity_tool.hpp"
 #include "editor/block_tool.hpp"
+#include "editor/primitive_tool.hpp"
 #include "editor/clip_tool.hpp"
 #include "editor/vertex_tool.hpp"
 #include "editor/hide_ops.hpp"
@@ -21,6 +22,7 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Select, std::make_unique<SelectTool>(*this));
     tools_.emplace(Tool::Entity, std::make_unique<EntityTool>(*this));
     tools_.emplace(Tool::Block, std::make_unique<BlockTool>(*this));
+    tools_.emplace(Tool::Primitive, std::make_unique<PrimitiveTool>(*this));
     tools_.emplace(Tool::Clip, std::make_unique<ClipTool>(*this));
     tools_.emplace(Tool::Vertex, std::make_unique<VertexTool>(*this));
     activeToolObject().activate();
@@ -395,7 +397,8 @@ bool EditorSession::nudgeSelection(bool alongV, int direction) {
     } catch (const std::invalid_argument&) { return false; }
 }
 
-void EditorSession::edit(std::string label, const std::function<void(document::Transaction&)>& operation) {
+void EditorSession::edit(std::string label, const std::function<void(document::Transaction&)>& operation,
+                         std::string coalesceKey) {
     if (!document_) return;
     const Selection before(selection_);
     auto transaction = document_->begin(std::move(label));
@@ -403,7 +406,7 @@ void EditorSession::edit(std::string label, const std::function<void(document::T
     Selection after(selection_);
     after.prune(*document_);
     recordSelection(transaction, before, after);
-    transaction.commit();
+    transaction.commit(true, std::move(coalesceKey));
 }
 Result<void> EditorSession::runEdit(std::string label, AfterEdit policy,
                                     const std::function<Result<EditedObjects>(document::Transaction&)>& stage,
