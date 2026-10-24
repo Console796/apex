@@ -31,7 +31,7 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 65);
+    REQUIRE(registry.entries().size() == 66);
     CHECK(registry.entries().front().id == "edit.undo");
     CHECK(registry.entries().back().id == "workspace.previous");
     std::set<ActionId> ids;
@@ -109,6 +109,7 @@ TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
         {"Ctrl+C", "edit.copy"}, {"Ctrl+X", "edit.cut"}, {"Ctrl+V", "edit.paste"},
         {"Ctrl+Shift+V", "edit.paste_in_place"}, {"Ctrl+Alt+V", "edit.paste_special"},
         {"Ctrl+W", "selection.ignore_groups"}, {"H", "view.hide"},
+        {"Ctrl+E", "view.center_selection"}, {"Ctrl+Shift+E", "view.center_selection"},
         {"Ctrl+M", "transform.dialog"}, {"[", "grid.smaller"}, {"]", "grid.larger"},
         {"Alt+P", "workplane.pin"},
         {"Ctrl+Z", "edit.undo"}, {"Ctrl+Y", "edit.redo"}, {"Alt", "snap.suspend"}, {"Ctrl", "block.pick_plane"},

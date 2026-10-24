@@ -88,6 +88,8 @@ public:
 
     // Per-map views: the first four panes follow v0..v3 of the VMF's viewsettings.
     void applyMapViews(const viewport::MapViews& views);
+    // Frames every viewport on `bounds`, keeping each camera's orientation.
+    void centerOn(const AABB& bounds);
     viewport::MapViews captureMapViews() const;
 
     // The world ray under the mouse pointer when it is over a pane (Paste places at its work-plane

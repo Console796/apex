@@ -1447,8 +1447,26 @@ TEST_CASE("view actions hide unhide isolate and track selection") {
     scene.action("view.hide_unselected")->trigger();
     CHECK(editor::isVisible(doc, scene.boxId));
     CHECK(doc.undoCount() > count);
-    // Every panel role has a Show area entry that expands its collapsed area.
     auto* area = scene.window.viewportArea();
+    // Center views on selection frames every viewport on the selection without turning it.
+    session.selectNode(scene.boxId);
+    REQUIRE(scene.action("view.center_selection")->isEnabled());
+    const auto bounds = session.selectionBounds();
+    REQUIRE(bounds);
+    std::vector<DVec3> angles;
+    for (const auto pane : area->viewportLayout().viewportIds()) angles.push_back(area->viewportLayout().viewport(pane)->camera.angles);
+    scene.action("view.center_selection")->trigger();
+    const auto panes = area->viewportLayout().viewportIds();
+    for (std::size_t i = 0; i < panes.size(); ++i) {
+        const auto& camera = area->viewportLayout().viewport(panes[i])->camera;
+        CHECK(camera.angles == angles[i]);
+        const auto offset = bounds->center() - camera.position;
+        const auto along = glm::dot(offset, camera.forward()) * camera.forward();
+        CHECK(glm::length(offset - along) == doctest::Approx(0.0).scale(1.0));
+    }
+    REQUIRE(session.perform("selection.none"));
+    CHECK_FALSE(scene.action("view.center_selection")->isEnabled());
+    // Every panel role has a Show area entry that expands its collapsed area.
     for (const auto role : {viewport::AreaRole::Inspector, viewport::AreaRole::Visgroups, viewport::AreaRole::History}) {
         auto* show = scene.window.findChild<QAction*>(QStringLiteral("actionShowArea_") + QString::fromLatin1(viewport::nameOf(role)));
         REQUIRE(show);

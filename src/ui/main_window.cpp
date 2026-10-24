@@ -83,8 +83,10 @@ bool isTransformAction(const editor::ActionId& id) {
 
 // Actions whose plain (unmodified) default keys belong to the focused pane.
 bool isPaneKeyAction(const editor::ActionId& id) {
-    return isTransformAction(id) || (id.starts_with("view.") && id != "view.properties") || id == "edit.delete" ||
-           id == "edit.duplicate" || id.starts_with("selection.mode.") || id.starts_with("vertex.mode.");
+    return isTransformAction(id) ||
+           (id.starts_with("view.") && id != "view.properties" && id != "view.center_selection") ||
+           id == "edit.delete" || id == "edit.duplicate" || id.starts_with("selection.mode.") ||
+           id.starts_with("vertex.mode.");
 }
 
 bool looksLikeFragment(std::string_view text) {
@@ -389,6 +391,7 @@ void MainWindow::updateEditorActions() {
             action->setEnabled(objects || (id == "view.isolate" && session_.viewState().isolate.has_value()));
         }
         if (id == "view.isolate") action->setChecked(session_.viewState().isolate.has_value());
+        if (id == "view.center_selection") action->setEnabled(session_.document() && !session_.selection().ordered().empty());
         if (id == "edit.undo") action->setEnabled(document_ && document_->undoCount() != 0);
         if (id == "edit.redo") action->setEnabled(document_ && document_->redoCount() != 0);
         if (id == "selection.ignore_groups") action->setChecked(session_.selection().ignoreGroups());
@@ -544,6 +547,7 @@ void MainWindow::buildTransformUi() {
         editorActions_.emplace(entry->id, action);
         connect(action, &QAction::triggered, this, [this, id = entry->id] {
             if (id == "transform.dialog") openTransformDialog();
+            else if (id == "view.center_selection") centerViewsOnSelection();
             else session_.perform(id);
             updateEditorActions();
         });
@@ -553,6 +557,8 @@ void MainWindow::buildTransformUi() {
     viewMenu_->addSeparator();
     for (const char* id : {"view.hide", "view.unhide", "view.isolate", "view.hide_unselected"})
         make(id, viewMenu_, std::string_view(id) == "view.isolate");
+    viewMenu_->addSeparator();
+    make("view.center_selection", viewMenu_, false);
     viewMenu_->addSeparator();
 
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
@@ -816,6 +822,10 @@ void MainWindow::buildClipboardUi() {
     connect(QApplication::clipboard(), &QClipboard::dataChanged, this, &MainWindow::refreshClipboardState);
     connect(edit, &QMenu::aboutToShow, this, &MainWindow::refreshClipboardState);
     clipboardHasFragment_ = !clipboardFragment().empty();
+}
+
+void MainWindow::centerViewsOnSelection() {
+    if (const auto bounds = session_.selectionBounds(); bounds && viewport_) viewport_->centerOn(*bounds);
 }
 
 void MainWindow::openTransformDialog() {
