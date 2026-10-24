@@ -453,16 +453,33 @@ def windows_stage(build, report):
         lock.__exit__(None, None, None)
 
 
+def ensure_tools_venv():
+    """Create .venv-tools and install srctools if missing or broken; returns its python or None."""
+    venv = ROOT / ".venv-tools"
+    py = venv / "bin" / "python"
+    probe = lambda: py.exists() and subprocess.run(
+        [str(py), "-W", "ignore", "-c", "import srctools"], capture_output=True).returncode == 0
+    if probe():
+        return py
+    shutil.rmtree(venv, ignore_errors=True)
+    for cmd in ([sys.executable, "-m", "venv", str(venv)],
+                [str(py), "-m", "pip", "install", "-q", "srctools"]):
+        if subprocess.run(cmd, capture_output=True).returncode != 0:
+            return None
+    return py if probe() else None
+
+
 def crosscheck_stage(corpus, fixtures_only, report):
-    """VMF parse vs srctools (0.1.4 case 3). Needs .venv-tools with srctools installed."""
-    py = ROOT / ".venv-tools" / "bin" / "python"
+    """VMF parse vs srctools (0.1.4 case 3). Auto-creates .venv-tools with srctools installed."""
+    py = ensure_tools_venv()
     dump = ROOT / "build" / "linux-gcc-release" / "apex_vmf_dump"
     if not (corpus and Path(corpus).is_dir()):
         report.add("srctools-crosscheck", "skipped" if fixtures_only else "FAIL", 0,
                    "APEX_P2CE_DIR is unset or invalid")
-    elif not py.exists() or not dump.exists():
+    elif not py or not dump.exists():
         report.add("srctools-crosscheck", "skipped", 0,
-                   "needs .venv-tools (python3 -m venv .venv-tools && .venv-tools/bin/pip install srctools)")
+                   "could not set up .venv-tools (python3 -m venv .venv-tools && .venv-tools/bin/pip install srctools)"
+                   if not py else "apex_vmf_dump not built")
     else:
         run([str(py), "-W", "ignore", str(ROOT / "tools" / "srctools_crosscheck.py"), str(dump), corpus],
             report, "srctools-crosscheck")
