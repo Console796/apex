@@ -97,7 +97,9 @@ convex-hull rebuild and invalid-state feedback, carve/hollow/merge, material bro
 texture application and face editing (shift/scale/rotate, justify/fit, align to world/face,
 measure tool), and read-only mounting of Strata content addons that follows Strata Hammer's addon
 list (plans/addons.md, 0.3 D19), so the material browser indexes the same materials Hammer shows.
-Texture lock under transforms moved to 0.2 (plan 0.2 D7).
+Tool switching from a Blender-style pie menu, with the tools contracted into one toolbar drop-down,
+and selection modes as icons bound to number keys (0.3 D20–D22). Texture lock under transforms moved
+to 0.2 (plan 0.2 D7).
 **Exit:** a complete test chamber can be built from nothing without an orthographic view.
 
 ### 0.4: Entities & assets
@@ -146,7 +148,7 @@ rope and cable preview, detail/structural tooling.
 ### 0.9: Extensibility
 Plugin API (stable C ABI with a header-only C++ wrapper), a scripting host (language decided in
 the 0.9 plan), custom tools/panels/importers, keymap editor for the Hammer and Blender presets (0.2 D15),
-theme editor, plugin manager, scriptable primitives. (Renamed from "addon manager" to avoid a clash
+theme editor, plugin manager, scriptable primitives, user-editable pie menus (0.3 D20). (Renamed from "addon manager" to avoid a clash
 with Strata's content addons, which arrive in 0.3 to 0.5; plans/addons.md D10.)
 **Exit:** a third-party tool can be built, loaded and shipped without rebuilding Apex.
 
