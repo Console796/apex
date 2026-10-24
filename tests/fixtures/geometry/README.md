@@ -7,6 +7,12 @@ the test. There is no automatic acceptance/update switch.
 
 ## Corpus observations
 
+**Correction, 2026-10-24:** `test1.vmf` and `hammertest.vmf` never shipped with P2CE. They were
+the owner's own Strata Hammer test maps, saved in `sdk_content/maps`, so they were wrongly counted
+below. `test1.vmf`'s 44 inventory entries were removed (`hammertest.vmf` had none), and the counts
+below still include both. The corpus is the 510 P2CE instances; keep personal test maps outside
+`sdk_content/maps`, since the corpus tests scan all of it.
+
 On the 512-file P2CE corpus available on 2026-10-20:
 
 - All 11,698 solids build from planes.
@@ -35,7 +41,6 @@ On the 512-file P2CE corpus available on 2026-10-20:
 | instances/door/portal_door_entities/portal_door_frame_white_dirty.vmf | 0 | 1 |
 | instances/labs/observation_room_256x128_1b.vmf | 23 | 24 |
 | instances/labs/observation_room_64x128_1.vmf | 22 | 22 |
-| test1.vmf | 44 | 44 |
 
 These are **kernel/data compatibility failures, not demonstrated Hammer-invalid brushes**.
 Plane intersections produce closed, convex, planar solids for every entry. Independently rounded
@@ -44,8 +49,6 @@ thresholds while still meeting the per-side `1e-3` plane trust rule. Mixing trus
 plane-derived fallback loops can leave unmatched edges. Do not fix this by silently increasing
 tolerances or discarding trusted data in the kernel.
 
-For example, `test1.vmf` solid 1196 has maximum point/plane-vertex drift about 0.000269493
-units but face nonplanarity about 0.000261284 units: it passes trust and fails planarity.
 The maximum observed point-to-nearest-plane-vertex distance is 0.0625 units (departure dirty
 base, solid 49059); maximum point-data face nonplanarity is about 0.00628682 units.
 Observation-room solid 34 differs by 0.003 units and is successfully rebuilt using the specified
@@ -58,10 +61,11 @@ inheritance fixture already cover the requested synthetic cases and are retained
 
 ## Native VBSP experiment
 
-`python3 tools/vbsp_equivalence.py` builds isolated original/re-planed copies of `test1.vmf`
-using `bin/linux64/vbsp -game <p2ce> -instancepath <sdk_content/maps>`, then reads both with
+`python3 tools/vbsp_equivalence.py <map.vmf>` builds isolated original/re-planed copies of a
+complete, sealed map using `bin/linux64/vbsp -game <p2ce> -instancepath <sdk_content/maps>`, then reads both with
 `vbspinfo`. `--output-dir <new-directory>` retains the artifacts. This manual gate is deliberately
-outside `ci.py`. The tool re-planes all 119 solids / 722 sides from plane intersections using
+outside `ci.py`. The run recorded below used the owner's own test map (119 solids, not corpus
+content). The tool re-planes all 119 solids / 722 sides from plane intersections using
 maximum-precision vertex coordinates. It leaves point data and every other byte unchanged;
 the script checks that byte-preservation condition before compiling. Using plane intersections
 isolates D8's plane-to-vertex-to-plane premise even where trusted point data fails validation.
