@@ -36,6 +36,11 @@ ThemeEditorDialog::ThemeEditorDialog(MainWindow& window, const ThemeEntry& initi
     auto* inner = new QWidget;
     auto* form = new QFormLayout(inner);
     for (const QString& n : colourTokenNames()) {
+        if (n == QLatin1StringView(kFirstViewportToken)) {
+            auto* heading = new QLabel(tr("Viewport"));
+            heading->setObjectName(QStringLiteral("themeViewportHeading"));
+            form->addRow(heading);
+        }
         const QColor c = colourToken(theme_.tokens, n);
         auto* edit = new QLineEdit(c.name());
         edit->setObjectName(QStringLiteral("themeHex_%1").arg(n));

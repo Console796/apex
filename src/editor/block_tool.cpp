@@ -298,7 +298,7 @@ ToolOverlay BlockTool::overlay(const ToolView& view, InputSource source) const {
         const auto hover = hoverSuspended_.find(source);
         if (const auto start = corner(session_, view.cursorRay, view, basePlane(view),
                                       hover != hoverSuspended_.end() && hover->second)) {
-            result.worldPoints.push_back({start->projected, {1.0f, 0.65f, 0.15f, 1.0f}, 7.0f});
+            result.worldPoints.push_back({start->projected, session_.overlayPalette().block, 7.0f});
             result.labels.push_back({start->projected, snapName(start->kind), {8, -8}});
         }
         return result;
@@ -308,14 +308,14 @@ ToolOverlay BlockTool::overlay(const ToolView& view, InputSource source) const {
     const std::array<DVec2, 4> corners{g.start, {g.end.x, g.start.y}, g.end, {g.start.x, g.end.y}};
     for (std::size_t i = 0; i < corners.size(); ++i)
         result.worldSegments.push_back({point(g.plane, corners[i]), point(g.plane, corners[(i + 1) % 4]),
-                                       {1.0f, 0.65f, 0.15f, 1.0f}, 2.0f});
+                                       session_.overlayPalette().block, 2.0f});
     // Side lengths at the middle of the first u and v edges.
     for (std::size_t i = 0; i < 2; ++i) {
         const auto mid = (point(g.plane, corners[i]) + point(g.plane, corners[i + 1])) * 0.5;
         result.labels.push_back({mid, number(std::abs(i == 0 ? g.end.x - g.start.x : g.end.y - g.start.y)), {8, 8}});
     }
     if (g.dragging && g.cornerSnap) {
-        result.worldPoints.push_back({g.cornerSnap->first, {1.0f, 0.65f, 0.15f, 1.0f}, 7.0f});
+        result.worldPoints.push_back({g.cornerSnap->first, session_.overlayPalette().block, 7.0f});
         result.labels.push_back({g.cornerSnap->first, snapName(g.cornerSnap->second), {8, -8}});
     }
     if (g.stage == Stage::Height)

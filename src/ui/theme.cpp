@@ -12,10 +12,60 @@
 #include <QStyleOption>
 
 #include <algorithm>
+#include <utility>
 #include <cstring>
 
 namespace apex::ui {
 namespace {
+
+// Every colour token: its theme-file name and field, in editor order.
+struct ColourField {
+    const char* name;
+    QColor Tokens::*field;
+};
+constexpr ColourField kColourFields[] = {
+    {"window", &Tokens::window}, {"panel", &Tokens::panel}, {"base", &Tokens::base},
+    {"raised", &Tokens::raised}, {"hover", &Tokens::hover}, {"pressed", &Tokens::pressed},
+    {"border", &Tokens::border}, {"text", &Tokens::text}, {"textDim", &Tokens::textDim},
+    {"textOnAccent", &Tokens::textOnAccent}, {"accent", &Tokens::accent}, {"accentHover", &Tokens::accentHover},
+    {"selection", &Tokens::selection}, {"warn", &Tokens::warn}, {"error", &Tokens::error},
+    {"vertexHandle", &Tokens::vertexHandle}, {"vertexSelected", &Tokens::vertexSelected},
+    {"vertexInactive", &Tokens::vertexInactive}, {"vertexEdge", &Tokens::vertexEdge},
+    {"vertexInvalid", &Tokens::vertexInvalid}, {"vertexSplit", &Tokens::vertexSplit},
+    {"faceHover", &Tokens::faceHover}, {"gizmoX", &Tokens::gizmoX}, {"gizmoY", &Tokens::gizmoY},
+    {"gizmoZ", &Tokens::gizmoZ}, {"gizmoScreen", &Tokens::gizmoScreen}, {"gizmoHighlight", &Tokens::gizmoHighlight},
+    {"clip", &Tokens::clip}, {"clipDiscard", &Tokens::clipDiscard}, {"block", &Tokens::block},
+};
+
+QColor toQColor(Vec4 c) { return QColor::fromRgbF(c.r, c.g, c.b); }
+Vec4 toVec4(const QColor& c) {
+    return {static_cast<float>(c.redF()), static_cast<float>(c.greenF()), static_cast<float>(c.blueF()), 1.0f};
+}
+
+// The palette and token tables list the viewport colours in the same order.
+constexpr std::pair<QColor Tokens::*, Vec4 editor::OverlayPalette::*> kViewportFields[] = {
+    {&Tokens::vertexHandle, &editor::OverlayPalette::vertexHandle},
+    {&Tokens::vertexSelected, &editor::OverlayPalette::vertexSelected},
+    {&Tokens::vertexInactive, &editor::OverlayPalette::vertexInactive},
+    {&Tokens::vertexEdge, &editor::OverlayPalette::vertexEdge},
+    {&Tokens::vertexInvalid, &editor::OverlayPalette::vertexInvalid},
+    {&Tokens::vertexSplit, &editor::OverlayPalette::vertexSplit},
+    {&Tokens::faceHover, &editor::OverlayPalette::faceHover},
+    {&Tokens::gizmoX, &editor::OverlayPalette::gizmoX},
+    {&Tokens::gizmoY, &editor::OverlayPalette::gizmoY},
+    {&Tokens::gizmoZ, &editor::OverlayPalette::gizmoZ},
+    {&Tokens::gizmoScreen, &editor::OverlayPalette::gizmoScreen},
+    {&Tokens::gizmoHighlight, &editor::OverlayPalette::gizmoHighlight},
+    {&Tokens::clip, &editor::OverlayPalette::clip},
+    {&Tokens::clipDiscard, &editor::OverlayPalette::clipDiscard},
+    {&Tokens::block, &editor::OverlayPalette::block},
+};
+
+// Built-in themes share the editor's default overlay colours.
+void setViewportDefaults(Tokens& t) {
+    const editor::OverlayPalette defaults;
+    for (const auto& [token, colour] : kViewportFields) t.*token = toQColor(defaults.*colour);
+}
 
 Tokens makeDark() {
     Tokens t;
@@ -34,6 +84,7 @@ Tokens makeDark() {
     t.selection = QColor("#264f8a");
     t.warn = QColor("#e0b341");
     t.error = QColor("#ef6a6a");
+    setViewportDefaults(t);
     return t;
 }
 
@@ -54,6 +105,7 @@ Tokens makeLight() {
     t.selection = QColor("#bcd5fa");
     t.warn = QColor("#9a6a00");
     t.error = QColor("#c62828");
+    setViewportDefaults(t);
     return t;
 }
 
@@ -65,6 +117,7 @@ Tokens makeColours(const char* const (&c)[15]) {
                         &t.pressed, &t.border, &t.text,       &t.textDim,     &t.textOnAccent,
                         &t.accent, &t.accentHover, &t.selection, &t.warn,      &t.error};
     for (int i = 0; i < 15; ++i) *fields[i] = QColor(QLatin1StringView(c[i]));
+    setViewportDefaults(t);
     return t;
 }
 
@@ -136,22 +189,27 @@ Theme currentTheme() { return current().window.lightness() < 128 ? Theme::Dark :
 QString currentThemeId() { return g_themeId; }
 
 const QStringList& colourTokenNames() {
-    static const QStringList names = {"window", "panel",  "base",         "raised",      "hover",
-                                      "pressed", "border", "text",         "textDim",     "textOnAccent",
-                                      "accent", "accentHover", "selection", "warn",       "error"};
+    static const QStringList names = [] {
+        QStringList l;
+        for (const auto& f : kColourFields) l.append(QString::fromLatin1(f.name));
+        return l;
+    }();
     return names;
 }
 
 const QColor& colourToken(const Tokens& t, const QString& name) {
     const int i = colourTokenNames().indexOf(name);
-    const QColor* fields[] = {&t.window, &t.panel,  &t.base,        &t.raised,      &t.hover,
-                              &t.pressed, &t.border, &t.text,       &t.textDim,     &t.textOnAccent,
-                              &t.accent, &t.accentHover, &t.selection, &t.warn,      &t.error};
-    return *fields[i < 0 ? 0 : i];
+    return t.*kColourFields[i < 0 ? 0 : i].field;
 }
 
 QColor& colourToken(Tokens& t, const QString& name) {
     return const_cast<QColor&>(colourToken(static_cast<const Tokens&>(t), name));
+}
+
+editor::OverlayPalette overlayPalette(const Tokens& t) {
+    editor::OverlayPalette palette;
+    for (const auto& [token, colour] : kViewportFields) palette.*colour = toVec4(t.*token);
+    return palette;
 }
 
 const QList<ThemeEntry>& themes() { return registry(); }

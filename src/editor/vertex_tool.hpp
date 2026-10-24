@@ -53,6 +53,7 @@ private:
     };
     struct Pane {
         std::optional<GizmoHandle> hovered, dragged;
+        std::optional<ElementHandle> hoveredFace; // Face mode: the face a press would push/pull.
         std::optional<DVec2> marqueeStart;
         DVec2 cursor{0.0};
         bool marqueeAdd = false, marqueeToggle = false;
@@ -73,12 +74,20 @@ private:
     std::uint64_t selectionRevision_ = 0;
     std::string status_;
     std::size_t absorbedCount_ = 0, mergeCount_ = 0, splitCount_ = 0;
+    // Face push/pull: a face-mode press drags the selected faces along the pressed face's normal.
+    bool pushing_ = false;
+    DVec3 pushAxis_{0.0}, pushStart_{0.0};
+    double pushDistance_ = 0.0;
+    std::optional<ElementHandle> pushCollapse_; // Selection a no-move click reduces to.
 
     std::map<NodeId, geometry::SolidGeometry> selectedSolids() const;
     std::optional<ElementHandle> hitElement(const InputEvent& event, const ToolView& view) const;
     std::optional<DVec3> elementPoint(const ElementHandle& element,
                                       const std::map<NodeId, geometry::SolidGeometry>& solids) const;
     bool selectElement(ElementHandle element, bool add, bool toggle);
+    bool collectSources();
+    bool beginPush(const ElementHandle& face, Ray ray, InputSource source);
+    Transform pushTransform(Ray ray, TransformModifiers modifiers) const;
     bool beginMove(GizmoMode mode, const GizmoView& view, Ray ray, GizmoHandle handle,
                    std::optional<DVec3> anchor = {});
     bool beginModal(GizmoMode mode, const ToolView& view, const InputEvent& event);

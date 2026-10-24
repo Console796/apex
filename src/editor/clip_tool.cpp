@@ -88,7 +88,7 @@ void ClipTool::updatePreview() {
         replacements.insert_or_assign(solid->id, keep_ == Keep::Back ? piece.back : piece.front);
         const auto& other = keep_ == Keep::Back ? piece.front : piece.back;
         ghosts.push_back({other, {}, keep_ == Keep::Both ? 0.55f : 0.2f,
-                          keep_ == Keep::Both ? Vec4{1.0f, 0.65f, 0.15f, 1.0f} : Vec4{1.0f, 0.2f, 0.2f, 1.0f}});
+                          keep_ == Keep::Both ? session_.overlayPalette().clip : session_.overlayPalette().clipDiscard});
     }
     preview_.setReplacements(replacements);
     preview_.setGhosts(ghosts);
@@ -216,7 +216,7 @@ ToolOverlay ClipTool::overlay(const ToolView&, InputSource source) const {
     const auto it = gestures_.find(source);
     if (it == gestures_.end()) return result;
     const auto& g = it->second;
-    const Vec4 colour{1.0f, 0.65f, 0.15f, 1.0f};
+    const Vec4 colour = session_.overlayPalette().clip;
     for (std::size_t i = 0; i < g.points.size(); ++i) {
         result.worldPoints.push_back({g.points[i], colour, 9.0f});
         result.labels.push_back({g.points[i], std::to_string(i + 1), {8, 8}});

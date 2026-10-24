@@ -6,6 +6,7 @@
 #include "editor/inspector_model.hpp"
 #include "editor/placement.hpp"
 #include "editor/modal_transform.hpp"
+#include "editor/overlay_palette.hpp"
 #include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
 #include "editor/visgroups.hpp"
@@ -78,6 +79,8 @@ public:
     void unpinWorkPlane();
     double gridSize() const { return gridSize_; }
     void setGridSize(double units);
+    const OverlayPalette& overlayPalette() const { return overlayPalette_; }
+    void setOverlayPalette(const OverlayPalette& palette);
     SnapResult snap(Ray ray, const ToolView& view, bool suspended = false,
                     std::optional<SurfacePlane> plane = {}, bool edges = true,
                     std::vector<FeatureRef> excluded = {}) const;
@@ -223,6 +226,7 @@ private:
     std::optional<NodeId> hoverDrawable_;
     std::optional<std::pair<NodeId, SideId>> hoverFace_;
     WorkPlaneState workPlane_;
+    OverlayPalette overlayPalette_;
     double gridSize_ = GridLadder::kDefault;
     MarqueeMode marqueeMode_ = MarqueeMode::Enclosed;
     GizmoMode gizmoMode_ = GizmoMode::Translate;

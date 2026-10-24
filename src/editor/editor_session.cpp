@@ -128,6 +128,12 @@ SnapResult EditorSession::snap(Ray ray, const ToolView& view, bool suspended,
         ray, view, {suspended, std::move(plane), edges, std::move(excluded)});
 }
 
+void EditorSession::setOverlayPalette(const OverlayPalette& palette) {
+    if (palette == overlayPalette_) return;
+    overlayPalette_ = palette;
+    notify();
+}
+
 void EditorSession::setGridSize(double units) {
     units = GridLadder::clamp(units);
     if (units == gridSize_) return;

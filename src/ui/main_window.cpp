@@ -119,6 +119,7 @@ MainWindow::MainWindow(QWidget* parent)
     const bool worldUv = QSettings().value(QStringLiteral("editor/newSolidWorldUv"), false).toBool();
     session_.setNewSolidMaterial(material.toStdString());
     session_.setNewSolidUvAlignment(worldUv ? geometry::UvAlignment::World : geometry::UvAlignment::Face);
+    session_.setOverlayPalette(overlayPalette(currentTokens()));
     buildMenus();
     buildStatusBar();
     buildTransformUi();
@@ -867,11 +868,13 @@ void MainWindow::setTheme(Theme theme) {
 void MainWindow::setThemeId(const QString& id) {
     applyThemeId(*qApp, id);
     refreshThemeMenu();
+    session_.setOverlayPalette(overlayPalette(currentTokens()));
     viewport_->setThemeChanged();
 }
 
 void MainWindow::previewTokens(const Tokens& tokens) {
     applyTokens(*qApp, tokens, currentThemeId());
+    session_.setOverlayPalette(overlayPalette(currentTokens()));
     viewport_->setThemeChanged();
 }
 

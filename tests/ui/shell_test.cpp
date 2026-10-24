@@ -110,6 +110,43 @@ TEST_CASE("custom themes round-trip through files and inherit from a base") {
     CHECK(apex::ui::applyThemeId(a, "gone") == "dark");
 }
 
+TEST_CASE("viewport overlay colours are theme tokens fed to the editor palette") {
+    auto& a = app();
+    const auto& names = apex::ui::colourTokenNames();
+    for (const char* name : {"vertexHandle", "vertexSelected", "vertexInactive", "vertexEdge", "vertexInvalid",
+                             "vertexSplit", "faceHover", "gizmoX", "gizmoY", "gizmoZ", "gizmoScreen",
+                             "gizmoHighlight", "clip", "clipDiscard", "block"})
+        CHECK(names.contains(QLatin1StringView(name)));
+    CHECK(names.indexOf(QLatin1StringView(apex::ui::kFirstViewportToken)) == 15);
+
+    // Built-ins carry the editor's default overlay colours.
+    const apex::editor::OverlayPalette defaults;
+    for (const auto& theme : apex::ui::themes()) {
+        if (!theme.builtin) continue;
+        const auto palette = apex::ui::overlayPalette(theme.tokens);
+        const auto near = [](apex::Vec4 a, apex::Vec4 b) { return glm::length(a - b) < 1.0f / 255; };
+        CHECK(near(palette.vertexHandle, defaults.vertexHandle));
+        CHECK(near(palette.gizmoZ, defaults.gizmoZ));
+    }
+
+    // A theme file sets a viewport token and inherits the rest from its base.
+    apex::ui::ThemeEntry entry;
+    REQUIRE(apex::ui::themeFromJson(QJsonDocument::fromJson(
+        R"({"name":"V","base":"dark","colors":{"vertexHandle":"#00ff00"}})").object(), entry));
+    CHECK(entry.tokens.vertexHandle == QColor("#00ff00"));
+    CHECK(entry.tokens.gizmoX == apex::ui::tokens(apex::ui::Theme::Dark).gizmoX);
+    CHECK(apex::ui::themeToJson(entry)["colors"].toObject()["vertexHandle"].toString() == "#00ff00");
+
+    // The window feeds the session from the applied theme, including theme-editor previews.
+    apex::ui::applyThemeId(a, "dark");
+    apex::ui::MainWindow window;
+    CHECK(window.editorSession().overlayPalette() == apex::ui::overlayPalette(apex::ui::currentTokens()));
+    window.previewTokens(entry.tokens);
+    CHECK(window.editorSession().overlayPalette().vertexHandle == apex::Vec4(0.0f, 1.0f, 0.0f, 1.0f));
+    window.setThemeId("dark");
+    CHECK(window.editorSession().overlayPalette() == apex::ui::overlayPalette(apex::ui::tokens(apex::ui::Theme::Dark)));
+}
+
 TEST_CASE("shell opens a VMF, fills the outliner and round-trips on save") {
     auto& a = app();
     apex::ui::applyTheme(a, apex::ui::Theme::Dark);

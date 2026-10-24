@@ -122,8 +122,8 @@ TEST_CASE("vertex tool requires confirmation before welding coincident vertices"
 TEST_CASE("vertex tool refuses a collapsed face move without changing document bytes") {
     Scene scene;
     REQUIRE(scene.session.perform("vertex.mode.face"));
-    auto e = event(InputKind::Press);
-    REQUIRE(scene.session.input(e, viewAt({0,0,64}, {0,0,-1})));
+    REQUIRE(scene.session.input(event(InputKind::Press), viewAt({0,0,64}, {0,0,-1})));
+    REQUIRE(scene.session.input(event(InputKind::Release), viewAt({0,0,64}, {0,0,-1})));
     const auto before = *scene.doc.write();
     const auto history = scene.doc.undoCount();
     startGrab(scene, {0,0,64});
@@ -205,4 +205,118 @@ TEST_CASE("vertex tool marquee selects element handles in the active mode") {
     CHECK(std::ranges::all_of(scene.tool().elements(), [](const auto& element) {
         return element.kind == ElementKind::Vertex;
     }));
+}
+
+namespace {
+// Press the top face from above, then drag in a side view whose ray crosses the face normal at z.
+void pushTopFace(Scene& scene, double z, bool suspend = false, bool release = true) {
+    REQUIRE(scene.session.perform("vertex.mode.face"));
+    REQUIRE(scene.session.input(event(InputKind::Press), viewAt({16,16,64}, {0,0,-1})));
+    auto move = event(InputKind::Move);
+    move.ctrl = suspend; // Blender's snap-suspend modifier.
+    REQUIRE(scene.session.input(move, viewAt({0,0,z})));
+    if (release) REQUIRE(scene.session.input(event(InputKind::Release), viewAt({0,0,z})));
+}
+}
+
+TEST_CASE("vertex tool face mode drags a pressed face along its normal") {
+    Scene scene;
+    const auto before = *scene.doc.write();
+    const auto history = scene.doc.undoCount();
+    const auto source = geometry::solidGeometry(*scene.doc.get(scene.solid)->block);
+    REQUIRE(source);
+    pushTopFace(scene, 88);
+    CHECK(scene.doc.undoCount() == history + 1);
+    const auto pulled = geometry::solidGeometry(*scene.doc.get(scene.solid)->block);
+    REQUIRE(pulled);
+    CHECK(pulled->poly.bounds().max.z == doctest::Approx(88));
+    CHECK(pulled->poly.bounds().min.z == doctest::Approx(-64));
+    CHECK(pulled->poly.bounds().max.x == doctest::Approx(64));
+    REQUIRE(pulled->poly.faces.size() == 6);
+    for (const auto& face : source->poly.faces)
+        CHECK(std::ranges::find(pulled->poly.faces, face.sideId, &geometry::Face::sideId) != pulled->poly.faces.end());
+
+    pushTopFace(scene, 40);
+    const auto pushed = geometry::solidGeometry(*scene.doc.get(scene.solid)->block);
+    REQUIRE(pushed);
+    CHECK(pushed->poly.bounds().max.z == doctest::Approx(40));
+    REQUIRE(scene.session.perform("edit.undo"));
+    REQUIRE(scene.session.perform("edit.undo"));
+    CHECK(*scene.doc.write() == before);
+}
+
+TEST_CASE("vertex tool face push snaps to the grid unless suspended") {
+    Scene scene;
+    pushTopFace(scene, 91, false, false);
+    CHECK(scene.tool().readout().status.find("Push/pull 24 units") != std::string::npos);
+    CHECK(scene.tool().overlay(viewAt({0,0,91}), 1).segments.empty()); // No gizmo while pushing.
+    CHECK(scene.session.preview().replacements().at(scene.node).bounds().max.z == doctest::Approx(88));
+    auto move = event(InputKind::Move);
+    move.ctrl = true;
+    REQUIRE(scene.session.input(move, viewAt({0,0,91})));
+    CHECK(scene.session.preview().replacements().at(scene.node).bounds().max.z == doctest::Approx(91));
+    modalKey(scene, "Escape");
+}
+
+TEST_CASE("vertex tool face click without a drag only selects the face") {
+    Scene scene;
+    const auto before = *scene.doc.write();
+    const auto history = scene.doc.undoCount();
+    REQUIRE(scene.session.perform("vertex.mode.face"));
+    REQUIRE(scene.session.input(event(InputKind::Press), viewAt({16,16,64}, {0,0,-1})));
+    REQUIRE(scene.session.input(event(InputKind::Release), viewAt({16,16,64}, {0,0,-1})));
+    CHECK(scene.doc.undoCount() == history);
+    CHECK(*scene.doc.write() == before);
+    CHECK(scene.session.preview().empty());
+    REQUIRE(scene.tool().elements().size() == 1);
+    CHECK(scene.tool().elements().front().kind == ElementKind::Face);
+    CHECK_FALSE(scene.tool().overlay(viewAt({0,0,200}), 1).segments.empty()); // Gizmo back once released.
+}
+
+TEST_CASE("vertex tool face press under the gizmo pushes the face, not the gizmo") {
+    Scene scene;
+    REQUIRE(scene.session.perform("vertex.mode.face"));
+    const auto top = viewAt({0,0,64}, {0,0,-1});
+    REQUIRE(scene.session.input(event(InputKind::Press), top));
+    REQUIRE(scene.session.input(event(InputKind::Release), top));
+    REQUIRE_FALSE(scene.tool().overlay(top, 1).segments.empty()); // Gizmo sits on the face centre.
+    REQUIRE(scene.session.input(event(InputKind::Press), top));
+    REQUIRE(scene.session.input(event(InputKind::Move), viewAt({0,0,88})));
+    CHECK(scene.tool().readout().status.find("Push/pull 24 units") != std::string::npos);
+    CHECK_FALSE(scene.tool().dragged(1));
+    CHECK(scene.tool().overlay(viewAt({0,0,88}), 1).segments.empty());
+    modalKey(scene, "Escape");
+}
+
+TEST_CASE("vertex tool face mode highlights the hovered face and hides edge midpoints") {
+    Scene scene;
+    REQUIRE(scene.session.perform("vertex.mode.face"));
+    const auto view = viewAt({40,-30,64}, {0,0,-1});
+    CHECK(scene.tool().overlay(view, 1).worldTriangles.empty());
+    REQUIRE(scene.session.input(event(InputKind::Move), view));
+    const auto overlay = scene.tool().overlay(view, 1);
+    CHECK(overlay.worldTriangles.size() == 2); // The top quad, fanned.
+    for (const auto& triangle : overlay.worldTriangles)
+        for (const auto point : {triangle.a, triangle.b, triangle.c}) CHECK(point.z == doctest::Approx(64));
+    CHECK(overlay.worldPoints.size() == 8 + 6); // Corners and face centres; no edge midpoints.
+    auto leave = event(InputKind::Leave);
+    scene.session.input(leave, view);
+    CHECK(scene.tool().overlay(view, 1).worldTriangles.empty());
+}
+
+TEST_CASE("vertex tool draws with the session's overlay palette") {
+    Scene scene;
+    OverlayPalette palette;
+    palette.vertexHandle = {0.0f, 1.0f, 0.0f, 1.0f};
+    palette.faceHover = {1.0f, 0.0f, 1.0f, 1.0f};
+    scene.session.setOverlayPalette(palette);
+    const auto view = viewAt({40,-30,64}, {0,0,-1});
+    auto overlay = scene.tool().overlay(view, 1);
+    CHECK(std::ranges::count_if(overlay.worldPoints, [&](const auto& p) { return p.colour == palette.vertexHandle; }) == 8);
+    REQUIRE(scene.session.perform("vertex.mode.face"));
+    REQUIRE(scene.session.input(event(InputKind::Move), view));
+    overlay = scene.tool().overlay(view, 1);
+    REQUIRE_FALSE(overlay.worldTriangles.empty());
+    CHECK(Vec3(overlay.worldTriangles.front().colour) == Vec3(palette.faceHover));
+    CHECK(overlay.worldTriangles.front().colour.a < 1.0f);
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "editor/overlay_palette.hpp"
+
 #include <QColor>
 #include <QJsonObject>
 #include <QList>
@@ -23,6 +25,10 @@ struct Tokens {
     QColor border, text, textDim, textOnAccent;
     // Accent and status.
     QColor accent, accentHover, selection, warn, error;
+    // Viewport overlays, fed to the editor as an editor::OverlayPalette.
+    QColor vertexHandle, vertexSelected, vertexInactive, vertexEdge, vertexInvalid, vertexSplit, faceHover;
+    QColor gizmoX, gizmoY, gizmoZ, gizmoScreen, gizmoHighlight;
+    QColor clip, clipDiscard, block;
     // Metrics in device-independent pixels.
     int spacing = 6;
     int radius = 4;
@@ -51,8 +57,13 @@ struct ThemeEntry {
 
 // Names of the colour tokens in theme files, in editor order (the keys of the "colors" object).
 const QStringList& colourTokenNames();
+// The first viewport overlay token; the theme editor groups the tokens from here on.
+inline constexpr const char* kFirstViewportToken = "vertexHandle";
 QColor& colourToken(Tokens& tokens, const QString& name);
 const QColor& colourToken(const Tokens& tokens, const QString& name);
+
+// The viewport overlay colours of a token table.
+editor::OverlayPalette overlayPalette(const Tokens& tokens);
 
 // Built-in themes first, then the custom ones loaded by loadCustomThemes().
 const QList<ThemeEntry>& themes();

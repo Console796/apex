@@ -7,13 +7,13 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <sstream>
 
 namespace apex::editor {
 namespace {
 bool displacement(const kv1::Node& block) {
     return std::ranges::any_of(block.findAll("side"), [](const auto* side) { return side->find("dispinfo"); });
 }
-Vec4 colour(float r, float g, float b) { return {r,g,b,1.0f}; }
 }
 
 std::map<NodeId, geometry::SolidGeometry> VertexTool::selectedSolids() const {
@@ -134,10 +134,9 @@ std::vector<FeatureRef> VertexTool::excludedFeatures() const {
     return excluded;
 }
 
-bool VertexTool::beginMove(GizmoMode mode, const GizmoView& view, Ray ray, GizmoHandle handle,
-                           std::optional<DVec3> anchor) {
-    if (transformActive() || elements_.empty() || !session_.document()) return false;
+bool VertexTool::collectSources() {
     sources_.clear();
+    if (elements_.empty() || !session_.document()) return false;
     selectionRevision_ = session_.selection().changed();
     for (const auto& [node, geometry] : selectedSolids()) {
         Source source;
@@ -157,8 +156,52 @@ bool VertexTool::beginMove(GizmoMode mode, const GizmoView& view, Ray ray, Gizmo
         source.vertices.erase(std::unique(source.vertices.begin(), source.vertices.end()), source.vertices.end());
         if (!source.vertices.empty()) sources_.emplace(node, std::move(source));
     }
+    return !sources_.empty();
+}
+
+bool VertexTool::beginPush(const ElementHandle& face, Ray ray, InputSource source) {
+    if (transformActive() || !collectSources()) return false;
+    const auto found = sources_.find(face.solid);
+    if (found == sources_.end()) { sources_.clear(); return false; }
+    const auto& poly = found->second.poly;
+    const auto pressed = std::ranges::find(poly.faces, face.side, &geometry::Face::sideId);
+    if (pressed == poly.faces.end() || pressed->vertices.empty()) { sources_.clear(); return false; }
+    DVec3 centre{0.0};
+    for (const auto index : pressed->vertices) centre += poly.vertices[index];
+    centre /= static_cast<double>(pressed->vertices.size());
+    const auto hit = session_.picks_ ? session_.picks_->first(ray) : std::nullopt;
+    pushAxis_ = glm::normalize(pressed->plane.normal);
+    pushStart_ = hit && hit->node == face.solid ? hit->point : centre;
+    pushDistance_ = 0.0;
+    pushing_ = moving_ = true;
+    modalActive_ = awaitingMerge_ = false;
+    activeMode_ = GizmoMode::Translate;
+    activeHandle_ = GizmoHandle::Screen;
+    snapAnchor_ = pushStart_;
+    owner_ = source;
+    publish(Transform{});
+    return true;
+}
+
+Transform VertexTool::pushTransform(Ray ray, TransformModifiers modifiers) const {
+    // Closest point on the push line to the cursor ray; hold the last value when looking along it.
+    const auto q = ray.origin - pushStart_;
+    const double a = glm::dot(ray.dir, ray.dir), b = glm::dot(ray.dir, pushAxis_);
+    const double det = a - b * b;
+    if (det <= 1e-9 * a) return Transform::translate(pushAxis_ * pushDistance_);
+    const double t = (b * glm::dot(q, pushAxis_) - glm::dot(q, ray.dir)) / det;
+    double distance = glm::dot(ray.at(t) - pushStart_, pushAxis_);
+    const double step = session_.gridSize();
+    if (!modifiers.suspend && !session_.snapSettings().suspended && step > 0.0)
+        distance = std::round(distance / step) * step;
+    return Transform::translate(pushAxis_ * distance);
+}
+
+bool VertexTool::beginMove(GizmoMode mode, const GizmoView& view, Ray ray, GizmoHandle handle,
+                           std::optional<DVec3> anchor) {
+    if (transformActive() || !collectSources()) return false;
     const auto context = gizmoContext();
-    if (!context || sources_.empty()) return false;
+    if (!context) { sources_.clear(); return false; }
     const auto hitView = view;
     if (!drag_.begin(mode, handle, *context, hitView, ray)) { sources_.clear(); return false; }
     moving_ = true;
@@ -188,24 +231,7 @@ bool VertexTool::beginModal(GizmoMode mode, const ToolView& view, const InputEve
     if (elements_.empty() || transformActive()) return false;
     const auto context = gizmoContext();
     if (!context) return false;
-    sources_.clear();
-    selectionRevision_ = session_.selection().changed();
-    for (const auto& [node, geometry] : selectedSolids()) {
-        const auto docHandle = session_.document()->handle(node);
-        if (!docHandle || !std::holds_alternative<Handle<document::Solid>>(*docHandle)) continue;
-        Source source{std::get<Handle<document::Solid>>(*docHandle), node,
-            session_.document()->get(*docHandle)->block.get(), geometry.poly, {}, {}};
-        for (const auto& element : elements_) if (element.solid == node) {
-            if (element.kind == ElementKind::Vertex) source.vertices.push_back(element.a);
-            else if (element.kind == ElementKind::Edge) { source.vertices.push_back(element.a); source.vertices.push_back(element.b); }
-            else if (const auto face = std::ranges::find(source.poly.faces, element.side, &geometry::Face::sideId);
-                     face != source.poly.faces.end()) source.vertices.insert(source.vertices.end(), face->vertices.begin(), face->vertices.end());
-        }
-        std::ranges::sort(source.vertices);
-        source.vertices.erase(std::unique(source.vertices.begin(), source.vertices.end()), source.vertices.end());
-        if (!source.vertices.empty()) sources_.emplace(node, std::move(source));
-    }
-    if (sources_.empty() || !modal_.start(mode, *context, gizmoViewFor(view, context->pivot), view.cursorRay, event.cursor)) {
+    if (!collectSources() || !modal_.start(mode, *context, gizmoViewFor(view, context->pivot), view.cursorRay, event.cursor)) {
         sources_.clear(); return false;
     }
     moving_ = false;
@@ -230,13 +256,15 @@ bool VertexTool::publish(const Transform& transform, const ToolView* view, const
             auto delta = snapped.point - snapAnchor_;
             const auto context = gizmoContext();
             const auto handle = modalActive_ ? modal_.constraint() : activeHandle_;
-            if (context && (handle == GizmoHandle::X || handle == GizmoHandle::Y || handle == GizmoHandle::Z)) {
+            if (pushing_) delta = pushAxis_ * glm::dot(delta, pushAxis_);
+            else if (context && (handle == GizmoHandle::X || handle == GizmoHandle::Y || handle == GizmoHandle::Z)) {
                 const auto axis = context->frame[handle == GizmoHandle::X ? 0 : handle == GizmoHandle::Y ? 1 : 2];
                 delta = axis * glm::dot(delta, axis);
             }
             actual = Transform::translate(delta);
         }
     }
+    if (pushing_) pushDistance_ = glm::dot(actual.point(DVec3{0.0}), pushAxis_);
     std::map<NodeId, geometry::ConvexPolyhedron> replacements;
     absorbedCount_ = mergeCount_ = splitCount_ = 0;
     status_.clear();
@@ -261,6 +289,11 @@ bool VertexTool::publish(const Transform& transform, const ToolView* view, const
         if (!status_.empty()) status_ += "; ";
         status_ += std::move(message);
     };
+    if (pushing_) {
+        std::ostringstream distance;
+        distance << "Push/pull " << pushDistance_ << " units";
+        appendStatus(distance.str());
+    }
     if (absorbedCount_) appendStatus(std::to_string(absorbedCount_) + " vertices will be absorbed");
     if (mergeCount_) appendStatus(std::to_string(mergeCount_) + " vertex merge(s) need confirmation");
     if (splitCount_) appendStatus(std::to_string(splitCount_) + " new face(s)");
@@ -271,6 +304,7 @@ bool VertexTool::publish(const Transform& transform, const ToolView* view, const
 bool VertexTool::updateMove(Ray ray, const ToolView& view, TransformModifiers modifiers,
                             const InputEvent* event) {
     if (!transformActive()) return false;
+    if (pushing_) return publish(pushTransform(ray, modifiers), &view, event);
     const auto value = modalActive_ ? modal_.update(ray, modifiers).transform : drag_.update(ray, modifiers).transform;
     return publish(value, &view, event);
 }
@@ -290,6 +324,7 @@ Handled VertexTool::input(const InputEvent& event, const ToolView& view) {
     if (event.kind == InputKind::CancelPointer) return false;
     if (event.kind == InputKind::Leave) {
         pane.hovered.reset();
+        if (pane.hoveredFace) { pane.hoveredFace.reset(); session_.notify(); }
         return false;
     }
     if (!session_.document() || view.size.x <= 0 || view.size.y <= 0) return false;
@@ -323,7 +358,12 @@ Handled VertexTool::input(const InputEvent& event, const ToolView& view) {
         } else if (event.kind == InputKind::Press && event.button == PointerButton::Right) cancelTransform();
         else if (event.kind == InputKind::Release && !modalActive_ && event.button == PointerButton::Left) {
             update();
-            endGizmoDrag();
+            if (pushing_ && std::abs(pushDistance_) < 1e-9) {
+                const auto collapse = pushCollapse_;
+                clearMove();
+                if (collapse) selectElement(*collapse, false, false);
+                session_.notify();
+            } else endGizmoDrag();
         }
         return true;
     }
@@ -373,10 +413,13 @@ Handled VertexTool::input(const InputEvent& event, const ToolView& view) {
         const auto context = gizmoContext();
         const auto gizmo = context ? hitTestGizmo(session_.gizmoMode(), *context,
             gizmoViewFor(view, context->pivot), view.cursorRay) : std::nullopt;
-        pane.hovered = gizmo ? std::optional<GizmoHandle>(gizmo->handle) : std::nullopt;
-        if (gizmo) return true;
         const auto element = hitElement(event, view);
-        if (element) return true;
+        // In face mode a face under the cursor beats the gizmo; the gizmo keeps presses off the face.
+        const bool facePush = mode_ == ElementMode::Face && element;
+        const auto face = facePush ? element : std::nullopt;
+        if (face != pane.hoveredFace) { pane.hoveredFace = face; session_.notify(); }
+        pane.hovered = gizmo && !facePush ? std::optional<GizmoHandle>(gizmo->handle) : std::nullopt;
+        if (gizmo || element) return true;
     }
     if (event.kind == InputKind::Press && event.button == PointerButton::Left) {
         if (elements_.empty()) {
@@ -395,10 +438,25 @@ Handled VertexTool::input(const InputEvent& event, const ToolView& view) {
         const auto context = gizmoContext();
         const auto gizmo = context ? hitTestGizmo(session_.gizmoMode(), *context,
             gizmoViewFor(view, context->pivot), view.cursorRay) : std::nullopt;
-        if (gizmo && beginGizmoDrag(gizmo->handle, gizmoViewFor(view, context->pivot), view.cursorRay)) {
+        const auto pressed = hitElement(event, view);
+        const bool facePush = mode_ == ElementMode::Face && pressed && !event.shift && !event.ctrl;
+        if (gizmo && !facePush &&
+            beginGizmoDrag(gizmo->handle, gizmoViewFor(view, context->pivot), view.cursorRay)) {
             owner_ = event.source; pane.dragged = gizmo->handle; pane.hovered.reset(); return true;
         }
-        if (const auto element = hitElement(event, view)) {
+        if (const auto element = pressed) {
+            if (facePush) {
+                const bool wasSelected = std::ranges::find(elements_, *element) != elements_.end();
+                if (!wasSelected) selectElement(*element, false, false);
+                if (beginPush(*element, view.cursorRay, event.source)) {
+                    pushCollapse_ = wasSelected && elements_.size() > 1 ? element : std::nullopt;
+                    pane.hovered.reset();
+                    pane.hoveredFace.reset();
+                    return true;
+                }
+                session_.notify();
+                return true;
+            }
             selectElement(*element, event.shift, event.ctrl);
             session_.notify();
             return true;
@@ -494,7 +552,8 @@ bool VertexTool::commit() {
 
 void VertexTool::clearMove() {
     drag_.cancel(); modal_.cancel();
-    moving_ = modalActive_ = awaitingMerge_ = false;
+    moving_ = modalActive_ = awaitingMerge_ = pushing_ = false;
+    pushCollapse_.reset();
     sources_.clear(); owner_.reset();
     for (auto& [source, pane] : panes_) pane.dragged.reset();
     preview_.clear();
@@ -514,7 +573,8 @@ void VertexTool::documentChanged() {
     if (committing_) return;
     if (transformActive() || awaitingMerge_) {
         drag_.cancel(); modal_.cancel();
-        moving_ = modalActive_ = awaitingMerge_ = false;
+        moving_ = modalActive_ = awaitingMerge_ = pushing_ = false;
+        pushCollapse_.reset();
         sources_.clear(); owner_.reset(); preview_.clear();
         previewValid_ = false;
         status_ = "Document changed; move cancelled";
@@ -563,6 +623,7 @@ ToolReadout VertexTool::readout() const {
 
 ToolOverlay VertexTool::overlay(const ToolView& view, InputSource source) const {
     ToolOverlay overlay;
+    const auto& palette = session_.overlayPalette();
     const auto solids = selectedSolids();
     for (const auto& [node, geometry] : solids) {
         const auto& poly = geometry.poly;
@@ -571,26 +632,26 @@ ToolOverlay VertexTool::overlay(const ToolView& view, InputSource source) const 
             for (std::size_t i = 0; i < face.vertices.size(); ++i) {
                 const auto a = face.vertices[i], b = face.vertices[(i+1)%face.vertices.size()];
                 edges.emplace(std::min(a,b), std::max(a,b));
-                overlay.worldSegments.push_back({poly.vertices[a], poly.vertices[b], colour(0.35f,0.55f,0.75f), 1.0f});
+                overlay.worldSegments.push_back({poly.vertices[a], poly.vertices[b], palette.vertexEdge, 1.0f});
             }
         }
         if (mode_ == ElementMode::Vertex) for (std::size_t i = 0; i < poly.vertices.size(); ++i) {
             const ElementHandle handle{node,ElementKind::Vertex,i};
             const bool selected = std::ranges::find(elements_, handle) != elements_.end();
             auto point = poly.vertices[i];
-            Vec4 c = selected ? colour(1.0f,0.85f,0.2f) : colour(0.25f,0.85f,1.0f);
+            Vec4 c = selected ? palette.vertexSelected : palette.vertexHandle;
             if (transformActive() && selected) {
                 for (const auto& [id, src] : sources_) if (id == node) {
                     if (const auto found = std::ranges::find(src.vertices, i); found != src.vertices.end()) {
                         if (preview_.empty()) {
                             const auto transform = modalActive_ ? modal_.value().transform : drag_.value().transform;
                             point = transform.point(point);
-                            c = colour(1.0f,0.15f,0.15f);
+                            c = palette.vertexInvalid;
                         }
                         else if (const auto replacement = preview_.replacements().find(node); replacement != preview_.replacements().end() &&
                                  std::ranges::find(src.result.absorbedVertices, i) != src.result.absorbedVertices.end()) {
                             point = modalActive_ ? modal_.value().transform.point(point) : drag_.value().transform.point(point);
-                            c = colour(1.0f,0.15f,0.15f);
+                            c = palette.vertexInvalid;
                         }
                     }
                 }
@@ -601,23 +662,37 @@ ToolOverlay VertexTool::overlay(const ToolView& view, InputSource source) const 
             const ElementHandle handle{node,ElementKind::Edge,a,b};
             const bool selected = std::ranges::find(elements_, handle) != elements_.end();
             overlay.worldPoints.push_back({(poly.vertices[a]+poly.vertices[b])*0.5,
-                selected ? colour(1.0f,0.85f,0.2f) : colour(0.25f,0.85f,1.0f), selected ? 10.0f : 7.0f});
+                selected ? palette.vertexSelected : palette.vertexHandle, selected ? 10.0f : 7.0f});
         }
         if (mode_ == ElementMode::Face) for (const auto& face : poly.faces) {
             DVec3 centre{0.0}; for (const auto index : face.vertices) centre += poly.vertices[index];
             centre /= static_cast<double>(face.vertices.size());
             const ElementHandle handle{node,ElementKind::Face,0,0,static_cast<SideId>(face.sideId)};
             const bool selected = std::ranges::find(elements_, handle) != elements_.end();
-            overlay.worldPoints.push_back({centre, selected ? colour(1.0f,0.85f,0.2f) : colour(0.25f,0.85f,1.0f), selected ? 10.0f : 7.0f});
+            overlay.worldPoints.push_back({centre, selected ? palette.vertexSelected : palette.vertexHandle, selected ? 10.0f : 7.0f});
         }
         if (mode_ != ElementMode::Vertex) for (std::size_t i = 0; i < poly.vertices.size(); ++i)
-            overlay.worldPoints.push_back({poly.vertices[i], colour(0.4f,0.58f,0.68f), 4.0f});
-        if (mode_ != ElementMode::Edge) for (const auto& [a,b] : edges)
-            overlay.worldPoints.push_back({(poly.vertices[a]+poly.vertices[b])*0.5, colour(0.4f,0.58f,0.68f), 4.0f});
+            overlay.worldPoints.push_back({poly.vertices[i], palette.vertexInactive, 4.0f});
+        if (mode_ == ElementMode::Vertex) for (const auto& [a,b] : edges)
+            overlay.worldPoints.push_back({(poly.vertices[a]+poly.vertices[b])*0.5, palette.vertexInactive, 4.0f});
         if (mode_ != ElementMode::Face) for (const auto& face : poly.faces) {
             DVec3 centre{0.0}; for (const auto index : face.vertices) centre += poly.vertices[index];
             centre /= static_cast<double>(face.vertices.size());
-            overlay.worldPoints.push_back({centre, colour(0.4f,0.58f,0.68f), 4.0f});
+            overlay.worldPoints.push_back({centre, palette.vertexInactive, 4.0f});
+        }
+        if (const auto pane = panes_.find(source); !transformActive() && pane != panes_.end() &&
+            pane->second.hoveredFace && pane->second.hoveredFace->solid == node) {
+            const auto face = std::ranges::find(poly.faces, pane->second.hoveredFace->side, &geometry::Face::sideId);
+            if (face != poly.faces.end() && face->vertices.size() >= 3) {
+                const Vec4 outline = palette.faceHover;
+                Vec4 fill = outline;
+                fill.a = 0.22f;
+                const auto& v = face->vertices;
+                for (std::size_t i = 1; i + 1 < v.size(); ++i)
+                    overlay.worldTriangles.push_back({poly.vertices[v[0]], poly.vertices[v[i]], poly.vertices[v[i+1]], fill});
+                for (std::size_t i = 0; i < v.size(); ++i)
+                    overlay.worldSegments.push_back({poly.vertices[v[i]], poly.vertices[v[(i+1)%v.size()]], outline, 2.5f});
+            }
         }
         if (transformActive()) if (const auto sourceIt = sources_.find(node); sourceIt != sources_.end()) {
             for (const auto faceIndex : sourceIt->second.result.splitFaces) {
@@ -626,18 +701,16 @@ ToolOverlay VertexTool::overlay(const ToolView& view, InputSource source) const 
                 for (std::size_t i = 0; i < split.vertices.size(); ++i) {
                     const auto a = sourceIt->second.result.poly.vertices[split.vertices[i]];
                     const auto b = sourceIt->second.result.poly.vertices[split.vertices[(i+1)%split.vertices.size()]];
-                    overlay.worldSegments.push_back({a,b,colour(1.0f,0.45f,0.08f),2.5f});
+                    overlay.worldSegments.push_back({a,b,palette.vertexSplit,2.5f});
                 }
             }
         }
     }
-    if (!modalActive_) if (const auto context = gizmoContext(); context && view.size.x > 0 && view.size.y > 0) {
+    if (!modalActive_ && !pushing_) if (const auto context = gizmoContext(); context && view.size.x > 0 && view.size.y > 0) {
         const auto gizmoView = gizmoViewFor(view, context->pivot);
         const auto active = dragged(source) ? dragged(source) : hovered(source);
         for (const auto& primitive : gizmoDescription(session_.gizmoMode(), *context, gizmoView)) {
-            const Vec4 c = active && *active == primitive.handle ? colour(1.0f,0.9f,0.2f) :
-                primitive.handle == GizmoHandle::X ? colour(0.95f,0.25f,0.25f) :
-                primitive.handle == GizmoHandle::Y ? colour(0.35f,0.85f,0.3f) : colour(0.3f,0.55f,1.0f);
+            const Vec4 c = gizmoHandleColour(palette, primitive.handle, active && *active == primitive.handle);
             if (primitive.shape == GizmoShape::Segment) overlay.segments.push_back({primitive.points[0],primitive.points[1],c,2.5f});
             else if (primitive.shape == GizmoShape::Quad) for (int i=0;i<4;++i)
                 overlay.segments.push_back({primitive.points[i],primitive.points[(i+1)%4],c,2.0f});

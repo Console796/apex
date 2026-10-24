@@ -8,16 +8,6 @@
 
 namespace apex::editor {
 namespace {
-Vec4 handleColour(GizmoHandle handle, bool highlight, float alpha) {
-    if (highlight) return Vec4(1.0f, 0.88f, 0.25f, alpha);
-    switch (handle) {
-    case GizmoHandle::X: case GizmoHandle::YZ: return Vec4(0.92f, 0.25f, 0.25f, alpha);
-    case GizmoHandle::Y: case GizmoHandle::ZX: return Vec4(0.35f, 0.82f, 0.3f, alpha);
-    case GizmoHandle::Z: case GizmoHandle::XY: return Vec4(0.3f, 0.5f, 1.0f, alpha);
-    default: return Vec4(0.85f, 0.85f, 0.88f, alpha);
-    }
-}
-
 DVec3 anyPerpendicular(DVec3 n) {
     const DVec3 axis = std::abs(n.z) < 0.9 ? DVec3{0, 0, 1} : DVec3{0, 1, 0};
     return glm::normalize(glm::cross(axis, n));
@@ -334,7 +324,7 @@ ToolOverlay SelectTool::overlay(const ToolView& camera, InputSource source) cons
         const float w = highlight ? 3.5f : 2.5f;
         switch (p.shape) {
         case GizmoShape::Segment: {
-            const auto colour = handleColour(p.handle, highlight, 1.0f);
+            const auto colour = gizmoHandleColour(session_.overlayPalette(), p.handle, highlight, 1.0f);
             line(p.points[0], p.points[1], colour, w);
             const DVec3 d = p.points[1] - p.points[0];
             const double length = glm::length(d);
@@ -359,7 +349,7 @@ ToolOverlay SelectTool::overlay(const ToolView& camera, InputSource source) cons
         case GizmoShape::Ring: {
             const DVec3 n = glm::normalize(p.normal);
             const DVec3 u = anyPerpendicular(n), v = glm::cross(n, u);
-            const auto colour = handleColour(p.handle, highlight, p.handle == GizmoHandle::Screen ? 0.8f : 1.0f);
+            const auto colour = gizmoHandleColour(session_.overlayPalette(), p.handle, highlight, p.handle == GizmoHandle::Screen ? 0.8f : 1.0f);
             constexpr int kSteps = 64;
             DVec3 previous = p.centre + u * p.radius;
             for (int i = 1; i <= kSteps; ++i) {
@@ -372,10 +362,10 @@ ToolOverlay SelectTool::overlay(const ToolView& camera, InputSource source) cons
         }
         case GizmoShape::Quad: {
             const bool plane = p.handle == GizmoHandle::XY || p.handle == GizmoHandle::YZ || p.handle == GizmoHandle::ZX;
-            auto fill = handleColour(p.handle, highlight, plane ? (highlight ? 0.55f : 0.32f) : (highlight ? 0.9f : 0.55f));
+            auto fill = gizmoHandleColour(session_.overlayPalette(), p.handle, highlight, plane ? (highlight ? 0.55f : 0.32f) : (highlight ? 0.9f : 0.55f));
             list.triangles.push_back({p.points[0], p.points[1], p.points[2], fill});
             list.triangles.push_back({p.points[0], p.points[2], p.points[3], fill});
-            const auto edge = handleColour(p.handle, highlight, 0.9f);
+            const auto edge = gizmoHandleColour(session_.overlayPalette(), p.handle, highlight, 0.9f);
             for (int i = 0; i < 4; ++i) line(p.points[static_cast<std::size_t>(i)], p.points[static_cast<std::size_t>((i + 1) % 4)], edge, 1.5f);
             break;
         }
