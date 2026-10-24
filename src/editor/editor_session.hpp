@@ -19,6 +19,7 @@ namespace apex::editor {
 
 class SelectTool;
 class EntityTool;
+class VertexTool;
 
 // One document's editor state. The attached document must outlive the session or
 // detach(). Selection-only gestures never write to Document or its undo history.
@@ -30,6 +31,7 @@ public:
         static constexpr const char* Entity = "tool.entity";
         static constexpr const char* Block = "tool.block";
         static constexpr const char* Clip = "tool.clip";
+        static constexpr const char* Vertex = "tool.vertex";
     };
     const ToolId& activeTool() const { return activeTool_; }
     void setActiveTool(ToolId tool);
@@ -75,7 +77,8 @@ public:
     double gridSize() const { return gridSize_; }
     void setGridSize(double units);
     SnapResult snap(Ray ray, const ToolView& view, bool suspended = false,
-                    std::optional<SurfacePlane> plane = {}, bool edges = true) const;
+                    std::optional<SurfacePlane> plane = {}, bool edges = true,
+                    std::vector<FeatureRef> excluded = {}) const;
     void pointerClick(Ray ray, Modifiers modifiers = {}, bool sameSpot = false);
     void marquee(std::span<const Plane> planes, Modifiers modifiers = {});
     void selectNode(NodeId node, Modifiers modifiers = {});
@@ -198,6 +201,7 @@ private:
     friend class SelectTool;
     friend class BlockTool;
     friend class ClipTool;
+    friend class VertexTool;
     SelectTool& selectTool();
     const SelectTool& selectTool() const;
     document::Document* document_ = nullptr;

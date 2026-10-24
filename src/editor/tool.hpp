@@ -84,6 +84,10 @@ public:
     virtual ToolOverlay overlay(const ToolView& view, InputSource source) const = 0;
     virtual ToolReadout readout() const = 0;
     virtual void cancel() = 0;
+    virtual bool transformActive() const { return false; }
+    virtual void cancelTransform() { cancel(); }
+    virtual void endTransform() {}
+    virtual void documentChanged() {}
     virtual bool perform(const ActionId&) { return false; }
     virtual std::vector<ActionId> actions() const { return {}; }
 

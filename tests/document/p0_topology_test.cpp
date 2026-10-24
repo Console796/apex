@@ -1,6 +1,7 @@
 // 0.3.1 topology write regressions (plan 0.3 D2, D3).
 #include "../editor/fixtures.hpp"
 #include "editor/editor_session.hpp"
+#include "editor/vertex_edit.hpp"
 #include "geometry/face_matching.hpp"
 
 #include <algorithm>
@@ -78,75 +79,34 @@ TEST_CASE("P0: session move accepts a redundant source side (D2)") {
     checkPoint(after->poly.bounds().max, before->poly.bounds().max + delta);
 }
 
-TEST_CASE("P0: moved cube vertex keeps adjacent face identities (D3)") {
+TEST_CASE("P0: moved cube vertex keeps all six face identities (D3)") {
     Document doc(fixture("p0_cube.vmf"));
-    const auto geometry = geometry::solidGeometry(*doc.get(solid(doc))->block);
-    REQUIRE(geometry);
-    const auto& original = geometry->poly;
+    const auto handle = solid(doc);
+    const auto source = geometry::solidGeometry(*doc.get(handle)->block);
+    REQUIRE(source);
+    REQUIRE(source->poly.faces.size() == 6);
     const DVec3 corner{64, 64, 64};
-    REQUIRE(std::ranges::any_of(original.vertices, [&](auto point) {
-        return glm::length(point - corner) < 1e-6;
+    const auto vertex = std::ranges::find_if(source->poly.vertices, [&](DVec3 point) {
+        return glm::length(point-corner) < 1e-6;
+    });
+    REQUIRE(vertex != source->poly.vertices.end());
+    const auto index = static_cast<std::size_t>(vertex-source->poly.vertices.begin());
+    const auto result = editor::evaluateVertexEdit(source->poly, std::span{&index, 1},
+        editor::Transform::translate(-glm::normalize(DVec3{1,1,1})*16.0));
+    REQUIRE(result);
+    const auto moved = corner - glm::normalize(DVec3{1,1,1})*16.0;
+    CHECK(std::ranges::any_of(result->poly.vertices, [&](DVec3 point) {
+        return glm::length(point-moved) < 1e-6;
     }));
-    const auto moved = corner - glm::normalize(DVec3{1, 1, 1}) * 16.0;
-    auto planes = geometry_test::rederivedSides(original);
-    std::vector<std::size_t> adjacent;
-    for (std::size_t i = 0; i < original.faces.size(); ++i) {
-        const auto& face = original.faces[i];
-        const auto vertex = std::ranges::find_if(face.vertices, [&](auto index) {
-            return glm::length(original.vertices[index] - corner) < 1e-6;
-        });
-        if (vertex == face.vertices.end()) continue;
-        adjacent.push_back(i);
-        const auto offset = static_cast<std::size_t>(vertex - face.vertices.begin());
-        const auto previous = original.vertices[face.vertices[(offset + face.vertices.size() - 1) % face.vertices.size()]];
-        const auto next = original.vertices[face.vertices[(offset + 1) % face.vertices.size()]];
-        // No hull builder yet: define the three tilted planes through the moved corner.
-        planes[i].plane = Plane::fromPoints(previous, moved, next);
-    }
-    REQUIRE(adjacent.size() == 3);
-    auto rebuilt = geometry_test::build(planes);
-    REQUIRE(rebuilt.faces.size() == 6);
-    REQUIRE(std::ranges::any_of(rebuilt.vertices, [&](auto point) {
-        return glm::length(point - moved) < 1e-6;
-    }));
-    // Plane matching loses every tilted face, which is why D3 needs explicit correspondence.
-    const auto matches = geometry::matchFaces(original, rebuilt);
-    CHECK(matches.matched.size() == 3);
-    for (const auto i : adjacent) {
-        CHECK(std::ranges::none_of(matches.matched, [&](const auto& match) {
-            return match.oldIndex == i;
-        }));
-    }
-    // The vertex tool knows the move: a new face is the old face holding most of its unmoved vertices.
-    geometry::FaceCorrespondence correspondence{std::in_place};
-    for (std::size_t n = 0; n < rebuilt.faces.size(); ++n) {
-        std::size_t best = 0, bestCount = 0;
-        for (std::size_t o = 0; o < original.faces.size(); ++o) {
-            const auto count = std::ranges::count_if(rebuilt.faces[n].vertices, [&](auto index) {
-                auto point = rebuilt.vertices[index];
-                if (glm::length(point - moved) < 1e-6) point = corner;
-                return std::ranges::any_of(original.faces[o].vertices, [&](auto old) {
-                    return glm::length(original.vertices[old] - point) < 1e-6;
-                });
-            });
-            if (static_cast<std::size_t>(count) > bestCount) {
-                best = o;
-                bestCount = static_cast<std::size_t>(count);
-            }
-        }
-        correspondence->emplace(n, original.faces[best].sideId);
-    }
     auto tx = doc.begin("move vertex");
-    tx.rebuildSolid(solid(doc), rebuilt, correspondence);
+    tx.rebuildSolid(handle, result->poly, result->correspondence);
     CHECK(tx.commit().vanishedSides.empty());
-    const auto written = geometry::solidGeometry(*doc.get(solid(doc))->block);
+    const auto written = geometry::solidGeometry(*doc.get(handle)->block);
     REQUIRE(written);
-    CHECK(written->poly.faces.size() == 6);
-    for (std::size_t i = 0; i < original.faces.size(); ++i) {
-        CAPTURE(original.faces[i].sideId);
-        const auto face = std::ranges::find(written->poly.faces, original.faces[i].sideId,
+    for (const auto& oldFace : source->poly.faces) {
+        CAPTURE(oldFace.sideId);
+        const auto face = std::ranges::find(written->poly.faces, oldFace.sideId,
                                             &geometry::Face::sideId);
         REQUIRE(face != written->poly.faces.end());
-        CHECK(glm::length(face->plane.normal - planes[i].plane.normal) < 1e-6);
     }
 }

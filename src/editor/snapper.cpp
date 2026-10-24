@@ -12,7 +12,9 @@ SnapResult Snapper::snap(Ray ray, const ToolView& view, const SnapRequest& reque
     const bool suspended = request.suspended || settings_.suspended;
     const auto hit = picks_.first(ray);
     if (!suspended) {
-        const auto features = picks_.nearestFeature(ray, 8.0, view);
+        const auto features = picks_.nearestFeature(ray, 8.0, view, [&](const FeatureRef& feature) {
+            return std::ranges::find(request.excluded, feature) == request.excluded.end();
+        });
         const auto result = [](const FeatureHit& feature, SnapKind kind) {
             return SnapResult{feature.point, kind, feature.node, feature.side};
         };

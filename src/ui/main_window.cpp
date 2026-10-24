@@ -45,6 +45,7 @@
 #include "core/version.hpp"
 #include "document/document.hpp"
 #include "document/vmf.hpp"
+#include "editor/vertex_tool.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/input_log.hpp"
@@ -83,7 +84,7 @@ bool isTransformAction(const editor::ActionId& id) {
 // Actions whose plain (unmodified) default keys belong to the focused pane.
 bool isPaneKeyAction(const editor::ActionId& id) {
     return isTransformAction(id) || (id.starts_with("view.") && id != "view.properties") || id == "edit.delete" ||
-           id == "edit.duplicate";
+           id == "edit.duplicate" || id.starts_with("selection.mode.") || id.starts_with("vertex.mode.");
 }
 
 bool looksLikeFragment(std::string_view text) {
@@ -287,7 +288,8 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
         QList<QKeySequence> sequences;
         const auto& binding = session_.preset().bindings.at(id);
         const bool transformAction = isPaneKeyAction(id);
-        if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
+        const bool toolScoped = !binding.context.toolId.empty();
+        if (!toolScoped) if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
             for (const auto& chord : *chords) {
                 // A bare modifier is a held key (snap.suspend style), never a shortcut.
                 if (isTransformAction(id) && (chord.key == "Ctrl" || chord.key == "Alt" || chord.key == "Shift")) continue;
@@ -297,7 +299,7 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
         action->setShortcuts(sequences);
         // Unmodified keys (W/E/R, arrows, Shift+L) belong to the focused pane, which routes them
         // through the same keymap; a window shortcut would steal them from the outliner.
-        if (transformAction) {
+        if (transformAction || toolScoped) {
             bool plain = true;
             if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
                 for (const auto& chord : *chords) plain = plain && !chord.ctrl && !chord.alt;
@@ -369,7 +371,7 @@ void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
         if (id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
-        if (id == "tool.select" || id == "tool.entity" || id == "tool.block" || id == "tool.clip") {
+        if (id == "tool.select" || id == "tool.entity" || id == "tool.block" || id == "tool.clip" || id == "tool.vertex") {
             action->setEnabled(true);
             action->setChecked(session_.activeTool() == id);
         }
@@ -406,6 +408,13 @@ void MainWindow::updateEditorActions() {
             const bool local = session_.gizmoSpace() == editor::GizmoSpace::Local;
             action->setChecked(local);
             action->setText(local ? tr("Space: Local") : tr("Space: Global"));
+        }
+        if (id == "vertex.mode.vertex" || id == "vertex.mode.edge" || id == "vertex.mode.face") {
+            const auto* vertex = dynamic_cast<const editor::VertexTool*>(&session_.activeToolObject());
+            const auto mode = id == "vertex.mode.vertex" ? editor::ElementMode::Vertex
+                            : id == "vertex.mode.edge" ? editor::ElementMode::Edge : editor::ElementMode::Face;
+            action->setEnabled(vertex != nullptr);
+            action->setChecked(vertex && vertex->elementMode() == mode);
         }
         if (id == "snap.mode.toggle") {
             const bool relative = session_.snapSettings().mode == editor::SnapMode::Relative;
@@ -596,7 +605,7 @@ void MainWindow::buildEntityUi() {
     auto* bar = findChild<QToolBar*>(QStringLiteral("toolbarTransform"));
     bar->addSeparator();
     auto* group = new QActionGroup(this);
-    for (const char* id : {"tool.select", "tool.entity", "tool.block", "tool.clip"}) {
+    for (const char* id : {"tool.select", "tool.entity", "tool.block", "tool.clip", "tool.vertex"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = new QAction(fromStd(entry->name), this);
         action->setObjectName(fromStd(entry->id));
@@ -606,6 +615,22 @@ void MainWindow::buildEntityUi() {
         viewMenu_->addAction(action);
         bar->addAction(action);
         connect(action, &QAction::triggered, this, [this, id] { session_.perform(id); });
+    }
+    bar->addSeparator();
+    auto* vertexModes = new QActionGroup(this);
+    for (const char* id : {"vertex.mode.vertex", "vertex.mode.edge", "vertex.mode.face"}) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = new QAction(fromStd(entry->name), this);
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        action->setCheckable(true);
+        vertexModes->addAction(action);
+        editorActions_.emplace(entry->id, action);
+        bar->addAction(action);
+        connect(action, &QAction::triggered, this, [this, id] {
+            session_.perform(id);
+            updateEditorActions();
+        });
     }
     entityClass_ = new QComboBox(bar);
     entityClass_->setObjectName(QStringLiteral("entityClassPicker"));

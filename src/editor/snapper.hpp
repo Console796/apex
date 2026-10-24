@@ -9,12 +9,14 @@ namespace apex::editor {
 
 enum class SnapKind { Vertex, EdgeMidpoint, Edge, Grid, Surface, None };
 struct SnapRequest {
-    SnapRequest(bool suspend = false, std::optional<SurfacePlane> lockedPlane = {}, bool snapEdges = true)
-        : suspended(suspend), plane(std::move(lockedPlane)), edges(snapEdges) {}
+    SnapRequest(bool suspend = false, std::optional<SurfacePlane> lockedPlane = {}, bool snapEdges = true,
+                std::vector<FeatureRef> excludedFeatures = {})
+        : suspended(suspend), plane(std::move(lockedPlane)), edges(snapEdges), excluded(std::move(excludedFeatures)) {}
     bool suspended = false;
     // Locks grid/surface fallback to this plane; feature priority is unchanged.
     std::optional<SurfacePlane> plane;
     bool edges = true; // Includes closest points and midpoints.
+    std::vector<FeatureRef> excluded;
 };
 struct SnapResult {
     DVec3 point{0.0};

@@ -23,7 +23,7 @@ public:
     std::optional<GizmoHandle> dragged(InputSource source) const override;
 
     std::optional<GizmoContext> gizmoContext() const;
-    bool transformActive() const { return dragging_ || modalActive_; }
+    bool transformActive() const override { return dragging_ || modalActive_; }
     bool beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray);
     bool updateGizmoDrag(Ray ray, TransformModifiers modifiers);
     bool endGizmoDrag();
@@ -32,8 +32,8 @@ public:
     ModalEvent modalKey(std::string_view key, bool shift = false);
     const ModalTransform& modal() const { return modal_; }
     const TransformReadout& activeReadout() const;
-    void cancelTransform();
-    void endTransform();
+    void cancelTransform() override;
+    void endTransform() override;
 private:
     friend class EditorSession;
     CycleState cycle_;

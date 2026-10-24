@@ -31,11 +31,19 @@ struct NearHit {
     DVec3 point;
     double distance;
 };
+enum class FeatureKind { Vertex, Edge };
+struct FeatureRef {
+    NodeId node = 0;
+    FeatureKind kind = FeatureKind::Vertex;
+    std::size_t a = 0, b = 0; // Edge endpoints are sorted; vertex uses a.
+    auto operator<=>(const FeatureRef&) const = default;
+};
 struct FeatureHit {
     NodeId node;
     SideId side;
     DVec3 point;
     double pixels, depth;
+    FeatureRef feature;
 };
 struct FeatureHits {
     std::optional<FeatureHit> vertex, midpoint, edge;
@@ -77,7 +85,8 @@ public:
 
     // Solid features only. Occlusion is tested along each feature's camera ray: occluded
     // geometry is never a fallback. Equal pixel distances prefer depth, then node/side.
-    FeatureHits nearestFeature(Ray ray, double pixelRadius, const ToolView& view) const;
+    FeatureHits nearestFeature(Ray ray, double pixelRadius, const ToolView& view,
+                               const std::function<bool(const FeatureRef&)>& allow = {}) const;
 
 private:
     struct Item {

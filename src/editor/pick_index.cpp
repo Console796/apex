@@ -407,7 +407,8 @@ std::vector<NearHit> PickIndex::nearest(DVec3 point, double radius) const {
     return result;
 }
 
-FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolView& view) const {
+FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolView& view,
+                                      const std::function<bool(const FeatureRef&)>& allow) const {
     FeatureHits result;
     if (!(pixelRadius >= 0.0 && std::isfinite(pixelRadius))) return result;
     const auto forward = glm::normalize(view.cameraForward);
@@ -436,8 +437,9 @@ FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolVie
     planes[3] = boundary(up, top);
     planes[4] = {-forward, -glm::dot(forward, view.orthographic ? ray.origin : view.cameraPosition) - 1e-6};
 
-    const auto consider = [&](DVec3 point, NodeId node, SideId side,
+    const auto consider = [&](DVec3 point, NodeId node, SideId side, FeatureRef feature,
                               std::optional<FeatureHit>& best) {
+        if (allow && !allow(feature)) return;
         const auto pixel = worldToPixel(view, point);
         if (!pixel) return;
         const double distance = glm::length(*pixel - *cursor);
@@ -451,7 +453,7 @@ FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolVie
         if (!(length > 0.0)) return;
         const auto hit = first({origin, delta / length});
         if (hit && hit->t < length - 1e-5) return;
-        const FeatureHit candidate{node, side, point, distance, depth};
+        const FeatureHit candidate{node, side, point, distance, depth, feature};
         if (!best || std::tie(candidate.pixels, candidate.depth, candidate.node, candidate.side) <
                      std::tie(best->pixels, best->depth, best->node, best->side)) best = candidate;
     };
@@ -474,10 +476,12 @@ FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolVie
                 add(edges, std::pair{std::min(a, b), std::max(a, b)});
             }
         }
-        for (const auto& [index, side] : vertices) consider(poly.vertices[index], node, side, result.vertex);
+        for (const auto& [index, side] : vertices)
+            consider(poly.vertices[index], node, side, {node, FeatureKind::Vertex, index, 0}, result.vertex);
         for (const auto& [indices, side] : edges) {
             auto a = poly.vertices[indices.first], b = poly.vertices[indices.second];
-            consider((a + b) * 0.5, node, side, result.midpoint);
+            const FeatureRef feature{node, FeatureKind::Edge, indices.first, indices.second};
+            consider((a + b) * 0.5, node, side, feature, result.midpoint);
             // Clip at the ray origin plane (camera plane in perspective).
             const auto clipOrigin = view.orthographic ? ray.origin : view.cameraPosition;
             double za = glm::dot(a - clipOrigin, forward);
@@ -493,7 +497,7 @@ FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolVie
             const double t = length2 == 0.0 ? 0.0 :
                 std::clamp(glm::dot(*cursor - *pa, segment) / length2, 0.0, 1.0);
             const double worldT = view.orthographic ? t : t * za / ((1.0 - t) * zb + t * za);
-            consider(a + (b - a) * worldT, node, side, result.edge);
+            consider(a + (b - a) * worldT, node, side, feature, result.edge);
         }
     });
     return result;

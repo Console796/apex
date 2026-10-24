@@ -48,7 +48,14 @@ struct KeyChord {
     auto operator<=>(const KeyChord&) const = default;
 };
 
-enum class BindingContext { Always, SelectToolActive };
+// Empty toolId is global. Tool-scoped bindings take precedence over global bindings.
+struct BindingContext {
+    std::string toolId;
+    static const BindingContext Always;
+    static const BindingContext SelectToolActive;
+    static BindingContext forTool(std::string toolId) { return {std::move(toolId)}; }
+    auto operator<=>(const BindingContext&) const = default;
+};
 
 struct Unbound {
     std::string reason;
@@ -76,14 +83,10 @@ public:
     // Throws invalid_argument with validation problems; never resolves conflicts silently.
     explicit Keymap(const Preset& preset, const Actions& actions = actionRegistry());
     std::optional<ActionId> lookup(const KeyChord& chord,
-                                  BindingContext context = BindingContext::Always) const;
+                                  BindingContext activeTool = BindingContext::Always) const;
 
 private:
-    struct Entry {
-        ActionId action;
-        BindingContext context;
-    };
-    std::map<KeyChord, Entry> entries_;
+    std::map<std::pair<BindingContext, KeyChord>, ActionId> entries_;
 };
 
 } // namespace apex::editor

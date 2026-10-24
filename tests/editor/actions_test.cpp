@@ -31,7 +31,7 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 61);
+    REQUIRE(registry.entries().size() == 65);
     CHECK(registry.entries().front().id == "edit.undo");
     CHECK(registry.entries().back().id == "workspace.previous");
     std::set<ActionId> ids;
@@ -103,6 +103,7 @@ TEST_CASE("Both presets explicitly cover every registered action without conflic
 TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
     checkBindings(hammerPreset(), {
         {"Shift+S", "tool.select"}, {"Shift+E", "tool.entity"}, {"Shift+B", "tool.block"}, {"Shift+X", "tool.clip"},
+        {"Shift+V", "tool.vertex"},
         {"Ctrl+T", "edit.tie_to_entity"}, {"Ctrl+Shift+W", "edit.move_to_world"},
         {"Ctrl+G", "edit.group"}, {"Ctrl+U", "edit.ungroup"},
         {"Ctrl+C", "edit.copy"}, {"Ctrl+X", "edit.cut"}, {"Ctrl+V", "edit.paste"},
@@ -178,16 +179,30 @@ TEST_CASE("Validation catches registry growth unknown actions and incomplete bin
 }
 
 TEST_CASE("Duplicate chords conflict in all overlapping binding contexts") {
-    for (auto context : {BindingContext::Always, BindingContext::SelectToolActive}) {
-        auto preset = hammerPreset();
-        preset.bindings.at("edit.undo") = Binding{std::vector<KeyChord>{chord("W")}, context};
-        CHECK(hasProblem(validate(preset), "Duplicate chord W"));
-        CHECK_THROWS_AS((void)Keymap(preset), std::invalid_argument);
-    }
     auto preset = hammerPreset();
     preset.bindings.at("edit.redo") = preset.bindings.at("edit.undo");
     CHECK(hasProblem(validate(preset), "Duplicate chord Ctrl+Z"));
+    CHECK_THROWS_AS((void)Keymap(preset), std::invalid_argument);
+    preset = hammerPreset();
+    preset.bindings.at("edit.undo") = Binding{std::vector<KeyChord>{chord("W")}, BindingContext::SelectToolActive};
+    CHECK(hasProblem(validate(preset), "Duplicate chord W"));
+    CHECK_THROWS_AS((void)Keymap(preset), std::invalid_argument);
     preset = hammerPreset();
     preset.bindings.at("edit.undo") = Binding{std::vector<KeyChord>{chord("Ctrl+Z"), chord("Ctrl+Z")}};
     CHECK(hasProblem(validate(preset), "Duplicate chord Ctrl+Z"));
+}
+
+TEST_CASE("Tool scopes shadow global bindings and allow reuse in separate scopes") {
+    auto preset = hammerPreset();
+    preset.bindings.at("selection.mode.solids") = Binding{std::vector<KeyChord>{chord("1")}};
+    preset.bindings.at("vertex.mode.vertex") = Binding{std::vector<KeyChord>{chord("1")},
+        BindingContext::forTool("tool.vertex")};
+    preset.bindings.at("vertex.mode.edge") = Binding{std::vector<KeyChord>{chord("1")},
+        BindingContext::forTool("tool.clip")};
+    CHECK(validate(preset).empty());
+    Keymap keymap(preset);
+    CHECK(keymap.lookup(chord("1")) == "selection.mode.solids");
+    CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.vertex")) == "vertex.mode.vertex");
+    CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.clip")) == "vertex.mode.edge");
+    CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.select")) == "selection.mode.solids");
 }

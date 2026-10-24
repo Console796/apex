@@ -428,8 +428,8 @@ void SettingsDialog::refreshTree() {
         item->setData(0, kIdRole, fromStd(action.id));
         item->setText(0, fromStd(action.name));
         item->setText(1, keys.isEmpty() ? QStringLiteral("—") : keys);
-        if (binding.context == editor::BindingContext::SelectToolActive)
-            item->setText(2, tr("Select tool active"));
+        if (!binding.context.toolId.empty())
+            item->setText(2, fromStd("Tool active: " + binding.context.toolId));
         const auto* original = original_.bindings.contains(action.id) ? &original_.bindings.at(action.id) : nullptr;
         if (original && !sameBinding(*original, binding)) {
             QFont font = item->font(1);
@@ -489,7 +489,7 @@ void SettingsDialog::captureKey(bool additional) {
             chords = *keys;
     }
     if (std::ranges::find(chords, chord) == chords.end()) chords.push_back(chord);
-    if (const auto owner = editor::chordOwner(working_, chord, id)) {
+    if (const auto owner = editor::chordOwner(working_, chord, id, working_.bindings.at(id).context)) {
         const auto* other = editor::actionRegistry().find(*owner);
         const auto answer = QMessageBox::question(
             this, tr("Key already in use"),

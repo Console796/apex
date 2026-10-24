@@ -15,8 +15,8 @@ using json::Value;
 
 constexpr double kFormat = 1;
 
-const char* contextName(BindingContext context) {
-    return context == BindingContext::SelectToolActive ? "select_tool" : "always";
+std::string contextName(const BindingContext& context) {
+    return context.toolId.empty() ? "always" : "tool:" + context.toolId;
 }
 
 std::string lower(std::string_view text) {
@@ -77,9 +77,11 @@ Result<Preset> parsePreset(std::string_view text, const Actions& actions) {
         if (!entry) return std::unexpected(bad("Binding is not an object: " + id));
         Binding binding;
         if (const auto* context = field(*entry, "context"); context && context->get<std::string>()) {
-            const auto& text = *context->get<std::string>();
-            if (text == "select_tool") binding.context = BindingContext::SelectToolActive;
-            else if (text != "always") return std::unexpected(bad("Unknown context for " + id));
+            const auto& contextText = *context->get<std::string>();
+            if (contextText == "select_tool") binding.context = BindingContext::SelectToolActive;
+            else if (contextText.starts_with("tool:") && contextText.size() > 5)
+                binding.context = BindingContext::forTool(contextText.substr(5));
+            else if (contextText != "always") return std::unexpected(bad("Unknown context for " + id));
         }
         if (const auto* provisional = field(*entry, "provisional"); provisional && provisional->get<bool>())
             binding.provisional = *provisional->get<bool>();
@@ -133,9 +135,10 @@ Result<std::string> checkPresetName(std::string_view name) {
     return trimmed;
 }
 
-std::optional<ActionId> chordOwner(const Preset& preset, const KeyChord& chord, std::string_view except) {
+std::optional<ActionId> chordOwner(const Preset& preset, const KeyChord& chord,
+                                   std::string_view except, BindingContext context) {
     for (const auto& [id, binding] : preset.bindings) {
-        if (id == except) continue;
+        if (id == except || binding.context != context) continue;
         if (const auto* keys = std::get_if<std::vector<KeyChord>>(&binding.value);
             keys && std::ranges::find(*keys, chord) != keys->end())
             return id;
@@ -155,9 +158,10 @@ void unbindAction(Preset& preset, const ActionId& id, std::string reason) {
 
 std::vector<ActionId> assignChords(Preset& preset, const ActionId& id, std::vector<KeyChord> chords) {
     std::vector<ActionId> changed;
+    const auto targetContext = preset.bindings.at(id).context;
     for (const auto& chord : chords) {
         for (auto& [other, binding] : preset.bindings) {
-            if (other == id) continue;
+            if (other == id || binding.context != targetContext) continue;
             auto* keys = std::get_if<std::vector<KeyChord>>(&binding.value);
             if (!keys) continue;
             const auto before = keys->size();

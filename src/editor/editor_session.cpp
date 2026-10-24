@@ -5,6 +5,7 @@
 #include "editor/entity_tool.hpp"
 #include "editor/block_tool.hpp"
 #include "editor/clip_tool.hpp"
+#include "editor/vertex_tool.hpp"
 #include "editor/hide_ops.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/selection_undo.hpp"
@@ -21,6 +22,7 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Entity, std::make_unique<EntityTool>(*this));
     tools_.emplace(Tool::Block, std::make_unique<BlockTool>(*this));
     tools_.emplace(Tool::Clip, std::make_unique<ClipTool>(*this));
+    tools_.emplace(Tool::Vertex, std::make_unique<VertexTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) { notify(); });
 }
@@ -49,6 +51,7 @@ void EditorSession::attach(document::Document& doc) {
         }
         picks_->apply(changes);
         groups_->apply(changes);
+        activeToolObject().documentChanged();
         if (transformActive()) endTransform(); // Undo/redo/external edits invalidate a drag.
         selectTool().cycle_ = {};
         hover_.reset();
@@ -116,12 +119,13 @@ void EditorSession::unpinWorkPlane() {
     notify();
 }
 SnapResult EditorSession::snap(Ray ray, const ToolView& view, bool suspended,
-                               std::optional<SurfacePlane> plane, bool edges) const {
+                               std::optional<SurfacePlane> plane, bool edges,
+                               std::vector<FeatureRef> excluded) const {
     if (!document_ || !picks_) return {};
     auto settings = snap_;
     settings.gridSize = gridSize_;
     return Snapper(*document_, *picks_, workPlane_, settings, fallbackPlane_).snap(
-        ray, view, {suspended, std::move(plane), edges});
+        ray, view, {suspended, std::move(plane), edges, std::move(excluded)});
 }
 
 void EditorSession::setGridSize(double units) {
@@ -769,9 +773,9 @@ std::optional<GizmoContext> EditorSession::gizmoContext() const {
     return selectTool().gizmoContext();
 }
 
-void EditorSession::endTransform() { selectTool().endTransform(); }
+void EditorSession::endTransform() { activeToolObject().endTransform(); }
 
-void EditorSession::cancelTransform() { selectTool().cancelTransform(); }
+void EditorSession::cancelTransform() { activeToolObject().cancelTransform(); }
 
 bool EditorSession::commitNow(const Transform& transform, std::string label) {
     const auto nodes = selectTool().transformNodes();
@@ -808,7 +812,7 @@ editor::Tool& EditorSession::activeToolObject() { return *tools_.at(activeTool_)
 const editor::Tool& EditorSession::activeToolObject() const { return *tools_.at(activeTool_); }
 SelectTool& EditorSession::selectTool() { return static_cast<SelectTool&>(*tools_.at(Tool::Select)); }
 const SelectTool& EditorSession::selectTool() const { return static_cast<const SelectTool&>(*tools_.at(Tool::Select)); }
-bool EditorSession::transformActive() const { return selectTool().transformActive(); }
+bool EditorSession::transformActive() const { return activeToolObject().transformActive(); }
 const ModalTransform& EditorSession::modal() const { return selectTool().modal(); }
 const CycleState& EditorSession::cycle() const { return selectTool().cycle_; }
 void EditorSession::forgetInputSource(InputSource source) {
@@ -817,7 +821,7 @@ void EditorSession::forgetInputSource(InputSource source) {
 bool EditorSession::input(const InputEvent& event, const ToolView& view) {
     if (activeToolObject().input(event, view)) return true;
     if (event.kind != InputKind::KeyDown || event.autoRepeat || event.navigating || !event.chord) return false;
-    const auto action = keymap_.lookup(*event.chord, BindingContext::SelectToolActive);
+    const auto action = keymap_.lookup(*event.chord, BindingContext::forTool(activeTool_));
     if (!action) return false;
     // Modal bindings still consume the key when the active tool has nothing transformable.
     if (document_ && !transformActive() && action->starts_with("transform.modal.")) return true;

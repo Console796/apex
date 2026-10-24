@@ -6,6 +6,9 @@
 
 namespace apex::editor {
 
+const BindingContext BindingContext::Always{};
+const BindingContext BindingContext::SelectToolActive{"tool.select"};
+
 Actions::Actions()
     : entries_{
         {"edit.undo", "Undo", "Edit", "Undo the last edit and restore its selection."},
@@ -53,6 +56,10 @@ Actions::Actions()
         {"tool.entity", "Entity tool", "Tool", "Activate point entity placement."},
         {"block.pick_plane", "Pick block plane", "Tool", "Hold and click a face to pin its plane; empty space unpins."},
         {"tool.clip", "Clip tool", "Tool", "Place points to clip selected solids; repeat to cycle kept side."},
+        {"tool.vertex", "Vertex tool", "Tool", "Edit vertices, edges and faces of selected solids."},
+        {"vertex.mode.vertex", "Vertex mode", "Vertex", "Select and move vertices."},
+        {"vertex.mode.edge", "Edge mode", "Vertex", "Select and move edges."},
+        {"vertex.mode.face", "Face mode", "Vertex", "Select and move faces."},
         {"clip.cycle_keep", "Cycle clip kept side", "Tool", "Keep front, back or both halves."},
         {"tool.block", "Block tool", "Tool", "Draw a base and extrude a new solid."},
         {"gizmo.mode.translate", "Translate gizmo", "Transform",
@@ -203,6 +210,10 @@ const Preset& hammerPreset() {
         {"tool.entity", bound({"Shift+E"})},
         {"tool.block", bound({"Shift+B"})},
         {"tool.clip", bound({"Shift+X"})},
+        {"tool.vertex", bound({"Shift+V"})},
+        {"vertex.mode.vertex", bound({"1"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.edge", bound({"2"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.face", bound({"3"}, BindingContext::forTool("tool.vertex"))},
         {"clip.cycle_keep", unbound("Repeat Shift+X while the clip tool is active.")},
         {"gizmo.mode.translate", bound({"W"}, BindingContext::SelectToolActive)},
         {"gizmo.mode.rotate", bound({"E"}, BindingContext::SelectToolActive)},
@@ -270,6 +281,10 @@ const Preset& blenderPreset() {
         {"tool.entity", unbound("Choose the entity tool in the toolbar.")},
         {"tool.block", unbound("Choose the block tool in the toolbar.")},
         {"tool.clip", unbound("Choose the clip tool in the toolbar.")},
+        {"tool.vertex", unbound("Choose the vertex tool in the toolbar.")},
+        {"vertex.mode.vertex", bound({"1"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.edge", bound({"2"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.face", bound({"3"}, BindingContext::forTool("tool.vertex"))},
         {"clip.cycle_keep", unbound("Repeat the clip tool action to cycle the kept side.")},
         {"gizmo.mode.translate", unbound("Choose the gizmo in the toolbar; G starts modal translation.")},
         {"gizmo.mode.rotate", unbound("Choose the gizmo in the toolbar; R starts modal rotation.")},
@@ -311,7 +326,7 @@ std::vector<std::string> validate(const Preset& preset, const Actions& actions) 
     for (const auto& action : actions.entries()) {
         if (!preset.bindings.contains(action.id)) problems.push_back("Missing action: " + action.id);
     }
-    std::map<KeyChord, ActionId> chords;
+    std::map<std::pair<BindingContext, KeyChord>, ActionId> chords;
     for (const auto& [id, binding] : preset.bindings) {
         if (!actions.find(id)) problems.push_back("Unknown action: " + id);
         if (const auto* unboundValue = std::get_if<Unbound>(&binding.value)) {
@@ -324,8 +339,7 @@ std::vector<std::string> validate(const Preset& preset, const Actions& actions) 
         for (const auto& chord : keys) {
             const auto parsed = KeyChord::parse(chord.toString());
             if (!parsed || *parsed != chord) problems.push_back("Invalid key chord for action: " + id);
-            // Both supported contexts overlap when the select tool is active.
-            const auto [it, inserted] = chords.emplace(chord, id);
+            const auto [it, inserted] = chords.emplace(std::pair{binding.context, chord}, id);
             if (!inserted)
                 problems.push_back("Duplicate chord " + chord.toString() + ": " +
                                    it->second + " and " + id);
@@ -343,17 +357,17 @@ Keymap::Keymap(const Preset& preset, const Actions& actions) {
     }
     for (const auto& [id, binding] : preset.bindings) {
         if (const auto* keys = std::get_if<std::vector<KeyChord>>(&binding.value)) {
-            for (const auto& chord : *keys) entries_.emplace(chord, Entry{id, binding.context});
+            for (const auto& chord : *keys) entries_.emplace(std::pair{binding.context, chord}, id);
         }
     }
 }
 
 std::optional<ActionId> Keymap::lookup(const KeyChord& chord, BindingContext context) const {
-    const auto it = entries_.find(chord);
-    if (it == entries_.end() || (it->second.context == BindingContext::SelectToolActive &&
-                                context != BindingContext::SelectToolActive))
-        return std::nullopt;
-    return it->second.action;
+    if (!context.toolId.empty()) {
+        if (const auto it = entries_.find({context, chord}); it != entries_.end()) return it->second;
+    }
+    if (const auto it = entries_.find({BindingContext::Always, chord}); it != entries_.end()) return it->second;
+    return std::nullopt;
 }
 
 } // namespace apex::editor
