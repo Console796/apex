@@ -1,0 +1,4 @@
+# LeakSanitizer suppressions for the asan test run (CMakePresets linux-asan).
+# libdbus is loaded by the Vulkan driver stack when a device is created and leaks a few KB at
+# bus registration; the stacks have no Apex frames.
+leak:libdbus-1.so

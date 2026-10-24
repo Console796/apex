@@ -24,7 +24,8 @@ target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets s
                                          sourcepp::vtfpp sourcepp::toolpp
                                          apex_editor apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
-doctest_discover_tests(apex_tests)
+doctest_discover_tests(apex_tests
+                      PROPERTIES ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
 add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp)
