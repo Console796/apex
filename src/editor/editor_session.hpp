@@ -57,6 +57,8 @@ public:
     document::Document* document() const { return document_; }
     Selection& selection() { return selection_; }
     const Selection& selection() const { return selection_; }
+    // Bounds of the expanded selection (group members, brush children, selected faces).
+    std::optional<AABB> selectionBounds() const;
     const PickIndex& picks() const { return *picks_; }
     const GroupIndex& groups() const { return *groups_; }
     const CycleState& cycle() const;

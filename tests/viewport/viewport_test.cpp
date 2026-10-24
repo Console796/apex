@@ -37,6 +37,38 @@ TEST_CASE("axis angles look along their axis with Hammer screen orientation") {
     checkVec(side.basis().up, {0, 0, 1});
 }
 
+TEST_CASE("frame bounds centres the view without turning it") {
+    const AABB box{{100, 200, 0}, {164, 264, 64}};
+    const DVec3 centre{132, 232, 32};
+    Camera perspective;
+    perspective.angles = {30, 45, 0};
+    perspective.position = {-5000, 0, 900};
+    frameBounds(perspective, box, 16.0 / 9.0);
+    checkVec(perspective.angles, {30, 45, 0});
+    checkVec(perspective.pivot(), centre, 1e-6);
+    // The bounding sphere fits the vertical field of view, the narrower one here.
+    const double radius = glm::length(box.max - box.min) * 0.5 * 1.25;
+    CHECK(perspective.orbitDistance == doctest::Approx(radius / std::sin(glm::radians(37.5))));
+
+    Camera top;
+    setAxis(top, ViewAxis::NegZ);
+    top.projection = ProjectionKind::Orthographic;
+    top.position = {0, 0, 4096};
+    frameBounds(top, box, 0.5);
+    checkVec(top.position, {132, 232, 4096}); // Depth along the view direction is kept.
+    CHECK(top.orthoHeight == doctest::Approx(4.0 * radius)); // Narrow pane: width limits.
+
+    Camera untouched = top;
+    frameBounds(untouched, AABB{}, 1.0);
+    checkVec(untouched.position, top.position);
+    CHECK(untouched.orthoHeight == top.orthoHeight);
+
+    Camera point;
+    frameBounds(point, AABB{{8, 8, 8}, {8, 8, 8}}, 1.0);
+    CHECK(point.orbitDistance > 16.0); // A point entity still gets a usable view.
+    checkVec(point.pivot(), {8, 8, 8}, 1e-6);
+}
+
 TEST_CASE("presets") {
     for (auto p : {Preset::Top, Preset::Front, Preset::Side}) {
         const auto vp = makePreset(p, {10, 20, 30});

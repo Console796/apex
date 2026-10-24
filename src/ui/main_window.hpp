@@ -111,6 +111,7 @@ private:
     void loadEntityClasses();
     void refreshEntityUi();
     void openTransformDialog();
+    void centerViewsOnSelection();
     void buildClipboardUi();
     void openPasteSpecial();
     void openTieDialog();

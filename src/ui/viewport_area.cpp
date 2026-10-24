@@ -789,6 +789,22 @@ void ViewportArea::applyMapViews(const viewport::MapViews& views) {
     emitCamera();
 }
 
+void ViewportArea::centerOn(const AABB& bounds) {
+    for (const auto pane : layout_.viewportIds()) {
+        auto* view = layout_.viewport(pane);
+        if (!view) continue;
+        double aspect = 1.0;
+        if (const auto* f = frame(pane); f && f->container()->height() > 0)
+            aspect = double(f->container()->width()) / f->container()->height();
+        viewport::frameBounds(view->camera, bounds, aspect);
+    }
+    for (auto& [id, f] : frames_) {
+        if (f && f->window()) f->window()->requestRedraw();
+    }
+    lastValid_ = false;
+    emitCamera();
+}
+
 viewport::MapViews ViewportArea::captureMapViews() const {
     return viewport::captureMapViews(layout_, pixelHeight());
 }

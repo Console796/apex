@@ -205,6 +205,21 @@ void EditorSession::setNewSolidUvAlignment(geometry::UvAlignment alignment) {
     newSolidStyle_.alignment = alignment;
     notify();
 }
+std::optional<AABB> EditorSession::selectionBounds() const {
+    if (!document_) return std::nullopt;
+    const auto expanded = expandSelection(*document_, *groups_, selection_);
+    AABB bounds;
+    for (const auto node : expanded.solidsAndEntities) {
+        if (const auto box = picks_->bounds(node)) bounds.expand(*box);
+    }
+    for (const auto side : expanded.sides) {
+        if (const auto location = document_->side(side)) {
+            if (const auto box = picks_->bounds(document_->get(location->solid)->id, side)) bounds.expand(*box);
+        }
+    }
+    if (bounds.empty()) return std::nullopt;
+    return bounds;
+}
 bool EditorSession::perform(const ActionId& action) {
     if (activeToolObject().perform(action)) return true;
     if (tools_.contains(action)) {
@@ -221,18 +236,9 @@ bool EditorSession::perform(const ActionId& action) {
         return true;
     }
     if (action == "workplane.axis_x" || action == "workplane.axis_y" || action == "workplane.axis_z") {
-        const auto expanded = expandSelection(*document_, *groups_, selection_);
-        AABB bounds;
-        for (const auto node : expanded.solidsAndEntities) {
-            if (const auto box = picks_->bounds(node)) bounds.expand(*box);
-        }
-        for (const auto side : expanded.sides) {
-            if (const auto location = document_->side(side)) {
-                if (const auto box = picks_->bounds(document_->get(location->solid)->id, side)) bounds.expand(*box);
-            }
-        }
+        const auto bounds = selectionBounds();
         const auto axis = action == "workplane.axis_x" ? Axis::X : action == "workplane.axis_y" ? Axis::Y : Axis::Z;
-        pinAxisWorkPlane(axis, bounds.empty() ? DVec3{0.0} : bounds.center());
+        pinAxisWorkPlane(axis, bounds ? bounds->center() : DVec3{0.0});
         return true;
     }
     // Escape: an active drag/modal is cancelled first, then the pin, then the selection.
