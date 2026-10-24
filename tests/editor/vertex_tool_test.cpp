@@ -320,3 +320,22 @@ TEST_CASE("vertex tool draws with the session's overlay palette") {
     CHECK(Vec3(overlay.worldTriangles.front().colour) == Vec3(palette.faceHover));
     CHECK(overlay.worldTriangles.front().colour.a < 1.0f);
 }
+
+TEST_CASE("vertex topology refuses displacement solids with a reason") {
+    Scene scene;
+    auto block = geometry::solidBlock(geometry_test::build(geometry_test::boxSides({-64,-64,-64}, {64,64,64})), {"apex/displacement"});
+    REQUIRE(block.find("side")->append(editor_test::block("dispinfo { power 2 }")));
+    auto tx = scene.doc.begin("displacement fixture");
+    tx.destroy(scene.solid);
+    scene.solid = std::get<Handle<Solid>>(tx.create(std::move(block)));
+    tx.commit();
+    scene.session.selection().select(scene.doc.get(scene.solid)->id);
+    const auto before = *scene.doc.write();
+    const auto count = scene.doc.undoCount();
+    selectVertex(scene, {64,64,64});
+    CHECK(scene.tool().elements().empty());
+    CHECK(scene.tool().readout().status.find("Displacement") != std::string::npos);
+    CHECK(scene.session.preview().empty());
+    CHECK(*scene.doc.write() == before);
+    CHECK(scene.doc.undoCount() == count);
+}

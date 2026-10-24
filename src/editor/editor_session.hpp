@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/topology_ops.hpp"
 #include "editor/tool.hpp"
 #include "editor/clipboard.hpp"
 #include "editor/inspector_model.hpp"
@@ -110,7 +111,7 @@ public:
     // Work plane used by nudge when nothing is hovered or pinned (the viewport supplies it).
     void setFallbackPlane(SurfacePlane plane) { fallbackPlane_ = std::move(plane); }
     const SurfacePlane& fallbackPlane() const { return fallbackPlane_; }
-    const Preview& preview() const { return activeToolObject().preview(); }
+    const Preview& preview() const { return topologyPreview_.empty() ? activeToolObject().preview() : topologyPreview_; }
     // Null while nothing transformable is selected (empty, or face mode).
     std::optional<GizmoContext> gizmoContext() const;
     bool transformActive() const;
@@ -195,6 +196,12 @@ public:
     const Keymap& keymap() const { return keymap_; }
     void setPreset(const Preset& preset);
     bool perform(const ActionId& action);
+    bool confirmNonConvexMerge = true;
+    // The host sees preview() populated during the callback. Missing host means Cancel.
+    std::function<bool(const MergePlan&)> confirmMerge;
+    std::function<std::optional<double>()> hollowThickness;
+    const std::string& topologyMessage() const { return topologyMessage_; }
+    Result<void> mergeSelection();
     // Document edits go through this seam to capture before/after selection metadata.
     // Direct Document edits still update indices and prune dead selection targets.
     void edit(std::string label, const std::function<void(document::Transaction&)>& operation,
@@ -205,6 +212,8 @@ public:
     void unobserve(std::size_t token);
 
 private:
+    Preview topologyPreview_;
+    std::string topologyMessage_;
     friend class SelectTool;
     friend class DrawExtrudeTool;
     friend class PrimitiveTool;

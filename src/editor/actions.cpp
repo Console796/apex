@@ -55,6 +55,9 @@ Actions::Actions()
         {"snap.suspend", "Suspend snapping", "Transform",
          "Hold this key to suspend snapping during a transform."},
         {"tool.select", "Select tool", "Tool", "Activate the select tool."},
+        {"edit.carve", "Carve", "Edit", "Subtract selected carvers from visible solids."},
+        {"edit.hollow", "Make Hollow…", "Edit", "Replace selected solids with walls."},
+        {"edit.merge", "Merge", "Edit", "Merge selected solids into their convex hull."},
         {"tool.entity", "Entity tool", "Tool", "Activate point entity placement."},
         {"block.pick_plane", "Pick block plane", "Tool", "Hold and click a face to pin its plane; empty space unpins."},
         {"tool.primitive", "Primitive tool", "Tool", "Draw wedges, cylinders, spikes, arches and spheres."},
@@ -175,6 +178,9 @@ Binding unbound(std::string reason) { return {Unbound{std::move(reason)}}; }
 const Preset& hammerPreset() {
     static const Preset preset{"Hammer", {
         {"edit.undo", bound({"Ctrl+Z"})},
+        {"edit.carve", bound({"Ctrl+Shift+C"})},
+        {"edit.hollow", unbound("Available through the Edit menu.")},
+        {"edit.merge", unbound("Available through the Edit menu.")},
         {"edit.redo", bound({"Ctrl+Y"})},
         {"selection.all", bound({"Ctrl+A"}, BindingContext::Always, true)},
         {"selection.none", bound({"Escape"}, BindingContext::Always, true)},
@@ -248,6 +254,9 @@ const Preset& hammerPreset() {
 const Preset& blenderPreset() {
     static const Preset preset{"Blender", {
         {"edit.undo", bound({"Ctrl+Z"})},
+        {"edit.carve", unbound("Available through the Edit menu.")},
+        {"edit.hollow", unbound("Available through the Edit menu.")},
+        {"edit.merge", unbound("Available through the Edit menu.")},
         {"edit.redo", bound({"Ctrl+Shift+Z"})},
         {"selection.all", bound({"A"})},
         {"selection.none", bound({"Alt+A", "Escape"})},

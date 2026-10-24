@@ -232,6 +232,27 @@ std::optional<AABB> EditorSession::selectionBounds() const {
     if (bounds.empty()) return std::nullopt;
     return bounds;
 }
+Result<void> EditorSession::mergeSelection() {
+    activeToolObject().cancel();
+    const auto plan = planMerge(*this);
+    if (!plan) return std::unexpected(plan.error());
+    if (!plan->convex() && confirmNonConvexMerge) {
+        std::vector<GhostSolid> ghosts;
+        for (const auto& poly : plan->ghosts) ghosts.push_back({poly, {}, 0.35f, overlayPalette().clip});
+        topologyPreview_.setGhosts(ghosts);
+        notify();
+        const auto* originalDocument = document_;
+        const auto state = document_->historyState();
+        const bool accepted = confirmMerge && confirmMerge(*plan);
+        topologyPreview_.clear();
+        notify();
+        if (!accepted) return {};
+        if (document_ != originalDocument || !document_ || document_->historyState() != state)
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "Document changed during merge confirmation"});
+    }
+    return commitMerge(*this, *plan);
+}
+
 bool EditorSession::perform(const ActionId& action) {
     if (activeToolObject().perform(action)) return true;
     if (tools_.contains(action)) {
@@ -239,6 +260,21 @@ bool EditorSession::perform(const ActionId& action) {
         return true;
     }
     if (!document_) return false;
+    if (action == "edit.carve" || action == "edit.hollow" || action == "edit.merge") {
+        if (transformActive()) return false;
+        activeToolObject().cancel();
+        Result<void> result;
+        if (action == "edit.carve") result = carve(*this);
+        else if (action == "edit.merge") result = mergeSelection();
+        else {
+            const auto thickness = hollowThickness ? hollowThickness() : std::nullopt;
+            if (!thickness) return true;
+            result = hollow(*this, *thickness);
+        }
+        topologyMessage_ = result ? "" : result.error().what();
+        notify();
+        return result.has_value();
+    }
     if (action == "grid.larger" || action == "grid.smaller") {
         setGridSize(action == "grid.larger" ? GridLadder::larger(gridSize_) : GridLadder::smaller(gridSize_));
         return true;

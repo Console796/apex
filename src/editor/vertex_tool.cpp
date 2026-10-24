@@ -1,4 +1,5 @@
 #include "editor/vertex_tool.hpp"
+#include "editor/topology_ops.hpp"
 
 #include "editor/editor_session.hpp"
 #include "editor/selection_expand.hpp"
@@ -10,11 +11,6 @@
 #include <sstream>
 
 namespace apex::editor {
-namespace {
-bool displacement(const kv1::Node& block) {
-    return std::ranges::any_of(block.findAll("side"), [](const auto* side) { return side->find("dispinfo"); });
-}
-}
 
 std::map<NodeId, geometry::SolidGeometry> VertexTool::selectedSolids() const {
     std::map<NodeId, geometry::SolidGeometry> result;
@@ -27,7 +23,7 @@ std::map<NodeId, geometry::SolidGeometry> VertexTool::selectedSolids() const {
         const auto handle = session_.document()->handle(node);
         if (!handle || !std::holds_alternative<Handle<document::Solid>>(*handle)) continue;
         const auto* solid = session_.document()->get(std::get<Handle<document::Solid>>(*handle));
-        if (!solid || displacement(*solid->block)) continue;
+        if (!solid || hasDisplacement(*solid->block)) continue;
         const auto geometry = geometry::solidGeometry(*solid->block);
         if (geometry) result.emplace(node, *geometry);
     }
@@ -428,7 +424,7 @@ Handled VertexTool::input(const InputEvent& event, const ToolView& view) {
                 const auto handle = session_.document()->handle(node);
                 if (!handle || !std::holds_alternative<Handle<document::Solid>>(*handle)) continue;
                 const auto* solid = session_.document()->get(std::get<Handle<document::Solid>>(*handle));
-                if (solid && displacement(*solid->block)) {
+                if (solid && hasDisplacement(*solid->block)) {
                     status_ = "Displacement solids are read-only in Vertex mode";
                     session_.notify();
                     return true;
@@ -618,7 +614,7 @@ ToolReadout VertexTool::readout() const {
     std::string status = status_;
     if (status.empty()) status = elements_.empty() ? "Select elements" : std::to_string(elements_.size()) + " element(s) selected";
     return {{"Vertex", mode}, {}, status, status_.starts_with("Invalid") ||
-        status_.find("collapse") != std::string::npos};
+        status_.find("collapse") != std::string::npos || status_.find("Displacement") != std::string::npos};
 }
 
 ToolOverlay VertexTool::overlay(const ToolView& view, InputSource source) const {

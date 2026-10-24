@@ -243,6 +243,11 @@ QWidget* SettingsDialog::buildGeneralPage() {
     connect(themeExport_, &QPushButton::clicked, this, &SettingsDialog::exportTheme);
     updateThemeButtons();
 
+    confirmMerge_ = new QCheckBox(tr("Confirm merges that fill unselected space"));
+    confirmMerge_->setObjectName(QStringLiteral("settingsConfirmNonConvexMerge"));
+    confirmMerge_->setChecked(window_.editorSession().confirmNonConvexMerge);
+    form->addRow(tr("Editing"), confirmMerge_);
+
     autosave_ = new QCheckBox(tr("Enable autosave"));
     autosave_->setObjectName(QStringLiteral("settingsAutosave"));
     autosave_->setChecked(QSettings().value("autosave/enabled", true).toBool());
@@ -622,6 +627,8 @@ bool SettingsDialog::confirmDiscard() {
 }
 
 bool SettingsDialog::applyAll() {
+    window_.editorSession().confirmNonConvexMerge = confirmMerge_->isChecked();
+    QSettings().setValue("editing/confirmNonConvexMerge", confirmMerge_->isChecked());
     window_.setNewSolidStyle(newSolidMaterial_->text().toStdString(),
                              static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
     if (theme_->currentData().toString() != currentThemeId()) window_.setThemeId(theme_->currentData().toString());

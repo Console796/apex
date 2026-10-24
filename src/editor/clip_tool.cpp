@@ -1,4 +1,5 @@
 #include "editor/clip_tool.hpp"
+#include "editor/topology_ops.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/selection_expand.hpp"
 #include "geometry/face_matching.hpp"
@@ -59,10 +60,7 @@ void ClipTool::rebuild(Gesture& g) {
         const auto handle = session_.document()->handle(node);
         if (!handle || !std::holds_alternative<Handle<document::Solid>>(*handle)) continue;
         const auto& block = *session_.document()->get(*handle)->block;
-        bool displacement = false;
-        for (const auto* side : block.findAll("side"))
-            if (side->find("dispinfo")) displacement = true;
-        if (displacement) { g.warning = "Skipping displacement solids: topology is read-only"; continue; }
+        if (hasDisplacement(block)) { g.warning = "Skipping displacement solids: topology is read-only"; continue; }
         const auto source = geometry::solidGeometry(block);
         if (!source) { g.warning = "Skipping invalid solids"; continue; }
         try {

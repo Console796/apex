@@ -90,7 +90,7 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
-apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
+apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
                           src/editor/group_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
                           src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
@@ -162,7 +162,7 @@ if(APEX_BUILD_APP)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
   if(APEX_BUILD_TESTS)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
-    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp)
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp)
     target_link_libraries(apex_ui_tests PRIVATE apex_ui apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

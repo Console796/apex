@@ -14,6 +14,7 @@
 #include <QFileDialog>
 #include <QKeySequence>
 #include <QInputDialog>
+#include <QPushButton>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
@@ -127,6 +128,29 @@ MainWindow::MainWindow(QWidget* parent)
     buildEntityUi();
     buildAreas();
     viewport_->setEditorSession(&session_);
+    session_.confirmNonConvexMerge = QSettings().value("editing/confirmNonConvexMerge", true).toBool();
+    session_.hollowThickness = [this]() -> std::optional<double> {
+        bool ok = false;
+        const auto value = QInputDialog::getDouble(this, tr("Make Hollow"),
+            tr("Wall thickness (negative grows outward):"), 16, -65536, 65536, 3, &ok);
+        return ok ? std::optional<double>{value} : std::nullopt;
+    };
+    session_.confirmMerge = [this](const editor::MergePlan& plan) {
+        QMessageBox box(QMessageBox::Warning, tr("Merge solids"),
+            tr("Merging fills %1 units³ outside the selection. Merge anyway?").arg(plan.addedVolume, 0, 'g', 12),
+            QMessageBox::Cancel, this);
+        box.setObjectName(QStringLiteral("confirmNonConvexMerge"));
+        auto* merge = box.addButton(tr("Merge"), QMessageBox::AcceptRole);
+        box.setDefaultButton(QMessageBox::Cancel);
+        auto* remember = new QCheckBox(tr("Don't ask again"), &box);
+        box.setCheckBox(remember);
+        box.exec();
+        if (remember->isChecked()) {
+            QSettings().setValue("editing/confirmNonConvexMerge", false);
+            session_.confirmNonConvexMerge = false;
+        }
+        return box.clickedButton() == merge;
+    };
     sessionObserver_ = session_.observe([this] {
         updateEditorActions();
         updateGridStatus();
@@ -382,7 +406,8 @@ void MainWindow::updateEditorActions() {
             const bool have = session_.document() != nullptr;
             const bool objects = have && !editor::selectedNodes(session_.selection()).empty();
             if (id == "edit.copy" || id == "edit.cut" || id == "edit.delete" || id == "edit.duplicate" ||
-                id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world")
+                id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world" ||
+                id == "edit.carve" || id == "edit.hollow" || id == "edit.merge")
                 action->setEnabled(objects);
             if (id == "edit.paste" || id == "edit.paste_in_place" || id == "edit.paste_special")
                 action->setEnabled(have && clipboardHasFragment_);
@@ -762,7 +787,9 @@ bool MainWindow::performEditAction(const editor::ActionId& id) {
         openTieDialog();
     } else {
         ok = session_.perform(id);
-        if (!ok) say(tr("%1: nothing to do").arg(fromStd(editor::actionRegistry().find(id)->name)));
+        if (!ok) say((id != "edit.carve" && id != "edit.hollow" && id != "edit.merge") || session_.topologyMessage().empty() ?
+            tr("%1: nothing to do").arg(fromStd(editor::actionRegistry().find(id)->name)) :
+            QString::fromStdString(session_.topologyMessage()));
     }
     updateEditorActions();
     return ok;
@@ -809,7 +836,7 @@ void MainWindow::buildClipboardUi() {
     edit->addSeparator();
     for (const char* id : {"edit.cut", "edit.copy", "edit.paste", "edit.paste_in_place", "edit.paste_special",
                            "edit.duplicate", "edit.delete", "edit.group", "edit.ungroup", "edit.tie_to_entity",
-                           "edit.move_to_world"}) {
+                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = edit->addAction(fromStd(entry->name));
         action->setObjectName(fromStd(entry->id));
