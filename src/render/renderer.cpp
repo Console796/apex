@@ -536,6 +536,7 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.offsetSlot = slotVec(toCameraRelative(mesh.origin, camera), mesh.texture);
             setup(push, mesh);
             previewPush(push, mesh.previewIndex);
+            push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha));
             s.pushAll(commands, push);
             vkCmdDrawIndexed(commands, n, 1, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
         }
@@ -550,9 +551,19 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     };
 
     switch (list.mode) {
-    case DisplayMode::Textured:
-        drawMeshes(Kind::Textured, list.meshes, brushColour, trianglesOf, trianglesBuf, false);
+    case DisplayMode::Textured: {
+        const auto opaqueOf = [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? 0u : m.indexCount; };
+        drawMeshes(Kind::Textured, list.meshes, brushColour, opaqueOf, trianglesBuf, false);
+        // Translucent solids last, farthest first (by draw origin), blended over the opaque scene.
+        std::vector<MeshDraw> blended;
+        for (const MeshDraw& mesh : list.meshes) {
+            if (mesh.alpha == AlphaMode::Blend) blended.push_back(mesh);
+        }
+        const auto distance = [&](const MeshDraw& m) { return glm::dot(m.origin - camera, m.origin - camera); };
+        std::ranges::stable_sort(blended, [&](const MeshDraw& a, const MeshDraw& b) { return distance(a) > distance(b); });
+        drawMeshes(Kind::GhostTextured, blended, brushColour, trianglesOf, trianglesBuf, false);
         break;
+    }
     case DisplayMode::Flat:
         drawMeshes(Kind::Flat, list.meshes, brushColour, trianglesOf, trianglesBuf, false);
         break;

@@ -77,8 +77,18 @@ struct MaterialState {
     TextureSlot slot = kCheckerboardSlot;
     TextureSize size;
     bool loading = false;
+    AlphaMode alpha = AlphaMode::Opaque; // From $translucent / $alphatest once the VMT has loaded.
+    bool nodraw = false;                 // %compilenodraw once loaded; see isNodraw().
     std::set<NodeId> users;
 };
+
+// toolsnodraw is recognised by name so it hides before its VMT has loaded.
+bool isNodraw(std::string_view name, const MaterialState* state) {
+    constexpr std::string_view kName = "tools/toolsnodraw";
+    const bool named = name.size() == kName.size() &&
+                       std::ranges::equal(name, kName, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; });
+    return named || (state && state->nodraw);
+}
 
 } // namespace
 
@@ -232,6 +242,11 @@ struct RenderMirror::Impl {
             h = std::max(1u, h / 2);
         }
         if (mips.empty()) return;
+        const assets::Material& vmt = material.material;
+        state.alpha = vmt.translucent ? AlphaMode::Blend : vmt.alphaTest ? AlphaMode::Test : AlphaMode::Opaque;
+        if (const auto flag = vmt.compileFlags.find("%compilenodraw"); flag != vmt.compileFlags.end()) {
+            state.nodraw = !flag->second.empty() && flag->second != "0";
+        }
         auto slot = heap.upload({texture.mips[0].width, texture.mips[0].height, *format}, mips);
         if (!slot) {
             log::warn("render mirror: texture upload for '{}' failed: {}", std::string_view(name),
@@ -676,9 +691,14 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.edgeIndexCount = batch.edgeCount;
             draw.origin = solid.origin;
             draw.previewIndex = preview;
-            if (const auto material = m.materials.find(batch.material); material != m.materials.end()) {
+            const auto material = m.materials.find(batch.material);
+            if (material != m.materials.end()) {
                 draw.texture = material->second.slot;
             }
+            // Wireframe keeps every edge: 2D views would otherwise lose the nodraw faces' outline.
+            const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
+                                  isNodraw(batch.material, material != m.materials.end() ? &material->second : nullptr);
+            if (options.mode == DisplayMode::Textured && material != m.materials.end()) draw.alpha = material->second.alpha;
             switch (options.mode) {
             case DisplayMode::Textured: draw.colour = Vec4(1.0f); break;
             case DisplayMode::Flat: draw.colour = flatColour(batch.material); break;
@@ -708,9 +728,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                         outline.highlight = Vec4(0.0f);
                         list.outlines.push_back(outline);
                     }
-                    list.meshes.push_back(part);
+                    if (!hideFill) list.meshes.push_back(part);
                 }
-            } else {
+            } else if (!hideFill) {
                 list.meshes.push_back(draw);
             }
             if (selected) {
@@ -750,13 +770,17 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.edgeIndexCount = batch.edgeCount;
             draw.origin = state.mesh.origin;
             draw.previewIndex = preview;
-            draw.texture = m.materials.at(batch.material).slot;
+            const MaterialState& material = m.materials.at(batch.material);
+            draw.texture = material.slot;
             draw.colour = options.mode == DisplayMode::Flat ? flatColour(batch.material) : Vec4(1.0f);
             draw.colour.a = state.shape.opacity;
             if (state.node) {
+                if (options.mode == DisplayMode::Textured) draw.alpha = material.alpha; // Ghosts stay uniformly translucent.
                 if (m.selected.contains(state.node)) draw.highlight = m.highlight.selectTint;
                 else if (m.highlight.hover == state.node) draw.highlight = m.highlight.hoverTint;
-                list.meshes.push_back(draw);
+                const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
+                                      isNodraw(batch.material, &material);
+                if (!hideFill) list.meshes.push_back(draw);
             } else {
                 list.ghosts.push_back(draw);
             }

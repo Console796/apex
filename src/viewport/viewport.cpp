@@ -125,6 +125,7 @@ json::Value toJson(const Viewport& vp) {
     ov["entityHelpers"] = boolean(vp.overlays.entityHelpers);
     ov["bounds"] = boolean(vp.overlays.bounds);
     ov["normals"] = boolean(vp.overlays.normals);
+    ov["nodrawFaces"] = boolean(vp.overlays.nodrawFaces);
     json::Value::Object root;
     root["camera"].data = std::move(cam);
     root["mode"] = str(nameOf(vp.mode));
@@ -190,7 +191,8 @@ Result<Viewport> viewportFromJson(const json::Value& value) {
         for (const Field& f : {Field{"grid", &vp.overlays.grid},
                                Field{"entityHelpers", &vp.overlays.entityHelpers},
                                Field{"bounds", &vp.overlays.bounds},
-                               Field{"normals", &vp.overlays.normals}}) {
+                               Field{"normals", &vp.overlays.normals},
+                               Field{"nodrawFaces", &vp.overlays.nodrawFaces}}) {
             auto b = readBool(*o, f.key, *f.dst);
             if (!b) return std::unexpected(b.error());
             *f.dst = *b;

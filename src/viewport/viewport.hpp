@@ -15,6 +15,7 @@ struct Overlays {
     bool entityHelpers = true;
     bool bounds = false;
     bool normals = false;
+    bool nodrawFaces = true; // False hides nodraw faces in Textured and Flat views.
 
     bool operator==(const Overlays&) const = default;
 };

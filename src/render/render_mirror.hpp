@@ -74,6 +74,9 @@ struct MirrorViewOptions {
     Vec4 edgeColour{0.0f, 0.0f, 0.0f, 1.0f};
     Vec4 wireColour{0.85f, 0.9f, 1.0f, 1.0f}; // Wireframe mode line colour.
     bool showEntities = true;
+    // False omits tools/toolsnodraw (and %compilenodraw) faces from Textured and Flat fills.
+    // Wireframe ignores it so brush edges stay complete; selection outlines are kept.
+    bool showNodraw = true;
 };
 
 class RenderMirror {
