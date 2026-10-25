@@ -11,11 +11,12 @@
 
 namespace {
 void require(bool condition) { if (!condition) std::abort(); }
-// Vertices may move by the weld distance, so volume may drift by area times that distance.
+// The hull merges faces within kPlanarEps, so a merged face's vertices may sit that far off its
+// plane, and cuts through it may change the volume by up to area times that distance.
 double volumeTolerance(const apex::geometry::ConvexPolyhedron& poly) {
     double area = 0.0;
     for (const auto& face : poly.faces) area += poly.faceArea(face);
-    return std::max(1e-6, area * apex::geometry::kPointMergeEps);
+    return std::max(1e-6, area * apex::geometry::kPlanarEps);
 }
 }
 

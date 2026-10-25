@@ -464,11 +464,14 @@ double ConvexPolyhedron::faceArea(const Face& face) const {
 }
 
 double ConvexPolyhedron::volume() const {
-    const auto origin = center();
+    if (vertices.empty()) return 0.0;
+    // Tetrahedra from a vertex: the bounds center is far from a sliver's faces and loses precision.
+    const auto origin = vertices.front();
     double result = 0.0;
     for (const auto& face : faces) {
         const auto points = facePoints(*this, face);
-        if (!points.empty()) result += glm::dot(points[0] - origin, areaVector(points)) / 3.0;
+        for (std::size_t i = 1; i + 1 < points.size(); ++i)
+            result += glm::dot(points[0] - origin, glm::cross(points[i] - origin, points[i + 1] - origin)) / 6.0;
     }
     return result;
 }

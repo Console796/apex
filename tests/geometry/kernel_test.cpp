@@ -294,3 +294,42 @@ TEST_CASE("long sliver split conserves volume within area times weld distance") 
     CHECK(std::abs(cut.front->volume() + cut.back->volume() - poly.volume()) <=
           area * kPointMergeEps);
 }
+
+TEST_CASE("needle volume is exact enough to check split conservation") {
+    // hull_fuzz regression: measured from the bounds center, this needle lost 4e-4 of its volume.
+    const std::vector<DVec3> points{{-27242.415710449219, -27242.415710449219, -27242.415710449219},
+                                    {-27242.415710449219, -27242.415710449219, -27242.414093017578},
+                                    {-0.00164794921875, -3.0517578125e-05, -3.0517578125e-05},
+                                    {-3.0517578125e-05, -0.003936767578125, -3.0517578125e-05}};
+    const auto poly = hull(points);
+    CHECK(poly.volume() == doctest::Approx(0.0405647609763046).epsilon(1e-6));
+    double area = 0.0;
+    for (const auto& face : poly.faces) area += poly.faceArea(face);
+    const auto normal = glm::normalize(points.front() - points.back());
+    const auto cut = split(poly, {normal, glm::dot(normal, poly.center())});
+    REQUIRE(cut.front);
+    REQUIRE(cut.back);
+    CHECK(std::abs(cut.front->volume() + cut.back->volume() - poly.volume()) <=
+          area * kPointMergeEps);
+}
+
+TEST_CASE("subtract from a merged near-coplanar slab conserves volume within area times planar tolerance") {
+    // hull_fuzz regression: the slab's merged quad has a vertex 9.9e-7 off its plane, within kPlanarEps.
+    const std::vector<DVec3> points{{24644.265625, 17476.266662597656, 0.0050048828125},
+                                    {0.046875, 0.0078125, 2.00146484375},
+                                    {12, 2.265625, 0},
+                                    {0, 0, 0},
+                                    {0, 4.265625, 0}};
+    const auto poly = hull(points);
+    const auto carver = build(boxSides({6161.06640625, 4369.0666656494141, 0.5003662109375},
+                                       {18483.19921875, 13107.199996948242, 1.5010986328125}));
+    double area = 0.0;
+    for (const auto& face : poly.faces) area += poly.faceArea(face);
+    double conserved = totalVolume(subtract(poly, carver));
+    std::optional<ConvexPolyhedron> overlap = poly;
+    for (const auto& face : carver.faces)
+        if (overlap) overlap = split(*overlap, face.plane).back;
+    REQUIRE(overlap);
+    conserved += overlap->volume();
+    CHECK(std::abs(conserved - poly.volume()) <= area * kPlanarEps);
+}
