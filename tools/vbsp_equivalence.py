@@ -23,6 +23,22 @@ def run(command, cwd, log):
     return result.stdout
 
 
+def game_directory(root):
+    """Find the game used by the native Linux compile gates."""
+    game = next((root / name for name in ('p2ce', 'portal2')
+                 if (root / name / 'gameinfo.txt').is_file()), None)
+    if game is None:
+        raise OSError('no p2ce or portal2 gameinfo.txt found')
+    return game
+
+
+def compile_vbsp(root, game, vmf):
+    """Compile a copied VMF in its own directory, inheriting the caller's env."""
+    return run([root / 'bin/linux64/vbsp', '-game', game,
+                '-instancepath', root / 'sdk_content/maps', vmf],
+               vmf.parent, vmf.parent / 'vbsp.log')
+
+
 def counts(output):
     result = {}
     for line in output.splitlines():
@@ -53,10 +69,10 @@ def main():
     if not install:
         parser.error('APEX_P2CE_DIR is unset')
     root = Path(install).resolve()
-    game = next((root / name for name in ('p2ce', 'portal2')
-                 if (root / name / 'gameinfo.txt').is_file()), None)
-    if game is None:
-        parser.error('no p2ce or portal2 gameinfo.txt found')
+    try:
+        game = game_directory(root)
+    except OSError as error:
+        parser.error(str(error))
     temporary = None
     try:
         if args.output_dir:
@@ -79,8 +95,7 @@ def main():
             raise RuntimeError('replane changed content outside plane strings')
         tables = []
         for vmf in (original, replaned):
-            run([root / 'bin/linux64/vbsp', '-game', game, '-instancepath', root / 'sdk_content/maps',
-                 vmf], vmf.parent, vmf.parent / 'vbsp.log')
+            compile_vbsp(root, game, vmf)
             bsp = vmf.with_suffix('.bsp')
             if not bsp.is_file():
                 raise RuntimeError(f'vbsp did not produce {bsp}')
