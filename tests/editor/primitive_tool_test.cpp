@@ -148,3 +148,24 @@ TEST_CASE("primitive VMF export writes every generator for external Hammer check
     std::ofstream out(path ? path : APEX_PRIMITIVE_VMF_OUT);
     REQUIRE(out); out << *bytes; REQUIRE(out.good());
 }
+
+TEST_CASE("primitive writes single and grouped brushes inside worldspawn through adjustment and redo") {
+    for (const int type : {0,1,3}) {
+        Scene s;
+        REQUIRE(s.session.activeToolObject().setParameter("type", type));
+        drawPrimitive(s.session); commit(s.session);
+        REQUIRE(s.session.activeToolObject().setParameter("type", type == 3 ? 4 : 2));
+        const auto check = [&] {
+            for (const auto h : nodes(s.doc)) if (std::holds_alternative<Handle<Solid>>(h))
+                CHECK(s.doc.get(h)->parent == s.doc.roots().front());
+            const auto saved = s.doc.toVmf();
+            REQUIRE(saved);
+            REQUIRE(saved->world);
+            CHECK(saved->world->solids.size() == polys(s.doc).size());
+        };
+        check();
+        REQUIRE(s.session.perform("edit.undo"));
+        REQUIRE(s.session.perform("edit.redo"));
+        check();
+    }
+}

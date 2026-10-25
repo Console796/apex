@@ -49,7 +49,7 @@ void PrimitiveTool::write(const std::vector<geometry::ConvexPolyhedron>& solids)
         }
         std::vector<Target> selected;
         for (const auto& poly : solids) {
-            const auto handle = tx.create(geometry::solidBlock(poly, *lastStyle_));
+            const auto handle = tx.create(geometry::solidBlock(poly, *lastStyle_), worldHandle(*session_.document()));
             const auto node = session_.document()->get(handle)->id;
             lastNodes_.push_back(node);
             selected.emplace_back(node);

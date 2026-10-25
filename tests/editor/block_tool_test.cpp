@@ -671,3 +671,23 @@ TEST_CASE("block drag labels its side lengths and height") {
     CHECK(has("48"));
     CHECK(std::ranges::any_of(overlay.labels, [](const auto& l) { return l.text.starts_with("Height: "); }));
 }
+
+TEST_CASE("block creates world brushes inside worldspawn and restores their parent on redo") {
+    Document doc{parsed("world { id 1 classname worldspawn }")};
+    EditorSession session;
+    session.attach(doc);
+    REQUIRE(session.perform("tool.block"));
+    draw(session, floorPlane, {0,0}, {32,48});
+    key(session, "Enter");
+    const auto selected = selectedNodes(session.selection());
+    REQUIRE(selected.size() == 1);
+    const auto node = selected.front();
+    CHECK(doc.get(*doc.handle(node))->parent == doc.roots().front());
+    REQUIRE(session.perform("edit.undo"));
+    REQUIRE(session.perform("edit.redo"));
+    CHECK(doc.get(*doc.handle(node))->parent == doc.roots().front());
+    const auto saved = doc.toVmf();
+    REQUIRE(saved);
+    REQUIRE(saved->world);
+    CHECK(saved->world->solids.size() == 1);
+}

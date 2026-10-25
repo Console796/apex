@@ -1,5 +1,6 @@
 #include "editor/draw_extrude_tool.hpp"
 #include "editor/editor_session.hpp"
+#include "editor/group_ops.hpp"
 #include "geometry/solid_block.hpp"
 
 #include <algorithm>
@@ -157,7 +158,7 @@ std::vector<geometry::ConvexPolyhedron> DrawExtrudeTool::shapes(const Gesture& g
 bool DrawExtrudeTool::commitShape(const Gesture& g) {
     const auto block = geometry::solidBlock(*g.poly, session_.newSolidStyle());
     session_.edit("Create block", [&](document::Transaction& tx) {
-        const auto handle = tx.create(block);
+        const auto handle = tx.create(block, worldHandle(*session_.document()));
         if (session_.selection().mode() == SelectionMode::Faces) session_.selection().setMode(SelectionMode::Solids);
         const std::array<Target, 1> selected{session_.document()->get(handle)->id};
         session_.selection().replace(selected);
