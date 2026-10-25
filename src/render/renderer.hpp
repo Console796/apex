@@ -56,6 +56,11 @@ static_assert(sizeof(SpriteInstance) == 48);
 
 inline constexpr std::uint32_t kVertexMaterial = 0xFFFFFFFFu;
 
+// How the textured pass treats the texture's alpha channel. Opaque ignores it. Test discards
+// below 0.5 in the opaque pass ($alphatest). Blend draws in the sorted translucent pass with no
+// depth writes ($translucent); other display modes treat Blend draws as Opaque.
+enum class AlphaMode : std::uint32_t { Opaque = 0, Test = 1, Blend = 2 };
+
 struct MeshDraw {
     const Buffer* vertices = nullptr;  // BrushVertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT.
     const Buffer* indices = nullptr;   // uint32 triangle list, INDEX_BUFFER_BIT.
@@ -70,6 +75,7 @@ struct MeshDraw {
     std::uint32_t firstEdgeIndex = 0;
     bool outlineOnlyWire = false;      // Selected wire edges are emitted by the outline pass.
     std::uint32_t previewIndex = 0;     // 0 = identity; otherwise DrawList::previews[index - 1].
+    AlphaMode alpha = AlphaMode::Opaque; // Textured mode only.
 };
 
 struct BoxDraw {

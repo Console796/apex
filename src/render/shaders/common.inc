@@ -5,7 +5,7 @@ layout(push_constant) uniform Push {
     vec4 colour;
     vec4 offsetSlot; // xyz: draw origin relative to the camera; w: texture slot (uint bits). Grid: fade origin xy, distance, major phase v.
     vec4 p0;         // Brush: highlight; grid: minor phase uv, major phase u, spacing; sprite: right, packed index/outline; box: x = solid, y = outline.
-    vec4 p1;         // Grid: plane rect; sprite: up, address high; brush/box: address low/high, index, unused (uint bits).
+    vec4 p1;         // Grid: plane rect; sprite: up, address high; brush/box: address low/high, index, brush alpha mode (uint bits).
 } push;
 
 uint pushSlot() { return floatBitsToUint(push.offsetSlot.w); }

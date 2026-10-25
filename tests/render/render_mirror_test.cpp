@@ -40,7 +40,8 @@ std::unique_ptr<document::Document> loadMap() {
     return std::make_unique<document::Document>(*file);
 }
 
-void writeVtf(const std::filesystem::path& path, bool checker, std::array<std::uint8_t, 3> colour) {
+void writeVtf(const std::filesystem::path& path, bool checker, std::array<std::uint8_t, 3> colour,
+              std::uint8_t alpha = 255) {
     std::vector<std::byte> pixels(16 * 16 * 4);
     for (int y = 0; y < 16; ++y) {
         for (int x = 0; x < 16; ++x) {
@@ -49,7 +50,7 @@ void writeVtf(const std::filesystem::path& path, bool checker, std::array<std::u
             for (int c = 0; c < 3; ++c) {
                 p[c] = std::byte{alt ? static_cast<std::uint8_t>(colour[c] / 2) : colour[c]};
             }
-            p[3] = std::byte{255};
+            p[3] = std::byte{alpha};
         }
     }
     vtfpp::VTF::CreationOptions options;
@@ -87,6 +88,14 @@ Gpu* gpu() {
         writeVtf(g->tree.root / "materials/test/red.vtf", false, {255, 0, 0});
         writeVtf(g->tree.root / "materials/test/green.vtf", false, {0, 255, 0});
         writeVtf(g->tree.root / "materials/test/blue.vtf", false, {0, 0, 255});
+        // Alpha-channel materials: half-transparent green glass, a fully transparent cutout, and
+        // two nodraw spellings (by name, and by %compilenodraw alone).
+        g->tree.put("materials/test/glass.vmt", "UnlitGeneric { $basetexture test/glass $translucent 1 }");
+        g->tree.put("materials/test/cutout.vmt", "UnlitGeneric { $basetexture test/cutout $alphatest 1 }");
+        g->tree.put("materials/test/skipped.vmt", "UnlitGeneric { $basetexture test/blue %compilenodraw 1 }");
+        g->tree.put("materials/tools/toolsnodraw.vmt", "UnlitGeneric { $basetexture test/blue }");
+        writeVtf(g->tree.root / "materials/test/glass.vtf", false, {0, 255, 0}, 128);
+        writeVtf(g->tree.root / "materials/test/cutout.vtf", false, {0, 255, 0}, 0);
         assets::GameProfile profile;
         profile.gameDirectory = g->tree.root;
         auto vfs = assets::Vfs::load(profile, g->jobs);
@@ -117,11 +126,12 @@ Gpu* gpu() {
 
 // A mirror bound to a document through the observer API, as the app will do.
 struct Scene {
-    std::unique_ptr<document::Document> doc = loadMap();
+    std::unique_ptr<document::Document> doc;
     RenderMirror mirror;
     std::size_t token = 0;
 
-    explicit Scene(Gpu& g) : mirror(*g.context, *g.heap, g.jobs, *g.cache) {
+    explicit Scene(Gpu& g, std::unique_ptr<document::Document> document = loadMap())
+        : doc(std::move(document)), mirror(*g.context, *g.heap, g.jobs, *g.cache) {
         mirror.rebuild(*doc);
         REQUIRE(mirror.settle());
         token = doc->observe([this](const document::ChangeSet& c) { mirror.apply(*doc, c); });
@@ -172,10 +182,11 @@ FrameView makeView(DVec3 position, DVec3 anglesDeg) {
     return view;
 }
 
-Rgba8Image drawFrame(Gpu& g, RenderMirror& mirror, DisplayMode mode, bool edges = false) {
+Rgba8Image drawFrame(Gpu& g, RenderMirror& mirror, DisplayMode mode, bool edges = false,
+                     std::optional<FrameView> view = std::nullopt) {
     MirrorViewOptions options;
     options.mode = mode;
-    options.view = makeView({-220.0, -170.0, 130.0}, {23.0, 38.0, 0.0});
+    options.view = view ? *view : makeView({-220.0, -170.0, 130.0}, {23.0, 38.0, 0.0});
     options.edgeOverlay = edges;
     const DrawList list = mirror.buildDrawList(options);
     auto done = g.context->oneShot([&](VkCommandBuffer commands) {
@@ -833,4 +844,129 @@ TEST_CASE("mirror preview 2000 solids builds linear draw state without meshing")
     CHECK(scene.mirror.stats().jobsSubmitted == 0);
     CHECK(scene.mirror.stats().solidsRemeshed == 0);
     CHECK(scene.mirror.stats().texturesUploaded == 0);
+}
+
+namespace {
+
+// An axis-aligned box solid, one material on every side. Plane windings put normals outward.
+std::string boxSolid(int id, std::array<double, 3> lo, std::array<double, 3> hi, const std::string& material) {
+    const auto [x0, y0, z0] = lo;
+    const auto [x1, y1, z1] = hi;
+    const auto pt = [](double x, double y, double z) { return "(" + std::to_string(x) + " " + std::to_string(y) + " " + std::to_string(z) + ") "; };
+    const std::string planes[6] = {
+        pt(x0, y1, z1) + pt(x1, y1, z1) + pt(x1, y0, z1), pt(x0, y0, z0) + pt(x1, y0, z0) + pt(x1, y1, z0),
+        pt(x0, y1, z1) + pt(x0, y0, z1) + pt(x0, y0, z0), pt(x1, y1, z0) + pt(x1, y0, z0) + pt(x1, y0, z1),
+        pt(x1, y0, z0) + pt(x0, y0, z0) + pt(x0, y0, z1), pt(x0, y1, z0) + pt(x1, y1, z0) + pt(x1, y1, z1)};
+    std::string out = "solid { \"id\" \"" + std::to_string(id) + "\"\n";
+    for (int i = 0; i < 6; ++i) {
+        out += "side { \"id\" \"" + std::to_string(id * 10 + i) + "\" \"plane\" \"" + planes[i] + "\" \"material\" \"" + material +
+               "\" \"uaxis\" \"[1 0 0 0] 0.25\" \"vaxis\" \"[0 -1 0 0] 0.25\" \"rotation\" \"0\" "
+               "\"lightmapscale\" \"16\" \"smoothing_groups\" \"0\" }\n";
+    }
+    return out + "}\n";
+}
+
+std::unique_ptr<document::Document> boxesDocument(const std::vector<std::pair<std::string, std::array<double, 6>>>& boxes) {
+    std::string text = "versioninfo { \"editorextension\" \"strata\" }\nworld { \"id\" \"1\" \"classname\" \"worldspawn\"\n";
+    int id = 2;
+    for (const auto& [material, b] : boxes) text += boxSolid(id++, {b[0], b[1], b[2]}, {b[3], b[4], b[5]}, material);
+    text += "}\n";
+    auto file = vmf::parse(text);
+    REQUIRE(file.has_value());
+    return std::make_unique<document::Document>(*file);
+}
+
+std::size_t countAlpha(const DrawList& list, AlphaMode mode) {
+    return static_cast<std::size_t>(std::ranges::count(list.meshes, mode, &MeshDraw::alpha));
+}
+
+} // namespace
+
+TEST_CASE("mirror: material alpha flags select the draw's alpha mode") {
+    REQUIRE_GPU();
+    Scene scene(*g, boxesDocument({{"test/red", {0, 0, 0, 32, 32, 32}},
+                                   {"test/glass", {64, 0, 0, 96, 32, 32}},
+                                   {"test/cutout", {128, 0, 0, 160, 32, 32}}}));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Textured;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.meshes.size() == 3);
+    CHECK(countAlpha(list, AlphaMode::Opaque) == 1);
+    CHECK(countAlpha(list, AlphaMode::Blend) == 1);
+    CHECK(countAlpha(list, AlphaMode::Test) == 1);
+    // Only Textured mode samples the texture's alpha.
+    for (const auto mode : {DisplayMode::Flat, DisplayMode::Wireframe}) {
+        options.mode = mode;
+        list = scene.mirror.buildDrawList(options);
+        CHECK(countAlpha(list, AlphaMode::Opaque) == 3);
+    }
+}
+
+TEST_CASE("mirror: showNodraw filters nodraw fills by name or %compilenodraw") {
+    REQUIRE_GPU();
+    const auto document = [] {
+        return boxesDocument({{"test/red", {0, 0, 0, 32, 32, 32}},
+                              {"TOOLS/ToolsNoDraw", {64, 0, 0, 96, 32, 32}},
+                              {"test/skipped", {128, 0, 0, 160, 32, 32}}});
+    };
+    Scene scene(*g, document());
+    MirrorViewOptions options;
+    for (const auto mode : {DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe}) {
+        options.mode = mode;
+        options.showNodraw = true;
+        CHECK(scene.mirror.buildDrawList(options).meshes.size() == 3);
+        options.showNodraw = false;
+        // Wireframe keeps every brush edge so 2D views stay complete.
+        CHECK(scene.mirror.buildDrawList(options).meshes.size() == (mode == DisplayMode::Wireframe ? 3u : 1u));
+    }
+
+    // A hidden nodraw solid still shows its selection outline.
+    const auto nodraw = findSolid(*scene.doc, "TOOLS/ToolsNoDraw");
+    REQUIRE(nodraw);
+    Highlight highlight;
+    highlight.selected = {scene.doc->get(*nodraw)->id};
+    scene.mirror.setHighlight(highlight);
+    options.mode = DisplayMode::Textured;
+    options.showNodraw = false;
+    const auto list = scene.mirror.buildDrawList(options);
+    CHECK(list.meshes.size() == 1);
+    CHECK(list.outlines.size() == 1);
+}
+
+TEST_CASE("mirror: translucent and alpha-tested textures render through the pass") {
+    REQUIRE_GPU();
+    // Camera at x = -100 looking down +x; the red wall is behind a front box in the middle.
+    const auto view = makeView({-100.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+    const auto centre = [&](const std::string& front) {
+        Scene scene(*g, boxesDocument({{"test/red", {200, -200, -200, 300, 200, 200}},
+                                       {front, {0, -50, -50, 50, 50, 50}}}));
+        const auto image = drawFrame(*g, scene.mirror, DisplayMode::Textured, false, view);
+        return at(image, kSize / 2, kSize / 2);
+    };
+    const Px opaque = centre("test/green");
+    CHECK(opaque.g > 100);
+    CHECK(opaque.r < 10);
+
+    const Px glass = centre("test/glass"); // Green at 50% over the red wall.
+    CHECK(glass.g > 40);
+    CHECK(glass.r > 40);
+    CHECK(glass.g < opaque.g);
+
+    const Px cutout = centre("test/cutout"); // Alpha 0 everywhere: the wall shows through.
+    CHECK(cutout.r > 100);
+    CHECK(cutout.g < 10);
+}
+
+TEST_CASE("mirror: translucent faces win against a coplanar opaque face") {
+    REQUIRE_GPU();
+    // The glass front sits 0.004 units behind the red wall's face, inside the layer bias at this
+    // distance (about 0.006), so the glass must still blend over it. Without the bias the wall
+    // would hide the glass entirely.
+    const auto view = makeView({-100.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+    Scene scene(*g, boxesDocument({{"test/red", {200, -200, -200, 300, 200, 200}},
+                                   {"test/glass", {200.004, -50, -50, 250, 50, 50}}}));
+    const auto image = drawFrame(*g, scene.mirror, DisplayMode::Textured, false, view);
+    const Px centre = at(image, kSize / 2, kSize / 2);
+    CHECK(centre.g > 40);
+    CHECK(centre.r > 40);
 }

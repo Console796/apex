@@ -28,6 +28,12 @@ enum class Kind : std::uint32_t {
 };
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
+// Relative depth pull per AlphaMode layer (opaque 0, alpha test 1, blend 2), so coplanar
+// alpha-tested and translucent faces win against the opaque face under them. Applied as a
+// clip-z scale like the grid's surface bias: dynamic depth-bias units are implementation-defined.
+// Well above D32 resolution (~6e-8) and far below the grid's 2e-4.
+constexpr float kLayerBias = 1e-5f;
+
 enum class Input { Brush, Box, Sprite, None };
 
 struct Spec {
@@ -536,6 +542,10 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.offsetSlot = slotVec(toCameraRelative(mesh.origin, camera), mesh.texture);
             setup(push, mesh);
             previewPush(push, mesh.previewIndex);
+            push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha));
+            // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
+            const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
+            for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;
             s.pushAll(commands, push);
             vkCmdDrawIndexed(commands, n, 1, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
         }
@@ -550,9 +560,19 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     };
 
     switch (list.mode) {
-    case DisplayMode::Textured:
-        drawMeshes(Kind::Textured, list.meshes, brushColour, trianglesOf, trianglesBuf, false);
+    case DisplayMode::Textured: {
+        const auto opaqueOf = [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? 0u : m.indexCount; };
+        drawMeshes(Kind::Textured, list.meshes, brushColour, opaqueOf, trianglesBuf, false);
+        // Translucent solids last, farthest first (by draw origin), blended over the opaque scene.
+        std::vector<MeshDraw> blended;
+        for (const MeshDraw& mesh : list.meshes) {
+            if (mesh.alpha == AlphaMode::Blend) blended.push_back(mesh);
+        }
+        const auto distance = [&](const MeshDraw& m) { return glm::dot(m.origin - camera, m.origin - camera); };
+        std::ranges::stable_sort(blended, [&](const MeshDraw& a, const MeshDraw& b) { return distance(a) > distance(b); });
+        drawMeshes(Kind::GhostTextured, blended, brushColour, trianglesOf, trianglesBuf, false);
         break;
+    }
     case DisplayMode::Flat:
         drawMeshes(Kind::Flat, list.meshes, brushColour, trianglesOf, trianglesBuf, false);
         break;
