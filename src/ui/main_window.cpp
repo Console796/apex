@@ -1331,8 +1331,8 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
 }
 
 void MainWindow::newFile() {
-    auto parsed = vmf::parse("versioninfo { editorversion 400 mapversion 1 } world { id 1 classname worldspawn }");
-    if (parsed) installDocument(std::make_unique<document::Document>(*parsed), *parsed, {}, true);
+    const auto empty = vmf::emptyMap();
+    installDocument(std::make_unique<document::Document>(empty), empty, {}, true);
 }
 
 void MainWindow::startAutosave() {

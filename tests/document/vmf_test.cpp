@@ -32,6 +32,16 @@ apex::vmf::VmfFile parsed(std::string_view source) {
 
 } // namespace
 
+TEST_CASE("the empty map quotes every key and value, so vbsp sees worldspawn") {
+    const auto empty = apex::vmf::emptyMap();
+    REQUIRE(empty.world);
+    const auto text = apex::vmf::write(empty);
+    CHECK(text.find("\"id\" \"1\"") != std::string::npos);
+    CHECK(text.find("\"classname\" \"worldspawn\"") != std::string::npos);
+    CHECK(text.find("\"editorversion\" \"400\"") != std::string::npos);
+    CHECK(text.find("classname worldspawn") == std::string::npos);
+}
+
 TEST_CASE("VMF fixtures and probe CRLF input write byte-identically") {
     for (const auto& entry : std::filesystem::directory_iterator(fixtures())) {
         CAPTURE(entry.path().string());
