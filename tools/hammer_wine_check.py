@@ -10,7 +10,7 @@ re-saved file has the same entity/solid/side ids and planes as the input per `ap
 status is non-zero if any map fails.
 
 Environment: needs wine, Xvfb, libX11/libXtst; the game dir comes from GAME_DIR like
-~/.local/bin/strata-hammer (Hammer and its P2:CE install). It runs on a private Xvfb display and
+~/.local/bin/strata-hammer (Hammer and its P2:CE install), else APEX_P2CE_DIR. It runs on a private Xvfb display and
 hides the Wayland socket, so nothing appears on the real desktop. DXVK is pointed at lavapipe
 because DRI3/amdgpu present through Xvfb kills the X connection (observed 2026-10-22).
 """
@@ -28,9 +28,8 @@ from pathlib import Path
 
 DISPLAY = ":97"
 LVP_ICD = "/usr/share/vulkan/icd.d/lvp_icd.json"
-GAME_DIR = os.environ.get(
-    "GAME_DIR",
-    str(Path.home() / "snap/steam/common/.local/share/Steam/steamapps/common/Portal 2 Community Edition"),
+GAME_DIR = os.environ.get("GAME_DIR") or os.environ.get("APEX_P2CE_DIR") or str(
+    Path.home() / "snap/steam/common/.local/share/Steam/steamapps/common/Portal 2 Community Edition"
 )
 ERROR_TITLES = ("error", "warning", "unable", "fatal", "failed", "invalid", "problem", "hammer errors")
 
