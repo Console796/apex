@@ -2,6 +2,8 @@
 
 #include "ui/gpu_host.hpp"
 
+#include <algorithm>
+
 #include <QFile>
 #include <QFontMetrics>
 #include <QImage>
@@ -186,6 +188,11 @@ void GpuHost::setDocument(document::Document* document, const assets::GameProfil
         document_ = nullptr;
         return;
     }
+    const auto mounted = std::ranges::count_if(vfs->addons().entries, [](const auto& entry) {
+        return entry.mounted && !entry.resolved.empty();
+    });
+    log::info("viewports: mounted {} addons", mounted);
+    for (const auto& problem : vfs->addons().problems) log::warn("viewports: {}", problem);
     vfs_ = std::make_unique<assets::Vfs>(std::move(*vfs));
     materials_ = std::make_unique<assets::MaterialCache>(*vfs_, *jobs_, 256ull * 1024 * 1024,
                                                          effective.escapeMode);

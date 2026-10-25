@@ -1,6 +1,6 @@
 #pragma once
 
-#include "assets/game_profile.hpp"
+#include "assets/addons.hpp"
 #include "core/job_pool.hpp"
 
 #include <cstddef>
@@ -33,6 +33,8 @@ public:
     Result<void> refresh(JobPool& jobs);
     Result<Blob> open(std::string_view path) const;
     bool exists(std::string_view path) const;
+    const AddonList& addons() const;
+    std::optional<std::size_t> provider(std::string_view path) const;
     // Immediate files only, sorted canonical virtual paths, duplicates removed. '*' and '?'
     // match filenames case-insensitively; directories themselves are not returned.
     std::vector<std::string> list(std::string_view directory, std::string_view glob = "*") const;

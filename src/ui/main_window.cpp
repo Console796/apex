@@ -39,6 +39,7 @@
 #include <algorithm>
 #include <tuple>
 
+#include "assets/addons.hpp"
 #include "assets/fgd.hpp"
 #include "core/kv1.hpp"
 #include "core/log.hpp"
@@ -281,6 +282,17 @@ void MainWindow::buildMenus() {
         connect(action, &QAction::triggered, this, [this, id = entry.id] { session_.perform(id); });
     }
 
+    addonsMenu_ = menuBar()->addMenu(tr("&Addons"));
+    addonsMenu_->setObjectName(QStringLiteral("menuAddons"));
+    const auto* reload = editor::actionRegistry().find("assets.reload");
+    auto* reloadAction = new QAction(fromStd(reload->name), this);
+    reloadAction->setObjectName(fromStd(reload->id));
+    reloadAction->setToolTip(fromStd(reload->description));
+    editorActions_.emplace(reload->id, reloadAction);
+    connect(reloadAction, &QAction::triggered, this, &MainWindow::reloadGameContent);
+    connect(addonsMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildAddonsMenu);
+    rebuildAddonsMenu();
+
     auto* help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About Apex"), this, [this] {
         const auto& v = version();
@@ -306,6 +318,84 @@ void MainWindow::buildMenus() {
         loadEntityClasses();
         log::info("game profile: {}", profiles_[static_cast<std::size_t>(i)].name);
     });
+}
+
+void MainWindow::reloadGameContent() {
+    if (document_ && viewport_) viewport_->setDocument(document_.get(), currentProfile());
+}
+
+void MainWindow::rebuildAddonsMenu() {
+    auto* reload = editorActions_.at("assets.reload");
+    for (auto* action : addonsMenu_->actions()) {
+        addonsMenu_->removeAction(action);
+        if (action == reload) continue;
+        // Deferred: a toggle rebuilds the menu from inside its submenu's own event handling.
+        if (auto* submenu = action->menu()) {
+            submenu->setObjectName({});
+            submenu->deleteLater();
+        }
+        else action->deleteLater();
+    }
+    const auto header = [this](const QString& text, const QString& path = {}) {
+        auto* action = addonsMenu_->addAction(text);
+        action->setEnabled(false);
+        if (!path.isEmpty()) {
+            action->setToolTip(path);
+            action->setStatusTip(path);
+        }
+    };
+    const auto* profile = profileCombo_ ? currentProfile() : nullptr;
+    if (!profile) header(tr("No game profile"));
+    else if (auto list = assets::readAddonList(*profile)) {
+        const bool apex = list->source == assets::AddonSettings::List::Apex;
+        if (apex) header(tr("Game profile list"));
+        else if (list->file.empty()) header(tr("No addon list found"));
+        else header(list->source == assets::AddonSettings::List::Hammer ? tr("Hammer list") : tr("Game list"),
+                    fromStd(list->file.string()));
+        const auto snapshot = std::make_shared<assets::AddonList>(std::move(*list));
+        std::size_t workshopCount = 0, workshopMounted = 0, localCount = 0, localMounted = 0;
+        for (const auto& entry : snapshot->entries) {
+            if (!apex && entry.type == "steam") {
+                ++workshopCount;
+                workshopMounted += entry.mounted;
+            } else {
+                ++localCount;
+                localMounted += apex || entry.mounted;
+            }
+        }
+        const auto makeSubmenu = [this](const QString& title, const char* name) {
+            auto* menu = addonsMenu_->addMenu(title);
+            menu->setObjectName(QString::fromLatin1(name));
+            return menu;
+        };
+        QMenu* workshop = workshopCount ? makeSubmenu(tr("Workshop (%1 of %2 on)")
+            .arg(workshopMounted).arg(workshopCount), "menuAddonsWorkshop") : nullptr;
+        QMenu* local = localCount ? makeSubmenu(tr("Local (%1 of %2 on)")
+            .arg(localMounted).arg(localCount), "menuAddonsLocal") : nullptr;
+        for (std::size_t i = 0; i < snapshot->entries.size(); ++i) {
+            const auto& entry = snapshot->entries[i];
+            auto* parent = !apex && entry.type == "steam" ? workshop : local;
+            auto text = fromStd(entry.name);
+            if (entry.resolved.empty()) text += tr(" (missing)");
+            auto* action = parent->addAction(text);
+            action->setCheckable(true);
+            action->setChecked(apex || entry.mounted);
+            action->setEnabled(!apex && !entry.resolved.empty());
+            const auto tip = apex ? tr("Listed in the game profile's addons.mounted") : fromStd(entry.dir);
+            action->setToolTip(tip);
+            action->setStatusTip(tip);
+            connect(action, &QAction::triggered, this, [this, list = snapshot, i](bool mounted) {
+                if (auto result = assets::setAddonMounted(*list, i, mounted)) reloadGameContent();
+                else {
+                    statusBar()->showMessage(fromStd(result.error().what()), 5000);
+                    log::warn("addons: {}", result.error().what());
+                }
+                rebuildAddonsMenu();
+            });
+        }
+    } else header(fromStd(list.error().what()));
+    addonsMenu_->addSeparator();
+    addonsMenu_->addAction(reload);
 }
 
 void MainWindow::applyPreset(const editor::Preset& preset) {
@@ -397,7 +487,7 @@ void MainWindow::openPreferences() {
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
-        if (id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
+        if (id == "assets.reload" || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
         if (id == "tool.select" || id == "tool.entity" || id == "tool.block" || id == "tool.clip" || id == "tool.vertex" || id == "tool.primitive") {
             action->setEnabled(true);
             action->setChecked(session_.activeTool() == id);
@@ -758,6 +848,7 @@ editor::PasteOptions MainWindow::pastePlacement(bool inPlace) const {
 
 bool MainWindow::performEditAction(const editor::ActionId& id) {
     const auto say = [this](const QString& text) { statusBar()->showMessage(text, 5000); };
+    if (id == "assets.reload") { reloadGameContent(); return true; }
     if (!session_.document()) return false;
     bool ok = true;
     if (id == "edit.copy" || id == "edit.cut") {

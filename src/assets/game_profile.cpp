@@ -86,6 +86,32 @@ Result<GameProfile> parseGameProfile(std::string_view source) {
             }
         }
     }
+    if (auto v = find("addons")) {
+        auto options = v->get<json::Value::Object>();
+        if (!options) return invalid();
+        if (auto it = options->find("enabled"); it != options->end()) {
+            auto enabled = it->second.get<bool>();
+            if (!enabled) return invalid();
+            result.addons.enabled = *enabled;
+        }
+        if (auto it = options->find("list"); it != options->end()) {
+            auto list = it->second.get<std::string>();
+            if (!list) return invalid();
+            if (*list == "hammer") result.addons.list = AddonSettings::List::Hammer;
+            else if (*list == "game") result.addons.list = AddonSettings::List::Game;
+            else if (*list == "apex") result.addons.list = AddonSettings::List::Apex;
+            else return invalid();
+        }
+        if (auto it = options->find("mounted"); it != options->end()) {
+            auto mounted = it->second.get<json::Value::Array>();
+            if (!mounted) return invalid();
+            for (const auto& item : *mounted) {
+                auto path = item.get<std::string>();
+                if (!path) return invalid();
+                result.addons.apexMounted.emplace_back(*path);
+            }
+        }
+    }
     return result;
 }
 
@@ -98,7 +124,13 @@ std::string writeGameProfile(const GameProfile& profile) {
     for (const auto& [key, path] : profile.toolPaths) {
         tools[key] = {path.generic_string()};
     }
+    json::Value::Array mounted;
+    for (const auto& path : profile.addons.apexMounted) mounted.push_back({path.generic_string()});
+    const std::string list = profile.addons.list == AddonSettings::List::Hammer ? "hammer" :
+                            profile.addons.list == AddonSettings::List::Game ? "game" : "apex";
     return json::write({json::Value::Object{
+        {"addons", {json::Value::Object{{"enabled", {profile.addons.enabled}},
+                                       {"list", {list}}, {"mounted", {mounted}}}}},
         {"name", {profile.name}}, {"game_directory", {profile.gameDirectory.generic_string()}},
         {"fgds", {fgds}}, {"tool_paths", {tools}},
         {"kv_escape_mode",

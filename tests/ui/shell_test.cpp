@@ -23,6 +23,11 @@
 
 #include "core/log.hpp"
 #include "../editor/fixtures.hpp"
+#include "../assets/fixture.hpp"
+#include "assets/addons.hpp"
+#include "core/json.hpp"
+#include <QMenuBar>
+#include <QStatusBar>
 #include "document/document.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
@@ -38,6 +43,7 @@
 #include <QToolBar>
 #include "ui/theme.hpp"
 #include "ui/viewport_area.hpp"
+#include "ui/gpu_host.hpp"
 #include "ui/viewport_pane.hpp"
 #include <QMenu>
 #include <QSplitter>
@@ -2382,4 +2388,155 @@ TEST_CASE("viewport area survives session notifications while it destroys panes"
     CHECK(notified == 4);
     area->setLayout(viewport::ViewportLayout(area->viewportLayout()));  // Rebuilt frames take badge updates.
     session.setAlignToSurface(!session.alignToSurface());
+}
+
+TEST_CASE("assets reload menu action keeps the current document and editor state") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("reload.vmf");
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::WriteOnly));
+    file.write(kVmf);
+    file.close();
+    apex::ui::MainWindow window;
+    auto* action = window.findChild<QAction*>(QStringLiteral("assets.reload"));
+    REQUIRE(action);
+    CHECK(action->text() == QStringLiteral("Reload Game Content"));
+    CHECK(action->shortcut().isEmpty());
+    CHECK(action->isEnabled());
+    auto* menu = window.findChild<QMenu*>(QStringLiteral("menuAddons"));
+    auto* edit = window.findChild<QMenu*>(QStringLiteral("menuEdit"));
+    REQUIRE(menu);
+    REQUIRE(edit);
+    CHECK(menu->actions().contains(action));
+    CHECK_FALSE(edit->actions().contains(action));
+    action->trigger();
+    CHECK(window.document() == nullptr);
+    CHECK(window.performEditAction("assets.reload"));
+    REQUIRE(window.openFile(path));
+    REQUIRE(action->isEnabled());
+    auto* document = window.document();
+    const auto before = document->write();
+    REQUIRE(before);
+    const auto undo = document->undoCount();
+    action->trigger();
+    CHECK(window.document() == document);
+    CHECK(window.viewportArea()->host().document() == document);
+    CHECK(document->undoCount() == undo);
+    const auto after = document->write();
+    REQUIRE(after);
+    CHECK(*after == *before);
+}
+
+TEST_CASE("addons menu reflects list order toggles and stale file errors") {
+    using namespace apex;
+    using namespace apex::assets;
+    app();
+    GameTree tree;
+    tree.put("Game/gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    const std::string header = "<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->\n";
+    tree.put("First/addon.kv3", header + "{ mod = \"First fixture\" }");
+    tree.put("Second/addon.kv3", header + "{ mod = \"Second fixture\" }");
+    auto entry = [&](const char* dir, bool mounted, const char* type) {
+        return "{ dir = " + json::write({(tree.root / dir).string()}) + " mounted = " +
+               (mounted ? "true" : "false") + " type = \"" + type + "\" vpks = [] }";
+    };
+    const auto original = header + "{ addons = [" + entry("First", true, "local") +
+        entry("Second", false, "steam") + entry("Missing", true, "local") + "] }";
+    tree.put("Game/addons/addonlist.kv3", original);
+    GameProfile profile;
+    profile.name = "Addon fixture";
+    profile.gameDirectory = tree.root / "Game";
+    ui::MainWindow window;
+    auto* menu = window.findChild<QMenu*>(QStringLiteral("menuAddons"));
+    REQUIRE(menu);
+    auto show = [&] { REQUIRE(QMetaObject::invokeMethod(menu, "aboutToShow", Qt::DirectConnection)); };
+    show();
+    CHECK(menu->actions().front()->text() == QStringLiteral("No game profile"));
+    CHECK_FALSE(menu->actions().front()->isEnabled());
+    const auto menus = window.menuBar()->actions();
+    const auto position = menus.indexOf(menu->menuAction());
+    REQUIRE(position > 0);
+    REQUIRE(position + 1 < menus.size());
+    CHECK(menus[position - 1]->menu()->objectName() == QStringLiteral("menuView"));
+    CHECK(menus[position + 1]->text() == QStringLiteral("&Help"));
+    window.setProfiles({profile});
+    show();
+    auto actions = menu->actions();
+    REQUIRE(actions.size() == 5);
+    CHECK(actions[0]->text() == QStringLiteral("Game list"));
+    CHECK_FALSE(actions[0]->isEnabled());
+    CHECK(actions[0]->toolTip() == QString::fromStdString((tree.root / "Game/addons/addonlist.kv3").string()));
+    CHECK(actions[0]->statusTip() == actions[0]->toolTip());
+    auto* workshop = window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop"));
+    auto* local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(workshop);
+    REQUIRE(local);
+    CHECK(workshop->title() == QStringLiteral("Workshop (0 of 1 on)"));
+    CHECK(local->title() == QStringLiteral("Local (2 of 2 on)"));
+    REQUIRE(workshop->actions().size() == 1);
+    REQUIRE(local->actions().size() == 2);
+    CHECK(local->actions()[0]->text() == QStringLiteral("First fixture"));
+    CHECK(local->actions()[0]->isChecked());
+    CHECK(local->actions()[0]->isEnabled());
+    CHECK(local->actions()[0]->isCheckable());
+    CHECK(local->actions()[0]->toolTip() == QString::fromStdString((tree.root / "First").string()));
+    CHECK(local->actions()[0]->statusTip() == local->actions()[0]->toolTip());
+    CHECK(workshop->actions()[0]->text() == QStringLiteral("Second fixture"));
+    CHECK_FALSE(workshop->actions()[0]->isChecked());
+    CHECK(workshop->actions()[0]->isEnabled());
+    CHECK(local->actions()[1]->text() == QStringLiteral("Missing (missing)"));
+    CHECK(local->actions()[1]->isChecked());
+    CHECK_FALSE(local->actions()[1]->isEnabled());
+    local->actions()[0]->trigger();  // Works without a document.
+    auto list = readAddonList(profile);
+    REQUIRE(list);
+    CHECK_FALSE(list->entries[0].mounted);
+    show();
+    local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(local);
+    CHECK_FALSE(local->actions()[0]->isChecked());
+    // The open menu's snapshot must not overwrite an entry replaced on disk.
+    tree.put("Game/addons/addonlist.kv3", header + "{ addons = [" + entry("Second", true, "local") + "] }");
+    local->actions()[0]->trigger();
+    CHECK(window.statusBar()->currentMessage().contains(QStringLiteral("changed on disk")));
+    local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(local);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop")) == nullptr);
+    CHECK(local->actions()[0]->text() == QStringLiteral("Second fixture"));
+    CHECK(local->actions()[0]->isChecked());
+    list = readAddonList(profile);
+    REQUIRE(list);
+    CHECK(list->entries[0].mounted);
+    profile.addons.list = AddonSettings::List::Apex;
+    profile.addons.apexMounted = {tree.root / "First", tree.root / "Missing"};
+    window.setProfiles({profile});
+    show();
+    CHECK(menu->actions()[0]->text() == QStringLiteral("Game profile list"));
+    local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(local);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop")) == nullptr);
+    REQUIRE(local->actions().size() == 2);
+    for (auto* action : local->actions()) {
+        CHECK(action->isChecked());
+        CHECK_FALSE(action->isEnabled());
+        CHECK(action->toolTip() == QStringLiteral("Listed in the game profile's addons.mounted"));
+    }
+    profile.addons.list = AddonSettings::List::Hammer;
+    window.setProfiles({profile});
+    tree.put("hammer/addons/addonlist.kv3", original);
+    show();
+    CHECK(menu->actions()[0]->text() == QStringLiteral("Hammer list"));
+    CHECK(menu->actions()[0]->toolTip() == QString::fromStdString((tree.root / "hammer/addons/addonlist.kv3").string()));
+    tree.put("hammer/addons/addonlist.kv3", "invalid fixture");
+    show();
+    CHECK(menu->actions().size() == 3);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop")) == nullptr);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal")) == nullptr);
+    CHECK_FALSE(menu->actions()[0]->isEnabled());
+    CHECK(menu->actions()[0]->text().contains(QStringLiteral("Missing KV3 header")));
+    std::filesystem::remove(tree.root / "hammer/addons/addonlist.kv3");
+    std::filesystem::remove(tree.root / "Game/addons/addonlist.kv3");
+    show();
+    CHECK(menu->actions()[0]->text() == QStringLiteral("No addon list found"));
 }

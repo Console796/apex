@@ -99,6 +99,8 @@ private slots:
 
 private:
     void buildMenus();
+    void rebuildAddonsMenu();
+    void reloadGameContent();
     bool loadFile(const QString& readPath, const QString& source, bool recovered);
     void installDocument(std::unique_ptr<document::Document> doc, const vmf::VmfFile& parsed,
                          const QString& path, bool unsaved);
@@ -150,6 +152,7 @@ private:
     QComboBox* profileCombo_ = nullptr;
     QMenu* recentMenu_ = nullptr;
     QMenu* viewMenu_ = nullptr;
+    QMenu* addonsMenu_ = nullptr;
     QAction* saveAction_ = nullptr;
     QAction* saveAsAction_ = nullptr;
     QAction* uvAlignmentAction_ = nullptr;

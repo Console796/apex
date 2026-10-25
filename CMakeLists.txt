@@ -81,7 +81,7 @@ include(deps)
 
 # Layer graph, plan 0.1 section 2. tools/check_layers.py enforces the same edges on #includes.
 apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths.cpp
-                       src/core/log.cpp src/core/job_pool.cpp src/core/json.cpp
+                       src/core/log.cpp src/core/job_pool.cpp src/core/json.cpp src/core/kv3.cpp
                        src/core/kv1.cpp src/core/kv1_parse.cpp src/core/kv1_write.cpp
            DEPS glm::glm spdlog::spdlog)
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
@@ -98,7 +98,7 @@ apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp 
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/inspector_model.cpp src/editor/placement.cpp
            DEPS apex_document apex_geometry apex_core)
-apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
+apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp
                          src/assets/material_cache.cpp DEPS apex_core)
 target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp

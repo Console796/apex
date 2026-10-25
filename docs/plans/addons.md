@@ -118,7 +118,7 @@ cover addons: they're a separate mount layer.
 | # | Question | How | Settles |
 |---|---|---|---|
 | P1 (0.5) | Which list does each compile tool read? Does `-mountmod` add an addon? | Build a map that uses a material found only in an unmounted addon, compile it with the game list toggled each way, and read the result with `vbspinfo` or the vbsp log. | D8 |
-| P2 (0.3.7 P0) | Where do mounted addons sit in the search order relative to `custom/*`, the mod, `hammer`, and `mounts.kv` heads? Do they mount in list order or reverse? | Use two test addons and a `custom/` folder, each overriding the same VMT with a different `$basetexture`. Check what game (`path`, `mat_texture_list`) and Hammer show. | D3 |
+| P2 (0.3.7 P0, **done**: D3) | Where do mounted addons sit in the search order relative to `custom/*`, the mod, `hammer`, and `mounts.kv` heads? Do they mount in list order or reverse? | Use two test addons and a `custom/` folder, each overriding the same VMT with a different `$basetexture`. Check what game (`path`, `mat_texture_list`) and Hammer show. | D3 |
 | P3 (0.4) | Does Hammer rewrite its list completely or edit it in place? Does it pick up an external edit while running, or only on Reload? | Toggle in Apex while Hammer runs, then Reload. Toggle in Hammer, then diff. | D2 |
 | P4 (0.5) | What syntax does a `dependencies` entry use? | `workshopcli` with a dependency set, or the uploader GUI. | D5 |
 | P5 (0.3.7, if the VM runs) | Does Hammer on native Windows write `C:\…` with the case preserved? | Windows VM, only when it's next booted for a milestone tag (it isn't worth a dedicated run). | D4 |
@@ -153,10 +153,14 @@ The alternatives were Apex's own list in the profile (simpler, but drifts from H
 the game list already has) and following the game's list (it matches what compiles see, but not
 what Hammer shows). The profile setting allows `hammer`, `game` or `apex`, so a user can choose.
 
-### D3: Search order matches the engine once P2 measures it; until then, addons sit just above the mod and below `custom/*`
+### D3: Search order matches the engine (measured by P2, 2026-10-24)
 
-If the probe disagrees, the measured order wins and gets a corpus-style regression fixture.
-Within the addon layer, list order applies.
+*P2 result ([probe-results/addons_p2.md](probe-results/addons_p2.md)):* addons sit above every other
+search path, `custom/*` included, and the first mounted entry in the list has the highest priority, in
+both the game and Strata Hammer. Within one addon the programs differ: the game puts the listed VPKs
+above the addon's loose folder, and Hammer puts the folder above the VPKs. Apex orders an addon's mounts
+the way the program whose list it follows does. The draft guess ("just above the mod and below
+`custom/*`") was wrong.
 
 ### D4: Paths in the list are normalised on read and kept verbatim on write
 
@@ -227,7 +231,7 @@ plan.
 | Part | Milestone | Why there |
 |---|---|---|
 | **Read-only addon mounting**: D1, D3, D4 and D5, plus following Hammer's list (D2's read half) and the P2/P3 probes. | **0.3: sub-milestone 0.3.7 (0.3 D19), before the material index (now 0.3.8).** | 0.3 D14 indexes every material across P2CE's mounts. Built without addons, it would index the wrong set, and then need reworking as soon as addons arrive. On this machine the two largest material sources mappers use (EverythingPBR at about 1.9 GB, ApertureVR PBR at 600 MB) are addons. It's a small piece of work: one parser, one extra mount layer, and fixtures. The plan labels for the material index and face editing moved from 0.3.7 and 0.3.8 to 0.3.8 and 0.3.9. Neither had started. |
-| **Addons panel**: D6, D2's write-back, and the "unmounted addon" hints. | **0.4**, next to the model, sound and particle browsers. | It's a browser panel of the same kind. The hints need the 0.4 entity report and model loading to pay off. 0.3's exit test doesn't need it, because the user can toggle addons in Hammer. |
+| **Addons panel**: D6 and the "unmounted addon" hints. D2's write-back moved into 0.3.7 as the Addons menu at the owner's request (2026-10-24). | **0.4**, next to the model, sound and particle browsers. | It's a browser panel of the same kind. The hints need the 0.4 entity report and model loading to pay off. |
 | **Compile parity and authoring**: D7's report, D8 and D9, plus the P1 probe. | **0.5**, Compile & play. | That's where compile profiles, `-game` and the run command are built. The addon-as-compile-target workflow from the wiki belongs with them. |
 | **Interop regression**: the addon list round trip, and both editors open with the same mounts. | **0.10** interop suite. | Same treatment as the VMF interop tests. |
 | **Rename** (D10). | Roadmap edit now. | Avoids confusion in the meantime. |
