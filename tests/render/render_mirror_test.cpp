@@ -849,10 +849,10 @@ TEST_CASE("mirror preview 2000 solids builds linear draw state without meshing")
 namespace {
 
 // An axis-aligned box solid, one material on every side. Plane windings put normals outward.
-std::string boxSolid(int id, std::array<int, 3> lo, std::array<int, 3> hi, const std::string& material) {
+std::string boxSolid(int id, std::array<double, 3> lo, std::array<double, 3> hi, const std::string& material) {
     const auto [x0, y0, z0] = lo;
     const auto [x1, y1, z1] = hi;
-    const auto pt = [](int x, int y, int z) { return "(" + std::to_string(x) + " " + std::to_string(y) + " " + std::to_string(z) + ") "; };
+    const auto pt = [](double x, double y, double z) { return "(" + std::to_string(x) + " " + std::to_string(y) + " " + std::to_string(z) + ") "; };
     const std::string planes[6] = {
         pt(x0, y1, z1) + pt(x1, y1, z1) + pt(x1, y0, z1), pt(x0, y0, z0) + pt(x1, y0, z0) + pt(x1, y1, z0),
         pt(x0, y1, z1) + pt(x0, y0, z1) + pt(x0, y0, z0), pt(x1, y1, z0) + pt(x1, y0, z0) + pt(x1, y0, z1),
@@ -866,7 +866,7 @@ std::string boxSolid(int id, std::array<int, 3> lo, std::array<int, 3> hi, const
     return out + "}\n";
 }
 
-std::unique_ptr<document::Document> boxesDocument(const std::vector<std::pair<std::string, std::array<int, 6>>>& boxes) {
+std::unique_ptr<document::Document> boxesDocument(const std::vector<std::pair<std::string, std::array<double, 6>>>& boxes) {
     std::string text = "versioninfo { \"editorextension\" \"strata\" }\nworld { \"id\" \"1\" \"classname\" \"worldspawn\"\n";
     int id = 2;
     for (const auto& [material, b] : boxes) text += boxSolid(id++, {b[0], b[1], b[2]}, {b[3], b[4], b[5]}, material);
@@ -955,4 +955,18 @@ TEST_CASE("mirror: translucent and alpha-tested textures render through the pass
     const Px cutout = centre("test/cutout"); // Alpha 0 everywhere: the wall shows through.
     CHECK(cutout.r > 100);
     CHECK(cutout.g < 10);
+}
+
+TEST_CASE("mirror: translucent faces win against a coplanar opaque face") {
+    REQUIRE_GPU();
+    // The glass front sits 0.004 units behind the red wall's face, inside the layer bias at this
+    // distance (about 0.006), so the glass must still blend over it. Without the bias the wall
+    // would hide the glass entirely.
+    const auto view = makeView({-100.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+    Scene scene(*g, boxesDocument({{"test/red", {200, -200, -200, 300, 200, 200}},
+                                   {"test/glass", {200.004, -50, -50, 250, 50, 50}}}));
+    const auto image = drawFrame(*g, scene.mirror, DisplayMode::Textured, false, view);
+    const Px centre = at(image, kSize / 2, kSize / 2);
+    CHECK(centre.g > 40);
+    CHECK(centre.r > 40);
 }
