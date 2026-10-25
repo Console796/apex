@@ -1,0 +1,10 @@
+<RCC>
+  <qresource prefix="/icons">
+    <file>groups.svg</file>
+    <file>objects.svg</file>
+    <file>solids.svg</file>
+    <file>faces.svg</file>
+    <file>ignore_groups.svg</file>
+    <file>marquee.svg</file>
+  </qresource>
+</RCC>

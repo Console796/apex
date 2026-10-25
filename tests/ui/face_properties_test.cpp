@@ -283,6 +283,7 @@ TEST_CASE("GameContent face texture dimensions read VTF headers and clear cache 
 TEST_CASE("Tool actions show in the toolbar and activate from buttons and Hammer shortcuts") {
     app();
     ui::MainWindow window;
+    window.newFile(); // Without a document only the select tool is enabled (D20).
     auto* apply = window.findChild<QAction*>("tool.apply");
     auto* measure = window.findChild<QAction*>("tool.measure");
     REQUIRE(apply); REQUIRE(measure);
@@ -311,6 +312,7 @@ TEST_CASE("Face edit activation expands Face Properties and the extrapolation co
     const auto oldMode = settings.value("editor/faceExtrapolation");
     ui::MainWindow::setFacePropertiesInWindow(false);
     ui::MainWindow window;
+    window.newFile(); // Without a document only the select tool is enabled (D20).
     auto* area = window.viewportArea();
     const auto pane = area->viewportLayout().paneIds().front();
     area->setRole(pane, viewport::AreaRole::FaceProperties);

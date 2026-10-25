@@ -3,6 +3,9 @@
 
 
 #include <QAction>
+#include <QWidgetAction>
+#include <QSvgRenderer>
+#include <QPainter>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
@@ -72,6 +75,9 @@
 #include "ui/viewport_pane.hpp"
 #include "viewport/map_views.hpp"
 
+// Q_INIT_RESOURCE must be called outside a namespace; apex_ui is a static library.
+static void initializeIcons() { Q_INIT_RESOURCE(icons); }
+
 namespace apex::ui {
 namespace {
 constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
@@ -101,7 +107,7 @@ bool isPaneKeyAction(const editor::ActionId& id) {
     return isTransformAction(id) ||
            (id.starts_with("view.") && id != "view.properties" && id != "view.center_selection") ||
            id == "edit.delete" || id == "edit.duplicate" || id.starts_with("selection.mode.") ||
-           id.starts_with("vertex.mode.");
+           id.starts_with("vertex.mode.") || id == "pie.tools";
 }
 
 bool looksLikeFragment(std::string_view text) {
@@ -143,6 +149,11 @@ MainWindow::MainWindow(QWidget* parent)
     session_.setNewSolidUvAlignment(worldUv ? geometry::UvAlignment::World : geometry::UvAlignment::Face);
     session_.setFaceExtrapolation(static_cast<editor::FaceExtrapolation>(extrapolation));
     session_.setOverlayPalette(overlayPalette(currentTokens()));
+    initializeIcons();
+    session_.setPieTrace([](std::string_view event, std::string_view detail, std::chrono::milliseconds time) {
+        inputTraceEvent("pie", {{"event", fromStd(event)}, {"detail", fromStd(detail)},
+                                {"session_ms", static_cast<qint64>(time.count())}});
+    });
     buildMenus();
     buildStatusBar();
     buildTransformUi();
@@ -300,7 +311,8 @@ void MainWindow::buildMenus() {
     auto* selectionBar = addToolBar(tr("Selection"));
     selectionBar->setObjectName(QStringLiteral("toolbarSelection"));
     auto* modes = new QActionGroup(this);
-    selectionBar->addWidget(new QLabel(tr("Select")));
+    selectionBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    selectionBar->setIconSize(QSize(24, 24));
     for (const auto& entry : editor::actionRegistry().entries()) {
         if (entry.id != "edit.undo" && entry.id != "edit.redo" &&
             (!entry.id.starts_with("selection.") || entry.id == "selection.box")) continue;
@@ -322,6 +334,7 @@ void MainWindow::buildMenus() {
             updateEditorActions();
         });
     }
+    refreshSelectionIcons();
     auto* settings = menuBar()->addMenu(tr("&Settings"));
     auto* preferences = settings->addAction(tr("&Preferences..."), QKeySequence(Qt::CTRL | Qt::Key_Comma), this,
                                             &MainWindow::openPreferences);
@@ -486,6 +499,14 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
             }
         }
         action->setShortcuts(sequences);
+        if (id.starts_with("selection.mode.") || id == "selection.ignore_groups" || id == "selection.marquee_toggle") {
+            const auto* entry = editor::actionRegistry().find(id);
+            QStringList shortcuts;
+            for (const auto& sequence : sequences) shortcuts.push_back(sequence.toString(QKeySequence::NativeText));
+            action->setToolTip(fromStd(entry->name) +
+                (shortcuts.empty() ? QString() : QStringLiteral(" (%1)").arg(shortcuts.join(", "))) +
+                QStringLiteral(": ") + fromStd(entry->description));
+        }
         // Unmodified keys (W/E/R, arrows, Shift+L) belong to the focused pane, which routes them
         // through the same keymap; a window shortcut would steal them from the outliner.
         if (transformAction || toolScoped) {
@@ -644,8 +665,9 @@ void MainWindow::updateEditorActions() {
         action->setEnabled(session_.document() != nullptr);
         if (id == "assets.reload" || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
         if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
-            action->setEnabled(true);
+            action->setEnabled(session_.isToolEnabled(id));
             action->setChecked(session_.activeTool() == id);
+            if (toolButton_ && action->isChecked()) toolButton_->setText(action->text());
         }
         if (id.starts_with("edit.") && !id.starts_with("edit.flip.")) {
             const bool have = session_.document() != nullptr;
@@ -705,6 +727,8 @@ void MainWindow::updateEditorActions() {
             if (id == modeId) action->setChecked(session_.selection().mode() == mode);
         }
     }
+    for (const auto& [tool, options] : toolOptions_)
+        for (auto* option : options) option->setVisible(session_.activeTool() == tool);
 }
 
 void MainWindow::buildAreas() {
@@ -898,8 +922,18 @@ void MainWindow::buildTransformUi() {
 }
 
 void MainWindow::buildEntityUi() {
-    auto* bar = findChild<QToolBar*>(QStringLiteral("toolbarTransform"));
-    bar->addSeparator();
+    // Next to Selection: when the row overflows, the transform controls (also in the status bar) go
+    // behind the extension button rather than the active tool's options.
+    auto* bar = new QToolBar(tr("Tools"), this);
+    insertToolBar(findChild<QToolBar*>(QStringLiteral("toolbarGame")), bar);
+    bar->setObjectName(QStringLiteral("toolbarTools"));
+    toolButton_ = new QToolButton(bar);
+    toolButton_->setObjectName(QStringLiteral("toolDropDown"));
+    toolButton_->setPopupMode(QToolButton::InstantPopup);
+    toolButton_->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    auto* menu = new QMenu(toolButton_);
+    toolButton_->setMenu(menu);
+    bar->addWidget(toolButton_);
     auto* group = new QActionGroup(this);
     for (const auto id : kToolActions) {
         const auto* entry = editor::actionRegistry().find(id);
@@ -910,10 +944,9 @@ void MainWindow::buildEntityUi() {
         group->addAction(action);
         editorActions_.emplace(entry->id, action);
         viewMenu_->addAction(action);
-        bar->addAction(action);
+        menu->addAction(action);
         connect(action, &QAction::triggered, this, [this, id] { session_.perform(std::string(id)); });
     }
-    bar->addSeparator();
     auto* vertexModes = new QActionGroup(this);
     for (const char* id : {"vertex.mode.vertex", "vertex.mode.edge", "vertex.mode.face"}) {
         const auto* entry = editor::actionRegistry().find(id);
@@ -923,7 +956,10 @@ void MainWindow::buildEntityUi() {
         action->setCheckable(true);
         vertexModes->addAction(action);
         editorActions_.emplace(entry->id, action);
-        bar->addAction(action);
+        auto* button = new QToolButton(bar);
+        button->setDefaultAction(action);
+        toolOptions_[editor::EditorSession::Tool::Vertex].push_back(
+            static_cast<QWidgetAction*>(bar->addWidget(button)));
         connect(action, &QAction::triggered, this, [this, id] {
             session_.perform(id);
             updateEditorActions();
@@ -937,14 +973,14 @@ void MainWindow::buildEntityUi() {
     entityClass_->completer()->setFilterMode(Qt::MatchContains);
     entityClass_->setEnabled(false);
     entityClass_->setMinimumContentsLength(20);
-    bar->addWidget(entityClass_);
+    toolOptions_[editor::EditorSession::Tool::Entity].push_back(static_cast<QWidgetAction*>(bar->addWidget(entityClass_)));
     connect(entityClass_, &QComboBox::currentTextChanged, this, [this](const QString& name) {
         session_.setCurrentEntityClass(name.toStdString());
         if (entityClass_->findText(name) >= 0) QSettings().setValue(QStringLiteral("editor/entityClass"), name);
     });
     alignToSurface_ = new QCheckBox(tr("Align to surface"), bar);
     alignToSurface_->setObjectName(QStringLiteral("entityAlignToSurface"));
-    bar->addWidget(alignToSurface_);
+    toolOptions_[editor::EditorSession::Tool::Entity].push_back(static_cast<QWidgetAction*>(bar->addWidget(alignToSurface_)));
     connect(alignToSurface_, &QCheckBox::toggled, this, [this](bool align) { session_.setAlignToSurface(align); });
 }
 
@@ -1447,6 +1483,34 @@ void MainWindow::updateTitle() {
     if (!path_.isEmpty()) title = QStringLiteral("%1 - %2").arg(QFileInfo(path_).fileName(), title);
     if (document_ && (unsaved_ || savedState_ != document_->historyState())) title.prepend(QStringLiteral("* "));
     setWindowTitle(title);
+}
+
+// Monochrome SVGs tinted with the theme's text colour (D22); re-rendered when the theme changes.
+void MainWindow::refreshSelectionIcons() {
+    const std::pair<const char*, const char*> icons[] = {
+        {"selection.mode.groups", "groups"}, {"selection.mode.objects", "objects"},
+        {"selection.mode.solids", "solids"}, {"selection.mode.faces", "faces"},
+        {"selection.ignore_groups", "ignore_groups"}, {"selection.marquee_toggle", "marquee"}};
+    for (const auto& [id, name] : icons) {
+        const auto found = editorActions_.find(id);
+        if (found == editorActions_.end()) continue;
+        QSvgRenderer renderer(QStringLiteral(":/icons/%1.svg").arg(QString::fromLatin1(name)));
+        const auto dpr = devicePixelRatioF();
+        QPixmap pixmap(QSize(24, 24) * dpr);
+        pixmap.setDevicePixelRatio(dpr);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        renderer.render(&painter);
+        painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        painter.fillRect(QRect(0, 0, 24, 24), currentTokens().text);
+        painter.end();
+        found->second->setIcon(QIcon(pixmap));
+    }
+}
+
+bool MainWindow::event(QEvent* event) {
+    if (event->type() == QEvent::ApplicationPaletteChange) refreshSelectionIcons();
+    return QMainWindow::event(event);
 }
 
 }  // namespace apex::ui

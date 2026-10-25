@@ -2,6 +2,7 @@
 #include "editor/editor_session.hpp"
 
 using namespace editor_test;
+using namespace std::chrono_literals;
 
 namespace {
 ToolView viewFor(Ray ray = {{-24, -24, 1000}, {0, 0, -1}}) {
@@ -23,6 +24,14 @@ InputEvent pointer(InputKind kind, DVec2 cursor = {100, 100}, InputSource source
     event.cursor = cursor;
     event.button = kind == InputKind::Move ? PointerButton::None : PointerButton::Left;
     event.left = kind == InputKind::Press;
+    return event;
+}
+InputEvent shortcut(std::string_view value, InputKind kind = InputKind::KeyDown) {
+    InputEvent event;
+    event.kind = kind;
+    event.source = 1;
+    event.cursor = {100, 100};
+    event.chord = KeyChord::parse(value).value();
     return event;
 }
 void clickAt(EditorSession& session, const ToolView& view, InputSource source = 1) {
@@ -78,6 +87,106 @@ TEST_CASE("tool dispatch routes pointer input only to the active tool") {
     REQUIRE(session.perform("tool.select"));
     CHECK(&select == &session.activeToolObject());
     CHECK(scene.doc.undoCount() == history);
+}
+
+TEST_CASE("session pie consumes input before the active tool and performs its pick") {
+    Scene swallowed;
+    REQUIRE(swallowed.session.perform("tool.block"));
+    auto open = shortcut("Q");
+    REQUIRE(swallowed.session.input(open, viewFor()));
+    REQUIRE(swallowed.session.pie());
+    CHECK(swallowed.session.pieSource() == 1);
+    auto toolShortcut = shortcut("Shift+S");
+    CHECK(swallowed.session.input(toolShortcut, viewFor()));
+    CHECK(swallowed.session.activeTool() == "tool.block");
+    CHECK(swallowed.session.input(shortcut("Q", InputKind::KeyUp), viewFor()));
+    CHECK(swallowed.session.pie());
+    CHECK(swallowed.session.input(toolShortcut, viewFor()));
+    CHECK(swallowed.session.pie());
+    CHECK(swallowed.session.input(pointer(InputKind::Press, {100, 100}), viewFor()));
+    CHECK_FALSE(swallowed.session.activeToolObject().owns(1));
+    CHECK_FALSE(swallowed.session.pie());
+
+    Scene picked;
+    std::chrono::milliseconds now{0};
+    picked.session.setClock([&] { return now; });
+    open = shortcut("Q");
+    REQUIRE(picked.session.input(open, viewFor()));
+    now = 10ms;
+    CHECK(picked.session.input(pointer(InputKind::Move, {200, 100}), viewFor()));
+    auto release = shortcut("Q", InputKind::KeyUp);
+    now = 50ms;
+    CHECK(picked.session.input(release, viewFor()));
+    CHECK_FALSE(picked.session.pie());
+    CHECK_FALSE(picked.session.pieSource());
+    CHECK(picked.session.activeTool() == "tool.block");
+}
+
+TEST_CASE("session refuses pie while a block gesture or modal transform owns the pane") {
+    Scene block;
+    REQUIRE(block.session.perform("tool.block"));
+    auto press = pointer(InputKind::Press);
+    CHECK(block.session.input(press, viewFor()));
+    REQUIRE(block.session.activeToolObject().owns(1));
+    auto open = shortcut("Q");
+    CHECK(block.session.input(open, viewFor()));
+    CHECK_FALSE(block.session.pie());
+    CHECK(block.session.pieRefusal() == "Finish the current gesture first.");
+
+    Scene modal;
+    modal.session.selectNode(modal.box);
+    const auto view = viewFor();
+    const auto context = *modal.session.gizmoContext();
+    REQUIRE(modal.session.beginModal(GizmoMode::Translate, gizmoViewFor(view, context.pivot), view.cursorRay));
+    REQUIRE(modal.session.transformActive());
+    CHECK(modal.session.input(open, view));
+    CHECK_FALSE(modal.session.pie());
+    CHECK(modal.session.pieRefusal() == "Finish the current gesture first.");
+
+    auto navigating = shortcut("Q");
+    navigating.navigating = true;
+    CHECK(modal.session.input(navigating, view));
+    CHECK_FALSE(modal.session.pie());
+    CHECK(modal.session.pieRefusal() == "Stop navigating first.");
+}
+
+TEST_CASE("session pie settings and clock drive confirm on stop; focus loss closes it") {
+    Scene scene;
+    std::chrono::milliseconds now{0};
+    scene.session.setClock([&] { return now; });
+    PieSettings settings;
+    settings.confirmOnStopDistance = 50;
+    scene.session.setPieSettings(settings);
+    auto open = shortcut("Q");
+    REQUIRE(scene.session.input(open, viewFor()));
+    CHECK(scene.session.pie());
+    auto move = pointer(InputKind::Move, {200, 100});
+    scene.session.input(move, viewFor());
+    now = 20ms;
+    scene.session.tickPie();
+    CHECK_FALSE(scene.session.pie());
+    CHECK(scene.session.activeTool() == "tool.block");
+
+    REQUIRE(scene.session.input(open, viewFor()));
+    scene.session.pieFocusLost();
+    CHECK_FALSE(scene.session.pie());
+    CHECK_FALSE(scene.session.pieSource());
+}
+
+TEST_CASE("session pie without a document enables only Select") {
+    EditorSession session;
+    session.setActiveTool("tool.block");
+    auto open = shortcut("Q");
+    REQUIRE(session.input(open, {}));
+    REQUIRE(session.pie());
+    auto block = shortcut("6");
+    CHECK(session.input(block, {}));
+    CHECK(session.pie());
+    CHECK(session.activeTool() == "tool.block");
+    auto select = shortcut("4");
+    CHECK(session.input(select, {}));
+    CHECK_FALSE(session.pie());
+    CHECK(session.activeTool() == "tool.select");
 }
 
 TEST_CASE("tool switch cancels the previous gesture and clears its preview") {

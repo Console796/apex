@@ -11,6 +11,7 @@
 #include "editor/overlay_palette.hpp"
 #include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
+#include "editor/pie_menu.hpp"
 #include "editor/visgroups.hpp"
 #include "editor/work_plane.hpp"
 #include "editor/snapper.hpp"
@@ -18,6 +19,8 @@
 
 #include <memory>
 #include <span>
+#include <chrono>
+#include <functional>
 
 namespace apex::editor {
 
@@ -45,6 +48,15 @@ public:
     editor::Tool& activeToolObject();
     const editor::Tool& activeToolObject() const;
     bool input(const InputEvent& event, const ToolView& view);
+    void setClock(std::function<std::chrono::milliseconds()> clock) { clock_ = std::move(clock); }
+    void setPieSettings(PieSettings settings) { pieSettings_ = settings; }
+    using PieTrace = std::function<void(std::string_view, std::string_view, std::chrono::milliseconds)>;
+    void setPieTrace(PieTrace trace) { pieTrace_ = std::move(trace); }
+    void tickPie();
+    void pieFocusLost();
+    const PieGesture* pie() const { return pie_.get(); }
+    std::optional<InputSource> pieSource() const { return pieSource_; }
+    const std::string& pieRefusal() const { return pieRefusal_; }
     // Every tool drops the per-pane state of a pane that is going away.
     void forgetInputSource(InputSource source);
     const std::string& currentEntityClass() const { return currentEntityClass_; }
@@ -202,6 +214,7 @@ public:
     const Preset& preset() const { return preset_; }
     const Keymap& keymap() const { return keymap_; }
     void setPreset(const Preset& preset);
+    bool isToolEnabled(const ActionId& action) const;
     bool perform(const ActionId& action);
     bool confirmNonConvexMerge = true;
     // The host sees preview() populated during the callback. Missing host means Cancel.
@@ -242,6 +255,7 @@ public:
     void publishToolStatus() { notify(); }
 
 private:
+    void finishPie(PieResult result);
     Preview topologyPreview_;
     std::string topologyMessage_;
     friend class SelectTool;
@@ -284,6 +298,12 @@ private:
     Keymap keymap_;
     std::map<std::size_t, Observer> observers_;
     std::size_t nextObserver_ = 1;
+    PieTrace pieTrace_;
+    PieSettings pieSettings_;
+    std::unique_ptr<PieGesture> pie_;
+    std::optional<InputSource> pieSource_;
+    std::string pieRefusal_;
+    std::function<std::chrono::milliseconds()> clock_;
     void notify();
     VisgroupVisibility visgroupVisibility_;
     std::map<std::uint64_t, VisgroupVisibility> visgroupHistory_;

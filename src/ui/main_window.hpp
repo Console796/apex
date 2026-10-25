@@ -21,6 +21,7 @@ class QLabel;
 class QMenu;
 class QToolButton;
 class QTimer;
+class QWidgetAction;
 
 namespace apex::document {
 class Document;
@@ -126,6 +127,8 @@ private:
     void offerRecovery();
     void buildTransformUi();
     void buildEntityUi();
+    void refreshSelectionIcons();
+    bool event(QEvent* event) override;
     void loadEntityClasses();
     void refreshEntityUi();
     void openTransformDialog();
@@ -168,6 +171,8 @@ private:
 
     ViewportArea* viewport_ = nullptr;
     WorkspaceBar* workspaces_ = nullptr;
+    QToolButton* toolButton_ = nullptr;
+    std::map<editor::ToolId, std::vector<QWidgetAction*>> toolOptions_;
     QComboBox* entityClass_ = nullptr;
     QCheckBox* alignToSurface_ = nullptr;
     QComboBox* profileCombo_ = nullptr;

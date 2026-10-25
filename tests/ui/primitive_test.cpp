@@ -8,6 +8,8 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QToolBar>
+#include <QToolButton>
+#include <QMenu>
 
 using namespace editor_test;
 TEST_CASE("primitive UI parameter strip drives tool fields and preview") {
@@ -63,7 +65,9 @@ TEST_CASE("primitive action appears in the window tool list and toolbar") {
     auto* action = window.findChild<QAction*>(QStringLiteral("tool.primitive"));
     REQUIRE(action);
     CHECK(action->isCheckable());
-    auto* bar = window.findChild<QToolBar*>(QStringLiteral("toolbarTransform"));
+    auto* bar = window.findChild<QToolBar*>(QStringLiteral("toolbarTools"));
     REQUIRE(bar);
-    CHECK(bar->actions().contains(action));
+    auto* button = bar->findChild<QToolButton*>("toolDropDown");
+    REQUIRE(button);
+    CHECK(button->menu()->actions().contains(action));
 }

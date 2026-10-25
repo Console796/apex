@@ -172,6 +172,7 @@ TEST_CASE("active material and UV alignment persist without a new solid material
         CHECK(window.editorSession().newSolidStyle().material == "test/changed");
         CHECK(window.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World);
         CHECK(window.editorSession().faceExtrapolation() == editor::FaceExtrapolation::Wrap);
+        window.newFile();
         auto* action = window.findChild<QAction*>("tool.block");
         REQUIRE(action);
         action->trigger();

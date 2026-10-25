@@ -1,4 +1,5 @@
 #include "editor/editor_session.hpp"
+#include "editor/pie_menus.hpp"
 
 #include "core/strings.hpp"
 #include "editor/select_tool.hpp"
@@ -15,12 +16,17 @@
 #include "editor/visibility.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <iomanip>
 #include <sstream>
 
 namespace apex::editor {
 
 EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
+    clock_ = [] {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch());
+    };
     tools_.emplace(Tool::Select, std::make_unique<SelectTool>(*this));
     tools_.emplace(Tool::Entity, std::make_unique<EntityTool>(*this));
     tools_.emplace(Tool::Block, std::make_unique<BlockTool>(*this));
@@ -298,8 +304,12 @@ Result<void> EditorSession::mergeSelection() {
     return commitMerge(*this, *plan);
 }
 
+bool EditorSession::isToolEnabled(const ActionId& action) const {
+    return tools_.contains(action) && (document_ || action == Tool::Select);
+}
 bool EditorSession::perform(const ActionId& action) {
     if (activeToolObject().perform(action)) return true;
+    // UI entry points use this policy; perform() remains available to programmatic callers.
     if (tools_.contains(action)) {
         setActiveTool(action);
         return true;
@@ -919,7 +929,43 @@ const CycleState& EditorSession::cycle() const { return selectTool().cycle_; }
 void EditorSession::forgetInputSource(InputSource source) {
     for (auto& [id, tool] : tools_) tool->forget(source);
 }
+void EditorSession::finishPie(PieResult result) {
+    if (result.outcome == PieResult::Pending) return;
+    if (pieTrace_) pieTrace_(result.outcome == PieResult::Pick ? "pick" : "cancel",
+                             result.action.value_or(""), clock_());
+    pie_.reset();
+    pieSource_.reset();
+    if (result.outcome == PieResult::Pick && result.action) perform(*result.action);
+}
+void EditorSession::tickPie() {
+    if (pie_) finishPie(pie_->tick(clock_()));
+}
+void EditorSession::pieFocusLost() {
+    if (!pie_) return;
+    finishPie(pie_->focusLost());
+}
 bool EditorSession::input(const InputEvent& event, const ToolView& view) {
+    if (pie_) {
+        finishPie(pie_->input(event, clock_()));
+        return true;
+    }
+    if (event.kind == InputKind::KeyDown && !event.autoRepeat && event.chord) {
+        const auto action = keymap_.lookup(*event.chord, BindingContext::forTool(activeTool_));
+        if (action == "pie.tools") {
+            if (event.navigating) pieRefusal_ = "Stop navigating first.";
+            else if (activeToolObject().owns(event.source) || transformActive())
+                pieRefusal_ = "Finish the current gesture first.";
+            else {
+                pieRefusal_.clear();
+                pie_ = std::make_unique<PieGesture>(toolPie(), pieSettings_, event.cursor, *event.chord,
+                    [this](const ActionId& id) { return isToolEnabled(id); }, clock_());
+                pieSource_ = event.source;
+                if (pieTrace_) pieTrace_("open", "pie.tools", clock_());
+            }
+            if (!pieRefusal_.empty() && pieTrace_) pieTrace_("refusal", pieRefusal_, clock_());
+            return true;
+        }
+    }
     if (activeToolObject().input(event, view)) return true;
     if (event.kind != InputKind::KeyDown || event.autoRepeat || event.navigating || !event.chord) return false;
     const auto action = keymap_.lookup(*event.chord, BindingContext::forTool(activeTool_));
