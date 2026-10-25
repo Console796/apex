@@ -37,10 +37,11 @@ its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 
 **Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`, and the
 post-release sub-milestone 0.2.12 (Preferences, keybinding editor, areas and workspaces) followed
-at the owner's request (see [plans/0.2.md](plans/0.2.md)). 0.3 is planned
-([plans/0.3.md](plans/0.3.md)); 0.3.1 (tool interface, hull/CSG kernel, topology write path,
-snapper, preview geometry and world overlays) has landed (`version.txt` reads 0.3.1). The next
-landed work is 0.3.2, the block tool; Track B (0.3.7 → 0.3.9) can start alongside.
+at the owner's request (see [plans/0.2.md](plans/0.2.md)). 0.3 is complete
+([plans/0.3.md](plans/0.3.md)) and was released as `0.3.10-release`: the tool interface and
+hull/CSG kernel (0.3.1), block, clip, vertex, primitive and carve/hollow/merge tools (0.3.2–0.3.6),
+addon mounting, the material browser and face editing (0.3.7–0.3.9), and the tool pie menu
+(0.3.10). The next landed work is 0.4.1.
 
 ## Principles that hold across every milestone
 
@@ -92,7 +93,8 @@ the result opens in Strata Hammer unchanged except for the edits.
 
 ### 0.3: Brush authoring in 3D
 Block tool (draw on a surface or work plane, then extrude), primitives (wedge, cylinder, arch,
-spike, sphere), clip tool (3 points placed on surfaces), vertex/edge/face tool with
+spike, sphere; generated once and committed as plain solids, with
+parameters editable until the next action, 0.3 D6), clip tool (3 points placed on surfaces), vertex/edge/face tool with
 convex-hull rebuild and invalid-state feedback, carve/hollow/merge, material browser,
 texture application and face editing (shift/scale/rotate, justify/fit, align to world/face,
 measure tool), and read-only mounting of Strata content addons that follows Strata Hammer's addon
@@ -140,7 +142,8 @@ density view.
 re-converges interactively after moving a light.
 
 ### 0.8: Advanced geometry & surfaces
-Displacements (create, sculpt, paint alpha/multiblend, sew, subdivide), overlays
+Displacements (create, sculpt, paint alpha/multiblend, sew, subdivide, and what each topology tool
+does to a displaced solid: clip, vertex, carve, hollow and merge refuse them until then, 0.3 D11), overlays
 (`info_overlay`, face sets), hotspot texturing (VTF hotspot resource + rect maps), decals,
 rope and cable preview, detail/structural tooling.
 **Exit:** organic and outdoor geometry workflows reach parity with Hammer++.
@@ -148,7 +151,8 @@ rope and cable preview, detail/structural tooling.
 ### 0.9: Extensibility
 Plugin API (stable C ABI with a header-only C++ wrapper), a scripting host (language decided in
 the 0.9 plan), custom tools/panels/importers, keymap editor for the Hammer and Blender presets (0.2 D15),
-theme editor, plugin manager, scriptable primitives, user-editable pie menus (0.3 D20). (Renamed from "addon manager" to avoid a clash
+theme editor, plugin manager, scriptable and persistent parametric primitives (including Strata
+Hammer's AngelScript ones; 0.3 D6), user-editable pie menus (0.3 D20). (Renamed from "addon manager" to avoid a clash
 with Strata's content addons, which arrive in 0.3 to 0.5; plans/addons.md D10.)
 **Exit:** a third-party tool can be built, loaded and shipped without rebuilding Apex.
 
