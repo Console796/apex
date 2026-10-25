@@ -41,11 +41,17 @@ public:
     // Recursive files across all mounts, with list's filename glob and canonical ordering.
     // May run concurrently on workers while Vfs is immutable: no refresh, move or destruction
     // until readers finish. Reads only indices, never the archive objects.
+    // Owns the backing indices, so queued walks survive Vfs destruction. No refresh or
+    // mutation until the task finishes; the task never borrows the Vfs wrapper.
+    std::function<std::vector<std::string>()> walkTask(
+        std::string directory, std::string glob = "*") const;
+    // Original spelling of the winning provider, for display.
+    std::string displayPath(std::string_view path) const;
     std::vector<std::string> walk(std::string_view directory, std::string_view glob = "*") const;
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace apex::assets

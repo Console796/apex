@@ -23,6 +23,13 @@ struct Texture {
     std::vector<TextureMip> mips;
     std::size_t byteSize() const;
 };
+struct Thumbnail {
+    int width = 0, height = 0;
+    std::vector<std::uint8_t> rgba;
+};
+// Smallest mip at or above size, frame/face/slice zero, box-filtered until its larger side is
+// under 2 x size. HDR is clamped to [0, 1].
+Result<Thumbnail> decodeThumbnail(std::span<const std::byte> bytes, int size);
 Result<Texture> decodeTexture(std::span<const std::byte> bytes);
 Result<Texture> loadTexture(const Vfs& vfs, std::string_view name);
 Texture checkerboardTexture();

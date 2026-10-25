@@ -18,15 +18,18 @@ class EditorSession;
 }
 
 namespace apex::ui {
+class GameContent;
 
 // Area roles in the UI (0.2.12): the display name, the panel widget a non-viewport role shows, and
 // the header controls every area shares (role switcher, collapse, area menu).
 QString roleTitle(viewport::AreaRole role);
 // A new panel for a non-viewport role (null for Viewport), already bound to the document/session.
-QWidget* createPanel(viewport::AreaRole role, document::Document* document, editor::EditorSession* session);
+QWidget* createPanel(viewport::AreaRole role, document::Document* document, editor::EditorSession* session,
+                      GameContent* content = nullptr);
 void bindPanel(QWidget* panel, document::Document* document, editor::EditorSession* session);
 void setPanelSession(QWidget* panel, editor::EditorSession* session);
 void setPanelDocument(QWidget* panel, document::Document* document);
+void setPanelGameContent(QWidget* panel, GameContent* content);
 
 // The role switcher at the start of every area header (Blender's editor-type menu).
 QToolButton* makeRoleButton(viewport::AreaRole current, std::function<void(viewport::AreaRole)> choose,

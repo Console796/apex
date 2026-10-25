@@ -2,6 +2,7 @@
 
 #include "assets/vmt.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <limits>
 #include <vtfpp/VTF.h>
@@ -23,6 +24,29 @@ TextureFormat gpuFormat(vtfpp::ImageFormat format) {
         return vtfpp::ImageFormatDetails::large(format) ? TextureFormat::Rgba32Float : TextureFormat::Rgba8;
     }
 }
+Result<void> validate(const vtfpp::VTF& vtf) {
+    if (!vtf || !vtf.hasImageData() || !vtf.getWidth() || !vtf.getHeight() ||
+        !vtf.getMipCount() || vtf.getMipCount() > 16 || !vtf.getFrameCount()) {
+        return std::unexpected(Error{ErrorCode::ParseError, "Invalid or empty VTF"});
+    }
+    // vtfpp's subresource getter uses unchecked span::subspan. Validate the entire
+    // image resource before requesting any slices, including truncated legacy files.
+    std::uint64_t required = 0;
+    for (std::uint8_t mip = 0; mip < vtf.getMipCount(); ++mip) {
+        auto length = vtfpp::ImageFormatDetails::getDataLength(
+            vtf.getFormat(), vtf.getWidth(mip), vtf.getHeight(mip));
+        if (!length) {
+            return std::unexpected(Error{ErrorCode::Unsupported, "Unsupported VTF format"});
+        }
+        required += std::uint64_t(length) * vtf.getDepth(mip) * vtf.getFrameCount() * vtf.getFaceCount();
+    }
+    const auto* image = vtf.getResource(vtfpp::Resource::TYPE_IMAGE_DATA);
+    if (!image || required > std::numeric_limits<std::uint32_t>::max() ||
+        required > image->data.size()) {
+        return std::unexpected(Error{ErrorCode::ParseError, "Incomplete or oversized VTF image"});
+    }
+    return {};
+}
 } // namespace
 std::size_t Texture::byteSize() const {
     std::size_t bytes = 0;
@@ -33,31 +57,13 @@ std::size_t Texture::byteSize() const {
 }
 Result<Texture> decodeTexture(std::span<const std::byte> bytes) try {
     vtfpp::VTF vtf(bytes);
-    if (!vtf || !vtf.hasImageData() || !vtf.getWidth() || !vtf.getHeight() ||
-        !vtf.getMipCount() || vtf.getMipCount() > 16 || !vtf.getFrameCount()) {
-        return std::unexpected(Error{ErrorCode::ParseError, "Invalid or empty VTF"});
-    }
+    auto valid = validate(vtf);
+    if (!valid) return std::unexpected(valid.error());
     Texture result;
     result.format = gpuFormat(vtf.getFormat());
     result.srgb = vtf.isSRGB();
     result.frames = vtf.getFrameCount();
     result.faces = vtf.getFaceCount();
-    // vtfpp's subresource getter uses unchecked span::subspan. Validate the entire
-    // image resource before requesting any slices, including truncated legacy files.
-    std::uint64_t required = 0;
-    for (std::uint8_t mip = 0; mip < vtf.getMipCount(); ++mip) {
-        auto length = vtfpp::ImageFormatDetails::getDataLength(
-            vtf.getFormat(), vtf.getWidth(mip), vtf.getHeight(mip));
-        if (!length) {
-            return std::unexpected(Error{ErrorCode::Unsupported, "Unsupported VTF format"});
-        }
-        required += std::uint64_t(length) * vtf.getDepth(mip) * result.frames * result.faces;
-    }
-    const auto* image = vtf.getResource(vtfpp::Resource::TYPE_IMAGE_DATA);
-    if (!image || required > std::numeric_limits<std::uint32_t>::max() ||
-        required > image->data.size()) {
-        return std::unexpected(Error{ErrorCode::ParseError, "Incomplete or oversized VTF image"});
-    }
     auto reflectivity = vtf.getReflectivity();
     for (std::uint8_t i = 0; i < 3; ++i) {
         result.reflectivity[i] = reflectivity[i];
@@ -98,6 +104,44 @@ Result<Texture> decodeTexture(std::span<const std::byte> bytes) try {
             }
         }
         result.mips.push_back(std::move(output));
+    }
+    return result;
+} catch (const std::exception& e) {
+    return std::unexpected(Error{ErrorCode::ParseError, e.what()});
+}
+Result<Thumbnail> decodeThumbnail(std::span<const std::byte> bytes, int size) try {
+    if (size <= 0) return std::unexpected(Error{ErrorCode::ParseError, "Invalid thumbnail size"});
+    vtfpp::VTF vtf(bytes);
+    auto valid = validate(vtf);
+    if (!valid) return std::unexpected(valid.error());
+    std::uint8_t mip = 0;
+    while (mip + 1 < vtf.getMipCount() &&
+           std::max(vtf.getWidth(mip + 1), vtf.getHeight(mip + 1)) >= size) ++mip;
+    Thumbnail result{vtf.getWidth(mip), vtf.getHeight(mip), {}};
+    auto pixels = vtf.getImageDataAs(vtfpp::ImageFormat::RGBA8888, mip, 0, 0, 0);
+    if (pixels.size() != std::size_t(result.width) * result.height * 4)
+        return std::unexpected(Error{ErrorCode::Unsupported, "VTF thumbnail conversion failed"});
+    result.rgba.resize(pixels.size());
+    std::transform(pixels.begin(), pixels.end(), result.rgba.begin(),
+                   [](std::byte value) { return std::to_integer<std::uint8_t>(value); });
+    if (vtf.getFormat() == vtfpp::ImageFormat::BGRX5551)
+        for (std::size_t i = 3; i < result.rgba.size(); i += 4) result.rgba[i] = 255;
+    // A large texture without small mips is box-filtered down, so one thumbnail can't fill the cache.
+    int factor = 1;
+    while (std::max(result.width, result.height) / (factor * 2) >= size) factor *= 2;
+    if (factor > 1) {
+        const int w = std::max(1, result.width / factor), h = std::max(1, result.height / factor);
+        std::vector<std::uint8_t> out(std::size_t(w) * h * 4);
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x)
+                for (int c = 0; c < 4; ++c) {
+                    unsigned sum = 0, count = 0;
+                    for (int dy = 0; dy < factor && y * factor + dy < result.height; ++dy)
+                        for (int dx = 0; dx < factor && x * factor + dx < result.width; ++dx, ++count)
+                            sum += result.rgba[(std::size_t(y * factor + dy) * result.width + x * factor + dx) * 4 + c];
+                    out[(std::size_t(y) * w + x) * 4 + c] = static_cast<std::uint8_t>(sum / count);
+                }
+        result = {w, h, std::move(out)};
     }
     return result;
 } catch (const std::exception& e) {

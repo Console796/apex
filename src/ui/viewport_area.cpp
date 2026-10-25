@@ -26,6 +26,9 @@
 #include "ui/input_log.hpp"
 #include "ui/theme.hpp"
 #include "ui/viewport_pane.hpp"
+#include "ui/materials_panel.hpp"
+#include "ui/game_content.hpp"
+#include "ui/inspector_panel.hpp"
 
 namespace apex::ui {
 namespace {
@@ -149,7 +152,7 @@ ViewportArea::~ViewportArea() {
 
 void ViewportArea::setDocument(document::Document* document, const assets::GameProfile* profile) {
     document_ = document;
-    host_->setDocument(document, profile);
+    host_->setDocument(document, gameContent_ ? gameContent_->vfs() : nullptr, profile);
     previewRevision_ = kNoPreview;  // The mirror may be new.
     updateHighlight();
     forceDraw_ = true;
@@ -175,6 +178,32 @@ void ViewportArea::setEditorSession(editor::EditorSession* session) {
         if (w) setPanelSession(w->panel(), session_);
     updateHighlight();
     updateModeBadges();
+}
+
+void ViewportArea::setGameContent(GameContent* content) {
+    gameContent_ = content;
+    for (auto& [id, panel] : panels_) setPanelGameContent(panel, content);
+    for (auto& [role, window] : floating_) if (window) setPanelGameContent(window->panel(), content);
+}
+void ViewportArea::setMaterialBrowser(std::function<void(QString, std::function<void(QString)>)> browser) {
+    materialBrowser_ = std::move(browser);
+    for (auto& [id, panel] : panels_) configurePanel(panel);
+    for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
+}
+void ViewportArea::configurePanel(QWidget* panel) {
+    if (auto* materials = qobject_cast<MaterialsPanel*>(panel)) {
+        connect(materials, &MaterialsPanel::activeMaterialRequested, this,
+                &ViewportArea::activeMaterialRequested, Qt::UniqueConnection);
+        connect(materials, &MaterialsPanel::statusMessage, this,
+                &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
+    }
+    if (auto* inspector = qobject_cast<InspectorPanel*>(panel))
+        inspector->setMaterialBrowser(materialBrowser_);
+}
+QWidget* ViewportArea::makePanel(viewport::AreaRole role) {
+    auto* panel = createPanel(role, document_, session_, gameContent_);
+    configurePanel(panel);
+    return panel;
 }
 
 void ViewportArea::setRole(viewport::NodeId pane, viewport::AreaRole role) {
@@ -228,7 +257,7 @@ QWidget* ViewportArea::showRole(viewport::AreaRole role, bool window) {
 FloatingPanel* ViewportArea::popOut(viewport::AreaRole role) {
     if (role == viewport::AreaRole::Viewport) return nullptr;  // Native Vulkan windows stay docked (D15).
     auto& slot = floating_[role];
-    if (!slot) slot = new FloatingPanel(role, createPanel(role, document_, session_), window());
+    if (!slot) slot = new FloatingPanel(role, makePanel(role), window());
     slot->show();
     slot->raise();
     slot->activateWindow();
@@ -663,7 +692,7 @@ QWidget* ViewportArea::makeArea(const viewport::LayoutNode& node, bool maximized
 
 QWidget* ViewportArea::panelFor(viewport::NodeId pane, viewport::AreaRole role) {
     auto& slot = panels_[pane];
-    if (!slot) slot = createPanel(role, document_, session_);
+    if (!slot) slot = makePanel(role);
     return slot;
 }
 

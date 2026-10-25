@@ -232,6 +232,37 @@ std::optional<AABB> EditorSession::selectionBounds() const {
     if (bounds.empty()) return std::nullopt;
     return bounds;
 }
+std::size_t EditorSession::applyMaterial(std::span<const document::SideId> sides, const std::string& material) {
+    if (!document_) return 0;
+    std::vector<document::SideId> changed;
+    for (const auto id : sides) {
+        const auto location = document_->side(id);
+        const auto* solid = location ? document_->get(location->solid) : nullptr;
+        if (!solid || !solid->block) continue;
+        std::size_t face = 0;
+        for (const auto& child : solid->block->children()) {
+            if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+            if (face++ != location->faceIndex) continue;
+            const auto* key = child.find("material");
+            if (!key || !ciEquals(key->decodedValue().value_or(""), material)) changed.push_back(id);
+            break;
+        }
+    }
+    if (changed.empty()) return 0;
+    edit("Apply Material", [&](document::Transaction& tx) {
+        for (const auto id : changed) tx.setSideKeyValue(id, "material", material);
+    });
+    return changed.size();
+}
+
+bool EditorSession::applyMaterialAt(Ray ray, const std::string& material) {
+    if (!document_ || material.empty()) return false;
+    const auto hit = picks_->first(ray);
+    if (!hit || !hit->side) return false;
+    applyMaterial(std::span(&*hit->side, 1), material);
+    return true;
+}
+
 Result<void> EditorSession::mergeSelection() {
     activeToolObject().cancel();
     const auto plan = planMerge(*this);

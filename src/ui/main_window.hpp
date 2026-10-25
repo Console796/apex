@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPointer>
 #include <QString>
 #include <memory>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "editor/preset_io.hpp"
 #include "ui/theme.hpp"
 
+class QDialog;
 class QAction;
 class QComboBox;
 class QCheckBox;
@@ -25,6 +27,7 @@ class Document;
 
 namespace apex::ui {
 
+class GameContent;
 class LogPanel;
 class OutlinerPanel;
 class ViewportArea;
@@ -41,6 +44,11 @@ public:
     // Loads user profiles (<config>/profiles/*.json) plus the detected P2CE install.
     void reloadProfiles();
     const assets::GameProfile* currentProfile() const;
+    GameContent& gameContent() const { return *gameContent_; }
+    // The inspector's material Browse: a non-modal Materials panel in pick mode. One at a time; it is
+    // closed when the document is replaced and at shutdown.
+    void closeMaterialPicker();
+    void openMaterialPicker(QString current, std::function<void(QString)> choose);
 
     bool openFile(const QString& path);
     void newFile();
@@ -91,6 +99,7 @@ public:
     void setUndoCapMiB(int mib);
     void setNewSolidStyle(std::string material, geometry::UvAlignment alignment);
     void openPreferences();
+    void activateMaterial(const QString& name);
 
 private slots:
     void openDialog();
@@ -130,6 +139,8 @@ private:
     void closeEvent(QCloseEvent* event) override;
 
     std::unique_ptr<document::Document> document_;
+    std::unique_ptr<GameContent> gameContent_;
+    QPointer<QDialog> materialPicker_; // Bound to the document and session; closed before either changes.
     editor::EditorSession session_;
     std::unique_ptr<editor::Autosave> autosave_;
     QTimer* autosaveTimer_ = nullptr;
@@ -164,6 +175,7 @@ private:
     QLabel* cameraLabel_ = nullptr;
     QLabel* frameLabel_ = nullptr;
     QLabel* gpuLabel_ = nullptr;
+    QLabel* activeMaterialLabel_ = nullptr;
 };
 
 }  // namespace apex::ui

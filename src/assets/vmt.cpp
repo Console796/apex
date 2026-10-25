@@ -45,7 +45,7 @@ Result<void> merge(kv1::Node& target, const kv1::Node& changes, bool replace) {
     }
     return {};
 }
-Result<kv1::Node> resolve(const Vfs& vfs, const std::string& path, kv1::EscapeMode mode,
+Result<kv1::Node> resolve(const MaterialReader& read, const std::string& path, kv1::EscapeMode mode,
                          std::set<std::string>& stack) {
     if (stack.size() >= 64 || !stack.insert(path).second) {
         return std::unexpected(Error{ErrorCode::ParseError, "VMT patch cycle/depth: " + path});
@@ -55,7 +55,7 @@ Result<kv1::Node> resolve(const Vfs& vfs, const std::string& path, kv1::EscapeMo
         const std::string& path;
         ~Pop() { stack.erase(path); }
     } pop{stack, path};
-    auto bytes = read(vfs, path);
+    auto bytes = read(path);
     if (!bytes) {
         return std::unexpected(bytes.error());
     }
@@ -63,7 +63,7 @@ Result<kv1::Node> resolve(const Vfs& vfs, const std::string& path, kv1::EscapeMo
     if (!parsed) {
         return std::unexpected(parsed.error().withContext(path));
     }
-    auto expanded = parsed->resolve([&](std::string_view include) { return read(vfs, include); });
+    auto expanded = parsed->resolve([&](std::string_view include) { return read(include); });
     if (!expanded) {
         return std::unexpected(expanded.error().withContext(path));
     }
@@ -83,7 +83,7 @@ Result<kv1::Node> resolve(const Vfs& vfs, const std::string& path, kv1::EscapeMo
     if (!included) {
         return std::unexpected(included.error());
     }
-    auto base = resolve(vfs, materialPath(*included), mode, stack);
+    auto base = resolve(read, materialPath(*included), mode, stack);
     if (!base) {
         return base;
     }
@@ -122,8 +122,11 @@ std::string_view Material::previewTexture() const {
     return baseTexture;
 }
 Result<Material> loadMaterial(const Vfs& vfs, std::string_view name, kv1::EscapeMode mode) {
+    return parseMaterial([&](std::string_view path) { return read(vfs, path); }, name, mode);
+}
+Result<Material> parseMaterial(const MaterialReader& read, std::string_view name, kv1::EscapeMode mode) {
     std::set<std::string> stack;
-    auto root = resolve(vfs, materialPath(name), mode, stack);
+    auto root = resolve(read, materialPath(name), mode, stack);
     if (!root) {
         return std::unexpected(root.error());
     }
@@ -133,6 +136,8 @@ Result<Material> loadMaterial(const Vfs& vfs, std::string_view name, kv1::Escape
     result.baseTexture2 = value(*root, "$basetexture2");
     result.toolTexture = value(*root, "%tooltexture");
     result.toolViewportTexture = value(*root, "%ToolViewportTexture");
+    result.keywords = value(*root, "%keywords") + " " + value(*root, "$keywords");
+    result.hasToolTexture = root->find("%tooltexture") != nullptr;
     result.surfaceProp = value(*root, "$surfaceprop");
     result.translucent = flag(*root, "$translucent");
     result.alphaTest = flag(*root, "$alphatest");

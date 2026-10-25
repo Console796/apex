@@ -161,17 +161,15 @@ void GpuHost::unbind() {
     document_ = nullptr;
 }
 
-void GpuHost::setDocument(document::Document* document, const assets::GameProfile* profile) {
+void GpuHost::setDocument(document::Document* document, std::shared_ptr<const assets::Vfs> vfs,
+                          const assets::GameProfile* profile) {
     unbind();
     document_ = document;
     if (!document || !context_) return;
 
     assets::GameProfile effective;
     if (profile) effective = *profile;
-    auto loadVfs = [&](const assets::GameProfile& p) { return assets::Vfs::load(p, *jobs_); };
-    auto vfs = profile ? loadVfs(effective) : Result<assets::Vfs>(std::unexpected(Error{ErrorCode::NotFound, "no profile"}));
     if (!vfs) {
-        if (profile) log::warn("viewports: game files unavailable ({}); using placeholder textures", vfs.error().what());
         const QString info = emptyGame_.filePath(QStringLiteral("gameinfo.txt"));
         if (!QFile::exists(info)) {
             QFile f(info);
@@ -179,21 +177,16 @@ void GpuHost::setDocument(document::Document* document, const assets::GameProfil
                 f.write("GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
             }
         }
-        assets::GameProfile empty;
-        empty.gameDirectory = emptyGame_.path().toStdString();
-        vfs = loadVfs(empty);
+        effective.gameDirectory = emptyGame_.path().toStdString();
+        auto empty = assets::Vfs::load(effective, *jobs_);
+        if (empty) vfs = std::make_shared<assets::Vfs>(std::move(*empty));
+        else {
+            log::error("viewports: cannot create an empty file system: {}", empty.error().what());
+            document_ = nullptr;
+            return;
+        }
     }
-    if (!vfs) {
-        log::error("viewports: cannot create a file system: {}", vfs.error().what());
-        document_ = nullptr;
-        return;
-    }
-    const auto mounted = std::ranges::count_if(vfs->addons().entries, [](const auto& entry) {
-        return entry.mounted && !entry.resolved.empty();
-    });
-    log::info("viewports: mounted {} addons", mounted);
-    for (const auto& problem : vfs->addons().problems) log::warn("viewports: {}", problem);
-    vfs_ = std::make_unique<assets::Vfs>(std::move(*vfs));
+    vfs_ = std::move(vfs);
     materials_ = std::make_unique<assets::MaterialCache>(*vfs_, *jobs_, 256ull * 1024 * 1024,
                                                          effective.escapeMode);
     if (profile && !profile->fgds.empty()) {

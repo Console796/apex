@@ -7,6 +7,10 @@
 
 #include <QActionGroup>
 #include <QCoreApplication>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -197,6 +201,32 @@ void PaneWindow::releaseCapture() {
 
 bool PaneWindow::event(QEvent* e) {
     switch (e->type()) {
+    case QEvent::DragEnter:
+    case QEvent::DragMove: {
+        auto* drag = static_cast<QDragMoveEvent*>(e);
+        if (session_ && session_->document() && drag->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
+            drag->acceptProposedAction();
+            return true;
+        }
+        break;
+    }
+    case QEvent::Drop: {
+        auto* drop = static_cast<QDropEvent*>(e);
+        if (session_ && session_->document() && drop->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
+            auto name = QString::fromUtf8(drop->mimeData()->data(QStringLiteral("application/x-apex-material"))).toStdString();
+            const auto* vp = accessor_();
+            if (!name.empty() && vp && width() > 0 && height() > 0) {
+                const auto point = drop->position();
+                const auto ray = viewport::pixelRay(vp->camera, static_cast<double>(width()) / height(),
+                    point.x(), point.y(), width(), height());
+                if (session_->applyMaterialAt(ray, name)) {
+                    drop->acceptProposedAction();
+                    return true;
+                }
+            }
+        }
+        break;
+    }
     case QEvent::Expose:
     case QEvent::Resize:
     case QEvent::DevicePixelRatioChange:

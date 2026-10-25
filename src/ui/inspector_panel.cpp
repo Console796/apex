@@ -74,6 +74,10 @@ void InspectorPanel::setEditorSession(editor::EditorSession* session) {
     }
     refresh();
 }
+void InspectorPanel::setMaterialBrowser(std::function<void(QString, std::function<void(QString)>)> browser) {
+    materialBrowser_ = std::move(browser);
+    requestRefresh();
+}
 bool InspectorPanel::current(const std::vector<document::NodeId>& entities) const {
     return session_ && document_ && session_->document() == document_ && !entities.empty() &&
            session_->inspectorModel().entities() == entities;
@@ -257,8 +261,17 @@ void InspectorPanel::refresh() {
             }
             if (type == "studio" || type == "material" || type == "sound") {
                 auto* browse = new QPushButton(tr("Browse…"), field);
-                browse->setEnabled(false);
+                browse->setObjectName(QStringLiteral("inspectorBrowse.%1").arg(text(row.key)));
+                browse->setEnabled(type == "material" && static_cast<bool>(materialBrowser_));
                 horizontal->addWidget(browse);
+                if (type == "material") connect(browse, &QPushButton::clicked, this,
+                    [this, valid, write, currentValue = text(row.value)] {
+                        if (!materialBrowser_ || !valid()) return;
+                        QPointer<InspectorPanel> self(this);
+                        materialBrowser_(currentValue, [self, write](QString value) {
+                            if (self) write(value, token());
+                        });
+                    });
             }
         }
         form->addRow(row.property && !row.property->displayName.empty() ? text(row.property->displayName) : text(row.key), field);

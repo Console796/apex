@@ -1,4 +1,5 @@
 #include "assets/vmt.hpp"
+#include "assets/material_index.hpp"
 #include "document/vmf.hpp"
 #include "core/paths.hpp"
 
@@ -8,6 +9,8 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+#include <chrono>
+#include <thread>
 
 using namespace apex;
 using namespace apex::assets;
@@ -67,10 +70,27 @@ TEST_CASE("Materials referenced by all corpus VMF sides match reviewed missing l
     JobPool jobs(2);
     auto vfs = Vfs::load(profile, jobs);
     REQUIRE(vfs);
+    const auto started = std::chrono::steady_clock::now();
+    MaterialIndex index(*vfs, jobs);
+    while (!index.progress().finished && std::chrono::steady_clock::now() - started < std::chrono::seconds(60)) {
+        index.step();
+        jobs.drainCompletions();
+        std::this_thread::yield();
+    }
+    REQUIRE(index.progress().finished);
+    auto snapshot = index.snapshot();
+    MESSAGE("Material index: ", snapshot->entries.size(), " entries in ",
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count(), " ms");
     std::ostringstream actual;
     std::size_t missing = 0;
     for (const auto& name : materials) {
         auto material = loadMaterial(*vfs, name);
+        if (material) {
+            auto entry = snapshot->find(name);
+            REQUIRE_MESSAGE(entry, name);
+            CHECK(entry->error.empty());
+            CHECK(entry->previewTexture == material->previewTexture());
+        }
         std::string reason;
         if (!material) {
             reason = "VMT: " + material.error().what();

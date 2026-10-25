@@ -16,6 +16,7 @@
 #include "geometry/solid_block.hpp"
 
 #include <memory>
+#include <span>
 
 namespace apex::editor {
 
@@ -202,6 +203,11 @@ public:
     std::function<std::optional<double>()> hollowThickness;
     const std::string& topologyMessage() const { return topologyMessage_; }
     Result<void> mergeSelection();
+    // One "Apply Material" edit over `sides`, skipping sides that already have it (any case).
+    // Returns how many changed; zero leaves no undo entry.
+    std::size_t applyMaterial(std::span<const document::SideId> sides, const std::string& material);
+    // Applies to the face `ray` hits first (a material drop); false when no face is hit.
+    bool applyMaterialAt(Ray ray, const std::string& material);
     // Document edits go through this seam to capture before/after selection metadata.
     // Direct Document edits still update indices and prune dead selection targets.
     void edit(std::string label, const std::function<void(document::Transaction&)>& operation,

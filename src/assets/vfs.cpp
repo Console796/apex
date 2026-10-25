@@ -453,4 +453,23 @@ std::vector<std::string> Vfs::walk(std::string_view directory, std::string_view 
     return {paths.begin(), paths.end()};
 }
 
+std::function<std::vector<std::string>()> Vfs::walkTask(std::string directory, std::string glob) const {
+    return [state = impl_, directory = std::move(directory), glob = std::move(glob)] {
+        Vfs view;
+        view.impl_ = state;
+        return view.walk(directory, glob);
+    };
+}
+std::string Vfs::displayPath(std::string_view path) const {
+    const auto key = lookupKey(path);
+    auto loose = impl_->loose.find(key);
+    for (std::size_t i = 0; i < impl_->mounts.size(); ++i) {
+        const auto& mount = impl_->mounts[i];
+        if (loose != impl_->loose.end() && loose->second.mount == i)
+            return loose->second.path.lexically_relative(mount.directory).generic_string();
+        if (auto entry = mount.entries.find(key); entry != mount.entries.end()) return entry->second;
+    }
+    return key;
+}
+
 } // namespace apex::assets

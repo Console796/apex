@@ -31,6 +31,7 @@
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QDialogButtonBox>
+#include <QDialog>
 #include <QFormLayout>
 #include "ui/recovery_dialog.hpp"
 #include "ui/settings_dialog.hpp"
@@ -59,6 +60,8 @@
 #include "ui/tie_dialog.hpp"
 #include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
+#include "ui/game_content.hpp"
+#include "ui/materials_panel.hpp"
 #include "ui/workspace_bar.hpp"
 #include "ui/area_frame.hpp"
 #include "ui/viewport_pane.hpp"
@@ -116,6 +119,7 @@ MainWindow::MainWindow(QWidget* parent)
                    "keymaps") {
     resize(1280, 800);
     LogPanel::startCapture();
+    gameContent_ = std::make_unique<GameContent>();
     const auto material = QSettings().value(QStringLiteral("editor/newSolidMaterial"),
                                            QStringLiteral("dev/dev_measuregeneric01")).toString();
     const bool worldUv = QSettings().value(QStringLiteral("editor/newSolidWorldUv"), false).toBool();
@@ -129,6 +133,14 @@ MainWindow::MainWindow(QWidget* parent)
     buildEntityUi();
     buildAreas();
     viewport_->setEditorSession(&session_);
+    viewport_->setGameContent(gameContent_.get());
+    viewport_->setMaterialBrowser([this](QString current, std::function<void(QString)> choose) {
+        openMaterialPicker(std::move(current), std::move(choose));
+    });
+    connect(viewport_, &ViewportArea::activeMaterialRequested, this, &MainWindow::activateMaterial);
+    connect(viewport_, &ViewportArea::materialStatusMessage, this, [this](const QString& message) {
+        statusBar()->showMessage(message, 4000);
+    });
     session_.confirmNonConvexMerge = QSettings().value("editing/confirmNonConvexMerge", true).toBool();
     session_.hollowThickness = [this]() -> std::optional<double> {
         bool ok = false;
@@ -178,11 +190,13 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+    closeMaterialPicker();
     session_.unobserve(sessionObserver_);
     viewport_->setEditorSession(nullptr);  // Also its panels and floating windows.
     session_.detach();
     // The area and its panels hold raw pointers to the document.
     if (viewport_) viewport_->setDocument(nullptr);
+    if (gameContent_) gameContent_->clear();
 }
 
 OutlinerPanel* MainWindow::outliner() const { return viewport_->findChild<OutlinerPanel*>(); }
@@ -317,11 +331,13 @@ void MainWindow::buildMenus() {
         QSettings().setValue(QStringLiteral("profile/last"), QString::fromStdString(profiles_[static_cast<std::size_t>(i)].name));
         loadEntityClasses();
         log::info("game profile: {}", profiles_[static_cast<std::size_t>(i)].name);
+        reloadGameContent();
     });
 }
 
 void MainWindow::reloadGameContent() {
-    if (document_ && viewport_) viewport_->setDocument(document_.get(), currentProfile());
+    gameContent_->reload(currentProfile());
+    if (viewport_) viewport_->setDocument(document_.get(), currentProfile());
 }
 
 void MainWindow::rebuildAddonsMenu() {
@@ -469,6 +485,34 @@ void MainWindow::setUndoCapMiB(int mib) {
     updateEditorActions();
 }
 
+void MainWindow::activateMaterial(const QString& name) {
+    setNewSolidStyle(name.toStdString(), session_.newSolidStyle().alignment);
+    statusBar()->showMessage(tr("Active material: %1").arg(name), 4000);
+}
+void MainWindow::closeMaterialPicker() {
+    delete materialPicker_.data();
+}
+void MainWindow::openMaterialPicker(QString current, std::function<void(QString)> choose) {
+    closeMaterialPicker();
+    auto* dialog = new QDialog(this, Qt::Tool);
+    materialPicker_ = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("materialPicker"));
+    dialog->setWindowTitle(tr("Choose Material"));
+    auto* layout = new QVBoxLayout(dialog);
+    auto* panel = new MaterialsPanel(dialog);
+    panel->setGameContent(gameContent_.get());
+    panel->setDocument(document_.get());
+    panel->setEditorSession(&session_);
+    panel->setPickMode(true, current);
+    connect(panel, &MaterialsPanel::materialChosen, dialog, [dialog, choose = std::move(choose)](const QString& value) {
+        choose(value);
+        dialog->close();
+    });
+    layout->addWidget(panel);
+    dialog->resize(720, 480);
+    dialog->show();
+}
 void MainWindow::setNewSolidStyle(std::string material, geometry::UvAlignment alignment) {
     session_.setNewSolidMaterial(std::move(material));
     session_.setNewSolidUvAlignment(alignment);
@@ -476,6 +520,8 @@ void MainWindow::setNewSolidStyle(std::string material, geometry::UvAlignment al
     settings.setValue(QStringLiteral("editor/newSolidMaterial"), fromStd(session_.newSolidStyle().material));
     settings.setValue(QStringLiteral("editor/newSolidWorldUv"),
                       session_.newSolidStyle().alignment == geometry::UvAlignment::World);
+    if (activeMaterialLabel_)
+        activeMaterialLabel_->setText(tr("Active material: %1").arg(fromStd(session_.newSolidStyle().material)));
 }
 
 void MainWindow::openPreferences() {
@@ -634,7 +680,9 @@ void MainWindow::buildStatusBar() {
     cameraLabel_ = new QLabel(tr("Cam: -"));
     frameLabel_ = new QLabel(tr("- ms"));
     gpuLabel_ = new QLabel(tr("GPU: -"));
-    for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
+    activeMaterialLabel_ = new QLabel;
+    activeMaterialLabel_->setObjectName(QStringLiteral("statusActiveMaterial"));
+    for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_, activeMaterialLabel_}) statusBar()->addPermanentWidget(l);
     uvAlignmentAction_ = new QAction(tr("UV: Face"), this);
     uvAlignmentAction_->setObjectName(QStringLiteral("newSolidWorldUv"));
     uvAlignmentAction_->setCheckable(true);
@@ -650,6 +698,7 @@ void MainWindow::buildStatusBar() {
     statusBar()->addPermanentWidget(uvButton);
     updateGridStatus();
     modeLabel_->setText(modeSummary(session_));
+    activeMaterialLabel_->setText(tr("Active material: %1").arg(fromStd(session_.newSolidStyle().material)));
     statusBar()->showMessage(tr("Ready"));
 }
 
@@ -1024,11 +1073,13 @@ void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {
         profileCombo_->addItem(tr("(no game profiles)"));
         profileCombo_->setEnabled(false);
         loadEntityClasses();
+        reloadGameContent();
         return;
     }
     profileCombo_->setEnabled(true);
     if (const int i = profileCombo_->findText(previous); i >= 0) profileCombo_->setCurrentIndex(i);
     loadEntityClasses();
+    reloadGameContent();
 }
 
 void MainWindow::reloadProfiles() {
@@ -1087,6 +1138,7 @@ bool MainWindow::loadFile(const QString& readPath, const QString& path, bool rec
 void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const vmf::VmfFile& parsed,
                                  const QString& path, bool unsaved) {
     autosave_.reset();
+    closeMaterialPicker();
     viewport_->setDocument(nullptr);
     session_.detach();
     document_ = std::move(doc);
