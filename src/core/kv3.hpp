@@ -12,7 +12,8 @@ struct Value {
     using Array = std::vector<Value>;
     using Object = std::vector<Member>;
     using Binary = std::vector<std::uint8_t>;
-    std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, Array, Object, Binary> data = nullptr;
+    // No default initializer: it would instantiate the variant while Member is still incomplete (Clang).
+    std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, Array, Object, Binary> data;
     std::string flag;
     kv1::SourceSpan source;
 

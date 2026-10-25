@@ -385,7 +385,7 @@ TEST_CASE("UI key chord conversion round trips preset shortcuts") {
             const auto* chords = std::get_if<std::vector<apex::editor::KeyChord>>(&binding.value);
             if (!chords) continue;
             for (const auto& chord : *chords) {
-                if (chord.key == "Ctrl" || chord.key == "Alt") continue;
+                if (chord.key == "Ctrl" || chord.key == "Shift" || chord.key == "Alt") continue; // Modifier holds.
                 const auto sequence = apex::ui::keySequence(chord);
                 REQUIRE_FALSE(sequence.isEmpty());
                 const auto combination = sequence[0];
