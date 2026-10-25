@@ -102,7 +102,7 @@ PieResult PieGesture::input(const InputEvent& event, std::chrono::milliseconds n
         else if (!disabledAimed()) return pick(highlighted());
         else clickStyle_ = true; // Released on a disabled item: stay open for a click.
     }
-    if (event.kind == InputKind::Press && event.button == PointerButton::Left && clickStyle_ && !disabledAimed())
+    if (event.kind == InputKind::Press && event.button == PointerButton::Left && !disabledAimed())
         return pick(highlighted());
     if (event.kind == InputKind::KeyDown) {
         if (key == trigger_.key) return result_;

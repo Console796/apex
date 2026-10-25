@@ -1,6 +1,7 @@
 #include "ui/settings_dialog.hpp"
 
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -26,6 +27,7 @@
 #include "editor/preset_io.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
+#include "ui/pie_menu_popup.hpp"
 #include "ui/theme.hpp"
 #include "ui/theme_editor.hpp"
 
@@ -124,15 +126,16 @@ SettingsDialog::SettingsDialog(MainWindow& window) : QDialog(&window), window_(w
     auto* pages = new QStackedWidget;
     pages->addWidget(buildGeneralPage());
     pages->addWidget(buildKeysPage());
+    pages->addWidget(buildInputPage());
     auto* nav = new QListWidget;
     nav->setObjectName(QStringLiteral("settingsNav"));
     nav->setFixedWidth(150);
-    nav->addItems({tr("General"), tr("Keybindings")});
+    nav->addItems({tr("General"), tr("Keybindings"), tr("Input")});
     connect(nav, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
     nav->setCurrentRow(0);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel);
-    connect(buttons, &QDialogButtonBox::rejected, this, [this] { if (confirmDiscard()) reject(); });
+    connect(buttons, &QDialogButtonBox::rejected, this, [this] { reject(); });
     connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] { applyAll(); });
     connect(buttons->button(QDialogButtonBox::Ok), &QPushButton::clicked, this, [this] { if (applyAll()) accept(); });
 
@@ -144,6 +147,10 @@ SettingsDialog::SettingsDialog(MainWindow& window) : QDialog(&window), window_(w
     root->addWidget(buttons);
 
     loadPreset(window_.editorSession().preset().name);
+}
+
+void SettingsDialog::reject() {
+    if (confirmDiscard()) QDialog::reject();
 }
 
 void SettingsDialog::refreshThemeCombo(const QString& select) {
@@ -300,6 +307,56 @@ QWidget* SettingsDialog::buildGeneralPage() {
     uvAlignment_->setCurrentIndex(window_.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World ? 1 : 0);
     form->addRow(tr("New solid UV alignment"), uvAlignment_);
     return page;
+}
+
+QWidget* SettingsDialog::buildInputPage() {
+    auto* page = new QWidget;
+    auto* form = new QFormLayout(page);
+    originalInput_ = window_.editorSession().pieSettings();
+    const auto pixels = [&](const char* name, double minimum, double maximum, double value) {
+        auto* box = new QDoubleSpinBox;
+        box->setObjectName(QString::fromLatin1(name));
+        box->setRange(minimum, maximum);
+        box->setSuffix(tr(" px"));
+        box->setValue(value);
+        return box;
+    };
+    pieRadius_ = pixels("settingsPieRadius", 20, 500, originalInput_.radius);
+    pieDeadZone_ = pixels("settingsPieDeadZone", 0, 500, originalInput_.deadZone);
+    pieConfirm_ = pixels("settingsPieConfirmOnStopDistance", 0, 2000, originalInput_.confirmOnStopDistance);
+    pieConfirm_->setSpecialValueText(tr("Off"));
+    const auto milliseconds = [&](const char* name, std::chrono::milliseconds value) {
+        auto* box = new QSpinBox;
+        box->setObjectName(QString::fromLatin1(name));
+        box->setRange(0, 5000);
+        box->setSuffix(tr(" ms"));
+        box->setValue(static_cast<int>(value.count()));
+        return box;
+    };
+    pieTap_ = milliseconds("settingsPieTapTimeout", originalInput_.tapTimeout);
+    pieAnimation_ = milliseconds("settingsPieAnimation", originalInput_.animation);
+    form->addRow(tr("Pie radius"), pieRadius_);
+    form->addRow(tr("Dead zone"), pieDeadZone_);
+    form->addRow(tr("Tap timeout"), pieTap_);
+    form->addRow(tr("Open animation (0 = instant)"), pieAnimation_);
+    form->addRow(tr("Confirm-on-stop distance (0 = off)"), pieConfirm_);
+    return page;
+}
+
+editor::PieSettings SettingsDialog::inputSettings() const {
+    auto settings = originalInput_;
+    settings.radius = pieRadius_->value();
+    settings.deadZone = pieDeadZone_->value();
+    settings.tapTimeout = std::chrono::milliseconds(pieTap_->value());
+    settings.animation = std::chrono::milliseconds(pieAnimation_->value());
+    settings.confirmOnStopDistance = pieConfirm_->value();
+    return settings;
+}
+bool SettingsDialog::inputModified() const {
+    const auto settings = inputSettings();
+    return settings.radius != originalInput_.radius || settings.deadZone != originalInput_.deadZone ||
+           settings.tapTimeout != originalInput_.tapTimeout || settings.animation != originalInput_.animation ||
+           settings.confirmOnStopDistance != originalInput_.confirmOnStopDistance;
 }
 
 QWidget* SettingsDialog::buildKeysPage() {
@@ -631,13 +688,17 @@ void SettingsDialog::exportPreset() {
 }
 
 bool SettingsDialog::confirmDiscard() {
-    if (!keysModified()) return true;
-    const auto answer = QMessageBox::question(this, tr("Unsaved keybinding changes"),
-                                              tr("Discard the unapplied changes to \"%1\"?").arg(fromStd(working_.name)));
+    if (!keysModified() && !inputModified()) return true;
+    const auto answer = QMessageBox::question(this, tr("Unapplied preferences"),
+                                              tr("Discard unapplied preferences?"));
     return answer == QMessageBox::Yes;
 }
 
 bool SettingsDialog::applyAll() {
+    const auto settings = inputSettings();
+    window_.editorSession().setPieSettings(settings);
+    savePieSettings(settings);
+    originalInput_ = settings;
     window_.editorSession().confirmNonConvexMerge = confirmMerge_->isChecked();
     QSettings().setValue("editing/confirmNonConvexMerge", confirmMerge_->isChecked());
     window_.setNewSolidStyle(window_.editorSession().newSolidStyle().material,

@@ -49,6 +49,8 @@ public:
     const editor::Tool& activeToolObject() const;
     bool input(const InputEvent& event, const ToolView& view);
     void setClock(std::function<std::chrono::milliseconds()> clock) { clock_ = std::move(clock); }
+    const PieSettings& pieSettings() const { return pieSettings_; }
+    std::chrono::milliseconds pieTime() const { return clock_(); }
     void setPieSettings(PieSettings settings) { pieSettings_ = settings; }
     using PieTrace = std::function<void(std::string_view, std::string_view, std::chrono::milliseconds)>;
     void setPieTrace(PieTrace trace) { pieTrace_ = std::move(trace); }
@@ -300,6 +302,7 @@ private:
     std::size_t nextObserver_ = 1;
     PieTrace pieTrace_;
     PieSettings pieSettings_;
+    std::optional<KeyChord> pieRelease_;
     std::unique_ptr<PieGesture> pie_;
     std::optional<InputSource> pieSource_;
     std::string pieRefusal_;

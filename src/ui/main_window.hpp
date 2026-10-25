@@ -29,6 +29,7 @@ class Document;
 
 namespace apex::ui {
 
+class PieMenuPopup;
 class GameContent;
 class LogPanel;
 class OutlinerPanel;
@@ -159,6 +160,7 @@ private:
     QTimer* autosaveTimer_ = nullptr;
     std::uint64_t savedState_ = 0;
     bool unsaved_ = false;
+    QPointer<PieMenuPopup> piePopup_;
     std::size_t sessionObserver_ = 0;
     bool clipboardHasFragment_ = false;
     std::optional<std::uint64_t> shownClassesRevision_;

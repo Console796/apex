@@ -6,6 +6,8 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPointF>
+#include <QPointer>
+#include <QWidget>
 #include <QSizeF>
 #include <QString>
 #include <optional>
@@ -35,6 +37,8 @@ public:
     ~TransformInput();
     TransformInput(const TransformInput&) = delete;
     TransformInput& operator=(const TransformInput&) = delete;
+    void setWidget(QWidget* widget);
+    static QWidget* widgetFor(editor::InputSource source);
     void setSession(editor::EditorSession* session);
 
     // Both return true when a transform/action consumes the event before camera navigation.

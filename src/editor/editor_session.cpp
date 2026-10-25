@@ -927,15 +927,18 @@ bool EditorSession::transformActive() const { return activeToolObject().transfor
 const ModalTransform& EditorSession::modal() const { return selectTool().modal(); }
 const CycleState& EditorSession::cycle() const { return selectTool().cycle_; }
 void EditorSession::forgetInputSource(InputSource source) {
+    if (pieSource_ == source) pieFocusLost();
     for (auto& [id, tool] : tools_) tool->forget(source);
 }
 void EditorSession::finishPie(PieResult result) {
     if (result.outcome == PieResult::Pending) return;
     if (pieTrace_) pieTrace_(result.outcome == PieResult::Pick ? "pick" : "cancel",
                              result.action.value_or(""), clock_());
+    if (pie_->triggerHeld()) pieRelease_ = pie_->trigger();
     pie_.reset();
     pieSource_.reset();
     if (result.outcome == PieResult::Pick && result.action) perform(*result.action);
+    notify();
 }
 void EditorSession::tickPie() {
     if (pie_) finishPie(pie_->tick(clock_()));
@@ -945,6 +948,14 @@ void EditorSession::pieFocusLost() {
     finishPie(pie_->focusLost());
 }
 bool EditorSession::input(const InputEvent& event, const ToolView& view) {
+    // Modifiers can be released before the trigger, so match its physical key from any pane.
+    if (event.kind == InputKind::KeyDown && !event.autoRepeat && pieRelease_ &&
+        event.chord && event.chord->key == pieRelease_->key) pieRelease_.reset();
+    if (event.kind == InputKind::KeyUp && pieRelease_ &&
+        (event.chord ? event.chord->key : event.key) == pieRelease_->key) {
+        if (!event.autoRepeat) pieRelease_.reset();
+        return true;
+    }
     if (pie_) {
         finishPie(pie_->input(event, clock_()));
         return true;
@@ -963,6 +974,7 @@ bool EditorSession::input(const InputEvent& event, const ToolView& view) {
                 if (pieTrace_) pieTrace_("open", "pie.tools", clock_());
             }
             if (!pieRefusal_.empty() && pieTrace_) pieTrace_("refusal", pieRefusal_, clock_());
+            notify();
             return true;
         }
     }

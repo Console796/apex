@@ -38,6 +38,9 @@ public:
     PieResult tick(std::chrono::milliseconds now);
     PieResult focusLost();
     std::optional<std::size_t> highlighted() const;
+    DVec2 centre() const { return centre_; }
+    bool triggerHeld() const { return triggerHeld_; }
+    const KeyChord& trigger() const { return trigger_; }
     bool clickStyle() const { return clickStyle_; }
     double openProgress(std::chrono::milliseconds now) const;
 

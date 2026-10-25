@@ -386,3 +386,20 @@ TEST_CASE("tool dispatch forgets a closed pane's pending gesture") {
     clickAt(session, viewFor(), 2);
     CHECK(session.selection().contains(scene.box));
 }
+
+TEST_CASE("pie dispatch swallows a held trigger release after digit click escape and focus loss") {
+    for (const int how : {0, 1, 2, 3}) {
+        Scene scene;
+        auto& session = scene.session;
+        REQUIRE(session.input(shortcut("Q"), viewFor()));
+        if (how == 0) session.input(shortcut("6"), viewFor());
+        if (how == 1) session.input(shortcut("Escape"), viewFor());
+        if (how == 2) session.pieFocusLost();
+        if (how == 3) session.input(pointer(InputKind::Press, {200, 100}), viewFor());
+        REQUIRE_FALSE(session.pie());
+        auto release = shortcut("Q", InputKind::KeyUp);
+        release.source = 99;
+        CHECK(session.input(release, viewFor()));
+        CHECK_FALSE(session.input(release, viewFor()));
+    }
+}

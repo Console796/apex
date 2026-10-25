@@ -7,6 +7,8 @@
 namespace apex::ui {
 namespace {
 
+std::map<editor::InputSource, QPointer<QWidget>> paneWidgets;
+
 bool isModifierKey(int key) {
     return key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt || key == Qt::Key_Meta || key == Qt::Key_AltGr;
 }
@@ -81,7 +83,14 @@ std::string modalKeyName(const QKeyEvent& event) {
     }
 }
 
+void TransformInput::setWidget(QWidget* widget) { paneWidgets[source()] = widget; }
+QWidget* TransformInput::widgetFor(editor::InputSource source) {
+    const auto it = paneWidgets.find(source);
+    return it == paneWidgets.end() ? nullptr : it->second.data();
+}
+
 TransformInput::~TransformInput() {
+    paneWidgets.erase(source());
     if (session_) session_->forgetInputSource(source());
 }
 void TransformInput::setSession(editor::EditorSession* session) {

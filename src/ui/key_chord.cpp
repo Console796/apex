@@ -32,4 +32,12 @@ std::optional<editor::KeyChord> keyChord(const QKeyEvent& event) {
     parsed->alt = event.modifiers().testFlag(Qt::AltModifier);
     return *parsed;
 }
+QString shortcutText(const editor::Preset& preset, const editor::ActionId& action) {
+    QStringList text;
+    const auto it = preset.bindings.find(action);
+    if (it != preset.bindings.end())
+        if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&it->second.value))
+            for (const auto& chord : *chords) text.push_back(keySequence(chord).toString(QKeySequence::NativeText));
+    return text.join(QStringLiteral(", "));
+}
 } // namespace apex::ui

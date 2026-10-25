@@ -59,6 +59,8 @@
 #include "editor/vertex_tool.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
+#include "ui/pie_menu_popup.hpp"
+#include "ui/transform_input.hpp"
 #include "ui/input_log.hpp"
 #include "ui/outliner_panel.hpp"
 #include "ui/visgroup_panel.hpp"
@@ -149,8 +151,11 @@ MainWindow::MainWindow(QWidget* parent)
     session_.setNewSolidUvAlignment(worldUv ? geometry::UvAlignment::World : geometry::UvAlignment::Face);
     session_.setFaceExtrapolation(static_cast<editor::FaceExtrapolation>(extrapolation));
     session_.setOverlayPalette(overlayPalette(currentTokens()));
+    session_.setPieSettings(loadPieSettings());
     initializeIcons();
-    session_.setPieTrace([](std::string_view event, std::string_view detail, std::chrono::milliseconds time) {
+    session_.setPieTrace([this](std::string_view event, std::string_view detail, std::chrono::milliseconds time) {
+        // Once per refusal: pieRefusal() stays set until the next open, so an observer would repeat it.
+        if (event == "refusal") statusBar()->showMessage(fromStd(detail), 4000);
         inputTraceEvent("pie", {{"event", fromStd(event)}, {"detail", fromStd(detail)},
                                 {"session_ms", static_cast<qint64>(time.count())}});
     });
@@ -193,6 +198,14 @@ MainWindow::MainWindow(QWidget* parent)
         return box.clickedButton() == merge;
     };
     sessionObserver_ = session_.observe([this] {
+        if (session_.pie()) {
+            if (!piePopup_ || !piePopup_->isVisible()) {
+                if (auto* pane = TransformInput::widgetFor(*session_.pieSource())) {
+                    if (!piePopup_) piePopup_ = new PieMenuPopup(session_, this);
+                    piePopup_->open(pane);
+                }
+            }
+        } else if (piePopup_) piePopup_->sync();
         if (lastActiveMaterial_ != session_.newSolidStyle().material) {
             lastActiveMaterial_ = session_.newSolidStyle().material;
             QSettings().setValue(QStringLiteral("editor/newSolidMaterial"), fromStd(lastActiveMaterial_));
@@ -241,6 +254,7 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+    delete piePopup_.data();
     closeMaterialPicker();
     session_.unobserve(sessionObserver_);
     viewport_->setEditorSession(nullptr);  // Also its panels and floating windows.
@@ -501,10 +515,9 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
         action->setShortcuts(sequences);
         if (id.starts_with("selection.mode.") || id == "selection.ignore_groups" || id == "selection.marquee_toggle") {
             const auto* entry = editor::actionRegistry().find(id);
-            QStringList shortcuts;
-            for (const auto& sequence : sequences) shortcuts.push_back(sequence.toString(QKeySequence::NativeText));
+            const auto shortcuts = shortcutText(session_.preset(), id);
             action->setToolTip(fromStd(entry->name) +
-                (shortcuts.empty() ? QString() : QStringLiteral(" (%1)").arg(shortcuts.join(", "))) +
+                (shortcuts.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(shortcuts)) +
                 QStringLiteral(": ") + fromStd(entry->description));
         }
         // Unmodified keys (W/E/R, arrows, Shift+L) belong to the focused pane, which routes them
