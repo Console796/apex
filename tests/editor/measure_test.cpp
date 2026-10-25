@@ -2,9 +2,17 @@
 #include "editor/editor_session.hpp"
 #include "editor/group_ops.hpp"
 #include "editor/transform.hpp"
+#include "assets/game_profile.hpp"
+#include "assets/material_index.hpp"
+#include "assets/thumbnail_cache.hpp"
+#include "assets/vfs.hpp"
+#include "core/job_pool.hpp"
 
 #include <chrono>
+#include <cstdlib>
+#include <iomanip>
 #include <iostream>
+#include <thread>
 
 using namespace editor_test;
 
@@ -70,7 +78,128 @@ void select(EditorSession& session, std::span<const NodeId> ids) {
     session.selection().replace(targets);
 }
 
+bool measureEnabled() {
+    const auto* value = std::getenv("APEX_MEASURE");
+    return value && std::string_view(value) == "1";
+}
+
+void finishIndex(assets::MaterialIndex& index, JobPool& jobs) {
+    while (!index.progress().finished) {
+        index.step();
+        jobs.drainCompletions();
+    }
+    jobs.drainCompletions();
+}
+
+void finishThumbnails(assets::ThumbnailCache& cache, JobPool& jobs,
+                      std::span<const assets::MaterialIndexEntry> entries, std::size_t limit,
+                      Clock::time_point deadline, std::size_t& decoded) {
+    const auto count = std::min(entries.size(), limit);
+    std::vector<std::string_view> requested;
+    requested.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        cache.request(entries[i].name, 128);
+        requested.push_back(entries[i].name);
+    }
+    for (;;) {
+        jobs.drainCompletions();
+        const bool pending = std::ranges::any_of(requested, [&](auto name) {
+            return cache.state(name, 128) == assets::ThumbnailState::Loading;
+        });
+        if (!pending || Clock::now() >= deadline) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    decoded = std::ranges::count_if(requested, [&](auto name) {
+        return cache.state(name, 128) == assets::ThumbnailState::Ready;
+    });
+}
+
 } // namespace
+
+TEST_CASE("[measure] 0.3 release carve 1000 targets") {
+    if (!measureEnabled()) {
+        MESSAGE("APEX_MEASURE=1 is required; skipping release measurements");
+        return;
+    }
+    Document doc(synthetic(1000));
+    const auto before = solidIds(doc);
+    REQUIRE(before.size() == 1000);
+    const auto carverHandle = addBox(doc, {-16, -16, 24}, {8016, 816, 40});
+    const auto* carver = doc.get(std::get<Handle<Solid>>(carverHandle));
+    REQUIRE(carver);
+    EditorSession session;
+    session.attach(doc);
+    session.selection().setMode(SelectionMode::Solids);
+    session.selection().setIgnoreGroups(true);
+    session.selection().select(carver->id);
+    const double elapsed = milliseconds([&] { REQUIRE(session.perform("edit.carve")); });
+    const auto after = solidIds(doc);
+    const auto fragments = after.size() - before.size() - 1;
+    REQUIRE(after.size() >= before.size() + 1);
+    std::ostringstream report;
+    report << std::fixed << std::setprecision(3) << "Carve 1000 target solids | " << elapsed
+           << " ms | " << fragments << " new fragments (D10; no time budget specified)";
+    MESSAGE(report.str());
+    std::cout << report.str() << '\n';
+}
+
+TEST_CASE("[measure] 0.3 release P2CE material index and thumbnails") {
+    if (!measureEnabled()) {
+        MESSAGE("APEX_MEASURE=1 is required; skipping release measurements");
+        return;
+    }
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) {
+        MESSAGE("APEX_P2CE_DIR is unset; skipping P2CE material measurements");
+        return;
+    }
+    JobPool jobs(2);
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    profile.addons.list = assets::AddonSettings::List::Game;
+    profile.addons.enabled = true;
+    auto loaded = assets::Vfs::load(profile, jobs);
+    REQUIRE(loaded);
+    assets::Vfs vfs(std::move(*loaded));
+    const auto mounted = std::ranges::count_if(vfs.addons().entries, [](const auto& entry) {
+        return entry.mounted && !entry.resolved.empty();
+    });
+
+    double cold = 0;
+    std::shared_ptr<const assets::MaterialIndexSnapshot> snapshot;
+    {
+        const auto start = Clock::now();
+        assets::MaterialIndex index(vfs, jobs, profile.escapeMode);
+        finishIndex(index, jobs);
+        cold = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        snapshot = index.snapshot();
+    }
+    REQUIRE(snapshot);
+    const auto vmtCount = snapshot->entries.size();
+    const double warm = median([&] {
+        assets::MaterialIndex index(vfs, jobs, profile.escapeMode);
+        finishIndex(index, jobs);
+        CHECK(index.snapshot());
+    });
+
+    assets::ThumbnailCache thumbnails(vfs, jobs, snapshot);
+    std::size_t firstDecoded = 0;
+    const auto deadline = Clock::now() + std::chrono::seconds(55);
+    finishThumbnails(thumbnails, jobs, snapshot->entries, 200, deadline, firstDecoded);
+    const auto screenBytes = thumbnails.residentBytes();
+    std::size_t allDecoded = firstDecoded;
+    if (Clock::now() < deadline && vmtCount > 200)
+        finishThumbnails(thumbnails, jobs, snapshot->entries, vmtCount, deadline, allDecoded);
+    std::ostringstream report;
+    report << std::fixed << std::setprecision(3)
+           << "P2CE material index | mounted addons " << mounted << " | VMTs " << vmtCount
+           << " | cold-ish " << cold << " ms | warm median (7) " << warm << " ms"
+           << " | thumbnails 128px: first screen " << firstDecoded << "/200, cache " << screenBytes
+           << " bytes; all attempt " << allDecoded << "/" << vmtCount << ", cache "
+           << thumbnails.residentBytes() << " bytes (resident RGBA pixel buffers only; 64 MiB cache budget)";
+    MESSAGE(report.str());
+    std::cout << report.str() << '\n';
+}
 
 TEST_CASE("[measure] 0.2 release undo memory and frame costs") {
     const char* enabled = std::getenv("APEX_MEASURE");

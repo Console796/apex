@@ -6,8 +6,15 @@
 #include "render/render_mirror.hpp"
 #include "render/render_target.hpp"
 #include "render/view_math.hpp"
+#include "editor/editor_session.hpp"
+#include "../editor/fixtures.hpp"
+#include "editor/vertex_tool.hpp"
 
 #include <vtfpp/VTF.h>
+
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
 
 using namespace apex;
 using namespace apex::render;
@@ -104,6 +111,118 @@ int channel(const Rgba8Image& image, unsigned x, unsigned y, unsigned c) {
 }
 
 } // namespace
+
+TEST_CASE("[measure] 0.3 release preview ticks for 500 vertex-selected solids") {
+    const auto* enabled = std::getenv("APEX_MEASURE");
+    if (!enabled || std::string_view(enabled) != "1") {
+        MESSAGE("APEX_MEASURE=1 is required; skipping release measurements");
+        return;
+    }
+    REQUIRE_GPU();
+    document::Document doc(editor_test::parsed());
+    std::vector<document::NodeId> ids;
+    ids.reserve(500);
+    for (std::size_t i = 0; i < 500; ++i) {
+        const DVec3 lo{double(i % 100) * 80.0, double(i / 100) * 80.0, 0};
+        const auto handle = editor_test::addBox(doc, lo, lo + DVec3(64.0));
+        ids.push_back(doc.get(std::get<Handle<document::Solid>>(handle))->id);
+    }
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setPreset(editor_test::blenderPreset());
+    session.selection().setMode(editor::SelectionMode::Solids);
+    session.selection().setIgnoreGroups(true);
+    std::vector<editor::Target> selection;
+    for (const auto id : ids) selection.emplace_back(id);
+    session.selection().replace(selection);
+    REQUIRE(session.perform("tool.vertex"));
+
+    editor::ToolView camera;
+    camera.size = {1600, 900};
+    camera.cameraPosition = {4000, -8000, 6000};
+    camera.cameraForward = glm::normalize(DVec3{4000, 360, 32} - camera.cameraPosition);
+    camera.cameraUp = {0, 0, 1};
+    camera.fovYDegrees = 90;
+    camera.cursorRay = {camera.cameraPosition, camera.cameraForward};
+    auto input = [&](editor::InputKind kind, DVec2 cursor, bool held = false) {
+        editor::InputEvent e;
+        e.kind = kind;
+        e.source = 1;
+        e.cursor = cursor;
+        e.left = held || kind == editor::InputKind::Press;
+        if (kind == editor::InputKind::Press || kind == editor::InputKind::Release)
+            e.button = editor::PointerButton::Left;
+        return e;
+    };
+    camera.cursorRay = {camera.cameraPosition, DVec3{0, 0, 1}}; // Begin the marquee over empty space.
+    auto press = input(editor::InputKind::Press, {0, 0});
+    REQUIRE(session.input(press, camera));
+    auto move = input(editor::InputKind::Move, camera.size, true);
+    REQUIRE(session.input(move, camera));
+    auto release = input(editor::InputKind::Release, camera.size);
+    REQUIRE(session.input(release, camera));
+    auto& tool = static_cast<editor::VertexTool&>(session.activeToolObject());
+    std::set<document::NodeId> vertexSolids;
+    for (const auto& element : tool.elements()) vertexSolids.insert(element.solid);
+    REQUIRE(vertexSolids.size() == 500);
+    editor::InputEvent grab;
+    grab.kind = editor::InputKind::KeyDown;
+    grab.source = 1;
+    grab.key = "G";
+    grab.chord = editor::KeyChord{"G"};
+    camera.cursorRay = {camera.cameraPosition, camera.cameraForward};
+    REQUIRE(session.input(grab, camera));
+
+    RenderMirror mirror(*g.context, *g.heap, g.jobs, *g.cache);
+    mirror.rebuild(doc);
+    REQUIRE(mirror.settle());
+    std::vector<double> tickMs, handoffMs;
+    std::size_t maxTicksForMove = 0;
+    std::optional<std::uint64_t> lastRevision;
+    // Eight moves, each far enough to change the snapped preview, so every one is a new revision.
+    for (int sample = 0; sample < 8; ++sample) {
+        const DVec3 target{4000, 360, 32};
+        const DVec3 offset{double((sample + 1) * 128), 0, double((sample % 2 ? -1 : 1) * 64)};
+        const auto direction = glm::normalize(target + offset - camera.cameraPosition);
+        camera.cursorRay = {camera.cameraPosition, direction};
+        move.cursor = {800.0 + (sample + 1) * 40.0, 450.0 + (sample % 2 ? -1 : 1) * 30.0};
+        move.left = false; // A modal grab follows the bare pointer, as in the vertex tool tests.
+        REQUIRE(session.input(move, camera));
+        const auto& preview = session.preview();
+        REQUIRE(preview.replacements().size() == 500);
+        CAPTURE(sample);
+        REQUIRE(preview.revision() != lastRevision);
+        lastRevision = preview.revision();
+        PreviewGeometry geometry;
+        geometry.replacements = preview.replacements();
+        PreviewTransforms transforms = preview.transforms();
+        std::size_t ticks = 0;
+        do {
+            // setPreview's hand-off (copying the new revision, retiring old meshes) is timed apart
+            // from pump(), where D12's budgeted meshing and upload happen.
+            const auto start = std::chrono::steady_clock::now();
+            mirror.setPreview(transforms, geometry, preview.revision());
+            const auto handed = std::chrono::steady_clock::now();
+            mirror.pump();
+            const auto end = std::chrono::steady_clock::now();
+            if (ticks == 0) handoffMs.push_back(std::chrono::duration<double, std::milli>(handed - start).count());
+            tickMs.push_back(std::chrono::duration<double, std::milli>(end - handed).count());
+            ++ticks;
+        } while (mirror.pendingPreviewCount() > 0);
+        maxTicksForMove = std::max(maxTicksForMove, ticks);
+    }
+    std::ranges::sort(tickMs);
+    const double medianTick = tickMs[tickMs.size() / 2];
+    const double maxTick = tickMs.back();
+    std::ostringstream report;
+    report << std::fixed << std::setprecision(3)
+           << "Vertex preview 500 solids | per-tick median " << medianTick << " ms, max " << maxTick
+           << " ms vs D12 2.000 ms | setPreview hand-off max " << std::ranges::max(handoffMs)
+           << " ms | max drain " << maxTicksForMove << " ticks/move";
+    MESSAGE(report.str());
+    std::cout << report.str() << '\n';
+    CHECK(g.context->validation().errorCount() == 0);
+}
 
 TEST_CASE("preview geometry: tiny budget continues across ticks and revision restarts") {
     REQUIRE_GPU();
