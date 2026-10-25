@@ -52,6 +52,22 @@ FAST_PRESETS = ["linux-gcc-debug"]
 # handling, GPU and Qt code). A change outside these waits for the next trigger or a release run.
 WIN_TRIGGERS = ["CMakeLists.txt", "CMakePresets.json", "cmake/", "tests/CMakeLists.txt", "version.txt",
                 "src/core/", "src/assets/", "src/render/", "src/ui/", "src/app/"]
+# Peak resident memory of one ASan compile or test process, and what the Windows VM takes.
+JOB_GB = 0.75
+VM_GB = 4.5
+
+
+def memory_jobs(run_win):
+    """Concurrent jobs that fit in the memory free now (Linux), less the VM's share; None if unknown."""
+    try:
+        with open("/proc/meminfo") as f:
+            info = dict(line.split(":", 1) for line in f)
+        free_gb = int(info["MemAvailable"].split()[0]) / 1024 / 1024
+    except (OSError, KeyError, ValueError):
+        return None
+    return max(2, int((free_gb - (VM_GB if run_win else 0)) / JOB_GB))
+
+
 DEFAULT_VCVARS = ('call "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools'
                   '\\VC\\Auxiliary\\Build\\vcvars64.bat"')
 
@@ -554,7 +570,8 @@ def main():
     ap.add_argument("--fuzz-seconds", type=int, default=600,
                     help="libFuzzer run time (default: 600; 0 disables the stage)")
     ap.add_argument("--build-slots", type=int, default=0,
-                    help="concurrent compiles (default: 2, or 1 while the Windows VM runs)")
+                    help="concurrent builds (default: 2, or 1 while the Windows VM runs); each gets -j"
+                         " from the cores and the free memory")
     ap.add_argument("--test-jobs", type=int, default=0,
                     help="concurrent ctest tests (default: half the cores)")
     ap.add_argument("--serial", action="store_true", help="run one stage at a time")
@@ -579,6 +596,16 @@ def main():
         slots = 1
     jobs = max(2, cores // slots)
     test_jobs = 1 if a.serial else (a.test_jobs or max(2, cores // 2))
+    # Cores alone overcommit memory: 24 ASan compiles beside the VM ran a 15 GB host out of memory.
+    # Builds in every slot and one test stage share the budget.
+    budget = memory_jobs(run_win)
+    if budget is not None:
+        share = max(2, budget // (slots + 1))
+        jobs = min(jobs, share)
+        if not a.test_jobs:
+            test_jobs = min(test_jobs, share)
+    print(f"ci: {slots} build slot(s) x -j{jobs}, ctest -j{test_jobs}"
+          + (f" (memory allows {budget} jobs)" if budget is not None else ""), flush=True)
     g = Graph(rep, {"build": slots, "configure": 1})
 
     def add_preset(preset):
