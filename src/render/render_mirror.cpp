@@ -136,7 +136,9 @@ struct RenderMirror::Impl {
     std::size_t previewCursor = 0;
     std::optional<std::uint64_t> previewRevision;
     std::chrono::nanoseconds previewBudget = std::chrono::milliseconds(2);
-    std::chrono::nanoseconds previewFlushPerSolid{0};
+    // Seeded so the first tick of a drag reserves upload time too (about 6 us per box measured on
+    // an RTX 4060 Ti at the 0.3 release); a zero seed let that tick run to 4.8 ms with 500 solids.
+    std::chrono::nanoseconds previewFlushPerSolid = std::chrono::microseconds(10);
 
     void clearGeometry() {
         for (auto& state : previewGeometry) retire(state.mesh);
