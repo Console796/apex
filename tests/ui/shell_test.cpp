@@ -2466,7 +2466,7 @@ TEST_CASE("addons menu reflects list order toggles and stale file errors") {
     REQUIRE(actions.size() == 5);
     CHECK(actions[0]->text() == QStringLiteral("Game list"));
     CHECK_FALSE(actions[0]->isEnabled());
-    CHECK(actions[0]->toolTip() == QString::fromStdString((tree.root / "Game/addons/addonlist.kv3").string()));
+    CHECK(actions[0]->toolTip() == QString::fromStdString((tree.root / "Game" / "addons" / "addonlist.kv3").string()));
     CHECK(actions[0]->statusTip() == actions[0]->toolTip());
     auto* workshop = window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop"));
     auto* local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
@@ -2527,7 +2527,7 @@ TEST_CASE("addons menu reflects list order toggles and stale file errors") {
     tree.put("hammer/addons/addonlist.kv3", original);
     show();
     CHECK(menu->actions()[0]->text() == QStringLiteral("Hammer list"));
-    CHECK(menu->actions()[0]->toolTip() == QString::fromStdString((tree.root / "hammer/addons/addonlist.kv3").string()));
+    CHECK(menu->actions()[0]->toolTip() == QString::fromStdString((tree.root / "hammer" / "addons" / "addonlist.kv3").string()));
     tree.put("hammer/addons/addonlist.kv3", "invalid fixture");
     show();
     CHECK(menu->actions().size() == 3);

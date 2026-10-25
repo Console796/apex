@@ -527,7 +527,8 @@ TEST_CASE("Materials grid cells fit their names at the default size and with a l
             CAPTURE(row);
             CHECK(pixmap.deviceIndependentSize().toSize() == grid->iconSize());
             const auto rect = grid->visualRect(model->index(row, 0));
-            CHECK(rect.height() >= grid->iconSize().height() + metrics.lineSpacing());
+            // One line needs the text height; line spacing adds leading (1 px on Windows' font).
+            CHECK(rect.height() >= grid->iconSize().height() + metrics.height());
             CHECK(rect.height() <= grid->gridSize().height());
             CHECK(rect.width() <= grid->gridSize().width());
         }

@@ -4,6 +4,7 @@
 #include "core/kv3.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -30,8 +31,12 @@ const std::string* string(const kv3::Value& value, std::string_view key) {
 
 fs::path resolveAddonPath(std::string_view dir) {
     std::string path(dir);
+#ifdef _WIN32
+    // Native separators and an upper-case drive, so results compare equal to paths built natively.
+    std::ranges::replace(path, '/', '\\');
+    if (path.size() >= 2 && path[1] == ':') path[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(path[0])));
+#else
     std::ranges::replace(path, '\\', '/');
-#ifndef _WIN32
     if (path.size() >= 2 && path[1] == ':') {
         if (path[0] != 'z' && path[0] != 'Z') return {};
         path.erase(0, 2);

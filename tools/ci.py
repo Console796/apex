@@ -433,6 +433,8 @@ def windows_stage(build, report):
         ] + [f'(if exist "{n.replace("/", chr(92))}" del /q "{n.replace("/", chr(92))}")' for n in stale] + [
             envcmd,
             f'set "CMAKE_PREFIX_PATH={qt}"', f'set "CPM_SOURCE_CACHE={wwin}\\cpm-cache"',
+            # Non-GPU tests only (0.1 D23): a guest's software Vulkan isn't the lavapipe reference.
+            'set "APEX_VK_DEVICE=apex-ci-no-gpu"',
             f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}",
             "cmake --build --preset windows-msvc-release",
             "ctest --preset windows-msvc-release",
