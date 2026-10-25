@@ -189,7 +189,9 @@ TEST_CASE("GameContent reloads safely during indexing and MaterialsPanel filters
     CHECK(window.editorSession().newSolidStyle().material == "target");
     CHECK(settings.value("editor/newSolidMaterial").toString() == "target");
     CHECK(settings.value("materials/recent").toStringList().front() == "target");
-    CHECK(window.findChild<QLabel*>("statusActiveMaterial")->text().contains("target"));
+    auto* indicator = window.findChild<QToolButton*>("activeMaterialIndicator");
+    REQUIRE(indicator);
+    CHECK(indicator->text().contains("target"));
 
     targetIndex = grid->model()->index(0, 0);
     grid->doubleClicked(targetIndex);
@@ -227,12 +229,36 @@ TEST_CASE("GameContent reloads safely during indexing and MaterialsPanel filters
     CHECK(window.gameContent().thumbnails()->state("target", 96) == assets::ThumbnailState::Ready);
     CHECK(window.gameContent().thumbnails()->state("other", 96) == assets::ThumbnailState::Unloaded);
     CHECK(panel->thumbnailRequestCount() > 0);
+
+    // A single grid click applies only while the face edit tool is active.
+    REQUIRE(window.editorSession().perform("tool.apply"));
+    window.editorSession().selection().setMode(editor::SelectionMode::Faces);
+    window.editorSession().selection().select(side);
+    filter->setText("brick");
+    const auto brick = grid->model()->index(0, 0);
+    REQUIRE(brick.isValid());
+    grid->clicked(brick);
+    CHECK(sideMaterial(doc, side) == "brick");
+    CHECK(doc.undoLabels().back() == "Apply Material");
+    REQUIRE(window.editorSession().perform("tool.select"));
+    window.editorSession().selection().setMode(editor::SelectionMode::Faces);
+    window.editorSession().selection().select(side);
+    const auto undoBeforeActiveOnly = doc.undoCount();
+    filter->setText("target");
+    const auto target = grid->model()->index(0, 0);
+    REQUIRE(target.isValid());
+    grid->clicked(target);
+    CHECK(window.editorSession().newSolidStyle().material == "target");
+    CHECK(sideMaterial(doc, side) == "brick");
+    CHECK(doc.undoCount() == undoBeforeActiveOnly);
     delete panel;
     window.editorSession().detach(); // doc is destroyed before the window
 }
 
 TEST_CASE("Inspector material browse writes on pick and Esc leaves the key unchanged") {
     app();
+    const auto oldBrowserMode = QSettings().value("ui/materialBrowserWindow");
+    ui::MainWindow::setMaterialBrowserInWindow(false);
     GameTree tree;
     const auto profile = makeProfile(tree);
     ui::MainWindow window;
@@ -276,6 +302,62 @@ TEST_CASE("Inspector material browse writes on pick and Esc leaves the key uncha
     QApplication::sendEvent(dialog, &escape);
     app().processEvents();
     CHECK(doc->get(*doc->handle(id))->block->find("material")->decodedValue() == "target");
+    if (oldBrowserMode.isValid()) QSettings().setValue("ui/materialBrowserWindow", oldBrowserMode);
+    else QSettings().remove("ui/materialBrowserWindow");
+}
+
+TEST_CASE("Material Browse uses the Materials area once, cancels with Escape and honors window mode") {
+    app();
+    GameTree tree;
+    const auto profile = makeProfile(tree);
+    const auto oldBrowserMode = QSettings().value("ui/materialBrowserWindow");
+    ui::MainWindow::setMaterialBrowserInWindow(false);
+    {
+        ui::MainWindow window;
+        window.setProfiles({profile});
+        waitForIndex(window.gameContent());
+        auto* area = window.viewportArea();
+        const auto pane = area->viewportLayout().paneIds().front();
+        area->setRole(pane, viewport::AreaRole::Materials);
+        area->flush();
+        area->setCollapsed(pane, true);
+        area->flush();
+        window.show();
+        QString chosen;
+        const auto active = window.editorSession().newSolidStyle().material;
+        window.openMaterialPicker("brick", "the selected faces", [&](QString value) { chosen = value; });
+        app().processEvents();
+        auto* panel = qobject_cast<ui::MaterialsPanel*>(area->panel(pane));
+        REQUIRE(panel);
+        CHECK_FALSE(area->viewportLayout().collapsed(pane));
+        CHECK(panel->findChild<QLabel*>("materialsPickBanner")->text().contains("the selected faces"));
+        CHECK(panel->findChild<QLineEdit*>("materialsNameFilter")->text() == "brick");
+        auto* grid = panel->findChild<QListView*>("materialsGrid");
+        REQUIRE(grid);
+        const auto index = grid->model()->index(0, 0);
+        REQUIRE(index.isValid());
+        const auto expected = index.data().toString();
+        grid->clicked(index);
+        CHECK(chosen == expected);
+        CHECK_FALSE(panel->findChild<QLabel*>("materialsPickBanner")->isVisible());
+        CHECK(window.editorSession().newSolidStyle().material == active);
+
+        chosen.clear();
+        window.openMaterialPicker("brick", "first browse", [&](QString value) { chosen = value; });
+        window.openMaterialPicker("brick", "second browse", [&](QString value) { chosen = value; });
+        CHECK(panel->findChild<QLabel*>("materialsPickBanner")->text().contains("second browse"));
+        QKeyEvent escape(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QApplication::sendEvent(grid, &escape);
+        CHECK(chosen.isEmpty());
+        CHECK_FALSE(panel->findChild<QLabel*>("materialsPickBanner")->isVisible());
+        CHECK(window.editorSession().newSolidStyle().material == active);
+
+        ui::MainWindow::setMaterialBrowserInWindow(true);
+        window.openMaterialPicker("brick", "material", [](QString) {});
+        CHECK(window.findChild<QDialog*>("materialPicker"));
+    }
+    if (oldBrowserMode.isValid()) QSettings().setValue("ui/materialBrowserWindow", oldBrowserMode);
+    else QSettings().remove("ui/materialBrowserWindow");
 }
 
 TEST_CASE("Materials grid: a real double-click applies a new material, rows drag, and panels die cleanly") {
@@ -322,14 +404,53 @@ TEST_CASE("Materials grid: a real double-click applies a new material, rows drag
         CHECK(sideMaterial(*doc, side) == "target");
 
         // A picker left open across a document change is closed, not left observing the old one.
-        window.openMaterialPicker("brick", [](QString) {});
+        window.openMaterialPicker("brick", "the material", [](QString) {});
         QPointer<QDialog> picker = window.findChild<QDialog*>("materialPicker");
         REQUIRE(picker);
         window.newFile();
         CHECK_FALSE(picker);
-        window.openMaterialPicker("brick", [](QString) {}); // And one left open at shutdown.
+        window.openMaterialPicker("brick", "the material", [](QString) {}); // And one left open at shutdown.
     }
     CHECK_FALSE(docked); // Destroyed with the window, after GameContent, without touching it (ASan).
+}
+
+TEST_CASE("Active material indicator shows a thumbnail and opens the shared picker") {
+    app();
+    const auto oldBrowserMode = QSettings().value("ui/materialBrowserWindow");
+    ui::MainWindow::setMaterialBrowserInWindow(false);
+    GameTree tree;
+    const auto profile = makeProfile(tree);
+    ui::MainWindow window;
+    window.setProfiles({profile});
+    waitForIndex(window.gameContent());
+    window.activateMaterial("brick");
+    auto* indicator = window.findChild<QToolButton*>("activeMaterialIndicator");
+    REQUIRE(indicator);
+    CHECK(indicator->text() == "brick");
+    CHECK(indicator->toolTip().contains("brick"));
+    // The indicator asks for the thumbnail itself and repaints when GameContent reports it.
+    const auto swatch = [indicator] { return indicator->icon().pixmap(22, 22).toImage().pixelColor(10, 10); };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (swatch() == QColor(96, 99, 104) && std::chrono::steady_clock::now() < deadline) {
+        app().processEvents();
+        QThread::msleep(1);
+    }
+    CHECK(window.gameContent().thumbnails()->state("brick", 22) == assets::ThumbnailState::Ready);
+    CHECK(swatch() != QColor(96, 99, 104));
+
+    indicator->click();
+    app().processEvents();
+    auto* dialog = window.findChild<QDialog*>("materialPicker");
+    REQUIRE(dialog);
+    auto* picker = dialog->findChild<ui::MaterialsPanel*>("materialsPanel");
+    REQUIRE(picker);
+    CHECK(picker->findChild<QLineEdit*>("materialsNameFilter")->text() == "brick");
+    picker->materialChosen("target");
+    app().processEvents();
+    CHECK(window.editorSession().newSolidStyle().material == "target");
+    CHECK(indicator->text() == "target");
+    if (oldBrowserMode.isValid()) QSettings().setValue("ui/materialBrowserWindow", oldBrowserMode);
+    else QSettings().remove("ui/materialBrowserWindow");
 }
 
 TEST_CASE("Materials source filter lists the game and each addon that serves materials") {

@@ -1,4 +1,5 @@
 #include "document/document.hpp"
+#include "geometry/face_uv.hpp"
 #include "geometry/tolerances.hpp"
 
 #include <doctest/doctest.h>
@@ -187,12 +188,17 @@ TEST_CASE("setSolidGeometry matches IDs, round trips transformed points and undo
             for (const auto& point : plane.points) {
                 CHECK(std::any_of(points.begin(), points.end(), [&](auto vertex) { return vertex == point; }));
             }
+            // Texture lock rewrites the axes, and `rotation` follows them (D15).
             for (const auto& child : old.node->children()) {
                 if (child.key() == "plane" || child.key() == "point_data" ||
-                    child.key() == "uaxis" || child.key() == "vaxis") continue;
+                    child.key() == "uaxis" || child.key() == "vaxis" || child.key() == "rotation") continue;
                 REQUIRE(side.node->find(child.key()));
                 CHECK(spelling(child, bytes) == spelling(*side.node->find(child.key()), output));
             }
+            const auto& face = *std::ranges::find(actual->poly.faces, static_cast<std::uint32_t>(side.id()->asInt().value()),
+                                                  &geometry::Face::sideId);
+            CHECK(side.node->find("rotation")->asDouble().value() ==
+                  doctest::Approx(geometry::deriveRotation(face.uv, face.plane.normal)).epsilon(1e-5));
         }
         const auto oldSpan = file.world->solids[0].node->sourceSpan();
         const auto newSpan = solid.node->sourceSpan();
@@ -224,10 +230,14 @@ TEST_CASE("setSolidGeometry leaves untouched sides and geometry bytes alone on a
         const auto& side = reloaded.world->solids[0].sides[i];
         if (i != 2) CHECK(spelling(*side.node, output) == spelling(*old.node, bytes));
         else {
+            // `rotation` follows the written axes (D15); every other key keeps its bytes.
             for (const auto& child : old.node->children()) {
-                if (child.key() != "uaxis")
+                if (child.key() != "uaxis" && child.key() != "rotation")
                     CHECK(spelling(*side.node->find(child.key()), output) == spelling(child, bytes));
             }
+            const auto& face = geometry.poly.faces[2];
+            CHECK(side.node->find("rotation")->asDouble().value() ==
+                  doctest::Approx(geometry::deriveRotation(face.uv, face.plane.normal)).epsilon(1e-5));
             CHECK(side.uaxis()->asUvAxis()->axis == vmf::Vec3{0.123456789012345, 1.1e-7, -0.987654321098765});
         }
     }

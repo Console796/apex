@@ -279,9 +279,20 @@ QWidget* SettingsDialog::buildGeneralPage() {
     inspectorOpens_->setToolTip(tr("Where Object properties shows the inspector. Without an inspector area in the "
                                    "workspace it always opens a window."));
     form->addRow(tr("Object properties opens in"), inspectorOpens_);
-    newSolidMaterial_ = new QLineEdit(fromStd(window_.editorSession().newSolidStyle().material));
-    newSolidMaterial_->setObjectName(QStringLiteral("settingsNewSolidMaterial"));
-    form->addRow(tr("New solid material"), newSolidMaterial_);
+    facePropertiesOpens_ = new QComboBox;
+    facePropertiesOpens_->setObjectName(QStringLiteral("settingsFacePropertiesOpens"));
+    facePropertiesOpens_->addItem(tr("Workspace area"), false);
+    facePropertiesOpens_->addItem(tr("Floating window"), true);
+    facePropertiesOpens_->setCurrentIndex(MainWindow::facePropertiesInWindow() ? 1 : 0);
+    facePropertiesOpens_->setToolTip(tr("Where Face Properties shows when the Face edit tool is activated. "
+                                        "Without a Face Properties area it opens a floating window."));
+    form->addRow(tr("Face Properties opens in"), facePropertiesOpens_);
+    materialBrowserOpens_ = new QComboBox;
+    materialBrowserOpens_->setObjectName(QStringLiteral("settingsMaterialBrowserOpens"));
+    materialBrowserOpens_->addItem(tr("Materials area"), false);
+    materialBrowserOpens_->addItem(tr("Floating window"), true);
+    materialBrowserOpens_->setCurrentIndex(MainWindow::materialBrowserInWindow() ? 1 : 0);
+    form->addRow(tr("Material browser opens in"), materialBrowserOpens_);
     uvAlignment_ = new QComboBox;
     uvAlignment_->setObjectName(QStringLiteral("settingsUvAlignment"));
     uvAlignment_->addItem(tr("Face"), static_cast<int>(geometry::UvAlignment::Face));
@@ -629,11 +640,13 @@ bool SettingsDialog::confirmDiscard() {
 bool SettingsDialog::applyAll() {
     window_.editorSession().confirmNonConvexMerge = confirmMerge_->isChecked();
     QSettings().setValue("editing/confirmNonConvexMerge", confirmMerge_->isChecked());
-    window_.setNewSolidStyle(newSolidMaterial_->text().toStdString(),
+    window_.setNewSolidStyle(window_.editorSession().newSolidStyle().material,
                              static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
     if (theme_->currentData().toString() != currentThemeId()) window_.setThemeId(theme_->currentData().toString());
     window_.setAutosave(autosave_->isChecked(), autosaveMinutes_->value());
     MainWindow::setInspectorInWindow(inspectorOpens_->currentData().toBool());
+    MainWindow::setFacePropertiesInWindow(facePropertiesOpens_->currentData().toBool());
+    MainWindow::setMaterialBrowserInWindow(materialBrowserOpens_->currentData().toBool());
     if (undoMiB_->value() != QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt())
         window_.setUndoCapMiB(undoMiB_->value());
 

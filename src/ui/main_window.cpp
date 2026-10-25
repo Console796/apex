@@ -1,4 +1,5 @@
 #include "ui/main_window.hpp"
+#include "ui/game_content.hpp"
 
 
 #include <QAction>
@@ -14,6 +15,8 @@
 #include <QFileDialog>
 #include <QKeySequence>
 #include <QInputDialog>
+#include <QImage>
+#include <QIcon>
 #include <QPushButton>
 #include <QLabel>
 #include <QMenu>
@@ -28,6 +31,8 @@
 #include <QToolButton>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <array>
+#include <ranges>
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QDialogButtonBox>
@@ -68,6 +73,11 @@
 #include "viewport/map_views.hpp"
 
 namespace apex::ui {
+namespace {
+constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
+    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure"};
+}
+
 namespace {
 int undoCapMiB() {
     bool valid = false;
@@ -123,8 +133,15 @@ MainWindow::MainWindow(QWidget* parent)
     const auto material = QSettings().value(QStringLiteral("editor/newSolidMaterial"),
                                            QStringLiteral("dev/dev_measuregeneric01")).toString();
     const bool worldUv = QSettings().value(QStringLiteral("editor/newSolidWorldUv"), false).toBool();
+    const int extrapolation = std::clamp(QSettings().value(QStringLiteral("editor/faceExtrapolation"), 0).toInt(), 0, 2);
+    QPointer<GameContent> content(gameContent_.get());
+    session_.faceTextureSize = [content](std::string_view name) {
+        return content ? content->faceTextureSize(name) : std::pair{256, 256};
+    };
     session_.setNewSolidMaterial(material.toStdString());
+    lastActiveMaterial_ = material.toStdString();
     session_.setNewSolidUvAlignment(worldUv ? geometry::UvAlignment::World : geometry::UvAlignment::Face);
+    session_.setFaceExtrapolation(static_cast<editor::FaceExtrapolation>(extrapolation));
     session_.setOverlayPalette(overlayPalette(currentTokens()));
     buildMenus();
     buildStatusBar();
@@ -134,8 +151,8 @@ MainWindow::MainWindow(QWidget* parent)
     buildAreas();
     viewport_->setEditorSession(&session_);
     viewport_->setGameContent(gameContent_.get());
-    viewport_->setMaterialBrowser([this](QString current, std::function<void(QString)> choose) {
-        openMaterialPicker(std::move(current), std::move(choose));
+    viewport_->setMaterialBrowser([this](QString current, QString what, std::function<void(QString)> choose) {
+        openMaterialPicker(std::move(current), std::move(what), std::move(choose));
     });
     connect(viewport_, &ViewportArea::activeMaterialRequested, this, &MainWindow::activateMaterial);
     connect(viewport_, &ViewportArea::materialStatusMessage, this, [this](const QString& message) {
@@ -165,12 +182,35 @@ MainWindow::MainWindow(QWidget* parent)
         return box.clickedButton() == merge;
     };
     sessionObserver_ = session_.observe([this] {
+        if (lastActiveMaterial_ != session_.newSolidStyle().material) {
+            lastActiveMaterial_ = session_.newSolidStyle().material;
+            QSettings().setValue(QStringLiteral("editor/newSolidMaterial"), fromStd(lastActiveMaterial_));
+            updateActiveMaterialIndicator();
+        }
+        if (lastFaceExtrapolation_ != session_.faceExtrapolation()) {
+            lastFaceExtrapolation_ = session_.faceExtrapolation();
+            QSettings().setValue(QStringLiteral("editor/faceExtrapolation"), static_cast<int>(lastFaceExtrapolation_));
+            const auto name = lastFaceExtrapolation_ == editor::FaceExtrapolation::Wrap ? tr("Wrap")
+                            : lastFaceExtrapolation_ == editor::FaceExtrapolation::Projected ? tr("Projected") : tr("Match");
+            statusBar()->showMessage(tr("Face extrapolation: %1").arg(name), 4000);
+        }
+        if (lastActiveTool_ != session_.activeTool()) {
+            lastActiveTool_ = session_.activeTool();
+            // Queued: the tool key may come from a pane that showRole replaces.
+            if (lastActiveTool_ == editor::EditorSession::Tool::Apply)
+                QMetaObject::invokeMethod(this, [this] {
+                    if (session_.activeTool() == editor::EditorSession::Tool::Apply)
+                        viewport_->showRole(viewport::AreaRole::FaceProperties, facePropertiesInWindow());
+                }, Qt::QueuedConnection);
+        }
         updateEditorActions();
         updateGridStatus();
         updateTitle();
         refreshEntityUi();
         modeLabel_->setText(modeSummary(session_));
     });
+    lastActiveTool_ = session_.activeTool();
+    lastFaceExtrapolation_ = session_.faceExtrapolation();
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
     const bool touching = QSettings().value(QStringLiteral("editor/marqueeTouching"), false).toBool();
     session_.setMarqueeMode(touching ? editor::MarqueeMode::Touching : editor::MarqueeMode::Enclosed);
@@ -206,6 +246,22 @@ LogPanel* MainWindow::logPanel() const { return viewport_->findChild<LogPanel*>(
 bool MainWindow::inspectorInWindow() { return QSettings().value(QStringLiteral("ui/inspectorWindow"), false).toBool(); }
 
 void MainWindow::setInspectorInWindow(bool window) { QSettings().setValue(QStringLiteral("ui/inspectorWindow"), window); }
+
+bool MainWindow::materialBrowserInWindow() {
+    return QSettings().value(QStringLiteral("ui/materialBrowserWindow"), false).toBool();
+}
+
+void MainWindow::setMaterialBrowserInWindow(bool window) {
+    QSettings().setValue(QStringLiteral("ui/materialBrowserWindow"), window);
+}
+
+bool MainWindow::facePropertiesInWindow() {
+    return QSettings().value(QStringLiteral("ui/facePropertiesWindow"), false).toBool();
+}
+
+void MainWindow::setFacePropertiesInWindow(bool window) {
+    QSettings().setValue(QStringLiteral("ui/facePropertiesWindow"), window);
+}
 
 void MainWindow::showInspector() { viewport_->showRole(viewport::AreaRole::Inspector, inspectorInWindow()); }
 
@@ -487,13 +543,46 @@ void MainWindow::setUndoCapMiB(int mib) {
 
 void MainWindow::activateMaterial(const QString& name) {
     setNewSolidStyle(name.toStdString(), session_.newSolidStyle().alignment);
+    if (session_.activeTool() == editor::EditorSession::Tool::Apply &&
+        session_.selection().mode() == editor::SelectionMode::Faces && !session_.selection().ordered().empty()) {
+        std::vector<document::SideId> sides;
+        for (const auto target : session_.selection().ordered())
+            if (const auto* side = std::get_if<document::SideId>(&target)) sides.push_back(*side);
+        const auto changed = session_.applyMaterial(sides, name.toStdString());
+        statusBar()->showMessage(changed
+            ? tr("Applied %1 to %2 selected face(s); active material updated").arg(name).arg(changed)
+            : tr("Active material updated; selected faces already use %1").arg(name), 5000);
+        return;
+    }
     statusBar()->showMessage(tr("Active material: %1").arg(name), 4000);
 }
 void MainWindow::closeMaterialPicker() {
+    QObject::disconnect(areaPickChosen_);
+    QObject::disconnect(areaPickCancelled_);
+    if (areaMaterialPicker_) areaMaterialPicker_->setPickMode(false);
+    areaMaterialPicker_.clear();
     delete materialPicker_.data();
 }
-void MainWindow::openMaterialPicker(QString current, std::function<void(QString)> choose) {
+void MainWindow::openMaterialPicker(QString current, QString what, std::function<void(QString)> choose) {
     closeMaterialPicker();
+    if (!materialBrowserInWindow() &&
+        !viewport_->viewportLayout().paneIds(viewport::AreaRole::Materials).empty()) {
+        auto* panel = qobject_cast<MaterialsPanel*>(viewport_->showRole(viewport::AreaRole::Materials, false));
+        if (panel) {
+            areaMaterialPicker_ = panel;
+            panel->setPickMode(true, current, what);
+            areaPickChosen_ = connect(panel, &MaterialsPanel::materialChosen, this,
+                [this, panel, choose = std::move(choose)](const QString& value) mutable {
+                    QObject::disconnect(areaPickChosen_);
+                    QObject::disconnect(areaPickCancelled_);
+                    panel->setPickMode(false);
+                    areaMaterialPicker_.clear();
+                    choose(value);
+                });
+            areaPickCancelled_ = connect(panel, &MaterialsPanel::pickCancelled, this, &MainWindow::closeMaterialPicker);
+            return;
+        }
+    }
     auto* dialog = new QDialog(this, Qt::Tool);
     materialPicker_ = dialog;
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -504,11 +593,13 @@ void MainWindow::openMaterialPicker(QString current, std::function<void(QString)
     panel->setGameContent(gameContent_.get());
     panel->setDocument(document_.get());
     panel->setEditorSession(&session_);
-    panel->setPickMode(true, current);
+    panel->setPickMode(true, current, what);
     connect(panel, &MaterialsPanel::materialChosen, dialog, [dialog, choose = std::move(choose)](const QString& value) {
         choose(value);
         dialog->close();
     });
+    // The panel takes Esc in pick mode, so the dialog never sees it.
+    connect(panel, &MaterialsPanel::pickCancelled, dialog, &QDialog::close);
     layout->addWidget(panel);
     dialog->resize(720, 480);
     dialog->show();
@@ -520,8 +611,26 @@ void MainWindow::setNewSolidStyle(std::string material, geometry::UvAlignment al
     settings.setValue(QStringLiteral("editor/newSolidMaterial"), fromStd(session_.newSolidStyle().material));
     settings.setValue(QStringLiteral("editor/newSolidWorldUv"),
                       session_.newSolidStyle().alignment == geometry::UvAlignment::World);
-    if (activeMaterialLabel_)
-        activeMaterialLabel_->setText(tr("Active material: %1").arg(fromStd(session_.newSolidStyle().material)));
+    updateActiveMaterialIndicator();
+}
+
+void MainWindow::updateActiveMaterialIndicator() {
+    if (!activeMaterialLabel_) return;
+    const auto& name = session_.newSolidStyle().material;
+    activeMaterialLabel_->setText(fromStd(name));
+    QString shader;
+    QPixmap swatch(22, 22);
+    swatch.fill(QColor(96, 99, 104));
+    if (gameContent_) {
+        if (const auto snapshot = gameContent_->snapshot())
+            if (const auto* entry = snapshot->find(name)) shader = fromStd(entry->shader);
+        if (auto* thumbnails = gameContent_->thumbnails())
+            if (const auto thumb = thumbnails->request(name, 22))
+                swatch = QPixmap::fromImage(QImage(reinterpret_cast<const uchar*>(thumb->rgba.data()),
+                    thumb->width, thumb->height, thumb->width * 4, QImage::Format_RGBA8888).copy());
+    }
+    activeMaterialLabel_->setIcon(QIcon(swatch));
+    activeMaterialLabel_->setToolTip(shader.isEmpty() ? fromStd(name) : fromStd(name) + QStringLiteral("\n") + shader);
 }
 
 void MainWindow::openPreferences() {
@@ -534,7 +643,7 @@ void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
         if (id == "assets.reload" || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
-        if (id == "tool.select" || id == "tool.entity" || id == "tool.block" || id == "tool.clip" || id == "tool.vertex" || id == "tool.primitive") {
+        if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
             action->setEnabled(true);
             action->setChecked(session_.activeTool() == id);
         }
@@ -680,9 +789,22 @@ void MainWindow::buildStatusBar() {
     cameraLabel_ = new QLabel(tr("Cam: -"));
     frameLabel_ = new QLabel(tr("- ms"));
     gpuLabel_ = new QLabel(tr("GPU: -"));
-    activeMaterialLabel_ = new QLabel;
-    activeMaterialLabel_->setObjectName(QStringLiteral("statusActiveMaterial"));
-    for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_, activeMaterialLabel_}) statusBar()->addPermanentWidget(l);
+    activeMaterialLabel_ = new QToolButton;
+    activeMaterialLabel_->setObjectName(QStringLiteral("activeMaterialIndicator"));
+    activeMaterialLabel_->setAutoRaise(true);
+    activeMaterialLabel_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    activeMaterialLabel_->setIconSize(QSize(22, 22));
+    connect(activeMaterialLabel_, &QToolButton::clicked, this, [this] {
+        const auto current = fromStd(session_.newSolidStyle().material);
+        // Choosing here only changes the active material; unlike a Materials panel click it never
+        // applies to the selected faces.
+        openMaterialPicker(current, tr("the active material"), [this](QString value) {
+            setNewSolidStyle(value.toStdString(), session_.newSolidStyle().alignment);
+            statusBar()->showMessage(tr("Active material: %1").arg(value), 4000);
+        });
+    });
+    for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
+    statusBar()->addPermanentWidget(activeMaterialLabel_);
     uvAlignmentAction_ = new QAction(tr("UV: Face"), this);
     uvAlignmentAction_->setObjectName(QStringLiteral("newSolidWorldUv"));
     uvAlignmentAction_->setCheckable(true);
@@ -698,7 +820,10 @@ void MainWindow::buildStatusBar() {
     statusBar()->addPermanentWidget(uvButton);
     updateGridStatus();
     modeLabel_->setText(modeSummary(session_));
-    activeMaterialLabel_->setText(tr("Active material: %1").arg(fromStd(session_.newSolidStyle().material)));
+    connect(gameContent_.get(), &GameContent::contentChanged, this, &MainWindow::updateActiveMaterialIndicator);
+    connect(gameContent_.get(), &GameContent::thumbnailsReady, this, &MainWindow::updateActiveMaterialIndicator);
+    connect(gameContent_.get(), &GameContent::indexReady, this, &MainWindow::updateActiveMaterialIndicator);
+    updateActiveMaterialIndicator();
     statusBar()->showMessage(tr("Ready"));
 }
 
@@ -776,16 +901,17 @@ void MainWindow::buildEntityUi() {
     auto* bar = findChild<QToolBar*>(QStringLiteral("toolbarTransform"));
     bar->addSeparator();
     auto* group = new QActionGroup(this);
-    for (const char* id : {"tool.select", "tool.entity", "tool.block", "tool.clip", "tool.vertex", "tool.primitive"}) {
+    for (const auto id : kToolActions) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = new QAction(fromStd(entry->name), this);
         action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
         action->setCheckable(true);
         group->addAction(action);
         editorActions_.emplace(entry->id, action);
         viewMenu_->addAction(action);
         bar->addAction(action);
-        connect(action, &QAction::triggered, this, [this, id] { session_.perform(id); });
+        connect(action, &QAction::triggered, this, [this, id] { session_.perform(std::string(id)); });
     }
     bar->addSeparator();
     auto* vertexModes = new QActionGroup(this);

@@ -1,6 +1,7 @@
 #include "document/document.hpp"
 
 #include "core/strings.hpp"
+#include "geometry/face_uv.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -72,6 +73,17 @@ template <typename T> std::string geometryText(T value) {
     auto formatted = vmf::Value(&node).setGeometry(value);
     if (!formatted) throw std::invalid_argument(formatted.error().what());
     return node.decodedValue().value();
+}
+// D15: the axes are the truth. Whenever they are written, `rotation` is rewritten from them.
+void syncRotation(kv1::Node& side, const geometry::Face& face) {
+    double rotation = 0;
+    try { rotation = geometry::deriveRotation(face.uv, face.plane.normal); }
+    catch (const std::invalid_argument&) { return; } // No in-plane U axis: leave the stored value.
+    const auto* stored = side.find("rotation");
+    if (stored && stored->asDouble().value_or(NAN) == rotation) return;
+    auto node = kv1::Node::value("", "");
+    vmf::Value(&node).set(rotation).value();
+    set(side, "rotation", node.decodedValue().value());
 }
 bool finiteUv(const geometry::FaceUv& uv) {
     const auto finite = [](DVec3 value) {
@@ -966,14 +978,20 @@ void Transaction::rebuildSolidImpl(Handle<Solid> h, const geometry::ConvexPolyhe
         // shape changes, write every surviving loop from the same polyhedron, including intact faces.
         if (shapeChanged) writeFace(side, poly, face);
         if (writeUv) {
+            bool axes = false;
             if (old.uv.uaxis != face.uv.uaxis || old.uv.shiftU != face.uv.shiftU ||
-                old.uv.scaleU != face.uv.scaleU)
+                old.uv.scaleU != face.uv.scaleU) {
                 set(side, "uaxis", geometryText(vmf::UvAxis{vector(face.uv.uaxis), face.uv.shiftU,
                                                          face.uv.scaleU}));
+                axes = true;
+            }
             if (old.uv.vaxis != face.uv.vaxis || old.uv.shiftV != face.uv.shiftV ||
-                old.uv.scaleV != face.uv.scaleV)
+                old.uv.scaleV != face.uv.scaleV) {
                 set(side, "vaxis", geometryText(vmf::UvAxis{vector(face.uv.vaxis), face.uv.shiftV,
                                                          face.uv.scaleV}));
+                axes = true;
+            }
+            if (axes) syncRotation(side, face);
         }
         insertAt = ++i;
     }

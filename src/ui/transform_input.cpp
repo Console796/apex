@@ -1,5 +1,6 @@
 #include "ui/transform_input.hpp"
 
+#include "editor/apply_tool.hpp"
 #include "ui/key_chord.hpp"
 #include "viewport/pick_math.hpp"
 
@@ -142,7 +143,10 @@ bool TransformInput::mouse(const QMouseEvent& e, const viewport::Camera& camera,
     event.right = e.buttons().testFlag(Qt::RightButton);
     event.middle = e.buttons().testFlag(Qt::MiddleButton);
     event.anyButton = e.buttons() != Qt::NoButton;
-    event.navigating = event.right || event.middle;
+    const bool applyRightClick = session_->activeTool() == editor::EditorSession::Tool::Apply &&
+                                 editor::rightClickApplies(session_->preset()) &&
+                                 e.button() == Qt::RightButton;
+    event.navigating = (event.right || event.middle) && !applyRightClick;
     event.cursor = {cursor_.x(), cursor_.y()};
     modifiers(event, e.modifiers());
     auto view = toolViewFor(camera, size, cursor_);

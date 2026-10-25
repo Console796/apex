@@ -15,6 +15,7 @@
 #include "ui/log_panel.hpp"
 #include "ui/materials_panel.hpp"
 #include "ui/game_content.hpp"
+#include "ui/face_properties_panel.hpp"
 #include "ui/outliner_panel.hpp"
 #include "ui/theme.hpp"
 #include "ui/visgroup_panel.hpp"
@@ -33,6 +34,7 @@ QString roleTitle(AreaRole role) {
     case AreaRole::History: return tr("Undo History");
     case AreaRole::Log: return tr("Log");
     case AreaRole::Materials: return tr("Materials");
+    case AreaRole::FaceProperties: return tr("Face Properties");
     }
     return {};
 }
@@ -44,6 +46,7 @@ template <typename F> void withPanel(QWidget* panel, F&& f) {
     else if (auto* p = qobject_cast<VisgroupPanel*>(panel)) f(*p);
     else if (auto* p = qobject_cast<HistoryPanel*>(panel)) f(*p);
     else if (auto* p = qobject_cast<MaterialsPanel*>(panel)) f(*p);
+    else if (auto* p = qobject_cast<FacePropertiesPanel*>(panel)) f(*p);
 }
 }  // namespace
 
@@ -75,6 +78,7 @@ QWidget* createPanel(AreaRole role, document::Document* document, editor::Editor
     case AreaRole::History: panel = new HistoryPanel; break;
     case AreaRole::Log: panel = new LogPanel; break;
     case AreaRole::Materials: panel = new MaterialsPanel; break;
+    case AreaRole::FaceProperties: panel = new FacePropertiesPanel; break;
     }
     panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));
     bindPanel(panel, document, session);

@@ -6,6 +6,8 @@
 #include "editor/block_tool.hpp"
 #include "editor/primitive_tool.hpp"
 #include "editor/clip_tool.hpp"
+#include "editor/apply_tool.hpp"
+#include "editor/measure_tool.hpp"
 #include "editor/vertex_tool.hpp"
 #include "editor/hide_ops.hpp"
 #include "editor/selection_expand.hpp"
@@ -25,6 +27,8 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Primitive, std::make_unique<PrimitiveTool>(*this));
     tools_.emplace(Tool::Clip, std::make_unique<ClipTool>(*this));
     tools_.emplace(Tool::Vertex, std::make_unique<VertexTool>(*this));
+    tools_.emplace(Tool::Apply, std::make_unique<ApplyTool>(*this));
+    tools_.emplace(Tool::Measure, std::make_unique<MeasureTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) { notify(); });
 }
@@ -217,6 +221,16 @@ void EditorSession::setNewSolidUvAlignment(geometry::UvAlignment alignment) {
     newSolidStyle_.alignment = alignment;
     notify();
 }
+void EditorSession::setFaceExtrapolation(FaceExtrapolation mode) {
+    if (faceExtrapolation_ == mode) return;
+    faceExtrapolation_ = mode;
+    notify();
+}
+void EditorSession::cycleFaceExtrapolation() {
+    setFaceExtrapolation(faceExtrapolation_ == FaceExtrapolation::Wrap ? FaceExtrapolation::Projected
+                         : faceExtrapolation_ == FaceExtrapolation::Projected ? FaceExtrapolation::Match
+                         : FaceExtrapolation::Wrap);
+}
 std::optional<AABB> EditorSession::selectionBounds() const {
     if (!document_) return std::nullopt;
     const auto expanded = expandSelection(*document_, *groups_, selection_);
@@ -288,6 +302,10 @@ bool EditorSession::perform(const ActionId& action) {
     if (activeToolObject().perform(action)) return true;
     if (tools_.contains(action)) {
         setActiveTool(action);
+        return true;
+    }
+    if (action == "face.extrapolation.cycle") {
+        cycleFaceExtrapolation();
         return true;
     }
     if (!document_) return false;
@@ -473,7 +491,8 @@ void EditorSession::edit(std::string label, const std::function<void(document::T
     Selection after(selection_);
     after.prune(*document_);
     recordSelection(transaction, before, after);
-    transaction.commit(true, std::move(coalesceKey));
+    const bool coalesce = !coalesceKey.empty();
+    transaction.commit(coalesce, std::move(coalesceKey));
 }
 Result<void> EditorSession::runEdit(std::string label, AfterEdit policy,
                                     const std::function<Result<EditedObjects>(document::Transaction&)>& stage,

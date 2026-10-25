@@ -3,6 +3,10 @@
 #include <QObject>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
 
 #include "assets/game_profile.hpp"
 #include "assets/material_index.hpp"
@@ -28,6 +32,7 @@ public:
     const std::optional<assets::GameProfile>& profile() const { return profile_; }
     QString addonName(std::size_t index) const;
     QString error() const { return error_; }
+    std::pair<int, int> faceTextureSize(std::string_view material) const;
 
 signals:
     void contentChanged();
@@ -47,6 +52,7 @@ private:
     std::optional<assets::GameProfile> profile_;
     QTimer* timer_ = nullptr;
     QString error_;
+    mutable std::unordered_map<std::string, std::pair<int, int>> textureSizes_;
     std::size_t lastDone_ = static_cast<std::size_t>(-1), lastTotal_ = static_cast<std::size_t>(-1);
 };
 

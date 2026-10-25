@@ -77,6 +77,7 @@ const char* nameOf(AreaRole role) {
     case AreaRole::History: return "history";
     case AreaRole::Log: return "log";
     case AreaRole::Materials: return "materials";
+    case AreaRole::FaceProperties: return "face_properties";
     }
     return "viewport";
 }

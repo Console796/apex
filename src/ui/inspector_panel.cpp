@@ -74,7 +74,7 @@ void InspectorPanel::setEditorSession(editor::EditorSession* session) {
     }
     refresh();
 }
-void InspectorPanel::setMaterialBrowser(std::function<void(QString, std::function<void(QString)>)> browser) {
+void InspectorPanel::setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser) {
     materialBrowser_ = std::move(browser);
     requestRefresh();
 }
@@ -265,10 +265,10 @@ void InspectorPanel::refresh() {
                 browse->setEnabled(type == "material" && static_cast<bool>(materialBrowser_));
                 horizontal->addWidget(browse);
                 if (type == "material") connect(browse, &QPushButton::clicked, this,
-                    [this, valid, write, currentValue = text(row.value)] {
+                    [this, valid, write, currentValue = text(row.value), what = text(row.key)] {
                         if (!materialBrowser_ || !valid()) return;
                         QPointer<InspectorPanel> self(this);
-                        materialBrowser_(currentValue, [self, write](QString value) {
+                        materialBrowser_(currentValue, what, [self, write](QString value) {
                             if (self) write(value, token());
                         });
                     });

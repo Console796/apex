@@ -14,6 +14,7 @@ class QLineEdit;
 class QListView;
 class QListWidget;
 class QSlider;
+class QEvent;
 
 namespace apex::editor { class EditorSession; }
 namespace apex::ui { class GameContent; }
@@ -28,16 +29,18 @@ public:
     void setGameContent(GameContent* content);
     void setDocument(document::Document* document);
     void setEditorSession(editor::EditorSession* session);
-    void setPickMode(bool enabled, const QString& initial = {});
+    void setPickMode(bool enabled, const QString& initial = {}, const QString& what = {});
     QStringList filteredNames() const;
     std::size_t thumbnailRequestCount() const;
 
 protected:
     void changeEvent(QEvent* event) override;
+    bool eventFilter(QObject* object, QEvent* event) override;
 
 signals:
     void activeMaterialRequested(const QString& name);
     void materialChosen(const QString& name);
+    void pickCancelled();
     void statusMessage(const QString& message);
 
 private:
@@ -65,9 +68,11 @@ private:
     QListWidget* recent_ = nullptr;
     QListView* grid_ = nullptr;
     QLabel* progress_ = nullptr;
+    QLabel* pickBanner_ = nullptr;
     QSlider* size_ = nullptr;
     std::set<std::string> used_;
     bool pickMode_ = false;
+    QString filterBeforePick_;
     QString pickMaterial_;
     class GridModel;
     GridModel* model_ = nullptr;

@@ -5,6 +5,7 @@
 #include <QComboBox>
 #include <QDrag>
 #include <QEvent>
+#include <QKeyEvent>
 #include <QFont>
 #include <QFontMetrics>
 #include <QImage>
@@ -146,6 +147,11 @@ private:
 MaterialsPanel::MaterialsPanel(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("materialsPanel"));
     auto* layout = new QVBoxLayout(this);
+    pickBanner_ = new QLabel(this);
+    pickBanner_->setObjectName(QStringLiteral("materialsPickBanner"));
+    pickBanner_->setStyleSheet(QStringLiteral("QLabel { background: palette(highlight); color: palette(highlighted-text); padding: 4px; }"));
+    pickBanner_->hide();
+    layout->addWidget(pickBanner_);
     auto* filters = new QHBoxLayout;
     nameFilter_ = new QLineEdit(this);
     nameFilter_->setObjectName(QStringLiteral("materialsNameFilter"));
@@ -215,6 +221,8 @@ MaterialsPanel::MaterialsPanel(QWidget* parent) : QWidget(parent) {
     connect(grid_, &QListView::doubleClicked, this, [this](const QModelIndex& index) { applyToSelection(index.data().toString()); });
     connect(recent_, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) { activate(item->text()); });
     setPickMode(false);
+    installEventFilter(this);
+    for (auto* child : findChildren<QWidget*>()) child->installEventFilter(this);
 }
 MaterialsPanel::~MaterialsPanel() { setDocument(nullptr); setEditorSession(nullptr); }
 void MaterialsPanel::setGameContent(GameContent* content) {
@@ -292,11 +300,25 @@ void MaterialsPanel::setEditorSession(editor::EditorSession* session) {
     active_ = session_ ? session_->newSolidStyle().material : std::string{};
     refilter();
 }
-void MaterialsPanel::setPickMode(bool enabled, const QString& initial) {
+void MaterialsPanel::setPickMode(bool enabled, const QString& initial, const QString& what) {
+    // An area panel picks once and then shows what the user had filtered before.
+    if (enabled && !pickMode_) filterBeforePick_ = nameFilter_->text();
+    const QString filter = enabled ? initial : filterBeforePick_;
+    if (!enabled) filterBeforePick_.clear();
     pickMode_ = enabled;
     pickMaterial_ = initial;
-    nameFilter_->setText(initial);
+    pickBanner_->setText(tr("Choose a material for %1; Esc cancels").arg(what));
+    pickBanner_->setVisible(enabled);
+    nameFilter_->setText(filter);
     recent_->setVisible(!enabled);
+    if (enabled) nameFilter_->setFocus(Qt::OtherFocusReason);
+}
+bool MaterialsPanel::eventFilter(QObject* object, QEvent* event) {
+    if (pickMode_ && event->type() == QEvent::KeyPress && static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape) {
+        emit pickCancelled();
+        return true;
+    }
+    return QWidget::eventFilter(object, event);
 }
 void MaterialsPanel::updateProgress() {
     if (!content_ || !content_->hasProfile()) { progress_->setText(tr("No game profile")); return; }

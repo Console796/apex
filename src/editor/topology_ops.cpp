@@ -1,6 +1,7 @@
 #include "editor/topology_ops.hpp"
 
 #include "editor/editor_session.hpp"
+#include "editor/face_edit.hpp"
 #include "editor/group_ops.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/visibility.hpp"
@@ -84,8 +85,12 @@ void attributes(document::Transaction& tx, const document::Document& doc, SolidH
         const auto& uv = face->uv;
         if (uv.uaxis != side.uv.uaxis || uv.shiftU != side.uv.shiftU || uv.scaleU != side.uv.scaleU)
             tx.setSideKeyValue(static_cast<document::SideId>(side.sideId), "uaxis", axisText(uv.uaxis, uv.shiftU, uv.scaleU));
-        if (uv.vaxis != side.uv.vaxis || uv.shiftV != side.uv.shiftV || uv.scaleV != side.uv.scaleV)
-            tx.setSideKeyValue(static_cast<document::SideId>(side.sideId), "vaxis", axisText(uv.vaxis, uv.shiftV, uv.scaleV));
+        const bool u = uv.uaxis != side.uv.uaxis || uv.shiftU != side.uv.shiftU || uv.scaleU != side.uv.scaleU;
+        const bool v = uv.vaxis != side.uv.vaxis || uv.shiftV != side.uv.shiftV || uv.scaleV != side.uv.scaleV;
+        if (v) tx.setSideKeyValue(static_cast<document::SideId>(side.sideId), "vaxis", axisText(uv.vaxis, uv.shiftV, uv.scaleV));
+        // D15: `rotation` follows the axes whenever they're written.
+        if (u || v) if (auto rotation = derivedRotationText(uv, face->plane.normal, nullptr))
+            tx.setSideKeyValue(static_cast<document::SideId>(side.sideId), "rotation", std::move(*rotation));
     }
 }
 void replace(document::Transaction& tx, const document::Document& doc, SolidHandle source, const std::vector<Poly>& pieces) {

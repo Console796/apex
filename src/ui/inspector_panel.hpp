@@ -17,7 +17,7 @@ public:
     ~InspectorPanel() override;
     void setDocument(document::Document* document);
     void setEditorSession(editor::EditorSession* session);
-    void setMaterialBrowser(std::function<void(QString, std::function<void(QString)>)> browser);
+    void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
     void refresh();
 
 protected:
@@ -37,7 +37,7 @@ private:
     std::vector<document::NodeId> entities_;
     std::uint64_t selectionRevision_ = 0, classesRevision_ = 0;
     bool queued_ = false, rebuilding_ = false;
-    std::function<void(QString, std::function<void(QString)>)> materialBrowser_;
+    std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
 };
 
 } // namespace apex::ui

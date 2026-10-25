@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QMetaObject>
 #include <QPointer>
 #include <QString>
 #include <memory>
@@ -32,6 +33,7 @@ class LogPanel;
 class OutlinerPanel;
 class ViewportArea;
 class WorkspaceBar;
+class MaterialsPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -48,7 +50,7 @@ public:
     // The inspector's material Browse: a non-modal Materials panel in pick mode. One at a time; it is
     // closed when the document is replaced and at shutdown.
     void closeMaterialPicker();
-    void openMaterialPicker(QString current, std::function<void(QString)> choose);
+    void openMaterialPicker(QString current, QString what, std::function<void(QString)> choose);
 
     bool openFile(const QString& path);
     void newFile();
@@ -74,6 +76,10 @@ public:
     // the workspace's inspector area.
     static bool inspectorInWindow();
     static void setInspectorInWindow(bool window);
+    static bool materialBrowserInWindow();
+    static void setMaterialBrowserInWindow(bool window);
+    static bool facePropertiesInWindow();
+    static void setFacePropertiesInWindow(bool window);
     void showInspector();
     QComboBox* profilePicker() const { return profileCombo_; }
     QStringList recentFiles() const;
@@ -99,6 +105,7 @@ public:
     void setUndoCapMiB(int mib);
     void setNewSolidStyle(std::string material, geometry::UvAlignment alignment);
     void openPreferences();
+    // A Materials panel click: sets the active material, and with the face edit tool applies it to the selected faces.
     void activateMaterial(const QString& name);
 
 private slots:
@@ -132,6 +139,7 @@ private:
     void updateGridStatus();
     void buildAreas();
     void buildStatusBar();
+    void updateActiveMaterialIndicator();
     void addRecent(const QString& path);
     void rebuildRecentMenu();
     void updateTitle();
@@ -141,6 +149,8 @@ private:
     std::unique_ptr<document::Document> document_;
     std::unique_ptr<GameContent> gameContent_;
     QPointer<QDialog> materialPicker_; // Bound to the document and session; closed before either changes.
+    QPointer<MaterialsPanel> areaMaterialPicker_;
+    QMetaObject::Connection areaPickChosen_, areaPickCancelled_;
     editor::EditorSession session_;
     std::unique_ptr<editor::Autosave> autosave_;
     QTimer* autosaveTimer_ = nullptr;
@@ -175,7 +185,10 @@ private:
     QLabel* cameraLabel_ = nullptr;
     QLabel* frameLabel_ = nullptr;
     QLabel* gpuLabel_ = nullptr;
-    QLabel* activeMaterialLabel_ = nullptr;
+    QToolButton* activeMaterialLabel_ = nullptr;
+    std::string lastActiveMaterial_;
+    editor::ToolId lastActiveTool_;
+    editor::FaceExtrapolation lastFaceExtrapolation_ = editor::FaceExtrapolation::Wrap;
 };
 
 }  // namespace apex::ui

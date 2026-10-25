@@ -80,7 +80,6 @@ private:
     void importTheme();
     void exportTheme();
 
-    QLineEdit* newSolidMaterial_ = nullptr;
     QComboBox* uvAlignment_ = nullptr;
     QComboBox* theme_ = nullptr;
     QPushButton* themeEdit_ = nullptr;
@@ -91,6 +90,8 @@ private:
     QSpinBox* autosaveMinutes_ = nullptr;
     QSpinBox* undoMiB_ = nullptr;
     QComboBox* inspectorOpens_ = nullptr;
+    QComboBox* facePropertiesOpens_ = nullptr;
+    QComboBox* materialBrowserOpens_ = nullptr;
 
     QComboBox* presetCombo_ = nullptr;
     QLabel* modified_ = nullptr;

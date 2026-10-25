@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/face_edit.hpp"
 #include "editor/topology_ops.hpp"
 #include "editor/tool.hpp"
 #include "editor/clipboard.hpp"
@@ -36,6 +37,8 @@ public:
         static constexpr const char* Clip = "tool.clip";
         static constexpr const char* Primitive = "tool.primitive";
         static constexpr const char* Vertex = "tool.vertex";
+        static constexpr const char* Apply = "tool.apply";
+        static constexpr const char* Measure = "tool.measure";
     };
     const ToolId& activeTool() const { return activeTool_; }
     void setActiveTool(ToolId tool);
@@ -52,6 +55,9 @@ public:
     const geometry::NewSolidStyle& newSolidStyle() const { return newSolidStyle_; }
     void setNewSolidMaterial(std::string material);
     void setNewSolidUvAlignment(geometry::UvAlignment alignment);
+    FaceExtrapolation faceExtrapolation() const { return faceExtrapolation_; }
+    void setFaceExtrapolation(FaceExtrapolation mode);
+    void cycleFaceExtrapolation();
 
     EditorSession();
     ~EditorSession();
@@ -208,14 +214,32 @@ public:
     std::size_t applyMaterial(std::span<const document::SideId> sides, const std::string& material);
     // Applies to the face `ray` hits first (a material drop); false when no face is hit.
     bool applyMaterialAt(Ray ray, const std::string& material);
+    // Face edits use Faces selection only. Rotation is an absolute angle derived from axes.
+    Result<std::size_t> setFaceField(FaceField field, FaceValue value, std::string token = {});
+    Result<std::size_t> justifyFaces(geometry::Justify mode, bool treatAsOne = false);
+    Result<std::size_t> justifyFaces(geometry::HorizontalAlignment horizontal,
+                                     geometry::VerticalAlignment vertical, bool treatAsOne = false);
+    Result<std::size_t> editFaceGesture(FaceGesture gesture, double u, double v, DVec3 activePivot,
+                                        std::string token = {});
+    Result<std::size_t> alignFaces(FaceAlignment alignment);
+    Result<std::size_t> rotateFaces(double degrees, std::string token = {});
+    Result<std::size_t> toggleFaceSmoothingGroup(std::uint32_t bit, bool enabled);
+    Result<FaceApplyResult> applyMaterialWrapped(Ray ray);
+    bool liftMaterialAt(Ray ray, bool alignSource = false);
+    // Host supplies actual dimensions; unknown materials use the editor's 256x256 fallback.
+    std::function<std::pair<int, int>(std::string_view)> faceTextureSize =
+        [](std::string_view) { return std::pair{256, 256}; };
     // Document edits go through this seam to capture before/after selection metadata.
-    // Direct Document edits still update indices and prune dead selection targets.
+    // Direct Document edits still update indices and prune dead selection targets. A nonempty
+    // coalesceKey merges with the previous edit of the same key (typing); empty is its own undo step.
     void edit(std::string label, const std::function<void(document::Transaction&)>& operation,
               std::string coalesceKey = {});
 
     using Observer = std::function<void()>;
     std::size_t observe(Observer observer);
     void unobserve(std::size_t token);
+    // A tool calls this after changing transient data exposed through readout().
+    void publishToolStatus() { notify(); }
 
 private:
     Preview topologyPreview_;
@@ -224,6 +248,7 @@ private:
     friend class DrawExtrudeTool;
     friend class PrimitiveTool;
     friend class ClipTool;
+    friend class MeasureTool;
     friend class VertexTool;
     SelectTool& selectTool();
     const SelectTool& selectTool() const;
@@ -237,6 +262,7 @@ private:
     std::string currentEntityClass_;
     bool alignToSurface_ = false;
     geometry::NewSolidStyle newSolidStyle_{"dev/dev_measuregeneric01"};
+    FaceExtrapolation faceExtrapolation_ = FaceExtrapolation::Wrap;
     assets::EntityClassTable entityClasses_;
     std::uint64_t entityClassesRevision_ = 0;
     ViewState view_;

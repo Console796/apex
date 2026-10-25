@@ -27,6 +27,7 @@
 #include "ui/theme.hpp"
 #include "ui/viewport_pane.hpp"
 #include "ui/materials_panel.hpp"
+#include "ui/face_properties_panel.hpp"
 #include "ui/game_content.hpp"
 #include "ui/inspector_panel.hpp"
 
@@ -185,7 +186,7 @@ void ViewportArea::setGameContent(GameContent* content) {
     for (auto& [id, panel] : panels_) setPanelGameContent(panel, content);
     for (auto& [role, window] : floating_) if (window) setPanelGameContent(window->panel(), content);
 }
-void ViewportArea::setMaterialBrowser(std::function<void(QString, std::function<void(QString)>)> browser) {
+void ViewportArea::setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser) {
     materialBrowser_ = std::move(browser);
     for (auto& [id, panel] : panels_) configurePanel(panel);
     for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
@@ -199,6 +200,12 @@ void ViewportArea::configurePanel(QWidget* panel) {
     }
     if (auto* inspector = qobject_cast<InspectorPanel*>(panel))
         inspector->setMaterialBrowser(materialBrowser_);
+    if (auto* properties = qobject_cast<FacePropertiesPanel*>(panel)) {
+        properties->setMaterialBrowser(materialBrowser_);
+        properties->setGameContent(gameContent_);
+        connect(properties, &FacePropertiesPanel::statusMessage, this,
+                &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
+    }
 }
 QWidget* ViewportArea::makePanel(viewport::AreaRole role) {
     auto* panel = createPanel(role, document_, session_, gameContent_);

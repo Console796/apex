@@ -123,17 +123,22 @@ TEST_CASE("preferences edit and apply general settings and a saved keybinding pr
     CHECK(window.presetStore().list() == before);
 }
 
-TEST_CASE("new solid preferences and status toggle persist material and UV alignment") {
+TEST_CASE("active material and UV alignment persist without a new solid material setting") {
     ui_test::app();
     QSettings settings;
     const auto oldMaterial = settings.value("editor/newSolidMaterial");
     const auto oldWorld = settings.value("editor/newSolidWorldUv");
+    const auto oldBrowser = settings.value("ui/materialBrowserWindow");
+    const auto oldFaceWindow = settings.value("ui/facePropertiesWindow");
+    const auto oldExtrapolation = settings.value("editor/faceExtrapolation");
     settings.setValue("editor/newSolidMaterial", "test/loaded");
     settings.setValue("editor/newSolidWorldUv", true);
+    settings.setValue("editor/faceExtrapolation", static_cast<int>(editor::FaceExtrapolation::Match));
     {
         ui::MainWindow window;
         CHECK(window.editorSession().newSolidStyle().material == "test/loaded");
         CHECK(window.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World);
+        CHECK(window.editorSession().faceExtrapolation() == editor::FaceExtrapolation::Match);
         auto* toggle = window.findChild<QAction*>("newSolidWorldUv");
         REQUIRE(toggle);
         CHECK(toggle->isChecked());
@@ -143,20 +148,30 @@ TEST_CASE("new solid preferences and status toggle persist material and UV align
         ui::SettingsDialog dialog(window);
         auto* material = dialog.findChild<QLineEdit*>("settingsNewSolidMaterial");
         auto* alignment = dialog.findChild<QComboBox*>("settingsUvAlignment");
-        REQUIRE(material);
+        auto* browser = dialog.findChild<QComboBox*>("settingsMaterialBrowserOpens");
+        auto* faceProperties = dialog.findChild<QComboBox*>("settingsFacePropertiesOpens");
+        CHECK_FALSE(material);
         REQUIRE(alignment);
-        material->setText("test/changed");
+        REQUIRE(browser);
+        REQUIRE(faceProperties);
+        browser->setCurrentIndex(1);
+        faceProperties->setCurrentIndex(1);
+        window.editorSession().cycleFaceExtrapolation();
+        window.activateMaterial("test/changed");
         alignment->setCurrentIndex(1);
         auto* buttons = dialog.findChild<QDialogButtonBox*>();
         REQUIRE(buttons);
         buttons->button(QDialogButtonBox::Apply)->click();
         CHECK(window.editorSession().newSolidStyle().material == "test/changed");
+        CHECK(ui::MainWindow::materialBrowserInWindow());
+        CHECK(ui::MainWindow::facePropertiesInWindow());
         CHECK(toggle->isChecked());
     }
     {
         ui::MainWindow window;
         CHECK(window.editorSession().newSolidStyle().material == "test/changed");
         CHECK(window.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World);
+        CHECK(window.editorSession().faceExtrapolation() == editor::FaceExtrapolation::Wrap);
         auto* action = window.findChild<QAction*>("tool.block");
         REQUIRE(action);
         action->trigger();
@@ -167,4 +182,10 @@ TEST_CASE("new solid preferences and status toggle persist material and UV align
     else settings.remove("editor/newSolidMaterial");
     if (oldWorld.isValid()) settings.setValue("editor/newSolidWorldUv", oldWorld);
     else settings.remove("editor/newSolidWorldUv");
+    if (oldBrowser.isValid()) settings.setValue("ui/materialBrowserWindow", oldBrowser);
+    else settings.remove("ui/materialBrowserWindow");
+    if (oldFaceWindow.isValid()) settings.setValue("ui/facePropertiesWindow", oldFaceWindow);
+    else settings.remove("ui/facePropertiesWindow");
+    if (oldExtrapolation.isValid()) settings.setValue("editor/faceExtrapolation", oldExtrapolation);
+    else settings.remove("editor/faceExtrapolation");
 }

@@ -5,6 +5,8 @@
 #include <algorithm>
 
 #include "assets/vfs.hpp"
+#include "assets/vmt.hpp"
+#include "core/strings.hpp"
 #include "core/job_pool.hpp"
 #include "core/log.hpp"
 
@@ -23,6 +25,7 @@ void GameContent::clear() {
     snapshot_.reset();
     profile_.reset();
     error_.clear();
+    textureSizes_.clear();
 }
 void GameContent::reload(const assets::GameProfile* profile) {
     if (timer_) timer_->stop();
@@ -32,6 +35,7 @@ void GameContent::reload(const assets::GameProfile* profile) {
     snapshot_.reset();
     profile_ = profile ? std::optional(*profile) : std::nullopt;
     error_.clear();
+    textureSizes_.clear();
     lastDone_ = lastTotal_ = static_cast<std::size_t>(-1);
     if (profile_) {
         auto loaded = assets::Vfs::load(*profile_, *jobs_);
@@ -75,6 +79,31 @@ void GameContent::pump() {
 std::shared_ptr<const assets::MaterialIndexSnapshot> GameContent::snapshot() const {
     return snapshot_;
 }
+
+std::pair<int, int> GameContent::faceTextureSize(std::string_view material) const {
+    constexpr std::pair<int, int> fallback{256, 256};
+    const auto key = toLowerAscii(material);
+    if (const auto cached = textureSizes_.find(key); cached != textureSizes_.end()) return cached->second;
+    const auto remember = [&](std::pair<int, int> size) {
+        textureSizes_.emplace(key, size);
+        return size;
+    };
+    if (!snapshot_ || !vfs_) return fallback;
+    const auto* entry = snapshot_->find(material);
+    if (!entry || entry->previewTexture.empty()) return remember(fallback);
+    // Vfs exposes whole-file reads. Parse only the fixed VTF header fields; image data is untouched.
+    const auto bytes = vfs_->open(assets::texturePath(entry->previewTexture));
+    if (!bytes || bytes->size() < 20 ||
+        (*bytes)[0] != std::byte{'V'} || (*bytes)[1] != std::byte{'T'} ||
+        (*bytes)[2] != std::byte{'F'} || (*bytes)[3] != std::byte{0}) return remember(fallback);
+    const auto u16 = [&](std::size_t at) {
+        return int(std::to_integer<unsigned char>((*bytes)[at])) |
+               (int(std::to_integer<unsigned char>((*bytes)[at + 1])) << 8);
+    };
+    const int width = u16(16), height = u16(18);
+    return remember(width > 0 && height > 0 ? std::pair{width, height} : fallback);
+}
+
 QString GameContent::addonName(std::size_t index) const {
     if (!vfs_ || index >= vfs_->addons().entries.size()) return {};
     const auto& addon = vfs_->addons().entries[index];
