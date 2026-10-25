@@ -13,6 +13,7 @@
 #include <QMimeData>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QPointer>
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
@@ -83,6 +84,8 @@ public:
 
 protected:
     bool eventFilter(QObject*, QEvent* event) override {
+        // ~QWindowContainer deletes the window before ~QWidget clears focus, so it may be gone here.
+        if (!window_) return false;
         if (event->type() == QEvent::FocusOut) window_->releaseCapture();
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease &&
             event->type() != QEvent::ShortcutOverride) return false;
@@ -98,7 +101,7 @@ protected:
     }
 
 private:
-    PaneWindow* window_;
+    QPointer<PaneWindow> window_;
 };
 
 }  // namespace
@@ -635,6 +638,7 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
         container_->setFocusPolicy(Qt::StrongFocus);
         container_->setMinimumSize(80, 60);
         new KeyForwarder(container_, window_);
+        window_->transformInput().setWidget(container_);
         connect(window_, &PaneWindow::pressed, this, [this] {
             container_->setFocus(Qt::MouseFocusReason);
             emit activated(pane_);
