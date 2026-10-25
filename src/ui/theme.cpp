@@ -42,8 +42,11 @@ Vec4 toVec4(const QColor& c) {
     return {static_cast<float>(c.redF()), static_cast<float>(c.greenF()), static_cast<float>(c.blueF()), 1.0f};
 }
 
-// The palette and token tables list the viewport colours in the same order.
-constexpr std::pair<QColor Tokens::*, Vec4 editor::OverlayPalette::*> kViewportFields[] = {
+// The palette and token tables list the viewport colours in the same order. MSVC can't parse
+// qualified member pointer types as template arguments, hence the aliases.
+using TokenField = QColor Tokens::*;
+using PaletteField = Vec4 editor::OverlayPalette::*;
+constexpr std::pair<TokenField, PaletteField> kViewportFields[] = {
     {&Tokens::vertexHandle, &editor::OverlayPalette::vertexHandle},
     {&Tokens::vertexSelected, &editor::OverlayPalette::vertexSelected},
     {&Tokens::vertexInactive, &editor::OverlayPalette::vertexInactive},
