@@ -1,6 +1,7 @@
 #include "render/render_mirror.hpp"
 
 #include "core/log.hpp"
+#include "document/entity_transform.hpp"
 #include "render/solid_mesh.hpp"
 
 #include <algorithm>
@@ -70,6 +71,7 @@ struct SolidState {
 
 struct EntityState {
     DVec3 position{0.0}, mins{-8.0}, maxs{8.0};
+    DMat3 basis{1.0};
     Vec4 colour{0.9f, 0.4f, 0.9f, 1.0f};
 };
 
@@ -440,9 +442,9 @@ struct RenderMirror::Impl {
         }
         if (lower(classname) == "worldspawn") return;
         EntityState state;
-        if (const kv1::Node* o = entity->block->find("origin")) {
-            if (auto v = o->asVec3()) state.position = {(*v)[0], (*v)[1], (*v)[2]};
-        }
+        const auto pose = document::entityPose(*entity->block);
+        state.position = pose.origin;
+        state.basis = pose.basis;
         if (classes) {
             if (const assets::EntityClass* cls = classes->find(classname)) {
                 if (cls->mins) state.mins = {(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]};
@@ -469,10 +471,16 @@ struct RenderMirror::Impl {
         entityOrigin = (bounds.min + bounds.max) * 0.5;
         std::vector<BoxInstance> boxes;
         for (const auto& [id, e] : entities) {
-            const DVec3 lo = e.position + e.mins - entityOrigin, hi = e.position + e.maxs - entityOrigin;
-            boxes.push_back({{static_cast<float>(lo.x), static_cast<float>(lo.y), static_cast<float>(lo.z)},
-                             {static_cast<float>(hi.x), static_cast<float>(hi.y), static_cast<float>(hi.z)},
-                             {e.colour.x, e.colour.y, e.colour.z, e.colour.w}});
+            const DVec3 origin = e.position - entityOrigin;
+            BoxInstance box{{static_cast<float>(e.mins.x), static_cast<float>(e.mins.y), static_cast<float>(e.mins.z)},
+                            {static_cast<float>(e.maxs.x), static_cast<float>(e.maxs.y), static_cast<float>(e.maxs.z)},
+                            {e.colour.x, e.colour.y, e.colour.z, e.colour.w},
+                            {static_cast<float>(origin.x), static_cast<float>(origin.y), static_cast<float>(origin.z)}};
+            for (int column = 0; column < 3; ++column) {
+                for (int row = 0; row < 3; ++row)
+                    box.basis[column][row] = static_cast<float>(e.basis[column][row]);
+            }
+            boxes.push_back(box);
         }
         auto buffer = upload(boxes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         if (!buffer) {

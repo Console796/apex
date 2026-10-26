@@ -1,6 +1,7 @@
 #include "editor/pick_index.hpp"
 
 #include "core/strings.hpp"
+#include "document/entity_transform.hpp"
 #include "editor/tool.hpp"
 #include "geometry/tolerances.hpp"
 
@@ -21,27 +22,6 @@ using geometry::kPlanarEps;
 
 bool has(Dirty flags, Dirty bits) {
     return (static_cast<unsigned>(flags) & static_cast<unsigned>(bits)) != 0;
-}
-
-ConvexPolyhedron boxPoly(const AABB& box) {
-    ConvexPolyhedron poly;
-    for (int i = 0; i < 8; ++i) {
-        poly.vertices.push_back({i & 1 ? box.max.x : box.min.x,
-                                 i & 2 ? box.max.y : box.min.y,
-                                 i & 4 ? box.max.z : box.min.z});
-    }
-    const std::array<std::array<std::size_t, 4>, 6> loops{{
-        {1, 3, 7, 5}, {0, 4, 6, 2}, {2, 6, 7, 3},
-        {0, 1, 5, 4}, {4, 5, 7, 6}, {0, 2, 3, 1}}};
-    for (std::size_t i = 0; i < loops.size(); ++i) {
-        Face face;
-        face.vertices.assign(loops[i].begin(), loops[i].end());
-        face.plane.normal = DVec3{0.0};
-        face.plane.normal[static_cast<int>(i / 2)] = i % 2 == 0 ? 1.0 : -1.0;
-        face.plane.dist = glm::dot(face.plane.normal, poly.vertices[loops[i][0]]);
-        poly.faces.push_back(std::move(face));
-    }
-    return poly;
 }
 
 bool inFace(const ConvexPolyhedron& poly, const Face& face, DVec3 point) {
@@ -215,13 +195,23 @@ void PickIndex::refresh(NodeId id, bool building) {
             remove(id);
             return;
         }
-        DVec3 origin{0.0};
-        if (const auto* value = node->block->find("origin")) {
-            if (const auto v = value->asVec3()) origin = {(*v)[0], (*v)[1], (*v)[2]};
-        }
+        const auto pose = document::entityPose(*node->block);
         LocalBox local;
         if (bounds_) local = bounds_(classname).value_or(local);
-        poly = boxPoly({origin + local.mins, origin + local.maxs});
+        std::array<DVec3, 8> corners;
+        for (unsigned i = 0; i < corners.size(); ++i) {
+            const DVec3 point{i & 1 ? local.maxs.x : local.mins.x,
+                              i & 2 ? local.maxs.y : local.mins.y,
+                              i & 4 ? local.maxs.z : local.mins.z};
+            corners[i] = pose.origin + pose.basis * point;
+        }
+        auto hull = geometry::convexHull(corners);
+        if (!hull) {
+            remove(id);
+            failed_.insert(id);
+            return;
+        }
+        poly = std::move(*hull);
     } else {
         remove(id);
         return;

@@ -36,13 +36,15 @@ struct BrushVertex {
 };
 static_assert(sizeof(BrushVertex) == 36);
 
-// Per-instance data of an entity box, 40 bytes; corners relative to the draw origin.
+// Per-instance data of an entity box, 88 bytes; local corners and draw-relative origin.
 struct BoxInstance {
     float mins[3];
     float maxs[3];
     float colour[4];
+    float origin[3] = {};
+    float basis[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 };
-static_assert(sizeof(BoxInstance) == 40);
+static_assert(sizeof(BoxInstance) == 88);
 
 // Per-instance data of a sprite, 48 bytes.
 struct SpriteInstance {

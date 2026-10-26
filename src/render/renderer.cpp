@@ -281,7 +281,11 @@ struct Renderer::Impl {
             binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
             attributes = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, mins)},
                           {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, maxs)},
-                          {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(BoxInstance, colour)}};
+                          {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(BoxInstance, colour)},
+                          {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, origin)},
+                          {4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, basis)},
+                          {5, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, basis) + 3 * sizeof(float)},
+                          {6, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, basis) + 6 * sizeof(float)}};
             break;
         case Input::Sprite:
             binding.stride = sizeof(SpriteInstance);

@@ -1,5 +1,7 @@
 #include "fixtures.hpp"
 
+#include "document/entity_transform.hpp"
+
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -408,6 +410,41 @@ TEST_CASE("pick rotated asymmetric entity box follows angles on both sides") {
                 }
                 const auto perpendicular = index.first({{side, -20 * direction, 0}, {0, direction, 0}});
                 CHECK(perpendicular.has_value() == !rotated);
+            }
+        }
+    }
+}
+
+TEST_CASE("pick entity transform mixed angles preserves points normals and bounds without scale") {
+    for (const auto angles : {"0 90 0", "0 -90 0", "30 45 60"}) {
+        CAPTURE(angles);
+        Document doc(parsed());
+        const auto entity = addBlock(doc, std::string("entity { classname asymmetric origin \"100 -20 30\" modelscale 9 angles \"") + angles + "\" }");
+        PickIndex index(doc, [](std::string_view) -> std::optional<LocalBox> {
+            return LocalBox{{-8, -2, -3}, {12, 4, 7}};
+        });
+        const auto pose = document::entityPose(*doc.get(entity)->block);
+        const DVec3 center{2, 1, 2};
+        AABB expectedBounds;
+        for (unsigned corner = 0; corner < 8; ++corner) {
+            expectedBounds.expand(pose.origin + pose.basis * DVec3{corner & 1 ? 12 : -8,
+                                                                  corner & 2 ? 4 : -2,
+                                                                  corner & 4 ? 7 : -3});
+        }
+        const auto bounds = index.bounds(id(doc, entity));
+        REQUIRE(bounds);
+        checkPoint(bounds->min, expectedBounds.min);
+        checkPoint(bounds->max, expectedBounds.max);
+        for (int axis = 0; axis < 3; ++axis) {
+            for (const double sign : {-1.0, 1.0}) {
+                const DVec3 normal = pose.basis[axis] * sign;
+                const Ray ray{pose.origin + pose.basis * center + normal * 30.0, -normal * 2.0};
+                const auto hit = index.first(ray);
+                REQUIRE(hit);
+                const double halfSize = axis == 0 ? 10.0 : axis == 1 ? 3.0 : 5.0;
+                CHECK(hit->t == doctest::Approx((30.0 - halfSize) / 2.0));
+                checkPoint(hit->point, pose.origin + pose.basis * center + normal * halfSize);
+                checkPoint(hit->normal, normal);
             }
         }
     }

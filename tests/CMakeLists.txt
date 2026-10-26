@@ -4,7 +4,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp core/kv3_test.cpp
                document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
-               document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp
+               document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp
                assets/vfs_test.cpp assets/addons_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp

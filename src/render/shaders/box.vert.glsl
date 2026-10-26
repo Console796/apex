@@ -8,6 +8,8 @@
 layout(location = 0) in vec3 inMins;
 layout(location = 1) in vec3 inMaxs;
 layout(location = 2) in vec4 inColour;
+layout(location = 3) in vec3 inOrigin;
+layout(location = 4) in mat3 inBasis;
 
 layout(location = 0) out vec4 vColour;
 
@@ -22,7 +24,7 @@ void main() {
     if (push.p0.x > 0.5) {
         int face = v / 6;
         corner = kQuads[face * 4 + kTri[v % 6]];
-        shade = 0.6 + 0.4 * abs(dot(previewNormal(kNormals[face]), normalize(vec3(0.3, 0.5, 0.8))));
+        shade = 0.6 + 0.4 * abs(dot(previewNormal(inBasis * kNormals[face]), normalize(vec3(0.3, 0.5, 0.8))));
     } else {
         int e = v / 2;
         int axis = e / 4;
@@ -32,7 +34,7 @@ void main() {
         corner = ((r & 1) << a1) | (((r >> 1) & 1) << a2) | ((v & 1) << axis);
     }
     vec3 p = mix(inMins, inMaxs, vec3(bvec3((corner & 1) != 0, (corner & 2) != 0, (corner & 4) != 0)));
-    gl_Position = push.viewProj * vec4(previewPosition(p), 1.0);
+    gl_Position = push.viewProj * vec4(previewPosition(inOrigin + inBasis * p), 1.0);
     vColour = push.p0.y > 0.5 ? push.colour
                               : vec4(mix(inColour.rgb * shade, push.colour.rgb, push.colour.a), inColour.a);
 }
