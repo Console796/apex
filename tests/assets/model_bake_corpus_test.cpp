@@ -324,8 +324,8 @@ TEST_CASE("model bake corpus poses sequence 0 frame 0 so bounds agree with the s
         REQUIRE(source.open(*mdl, *vtx, *vvd));
         const auto hullGap = [&](const ModelData& data) {
             float gap = 0.0f;
-            const float lo[3] = {data.bounds.min.x, data.bounds.min.y, data.bounds.min.z};
-            const float hi[3] = {data.bounds.max.x, data.bounds.max.y, data.bounds.max.z};
+            const float lo[3] = {static_cast<float>(data.bounds.min.x), static_cast<float>(data.bounds.min.y), static_cast<float>(data.bounds.min.z)};
+            const float hi[3] = {static_cast<float>(data.bounds.max.x), static_cast<float>(data.bounds.max.y), static_cast<float>(data.bounds.max.z)};
             for (int axis = 0; axis < 3; ++axis) {
                 gap = std::max(gap, std::abs(lo[axis] - source.mdl.hullMin[axis]));
                 gap = std::max(gap, std::abs(hi[axis] - source.mdl.hullMax[axis]));
