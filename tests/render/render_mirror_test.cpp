@@ -130,8 +130,9 @@ struct Scene {
     RenderMirror mirror;
     std::size_t token = 0;
 
-    explicit Scene(Gpu& g, std::unique_ptr<document::Document> document = loadMap())
-        : doc(std::move(document)), mirror(*g.context, *g.heap, g.jobs, *g.cache) {
+    explicit Scene(Gpu& g, std::unique_ptr<document::Document> document = loadMap(),
+                   const assets::EntityClassTable* classes = nullptr)
+        : doc(std::move(document)), mirror(*g.context, *g.heap, g.jobs, *g.cache, classes) {
         mirror.rebuild(*doc);
         REQUIRE(mirror.settle());
         token = doc->observe([this](const document::ChangeSet& c) { mirror.apply(*doc, c); });
@@ -1002,5 +1003,236 @@ TEST_CASE("mirror rotated asymmetric entity box follows angles in offscreen cove
             CHECK(isBackground(at(alongX, kSize / 2, kSize / 2)) == !rotated);
             CHECK(isBackground(at(alongY, kSize / 2, kSize / 2)) == rotated);
         }
+    }
+}
+
+// --- Entity helpers (D5) -----------------------------------------------------------------------
+
+namespace {
+
+assets::EntityClass helperClass(std::string name, std::vector<assets::EntityHelper> helpers,
+                                std::vector<std::pair<std::string, std::string>> properties = {}) {
+    assets::EntityClass cls;
+    cls.name = std::move(name);
+    cls.type = "PointClass";
+    cls.helpers = std::move(helpers);
+    cls.mins = {-4, -4, -4};
+    cls.maxs = {4, 4, 4};
+    for (auto& [key, type] : properties) {
+        assets::EntityProperty property;
+        property.name = std::move(key);
+        property.type = std::move(type);
+        cls.properties.push_back(std::move(property));
+    }
+    return cls;
+}
+
+assets::EntityClassTable tableOf(std::vector<assets::EntityClass> classes) {
+    assets::EntityClassTable table;
+    for (auto& cls : classes) table.classes.emplace(toLowerAscii(cls.name), std::move(cls));
+    return table;
+}
+
+std::unique_ptr<document::Document> documentOf(const std::string& text) {
+    auto file = vmf::parse(text);
+    REQUIRE(file.has_value());
+    return std::make_unique<document::Document>(*file);
+}
+
+document::NodeId idOf(const document::Document& doc, std::string_view classname) {
+    const auto handle = findEntity(doc, classname);
+    REQUIRE(handle);
+    return doc.get(*handle)->id;
+}
+
+void select(RenderMirror& mirror, std::vector<document::NodeId> ids) {
+    Highlight h;
+    h.selected = std::move(ids);
+    mirror.setHighlight(h);
+}
+
+} // namespace
+
+TEST_CASE("mirror helpers: line() follows a rename and a deleted target") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_line", {{"line", "255 255 255,targetname,target"}}, {{"target", "target_destination"}})});
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname helper_line origin "0 0 0" target "dest" }
+        entity { id 2 classname info_target origin "100 0 0" targetname "Dest" })"), &classes);
+    const auto line = idOf(*scene.doc, "helper_line"), target = idOf(*scene.doc, "info_target");
+    const MirrorViewOptions options;
+
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty()); // Neither end is selected.
+    select(scene.mirror, {line});
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1);
+    CHECK(list.worldSegments[0].a == DVec3(0, 0, 0));
+    CHECK(list.worldSegments[0].b == DVec3(100, 0, 0));
+    select(scene.mirror, {target});
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.size() == 1); // Selecting the peer shows it too.
+
+    const auto rename = [&](const char* name) {
+        auto tx = scene.doc->begin("rename");
+        tx.setKeyValue(*findEntity(*scene.doc, "info_target"), "targetname", name);
+        tx.commit();
+    };
+    const auto move = [&](const char* origin) {
+        auto tx = scene.doc->begin("move");
+        tx.setKeyValue(*findEntity(*scene.doc, "info_target"), "origin", origin);
+        tx.commit();
+    };
+    rename("elsewhere");
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty());
+    rename("dest");
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.size() == 1);
+    move("0 64 0");
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1);
+    CHECK(list.worldSegments[0].b == DVec3(0, 64, 0));
+
+    auto tx = scene.doc->begin("delete target");
+    tx.destroy(*findEntity(*scene.doc, "info_target"));
+    tx.commit();
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty());
+    // A target created later is picked up without touching the line entity.
+    auto create = scene.doc->begin("add target");
+    auto block = kv1::Node::block("entity");
+    for (const auto& [key, value] : std::vector<std::pair<const char*, const char*>>{
+             {"id", "9"}, {"classname", "info_target"}, {"origin", "7 8 9"}, {"targetname", "DEST"}})
+        REQUIRE(block.append(kv1::Node::value(key, value)));
+    create.create(block);
+    create.commit();
+    select(scene.mirror, {line});
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1);
+    CHECK(list.worldSegments[0].b == DVec3(7, 8, 9));
+}
+
+TEST_CASE("mirror helpers: sphere() radius follows its key and appears only while selected") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_sphere", {{"sphere", "radius"}}, {{"radius", "float"}})});
+    Scene scene(*g, documentOf(R"(entity { id 1 classname helper_sphere origin "10 20 30" radius "64" })"), &classes);
+    const auto id = idOf(*scene.doc, "helper_sphere");
+    const MirrorViewOptions options;
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty());
+    select(scene.mirror, {id});
+    const auto distance = [&] {
+        const auto list = scene.mirror.buildDrawList(options);
+        CHECK(list.worldSegments.size() == 144);
+        double worst = 0;
+        for (const auto& segment : list.worldSegments) {
+            worst = std::max({worst, std::abs(glm::length(segment.a - DVec3(10, 20, 30)) - glm::length(segment.b - DVec3(10, 20, 30)))});
+        }
+        CHECK(worst < 1e-9);
+        return list.worldSegments.empty() ? 0.0 : glm::length(list.worldSegments[0].a - DVec3(10, 20, 30));
+    };
+    CHECK(distance() == doctest::Approx(64.0));
+    auto tx = scene.doc->begin("radius");
+    tx.setKeyValue(*findEntity(*scene.doc, "helper_sphere"), "radius", "32");
+    tx.commit();
+    CHECK(distance() == doctest::Approx(32.0));
+    MirrorViewOptions hidden;
+    hidden.showEntities = false;
+    CHECK(scene.mirror.buildDrawList(hidden).worldSegments.empty());
+}
+
+TEST_CASE("mirror helpers: entity names are labels only on request") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_text", {{"worldtext", ""}}, {{"message", "string"}})});
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname info_target origin "1 2 3" targetname "Alpha" }
+        entity { id 2 classname info_target origin "4 5 6" }
+        entity { id 3 classname helper_text origin "7 8 9" message "hello" })"), &classes);
+    MirrorViewOptions options;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.labels.size() == 1); // worldtext only.
+    CHECK(list.labels[0].text == "hello");
+    options.showEntityNames = true;
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.labels.size() == 2); // The unnamed entity gets none.
+    const auto named = std::ranges::find(list.labels, "Alpha", &Label::text);
+    REQUIRE(named != list.labels.end());
+    CHECK(named->position == DVec3(1, 2, 3));
+}
+
+TEST_CASE("mirror helpers: sidelist highlights its SideIds through a vertex edit that keeps them") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_sides", {{"sidelist", ""}}, {{"sides", "sidelist"}})});
+    Scene scene(*g, loadMap(), &classes);
+    const auto red = findSolid(*scene.doc, "test/red");
+    REQUIRE(red);
+    const int side = *scene.doc->get(*red)->block->find("side")->find("id")->asInt();
+    auto create = scene.doc->begin("add sidelist entity");
+    auto block = kv1::Node::block("entity");
+    for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
+             {"id", "9000"}, {"classname", "helper_sides"}, {"origin", "0 0 200"}, {"sides", std::to_string(side) + " 99999"}})
+        REQUIRE(block.append(kv1::Node::value(key, value)));
+    const auto entity = create.create(block);
+    create.commit();
+    REQUIRE(scene.mirror.settle());
+    const MirrorViewOptions options;
+
+    const auto outlines = [&] { return scene.mirror.buildDrawList(options).outlines.size(); };
+    CHECK(outlines() == 0);
+    select(scene.mirror, {scene.doc->get(entity)->id});
+    CHECK(outlines() == 1); // The listed face; the unknown id highlights nothing.
+
+    auto geometry = geometry::solidGeometry(*scene.doc->get(*red)->block);
+    REQUIRE(geometry);
+    for (auto& p : geometry->poly.vertices) p.x += 8;
+    for (auto& face : geometry->poly.faces) face.plane = geometry->poly.derivePlane(face).value();
+    auto edit = scene.doc->begin("shift solid");
+    edit.setSolidGeometry(std::get<Handle<document::Solid>>(*red), *geometry);
+    edit.commit();
+    REQUIRE(scene.mirror.settle());
+    CHECK(*scene.doc->get(*red)->block->find("side")->find("id")->asInt() == side);
+    CHECK(outlines() == 1);
+}
+
+TEST_CASE("mirror helpers: golden images per helper kind") {
+    REQUIRE_GPU();
+    struct Kind {
+        const char* name;
+        assets::EntityHelper helper;
+        std::vector<std::pair<std::string, std::string>> properties;
+        std::string keys, extra;
+    };
+    const std::vector<Kind> kinds{
+        {"sphere", {"sphere", "radius"}, {{"radius", "float"}}, R"(radius "48")", ""},
+        {"line", {"line", "255 128 0,targetname,target"}, {{"target", "target_destination"}}, R"(target "t")",
+         R"(entity { id 2 classname info_target origin "0 0 80" targetname "t" })"},
+        {"wirebox", {"wirebox", "mins,maxs"}, {{"mins", "vector"}, {"maxs", "vector"}}, R"(mins "-30 -20 -10" maxs "30 20 40")", ""},
+        {"frustum", {"frustum", "fov,near,far"}, {{"fov", "float"}, {"near", "float"}, {"far", "float"}},
+         R"(fov "60" near "8" far "96" angles "0 0 0")", ""},
+        {"cylinder", {"cylinder", "0 200 255,targetname,target,radius"}, {{"target", "target_destination"}, {"radius", "float"}},
+         R"(target "t" radius "20")", R"(entity { id 2 classname info_target origin "0 0 80" targetname "t" })"},
+        {"lightcone", {"lightcone", ""}, {{"_cone", "float"}, {"_distance", "float"}}, R"(_cone "30" _distance "96" angles "0 0 0")", ""},
+        {"rectangle", {"orientedwidthheight", "width,height"}, {{"width", "float"}, {"height", "float"}},
+         R"(width "80" height "40" angles "0 45 0")", ""},
+        {"catapult", {"catapult", ""}, {{"playerSpeed", "float"}, {"launchDirection", "angle"}},
+         R"(playerSpeed "400" launchDirection "-60 0 0")", ""},
+        {"chain", {"keyframe", ""}, {{"nextkey", "target_destination"}}, R"(nextkey "t")",
+         R"(entity { id 2 classname info_target origin "0 0 80" targetname "t" })"},
+    };
+    for (const auto& kind : kinds) {
+        CAPTURE(kind.name);
+        const auto classes = tableOf({helperClass("helper_kind", {kind.helper}, kind.properties)});
+        Scene scene(*g, documentOf("entity { id 1 classname helper_kind origin \"0 0 0\" " + kind.keys + " }\n" + kind.extra), &classes);
+        select(scene.mirror, {idOf(*scene.doc, "helper_kind")});
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Flat;
+        options.view = makeView({-200, -150, 120}, {25.6, 36.9, 0});
+        auto list = scene.mirror.buildDrawList(options);
+        CHECK_FALSE(list.worldSegments.empty());
+        list.viewportSize = Vec2(static_cast<float>(kSize));
+        REQUIRE(g->context->oneShot([&](VkCommandBuffer commands) {
+            g->target.begin(commands, kClear);
+            g->renderer->record(commands, list);
+            g->target.end(commands);
+        }));
+        const auto image = g->target.readback();
+        REQUIRE(image);
+        CHECK(g->context->validation().errorCount() == 0);
+        golden::check(std::string("helper_") + kind.name, *image, *g->context);
     }
 }

@@ -19,7 +19,7 @@ editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.c
                editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/hide_corpus_test.cpp editor/history_property_test.cpp editor/work_plane_test.cpp
                editor/transform_test.cpp editor/vector_key_test.cpp editor/preview_test.cpp editor/preview_geometry_test.cpp
                editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp
-               render/view_math_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
+               render/view_math_test.cpp render/helper_shapes_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
                ../src/ui/model_pick.cpp render/model_render_test.cpp render/p0_point_data_test.cpp render/preview_overlay_test.cpp
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
 target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp

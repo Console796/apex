@@ -105,7 +105,7 @@ apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/ass
 target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
                                           sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp sourcepp::kvpp sourcepp::bsppp)
 apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp src/render/vk.cpp
-                         src/render/context.cpp src/render/resources.cpp
+                         src/render/context.cpp src/render/resources.cpp src/render/helper_shapes.cpp
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
                          src/render/render_target.cpp src/render/swapchain.cpp
                          src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp

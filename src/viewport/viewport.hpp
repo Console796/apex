@@ -16,6 +16,7 @@ struct Overlays {
     bool bounds = false;
     bool normals = false;
     bool nodrawFaces = true; // False hides nodraw faces in Textured and Flat views.
+    bool entityNames = false; // Draws each point entity's targetname beside it.
 
     bool operator==(const Overlays&) const = default;
 };

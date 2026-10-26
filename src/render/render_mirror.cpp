@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 #include "document/entity_transform.hpp"
+#include "render/helper_shapes.hpp"
 #include "render/solid_mesh.hpp"
 
 #include <algorithm>
@@ -91,6 +92,14 @@ struct EntityState {
     DVec3 position{0.0}, mins{-8.0}, maxs{8.0};
     DMat3 basis{1.0};
     Vec4 colour{0.9f, 0.4f, 0.9f, 1.0f};
+    // Helper inputs and output (D5). The block is shared with the document, so keeping it is cheap.
+    std::shared_ptr<const kv1::Node> block;
+    document::EntityPose pose;
+    const assets::EntityClass* cls = nullptr;
+    std::string targetname;         // As written, for labels.
+    std::string nameKey;            // Lower case; empty when unnamed.
+    HelperShapes helpers;
+    std::set<std::string> watching; // Names peersNamed looked up during the last evaluation.
 };
 
 struct MaterialState {
@@ -134,6 +143,12 @@ struct RenderMirror::Impl {
     std::uint32_t entityCount = 0;
     DVec3 entityOrigin{0.0};
     bool entitiesDirty = false;
+    // Helper dependencies: helpers that name other entities (line, cylinder, keyframe chains) are
+    // re-evaluated only when an entity carrying one of the names they looked up changes.
+    std::map<std::string, std::set<NodeId>, std::less<>> byName;
+    std::map<std::string, std::set<NodeId>, std::less<>> watchers;
+    std::set<std::string> touchedNames;
+    std::set<NodeId> helperDirty;
     bool redraw = true;
     bool uploaded = false; // Texture uploads awaiting heap.flush().
 
@@ -453,9 +468,8 @@ struct RenderMirror::Impl {
         const document::Entity* entity = doc.get(handle);
         if (!entity) return;
         entityIds[handle] = entity->id;
-        const bool changed = entities.erase(entity->id) > 0;
+        eraseEntity(entity->id);
         entitiesDirty = true;
-        (void)changed;
         if (!entity->block || hidden(doc, *entity)) return;
         for (const NodeId child : entity->children) {
             const auto childHandle = doc.handle(child);
@@ -483,8 +497,17 @@ struct RenderMirror::Impl {
         state.body = entityUint(*entity->block, "body");
         state.position = pose.origin;
         state.basis = pose.basis;
+        state.block = entity->block;
+        state.pose = pose;
+        if (const kv1::Node* name = entity->block->find("targetname")) {
+            if (auto text = name->decodedValue()) {
+                state.targetname = *text;
+                state.nameKey = lower(*text);
+            }
+        }
         if (classes) {
             if (const assets::EntityClass* cls = classes->find(classname)) {
+                state.cls = cls;
                 if (cls->mins) state.mins = {(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]};
                 if (cls->maxs) state.maxs = {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]};
                 if (cls->color) {
@@ -494,7 +517,76 @@ struct RenderMirror::Impl {
                 }
             }
         }
-        entities[entity->id] = state;
+        if (!state.nameKey.empty()) {
+            byName[state.nameKey].insert(entity->id);
+            touchedNames.insert(state.nameKey);
+        }
+        entities[entity->id] = std::move(state);
+        helperDirty.insert(entity->id);
+    }
+
+    // Drops an entity's mirror state and marks the names it carried or watched as changed.
+    void eraseEntity(NodeId id) {
+        const auto found = entities.find(id);
+        if (found == entities.end()) return;
+        const EntityState& state = found->second;
+        for (const std::string& name : state.watching) {
+            if (const auto it = watchers.find(name); it != watchers.end()) {
+                it->second.erase(id);
+                if (it->second.empty()) watchers.erase(it);
+            }
+        }
+        if (!state.nameKey.empty()) {
+            touchedNames.insert(state.nameKey);
+            if (const auto it = byName.find(state.nameKey); it != byName.end()) {
+                it->second.erase(id);
+                if (it->second.empty()) byName.erase(it);
+            }
+        }
+        helperDirty.erase(id);
+        entities.erase(found);
+    }
+
+    void evaluateHelpers(NodeId id) {
+        const auto found = entities.find(id);
+        if (found == entities.end()) return;
+        EntityState& state = found->second;
+        for (const std::string& name : state.watching) {
+            if (const auto it = watchers.find(name); it != watchers.end()) {
+                it->second.erase(id);
+                if (it->second.empty()) watchers.erase(it);
+            }
+        }
+        state.watching.clear();
+        state.helpers = {};
+        if (!state.cls || state.cls->helpers.empty() || !state.block) return;
+        HelperContext context{*state.block, *state.cls, state.pose, state.colour, {}};
+        context.peersNamed = [&](std::string_view name) {
+            std::vector<HelperPeer> peers;
+            const std::string key = lower(name);
+            if (key.empty()) return peers;
+            state.watching.insert(key);
+            watchers[key].insert(id);
+            if (const auto it = byName.find(key); it != byName.end()) {
+                for (const NodeId peer : it->second) {
+                    if (peer != id) peers.push_back({peer, entities.at(peer).position});
+                }
+            }
+            return peers;
+        };
+        state.helpers = buildHelperShapes(context);
+    }
+
+    // Re-evaluates the entities the change touched plus any helper that looked up a changed name.
+    void refreshHelpers() {
+        std::set<NodeId> todo = std::move(helperDirty);
+        helperDirty.clear();
+        for (const std::string& name : touchedNames) {
+            if (const auto it = watchers.find(name); it != watchers.end()) todo.insert(it->second.begin(), it->second.end());
+        }
+        touchedNames.clear();
+        for (const NodeId id : todo) evaluateHelpers(id);
+        if (!todo.empty()) redraw = true;
     }
 
     void rebuildEntityBuffer() {
@@ -647,7 +739,7 @@ struct RenderMirror::Impl {
                 }
             } else if (const auto* e = std::get_if<Handle<document::Entity>>(&h)) {
                 if (const auto it = entityIds.find(*e); it != entityIds.end()) {
-                    entities.erase(it->second);
+                    eraseEntity(it->second);
                     entityIds.erase(it);
                     entitiesDirty = true;
                     redraw = true;
@@ -657,6 +749,7 @@ struct RenderMirror::Impl {
         for (const NodeId id : dirty) {
             if (solids.contains(id)) requestMesh(id);
         }
+        refreshHelpers();
         if (entitiesDirty) redraw = true;
         collectGarbage();
     }
@@ -816,6 +909,13 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     };
     std::set<NodeId> replaced;
     for (const auto& state : m.previewGeometry) if (state.node) replaced.insert(state.node);
+    // A selected sidelist entity (info_overlay) highlights the faces it lists, as if they were picked.
+    std::set<document::SideId> sides = m.selectedSides;
+    for (const NodeId id : m.selected) {
+        const auto entity = m.entities.find(id);
+        if (entity == m.entities.end()) continue;
+        for (const int side : entity->second.helpers.sideIds) sides.insert(static_cast<document::SideId>(side));
+    }
     for (const auto& [id, solid] : m.solids) {
         if (replaced.contains(id)) continue;
         if (solid.hidden || !solid.meshed) continue;
@@ -848,7 +948,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.highlight = tint;
             draw.outlineOnlyWire = selected;
             const bool faceMode = !selected && std::ranges::any_of(batch.faces, [&](const FaceRange& face) {
-                return m.selectedSides.contains(face.side);
+                return sides.contains(face.side);
             });
             if (faceMode) {
                 // Split existing ranges so a face tint does not bleed into its material siblings.
@@ -858,7 +958,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                     part.indexCount = face.indexCount;
                     part.firstEdgeIndex = face.firstEdgeIndex;
                     part.edgeIndexCount = face.edgeIndexCount;
-                    if (m.selectedSides.contains(face.side)) {
+                    if (sides.contains(face.side)) {
                         part.highlight = m.highlight.selectTint;
                         part.outlineOnlyWire = true;
                         MeshDraw outline = part;
@@ -945,6 +1045,28 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.tint = m.highlight.outlineColour;
                 list.boxOutlines.push_back(draw);
             }
+        }
+    }
+    if (options.showEntities) {
+        const auto moved = [&](NodeId id, DVec3 p) {
+            const auto it = m.effectivePreview.find(id);
+            return it == m.effectivePreview.end() ? p : DVec3(it->second * DVec4(p, 1.0));
+        };
+        for (const auto& [id, entity] : m.entities) {
+            const bool self = m.selected.contains(id);
+            for (const HelperSegment& segment : entity.helpers.segments) {
+                const bool peer = segment.peer && m.selected.contains(*segment.peer);
+                const bool shown = segment.visibility == HelperVisibility::Always ||
+                                   (self && segment.visibility == HelperVisibility::WhenSelected) ||
+                                   ((self || peer) && segment.visibility == HelperVisibility::WhenSelfOrPeerSelected);
+                if (!shown) continue;
+                list.worldSegments.push_back({moved(id, segment.a), moved(segment.peer.value_or(id), segment.b),
+                                              segment.colour, 1.0f});
+            }
+            for (const HelperLabel& label : entity.helpers.labels)
+                list.labels.push_back({moved(id, label.position), label.text, Vec2(0.0f), label.colour});
+            if (options.showEntityNames && !entity.targetname.empty())
+                list.labels.push_back({moved(id, entity.position), entity.targetname, Vec2(8.0f, -8.0f), options.wireColour});
         }
     }
     if (options.showEntities) {

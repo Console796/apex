@@ -80,6 +80,8 @@ struct MirrorViewOptions {
     // False omits tools/toolsnodraw (and %compilenodraw) faces from Textured and Flat fills.
     // Wireframe ignores it so brush edges stay complete; selection outlines are kept.
     bool showNodraw = true;
+    // Labels each point entity with its targetname (entities without one are skipped).
+    bool showEntityNames = false;
 };
 
 class RenderMirror {

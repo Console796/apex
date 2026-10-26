@@ -512,6 +512,7 @@ double PaneWindow::draw() {
     options.modelEdgeOverlay = !session_ || session_->modelEdgeOverlay();
     options.showEntities = vp->overlays.entityHelpers;
     options.showNodraw = vp->overlays.nodrawFaces;
+    options.showEntityNames = vp->overlays.entityNames;
     options.grid = makeGridSettings(*vp, session_);
     if (lightBackground) options.grid.colour = Vec4(0.25f, 0.25f, 0.3f, 0.8f);
 
@@ -765,7 +766,8 @@ void PaneFrame::buildMenu() {
                                     {"Entity helpers", &viewport::Overlays::entityHelpers},
                                     {"Bounds", &viewport::Overlays::bounds},
                                     {"Normals", &viewport::Overlays::normals},
-                                    {"Nodraw faces", &viewport::Overlays::nodrawFaces}};
+                                    {"Nodraw faces", &viewport::Overlays::nodrawFaces},
+                                    {"Entity names", &viewport::Overlays::entityNames}};
     for (const auto& entry : entries) {
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);
