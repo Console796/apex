@@ -28,6 +28,7 @@
 #include <QDialog>
 #include <QPlainTextEdit>
 #include <QKeyEvent>
+#include <QMenu>
 #include <QClipboard>
 #include <QGuiApplication>
 #include <QStyledItemDelegate>
@@ -153,7 +154,28 @@ InspectorPanel::InspectorPanel(QWidget* parent) : QWidget(parent) {
     inputs_->setSelectionMode(QAbstractItemView::SingleSelection);
     inputs_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     tabs_->addTab(properties_, tr("Properties"));
-    tabs_->addTab(outputs_, tr("Outputs"));
+    auto* outputsPage = new QWidget(tabs_);
+    outputsPage->setObjectName(QStringLiteral("inspectorOutputsPage"));
+    auto* outputsLayout = new QVBoxLayout(outputsPage);
+    outputsLayout->setContentsMargins(0, 0, 0, 0);
+    auto* outputButtons = new QHBoxLayout;
+    const auto makeButton = [&](const QString& name, const QString& label, const QString& tip, void (InspectorPanel::*action)()) {
+        auto* button = new QPushButton(label, outputsPage);
+        button->setObjectName(name);
+        button->setToolTip(tip);
+        button->setFocusPolicy(Qt::NoFocus);
+        connect(button, &QPushButton::clicked, this, action);
+        outputButtons->addWidget(button);
+    };
+    makeButton(QStringLiteral("outputAdd"), tr("Add"), tr("Add an output below the current row (Ctrl+N or Insert)"), &InspectorPanel::addConnectionRow);
+    makeButton(QStringLiteral("outputDuplicate"), tr("Duplicate"), tr("Duplicate the current row (Ctrl+D)"), &InspectorPanel::duplicateConnectionRow);
+    makeButton(QStringLiteral("outputDelete"), tr("Delete"), tr("Delete the selected rows (Delete)"), &InspectorPanel::deleteConnectionRows);
+    outputButtons->addStretch(1);
+    outputsLayout->addLayout(outputButtons);
+    outputsLayout->addWidget(outputs_);
+    outputs_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(outputs_, &QWidget::customContextMenuRequested, this, &InspectorPanel::showConnectionMenu);
+    tabs_->addTab(outputsPage, tr("Outputs"));
     tabs_->addTab(inputs_, tr("Inputs"));
     layout_->addWidget(tabs_);
     outputs_->setItemDelegate(new ConnectionDelegate([this](int row, int column) {
@@ -288,6 +310,18 @@ void InspectorPanel::watch(QWidget* field) {
     field->installEventFilter(this);
 }
 bool InspectorPanel::eventFilter(QObject* object, QEvent* event) {
+    // Window-level shortcuts (File>New, Edit>Duplicate/Copy/Paste/Delete) would otherwise take
+    // these keys from the table; accepting the override delivers them as ordinary key presses.
+    if (object == outputs_ && event->type() == QEvent::ShortcutOverride && QApplication::focusWidget() == outputs_) {
+        const auto* key = static_cast<QKeyEvent*>(event);
+        const bool control = key->modifiers() == Qt::ControlModifier;
+        if ((control && (key->key() == Qt::Key_N || key->key() == Qt::Key_D || key->key() == Qt::Key_C ||
+                         key->key() == Qt::Key_V)) ||
+            (key->modifiers() == Qt::NoModifier && (key->key() == Qt::Key_Delete || key->key() == Qt::Key_Insert))) {
+            event->accept();
+            return true;
+        }
+    }
     if (event->type() == QEvent::FocusIn) object->setProperty("inspectorFocus", token());
     if (event->type() == QEvent::FocusOut) requestRefresh();
     return QWidget::eventFilter(object, event);
@@ -651,86 +685,124 @@ void InspectorPanel::refreshConnectionTabs(bool refreshInputs) {
 void InspectorPanel::handleConnectionKey(QKeyEvent* event) {
     if (!session_ || rebuilding_) return;
     const auto modifiers = event->modifiers();
+    const bool control = modifiers.testFlag(Qt::ControlModifier);
+    const auto key = event->key();
+    void (InspectorPanel::*action)() = nullptr;
+    if ((control && key == Qt::Key_N) || key == Qt::Key_Insert) action = &InspectorPanel::addConnectionRow;
+    else if (key == Qt::Key_Delete) action = &InspectorPanel::deleteConnectionRows;
+    else if (control && key == Qt::Key_D) action = &InspectorPanel::duplicateConnectionRow;
+    else if (control && key == Qt::Key_C) action = &InspectorPanel::copyConnectionRows;
+    else if (control && key == Qt::Key_V) action = &InspectorPanel::pasteConnectionRows;
+    if (!action) return;
+    (this->*action)();
+    event->accept();
+}
+
+void InspectorPanel::addConnectionRow() {
+    if (!session_ || rebuilding_ || entities_.empty()) return;
     const auto current = outputs_->currentRow();
-    if ((modifiers.testFlag(Qt::ControlModifier) && event->key() == Qt::Key_N) || event->key() == Qt::Key_Insert) {
-        if (current >= 0 && !connectionRowMatches(current)) {
-            refresh();
-            event->accept();
-            return;
-        }
-        auto connection = document::parseConnection(std::string("\x1b\x1b\x1b") + "0\x1b-1");
-        const auto model = session_->connectionModel();
-        const auto after = current >= 0 ? std::optional(static_cast<std::size_t>(current)) : std::nullopt;
-        pendingOutputEdit_ = after ? *after + 1 : model.rows().size();
-        if (session_->addConnection({}, std::move(connection), after)) refresh();
-        event->accept();
-        return;
+    if (current >= 0 && !connectionRowMatches(current)) { refresh(); return; }
+    auto connection = document::parseConnection(std::string("\x1b\x1b\x1b") + "0\x1b-1");
+    const auto model = session_->connectionModel();
+    const auto after = current >= 0 ? std::optional(static_cast<std::size_t>(current)) : std::nullopt;
+    pendingOutputEdit_ = after ? *after + 1 : model.rows().size();
+    tabs_->setCurrentWidget(outputs_->parentWidget());
+    if (session_->addConnection({}, std::move(connection), after)) refresh();
+}
+
+void InspectorPanel::deleteConnectionRows() {
+    if (!session_ || rebuilding_) return;
+    const auto current = outputs_->currentRow();
+    auto rows = outputs_->selectionModel()->selectedRows();
+    std::vector<int> indices;
+    for (const auto& index : rows) indices.push_back(index.row());
+    if (indices.empty() && current >= 0) indices.push_back(current);
+    std::ranges::sort(indices);
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+    if (std::ranges::all_of(indices, [&](int row) { return connectionRowMatches(row); })) {
+        std::vector<std::size_t> selectedRows;
+        for (const auto row : indices) if (row >= 0) selectedRows.push_back(static_cast<std::size_t>(row));
+        if (!selectedRows.empty()) session_->removeConnections(std::move(selectedRows));
+    } else refresh();
+    requestRefresh();
+}
+
+void InspectorPanel::duplicateConnectionRow() {
+    if (!session_ || rebuilding_) return;
+    const auto current = outputs_->currentRow();
+    if (current >= 0 && connectionRowMatches(current)) session_->duplicateConnection(static_cast<std::size_t>(current));
+    else if (current >= 0) refresh();
+    requestRefresh();
+}
+
+void InspectorPanel::copyConnectionRows() {
+    if (!session_ || rebuilding_) return;
+    const auto current = outputs_->currentRow();
+    auto selected = outputs_->selectionModel()->selectedRows();
+    if (selected.empty() && current >= 0) selected.push_back(outputs_->model()->index(current, 0));
+    std::vector<int> rows;
+    for (const auto& index : selected) rows.push_back(index.row());
+    std::ranges::sort(rows);
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    const auto model = session_->connectionModel();
+    QStringList lines;
+    for (const auto row : rows) {
+        if (row < 0 || static_cast<std::size_t>(row) >= model.rows().size()) continue;
+        QStringList values{text(model.rows()[static_cast<std::size_t>(row)].output)};
+        for (const auto& field : model.rows()[static_cast<std::size_t>(row)].connection.fields()) values.push_back(text(field));
+        lines.push_back(values.join('\t'));
     }
-    if (event->key() == Qt::Key_Delete) {
-        auto rows = outputs_->selectionModel()->selectedRows();
-        std::vector<int> indices;
-        for (const auto& index : rows) indices.push_back(index.row());
-        if (indices.empty() && current >= 0) indices.push_back(current);
-        std::ranges::sort(indices);
-        indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
-        if (std::ranges::all_of(indices, [&](int row) { return connectionRowMatches(row); })) {
-            std::vector<std::size_t> selectedRows;
-            for (const auto row : indices) if (row >= 0) selectedRows.push_back(static_cast<std::size_t>(row));
-            if (!selectedRows.empty()) session_->removeConnections(std::move(selectedRows));
-        } else refresh();
-        requestRefresh();
-        event->accept();
-        return;
+    QGuiApplication::clipboard()->setText(lines.join('\n'));
+}
+
+void InspectorPanel::pasteConnectionRows() {
+    if (!session_ || rebuilding_ || entities_.empty()) return;
+    const auto current = outputs_->currentRow();
+    const auto clipboard = QGuiApplication::clipboard()->text();
+    std::optional<std::size_t> after = current >= 0 ? std::optional(static_cast<std::size_t>(current)) : std::nullopt;
+    std::vector<std::pair<std::string, document::Connection>> additions;
+    for (auto line : clipboard.split('\n', Qt::SkipEmptyParts)) {
+        if (line.endsWith('\r')) line.chop(1);
+        const auto values = line.split('\t');
+        if (values.size() != 6) { additions.clear(); break; }
+        const auto esc = QChar(0x1b);
+        QStringList fields;
+        for (qsizetype i = 1; i < values.size(); ++i) fields.push_back(values[i]);
+        const QString encoded = fields.join(esc);
+        auto connection = document::parseConnection(encoded.toStdString());
+        if (!connection.wellFormed) { additions.clear(); break; }
+        additions.emplace_back(values[0].toStdString(), std::move(connection));
     }
-    if (modifiers.testFlag(Qt::ControlModifier) && event->key() == Qt::Key_D) {
-        if (current >= 0 && connectionRowMatches(current)) session_->duplicateConnection(static_cast<std::size_t>(current));
-        else if (current >= 0) refresh();
-        requestRefresh();
-        event->accept();
-        return;
-    }
-    if (modifiers.testFlag(Qt::ControlModifier) && event->key() == Qt::Key_C) {
-        auto selected = outputs_->selectionModel()->selectedRows();
-        if (selected.empty() && current >= 0) selected.push_back(outputs_->model()->index(current, 0));
-        std::vector<int> rows;
-        for (const auto& index : selected) rows.push_back(index.row());
-        std::ranges::sort(rows);
-        rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
-        const auto model = session_->connectionModel();
-        QStringList lines;
-        for (const auto row : rows) {
-            if (row < 0 || static_cast<std::size_t>(row) >= model.rows().size()) continue;
-            QStringList values{text(model.rows()[static_cast<std::size_t>(row)].output)};
-            for (const auto& field : model.rows()[static_cast<std::size_t>(row)].connection.fields()) values.push_back(text(field));
-            lines.push_back(values.join('\t'));
-        }
-        QGuiApplication::clipboard()->setText(lines.join('\n'));
-        event->accept();
-        return;
-    }
-    if (modifiers.testFlag(Qt::ControlModifier) && event->key() == Qt::Key_V) {
-        const auto clipboard = QGuiApplication::clipboard()->text();
-        auto model = session_->connectionModel();
-        std::optional<std::size_t> after = current >= 0 ? std::optional(static_cast<std::size_t>(current)) : std::nullopt;
-        std::vector<std::pair<std::string, document::Connection>> additions;
-        for (auto line : clipboard.split('\n', Qt::SkipEmptyParts)) {
-            if (line.endsWith('\r')) line.chop(1);
-            const auto values = line.split('\t');
-            if (values.size() != 6) { additions.clear(); break; }
-            const auto esc = QChar(0x1b);
-            QStringList fields;
-            for (qsizetype i = 1; i < values.size(); ++i) fields.push_back(values[i]);
-            const QString encoded = fields.join(esc);
-            auto connection = document::parseConnection(encoded.toStdString());
-            if (!connection.wellFormed) { additions.clear(); break; }
-            additions.emplace_back(values[0].toStdString(), std::move(connection));
-        }
-        if (!additions.empty() && (current < 0 || connectionRowMatches(current)))
-            session_->addConnections(std::move(additions), after);
-        requestRefresh();
-        event->accept();
-        return;
-    }
+    if (!additions.empty() && (current < 0 || connectionRowMatches(current)))
+        session_->addConnections(std::move(additions), after);
+    requestRefresh();
+}
+
+void InspectorPanel::showConnectionMenu(const QPoint& position) {
+    if (!session_ || entities_.empty()) return;
+    const auto index = outputs_->indexAt(position);
+    if (index.isValid() && !outputs_->selectionModel()->isRowSelected(index.row(), QModelIndex()))
+        outputs_->selectRow(index.row());
+    if (index.isValid()) outputs_->setCurrentCell(index.row(), index.column());
+    const bool hasRow = index.isValid() || outputs_->currentRow() >= 0;
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("inspectorOutputsMenu"));
+    // The shortcut text after the tab is display-only: the keys are handled by the table itself.
+    const auto add = [&](const QString& name, const QString& label, bool enabled, void (InspectorPanel::*action)()) {
+        auto* item = menu.addAction(label);
+        item->setObjectName(name);
+        item->setEnabled(enabled);
+        connect(item, &QAction::triggered, this, action);
+    };
+    add(QStringLiteral("menuAddOutput"), tr("Add Output\tCtrl+N"), true, &InspectorPanel::addConnectionRow);
+    add(QStringLiteral("menuDuplicate"), tr("Duplicate\tCtrl+D"), hasRow, &InspectorPanel::duplicateConnectionRow);
+    menu.addSeparator();
+    add(QStringLiteral("menuCopy"), tr("Copy\tCtrl+C"), hasRow, &InspectorPanel::copyConnectionRows);
+    add(QStringLiteral("menuPaste"), tr("Paste\tCtrl+V"), QGuiApplication::clipboard()->text().contains('\t'),
+        &InspectorPanel::pasteConnectionRows);
+    menu.addSeparator();
+    add(QStringLiteral("menuDelete"), tr("Delete\tDel"), hasRow, &InspectorPanel::deleteConnectionRows);
+    if (menuHook_) menuHook_(&menu); else menu.exec(outputs_->viewport()->mapToGlobal(position));
 }
 
 } // namespace apex::ui

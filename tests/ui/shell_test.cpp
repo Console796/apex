@@ -2095,7 +2095,7 @@ TEST_CASE("inspector connection tabs show validation, completions, and incoming 
     CHECK_FALSE(outputs->item(0, 2)->toolTip().isEmpty());
     CHECK(outputs->item(2, 3)->toolTip().contains("editing rewrites this row as five fields"));
 
-    tabs->setCurrentWidget(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
     outputs->editItem(outputs->item(0, 1));
     app().processEvents();
     auto* edit = outputs->findChild<QLineEdit*>();
@@ -2184,7 +2184,7 @@ TEST_CASE("inspector refreshes common rows before another edit can target a coll
     auto* tabs = panel.findChild<QTabWidget*>();
     auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
     REQUIRE(tabs); REQUIRE(outputs);
-    tabs->setCurrentWidget(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
     REQUIRE(outputs->rowCount() == 3);
     REQUIRE(session.setConnectionField(1, editor::ConnectionModel::Field::Delay, "0"));
     const auto history = doc.undoCount();
@@ -2212,7 +2212,7 @@ TEST_CASE("inspector multi-row paste and delete each use one undo step") {
     auto* tabs = panel.findChild<QTabWidget*>();
     auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
     REQUIRE(tabs); REQUIRE(outputs);
-    tabs->setCurrentWidget(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
     outputs->setFocus();
     QGuiApplication::clipboard()->setText(QStringList{
         QStringLiteral("OnA\ta\tOpen\t\t0\t-1"),
@@ -2233,6 +2233,81 @@ TEST_CASE("inspector multi-row paste and delete each use one undo step") {
     REQUIRE(doc.undo());
     app().processEvents();
     CHECK(outputs->rowCount() == 3);
+}
+
+TEST_CASE("inspector Outputs table claims its keys from window shortcuts and offers a menu and buttons") {
+    app();
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button targetname button }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    panel.activateWindow();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs); REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->setFocus();
+    app().processEvents();
+    REQUIRE(QApplication::focusWidget() == outputs);
+
+    for (const auto& [code, mods] : std::vector<std::pair<int, Qt::KeyboardModifiers>>{
+             {Qt::Key_N, Qt::ControlModifier}, {Qt::Key_D, Qt::ControlModifier}, {Qt::Key_C, Qt::ControlModifier},
+             {Qt::Key_V, Qt::ControlModifier}, {Qt::Key_Delete, {}}, {Qt::Key_Insert, {}}}) {
+        QKeyEvent override(QEvent::ShortcutOverride, code, mods);
+        override.ignore();
+        QApplication::sendEvent(outputs, &override);
+        CHECK(override.isAccepted());
+    }
+    QKeyEvent other(QEvent::ShortcutOverride, Qt::Key_S, Qt::ControlModifier);
+    other.ignore();
+    QApplication::sendEvent(outputs, &other);
+    CHECK_FALSE(other.isAccepted());
+
+    // Buttons.
+    auto* add = panel.findChild<QPushButton*>("outputAdd");
+    auto* duplicate = panel.findChild<QPushButton*>("outputDuplicate");
+    auto* remove = panel.findChild<QPushButton*>("outputDelete");
+    REQUIRE(add); REQUIRE(duplicate); REQUIRE(remove);
+    const auto history = doc.undoCount();
+    add->click();
+    app().processEvents();
+    CHECK(doc.undoCount() == history + 1);
+    REQUIRE(outputs->rowCount() == 1);
+    key(outputs->findChild<QLineEdit*>(), Qt::Key_Escape);
+    app().processEvents();
+    outputs->setCurrentCell(0, 0);
+    duplicate->click();
+    app().processEvents();
+    CHECK(outputs->rowCount() == 2);
+
+    // Context menu lists the shortcuts and drives the same actions.
+    QStringList labels;
+    panel.setConnectionMenuHook([&](QMenu* menu) {
+        for (auto* action : menu->actions()) labels.push_back(action->text());
+        menu->findChild<QAction*>("menuAddOutput")->trigger();
+    });
+    const auto rows = outputs->rowCount();
+    outputs->setCurrentCell(0, 0);
+    QMetaObject::invokeMethod(outputs, "customContextMenuRequested", Qt::DirectConnection,
+                              Q_ARG(QPoint, outputs->visualItemRect(outputs->item(0, 0)).center()));
+    app().processEvents();
+    CHECK(labels.join('|').contains("Ctrl+N"));
+    CHECK(labels.join('|').contains("Ctrl+D"));
+    CHECK(labels.join('|').contains("Del"));
+    CHECK(outputs->rowCount() == rows + 1);
+
+    if (auto* open = outputs->findChild<QLineEdit*>()) key(open, Qt::Key_Escape);
+    app().processEvents();
+    outputs->selectAll();
+    remove->click();
+    app().processEvents();
+    CHECK(outputs->rowCount() == 0);
 }
 
 TEST_CASE("inspector accepted rename still applies when a refresh runs during the dialog") {
@@ -2279,7 +2354,7 @@ TEST_CASE("inspector Tab between output cells opens the next editor") {
     app().processEvents();
     auto* tabs = panel.findChild<QTabWidget*>();
     auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
-    tabs->setCurrentWidget(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
     outputs->setCurrentCell(0, 1);
     outputs->editItem(outputs->item(0, 1));
     app().processEvents();
@@ -2315,7 +2390,7 @@ TEST_CASE("inspector output cells preserve ESC edits and provide keyboard row op
     auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
     REQUIRE(tabs);
     REQUIRE(outputs);
-    tabs->setCurrentWidget(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
     outputs->setCurrentCell(0, 1);
     outputs->editItem(outputs->item(0, 1));
     app().processEvents();
@@ -2371,7 +2446,7 @@ TEST_CASE("inspector output cells preserve ESC edits and provide keyboard row op
     key(outputs, Qt::Key_C, Qt::ControlModifier);
     session.selectNode(doc.get(*doc.handle(doc.roots()[2]))->id);
     app().processEvents();
-    tabs->setCurrentWidget(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
     outputs->setFocus();
     key(outputs, Qt::Key_V, Qt::ControlModifier);
     app().processEvents();
@@ -2472,7 +2547,7 @@ TEST_CASE("keyboard wires a button output to a door input") {
     auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
     REQUIRE(tabs);
     REQUIRE(outputs);
-    tabs->setCurrentWidget(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
     outputs->setFocus();
     key(outputs, Qt::Key_N, Qt::ControlModifier);
     app().processEvents();

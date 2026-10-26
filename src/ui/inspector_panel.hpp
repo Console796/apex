@@ -7,6 +7,7 @@
 #include <array>
 
 class QCheckBox;
+class QMenu;
 class QComboBox;
 class QVBoxLayout;
 class QTabWidget;
@@ -24,6 +25,8 @@ public:
     void setEditorSession(editor::EditorSession* session);
     void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
     void setRenameDialogPresenter(RenameDialogPresenter presenter) { renamePresenter_ = std::move(presenter); }
+    // Tests replace the blocking menu.exec(); the hook receives the populated menu.
+    void setConnectionMenuHook(std::function<void(QMenu*)> hook) { menuHook_ = std::move(hook); }
     void refresh();
 
 protected:
@@ -36,6 +39,12 @@ private:
     void refreshConnectionTabs(bool refreshInputs = false);
     bool connectionRowMatches(int row, int editedColumn = -1) const;
     void handleConnectionKey(QKeyEvent* event);
+    void addConnectionRow();
+    void deleteConnectionRows();
+    void duplicateConnectionRow();
+    void copyConnectionRows();
+    void pasteConnectionRows();
+    void showConnectionMenu(const QPoint& position);
     document::Document* document_ = nullptr;
     editor::EditorSession* session_ = nullptr;
     std::size_t documentObserver_ = 0, sessionObserver_ = 0;
@@ -53,6 +62,7 @@ private:
     bool queued_ = false, rebuilding_ = false;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
     RenameDialogPresenter renamePresenter_;
+    std::function<void(QMenu*)> menuHook_;
     std::optional<std::size_t> pendingOutputEdit_;
     std::vector<std::array<QString, 6>> displayedConnections_;
 };
