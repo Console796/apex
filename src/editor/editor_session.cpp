@@ -1,6 +1,7 @@
 #include "editor/editor_session.hpp"
 #include "editor/connection_validation.hpp"
 #include "editor/instance_templates.hpp"
+#include "editor/instance_collapse_command.hpp"
 #include "editor/pie_menus.hpp"
 
 #include "core/strings.hpp"
@@ -792,6 +793,27 @@ Result<void> EditorSession::duplicateSelection() {
     return runEdit("Duplicate", AfterEdit::Computed, [&](document::Transaction& tx) {
         return stagePaste(*document_, tx, *text, options);
     });
+}
+Result<InstanceCollapseReport> EditorSession::collapseInstances(std::span<const NodeId> selected) {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    return stageInstanceCollapse(*this, *document_, selected, false);
+}
+Result<InstanceCollapseReport> EditorSession::collapseAllInstances() {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    std::vector<NodeId> instances;
+    for (const auto root : document_->roots()) {
+        const auto walk = [&](const auto& self, NodeId id) -> void {
+            const auto handle = document_->handle(id);
+            if (!handle) return;
+            const auto* node = document_->get(*handle);
+            if (std::holds_alternative<Handle<document::Entity>>(*handle) && node->block &&
+                ciEquals(node->block->find("classname") ? node->block->find("classname")->decodedValue().value_or("") : "", "func_instance"))
+                instances.push_back(id);
+            for (const auto child : node->children) self(self, child);
+        };
+        walk(walk, root);
+    }
+    return stageInstanceCollapse(*this, *document_, instances, true);
 }
 Result<void> EditorSession::deleteSelection() {
     return runEdit("Delete", AfterEdit::Clear, [&](document::Transaction& tx) {

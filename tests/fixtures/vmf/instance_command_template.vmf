@@ -1,0 +1,21 @@
+// Apex-authored fixture for editor instance collapse tests.
+entity
+{
+    "id" "1"
+    "classname" "logic_relay"
+    "targetname" "inside"
+    connections
+    {
+        "OnTrigger" "proxy,ProxyRelay,forwarded,0,-1"
+    }
+}
+entity
+{
+    "id" "2"
+    "classname" "func_instance_io_proxy"
+    "targetname" "proxy"
+    connections
+    {
+        "OnProxyRelay" "inside,Trigger,from instance input,0,-1"
+    }
+}

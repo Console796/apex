@@ -28,6 +28,13 @@
 
 namespace apex::editor {
 
+struct InstanceCollapseItemResult {
+    NodeId instance = 0;
+    bool collapsed = false;
+    std::string reason;
+};
+using InstanceCollapseReport = std::vector<InstanceCollapseItemResult>;
+
 class ConnectionValidator;
 class InstanceTemplates;
 
@@ -216,6 +223,8 @@ public:
     Result<std::string> cutText();
     Result<void> pasteText(std::string_view text, PasteOptions options = {});
     Result<void> duplicateSelection();
+    Result<InstanceCollapseReport> collapseInstances(std::span<const NodeId> selection);
+    Result<InstanceCollapseReport> collapseAllInstances();
     Result<void> deleteSelection();
     Result<void> groupSelection();
     Result<void> ungroupSelection();
@@ -290,6 +299,8 @@ public:
     void publishToolStatus() { notify(); }
 
 private:
+    friend Result<InstanceCollapseReport> stageInstanceCollapse(EditorSession&, document::Document&,
+        std::span<const NodeId>, bool);
     void finishPie(PieResult result);
     Preview topologyPreview_;
     std::string topologyMessage_;

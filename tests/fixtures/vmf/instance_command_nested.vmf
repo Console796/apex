@@ -1,0 +1,10 @@
+// Apex-authored fixture for recursive editor instance collapse tests.
+entity
+{
+    "id" "1"
+    "classname" "func_instance"
+    "targetname" "inner"
+    "file" "instance_command_template.vmf"
+    "origin" "0 0 0"
+    "angles" "0 0 0"
+}

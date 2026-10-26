@@ -89,12 +89,15 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
            DEPS apex_core)
-apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.cpp src/document/document.cpp src/document/entity_transform.cpp DEPS apex_geometry apex_core)
+apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.cpp
+                            src/document/document.cpp src/document/entity_transform.cpp
+                            src/document/instance_fixup.cpp src/document/instance_collapse.cpp
+           DEPS apex_geometry apex_core)
 apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp src/editor/pick_model.cpp
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
                           src/editor/group_index.cpp src/editor/name_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
-                          src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
+                          src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp src/editor/instance_collapse_command.cpp
                           src/editor/transform.cpp src/editor/preview.cpp src/editor/preset_io.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/instance_templates.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
@@ -189,6 +192,8 @@ endif()
 if(APEX_BUILD_TESTS)
   add_executable(apex_replane tools/replane/main.cpp)
   target_link_libraries(apex_replane PRIVATE apex_document apex_geometry apex_core apex_warnings)
+  add_executable(apex_instance_collapse tools/instance_collapse/main.cpp)
+  target_link_libraries(apex_instance_collapse PRIVATE apex_document apex_geometry apex_core apex_warnings)
   add_executable(apex_vmf_dump tools/vmf_dump/main.cpp)
   target_link_libraries(apex_vmf_dump PRIVATE apex_document apex_geometry apex_core apex_warnings)
 endif()
