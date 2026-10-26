@@ -116,6 +116,18 @@ TEST_CASE("ModelCache corpus models load async, evict by bytes, clear on mount c
     CHECK(cache.residentBytes() == 0);
     CHECK(first->vertices.size() > 0); // The caller's snapshot survives eviction.
 
+    // A model larger than the budget stays resident once loaded; it is not reloaded on every request.
+    cache.setBudget(1);
+    cache.request(names[0]);
+    finish(jobs, cache, names[0]);
+    REQUIRE(cache.state(names[0]) == ModelState::Ready);
+    CHECK(cache.request(names[0]) != nullptr);
+    CHECK(cache.request(names[0]) != cache.errorModel());
+    cache.request(names[1]); // The next load evicts it instead.
+    finish(jobs, cache, names[1]);
+    CHECK(cache.state(names[1]) == ModelState::Ready);
+    CHECK(cache.state(names[0]) == ModelState::Unloaded);
+
     cache.setBudget(256 * 1024 * 1024);
     cache.request(names[0]);
     finish(jobs, cache, names[0]);

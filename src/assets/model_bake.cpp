@@ -7,13 +7,27 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <span>
 #include <string>
+#include <type_traits>
+#include <vector>
 
 namespace apex::assets {
 namespace {
 constexpr std::int64_t kStudioVertexSize = 48; // sizeof(mstudiovertex_t)
 
 Error bakeError(std::string message) { return {ErrorCode::ParseError, std::move(message)}; }
+
+// mdlpp builds a strip's spans from file offsets and counts without checking them, so a corrupt VTX can
+// point them outside the strip group's own vectors.
+template <typename T>
+bool spanWithin(std::span<T> span, const std::vector<std::remove_const_t<T>>& owner) {
+    if (span.empty()) return true;
+    const auto first = reinterpret_cast<std::uintptr_t>(span.data());
+    const auto begin = reinterpret_cast<std::uintptr_t>(owner.data());
+    const auto end = begin + owner.size() * sizeof(T);
+    return first >= begin && first <= end && span.size() <= (end - first) / sizeof(T);
+}
 
 ModelVertex convertVertex(const mdlpp::VVD::Vertex& vertex) {
     return {{vertex.position[0], vertex.position[1], vertex.position[2]},
@@ -123,6 +137,8 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
                     };
                     for (const auto& group : vtxMesh.stripGroups) {
                         for (const auto& strip : group.strips) {
+                            if (!spanWithin(strip.indices, group.indices))
+                                return std::unexpected(bakeError("strip range out of bounds"));
                             if (strip.flags & mdlpp::VTX::Strip::FLAG_IS_TRILIST) {
                                 for (std::size_t i = 0; i + 2 < strip.indices.size(); i += 3) {
                                     for (const auto k : {i, i + 2, i + 1}) {

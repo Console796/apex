@@ -149,3 +149,19 @@ TEST_CASE("model bake rejects corrupt mdl vtx and vvd bytes and out-of-range ver
     REQUIRE_FALSE(baked);
     CHECK(baked.error().message.starts_with("vertex id out of range"));
 }
+
+TEST_CASE("model bake rejects strip spans that point outside their strip group") {
+    for (const auto kind : {0, 1, 2}) {
+        CAPTURE(kind);
+        mdlpp::StudioModel source{};
+        triangleModel(source, 1, 0);
+        auto& group = source.vtx.bodyParts[0].models[0].modelLODs[0].meshes[0].stripGroups[0];
+        static std::vector<std::uint16_t> elsewhere{0, 1, 2};
+        if (kind == 0) group.strips[0].indices = std::span<std::uint16_t>(elsewhere); // another allocation
+        if (kind == 1) group.strips[0].indices = std::span<std::uint16_t>(group.indices.data() + 1, 3); // runs past the end
+        if (kind == 2) group.strips[0].indices = std::span<std::uint16_t>(group.indices.data(), std::size_t{1} << 40);
+        const auto baked = bakeModel(source.mdl, source.vtx, source.vvd);
+        REQUIRE_FALSE(baked);
+        CHECK(baked.error().message.starts_with("strip range out of bounds"));
+    }
+}

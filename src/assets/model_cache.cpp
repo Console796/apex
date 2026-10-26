@@ -39,8 +39,16 @@ std::string modelPath(std::string_view name) {
 }
 
 std::size_t modelByteSize(const ModelData& model) {
-    return model.vertices.size() * sizeof(ModelVertex) + model.indices.size() * sizeof(std::uint32_t) +
-           model.submeshes.size() * sizeof(ModelSubmesh);
+    std::size_t bytes = model.vertices.size() * sizeof(ModelVertex) + model.indices.size() * sizeof(std::uint32_t) +
+                        model.submeshes.size() * sizeof(ModelSubmesh);
+    for (const auto& skin : model.skins) bytes += sizeof(skin) + skin.size() * sizeof(std::int16_t);
+    for (const auto& name : model.materialNames) bytes += sizeof(name) + name.size();
+    for (const auto& directory : model.materialDirectories) bytes += sizeof(directory) + directory.size();
+    for (const auto& part : model.bodyParts) {
+        bytes += sizeof(part) + part.name.size();
+        for (const auto& choice : part.choices) bytes += sizeof(choice) + choice.name.size();
+    }
+    return bytes;
 }
 
 struct ModelCache::Impl {
@@ -65,11 +73,14 @@ struct ModelCache::Impl {
         entry.error = error.withContext(key);
         log::warn("model {} failed: {}", key, entry.error->what());
     }
-    void evict() {
+    // `keep` is the entry that just finished loading: a model larger than the budget stays until the next
+    // load or a smaller budget, instead of reloading on every request.
+    void evict(const Entry* keep = nullptr) {
         while (resident > budget) {
             auto oldest = entries.end();
             for (auto it = entries.begin(); it != entries.end(); ++it)
-                if (it->second.data && (oldest == entries.end() || it->second.touched < oldest->second.touched))
+                if (it->second.data && &it->second != keep &&
+                    (oldest == entries.end() || it->second.touched < oldest->second.touched))
                     oldest = it;
             if (oldest == entries.end()) break;
             resident -= oldest->second.bytes;
@@ -138,7 +149,8 @@ std::shared_ptr<const ModelData> ModelCache::request(std::string_view name) {
             impl->resident += loaded.bytes;
             loaded.data = std::make_shared<const ModelData>(std::move(*result));
             loaded.state = ModelState::Ready;
-            impl->evict();
+            loaded.touched = ++impl->clock;
+            impl->evict(&loaded);
         });
     return nullptr;
 }
