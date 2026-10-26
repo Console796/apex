@@ -256,15 +256,15 @@ QWidget* SettingsDialog::buildGeneralPage() {
     form->addRow(tr("Editing"), confirmMerge_);
     pivotAtOrigin_ = new QCheckBox(tr("Rotate a single object about its origin"));
     pivotAtOrigin_->setObjectName(QStringLiteral("settingsPivotAtObjectOrigin"));
-    pivotAtOrigin_->setChecked(window_.editorSession().pivotAtObjectOrigin);
+    pivotAtOrigin_->setChecked(window_.editorSession().pivotAtObjectOrigin());
     pivotAtOrigin_->setToolTip(tr("Like Hammer, a lone selected entity rotates and scales about its origin. Off pivots "
                                   "on the centre of its bounds. Applies while the transform pivot is Bounds centre."));
     form->addRow(QString(), pivotAtOrigin_);
     modelEdgeOverlay_ = new QCheckBox(tr("Draw model wireframe overlay in Flat view"));
     modelEdgeOverlay_->setObjectName(QStringLiteral("settingsModelEdgeOverlay"));
-    modelEdgeOverlay_->setChecked(window_.editorSession().modelEdgeOverlay);
-    modelEdgeOverlay_->setToolTip(tr("Triangle edges over models in the Flat display mode. The Wireframe mode always "
-                                     "shows them."));
+    modelEdgeOverlay_->setChecked(window_.editorSession().modelEdgeOverlay());
+    modelEdgeOverlay_->setToolTip(tr("Triangle edges over models in the Flat display mode and on selected models. "
+                                     "The Wireframe mode always shows them. Also on the Transform toolbar."));
     form->addRow(tr("Models"), modelEdgeOverlay_);
 
     autosave_ = new QCheckBox(tr("Enable autosave"));
@@ -713,9 +713,9 @@ bool SettingsDialog::applyAll() {
     originalInput_ = settings;
     window_.editorSession().confirmNonConvexMerge = confirmMerge_->isChecked();
     QSettings().setValue("editing/confirmNonConvexMerge", confirmMerge_->isChecked());
-    window_.editorSession().pivotAtObjectOrigin = pivotAtOrigin_->isChecked();
+    window_.editorSession().setPivotAtObjectOrigin(pivotAtOrigin_->isChecked());
     QSettings().setValue("editing/pivotAtObjectOrigin", pivotAtOrigin_->isChecked());
-    window_.editorSession().modelEdgeOverlay = modelEdgeOverlay_->isChecked();
+    window_.editorSession().setModelEdgeOverlay(modelEdgeOverlay_->isChecked());
     QSettings().setValue("view/modelEdgeOverlay", modelEdgeOverlay_->isChecked());
     window_.setNewSolidStyle(window_.editorSession().newSolidStyle().material,
                              static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));

@@ -385,6 +385,14 @@ bool EditorSession::perform(const ActionId& action) {
         setSnapMode(snap_.mode == SnapMode::Absolute ? SnapMode::Relative : SnapMode::Absolute);
         return true;
     }
+    if (action == "gizmo.pivot.origin.toggle") {
+        setPivotAtObjectOrigin(!pivotAtObjectOrigin_);
+        return true;
+    }
+    if (action == "view.model_overlay.toggle") {
+        setModelEdgeOverlay(!modelEdgeOverlay_);
+        return true;
+    }
     if (action == "transform.texture_lock.toggle") {
         setTextureLock(!textureLock_);
         return true;
@@ -463,6 +471,16 @@ void EditorSession::setSnapMode(SnapMode mode) {
 void EditorSession::setTextureLock(bool lock) {
     if (lock == textureLock_) return;
     textureLock_ = lock;
+    notify();
+}
+void EditorSession::setPivotAtObjectOrigin(bool enabled) {
+    if (transformActive() || enabled == pivotAtObjectOrigin_) return;
+    pivotAtObjectOrigin_ = enabled;
+    notify();
+}
+void EditorSession::setModelEdgeOverlay(bool enabled) {
+    if (enabled == modelEdgeOverlay_) return;
+    modelEdgeOverlay_ = enabled;
     notify();
 }
 

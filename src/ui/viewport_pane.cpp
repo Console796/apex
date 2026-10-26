@@ -509,7 +509,7 @@ double PaneWindow::draw() {
     options.wireColour = Vec4(line, line, line + (lightBackground ? 0.05f : 0.05f), 1.0f);
     options.edgeColour = Vec4(0.0f, 0.0f, 0.0f, 1.0f);
     options.edgeOverlay = vp->mode == viewport::DisplayMode::Flat;
-    options.modelEdgeOverlay = !session_ || session_->modelEdgeOverlay;
+    options.modelEdgeOverlay = !session_ || session_->modelEdgeOverlay();
     options.showEntities = vp->overlays.entityHelpers;
     options.showNodraw = vp->overlays.nodrawFaces;
     options.grid = makeGridSettings(*vp, session_);

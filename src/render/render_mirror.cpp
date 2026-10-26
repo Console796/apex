@@ -996,7 +996,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             group.draw.instancedTransforms = true;
             for (const auto& transform : group.transforms) list.previews.push_back({transform, DVec3(0.0)});
             list.meshes.push_back(group.draw);
-            if (group.draw.highlight == m.highlight.selectTint && !m.selected.empty()) {
+            const bool outlined = options.modelEdgeOverlay || options.mode == DisplayMode::Wireframe;
+            if (outlined && group.draw.highlight == m.highlight.selectTint && !m.selected.empty()) {
                 MeshDraw outline = group.draw;
                 outline.colour = m.highlight.outlineColour;
                 outline.highlight = Vec4(0.0f);

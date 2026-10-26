@@ -131,6 +131,14 @@ public:
     void setSnapMode(SnapMode mode);
     bool textureLock() const { return textureLock_; }
     void setTextureLock(bool lock);
+    // Hammer's behaviour: a single selected object rotates and scales about its own origin. Off pivots on the
+    // selection's bounds centre. Only applies while the pivot mode is BoundsCentre.
+    bool pivotAtObjectOrigin() const { return pivotAtObjectOrigin_; }
+    void setPivotAtObjectOrigin(bool enabled);
+    // Model triangle edges drawn over models outside the Wireframe mode: the Flat edge overlay and the
+    // selection outline. Wireframe mode always draws them.
+    bool modelEdgeOverlay() const { return modelEdgeOverlay_; }
+    void setModelEdgeOverlay(bool enabled);
     // Work plane used by nudge when nothing is hovered or pinned (the viewport supplies it).
     void setFallbackPlane(SurfacePlane plane) { fallbackPlane_ = std::move(plane); }
     const SurfacePlane& fallbackPlane() const { return fallbackPlane_; }
@@ -221,11 +229,6 @@ public:
     bool isToolEnabled(const ActionId& action) const;
     bool perform(const ActionId& action);
     bool confirmNonConvexMerge = true;
-    // Hammer's behaviour: a single selected object rotates and scales about its own origin. Off pivots on the
-    // selection's bounds centre. Only applies while the pivot mode is BoundsCentre.
-    bool pivotAtObjectOrigin = true;
-    // Triangle edges drawn over models in Flat mode (Wireframe mode always draws them).
-    bool modelEdgeOverlay = true;
     // The host sees preview() populated during the callback. Missing host means Cancel.
     std::function<bool(const MergePlan&)> confirmMerge;
     std::function<std::optional<double>()> hollowThickness;
@@ -303,6 +306,8 @@ private:
     DVec3 customPivot_{0.0};
     SnapSettings snap_;
     bool textureLock_ = true;
+    bool pivotAtObjectOrigin_ = true;
+    bool modelEdgeOverlay_ = true;
     SurfacePlane fallbackPlane_{{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}, {}};
     Preset preset_;
     Keymap keymap_;

@@ -82,7 +82,7 @@ std::optional<GizmoContext> SelectTool::gizmoContext() const {
             }
         }
     }
-    const bool singleObject = session_.pivotAtObjectOrigin && nodes.size() == 1 && session_.selection_.active() &&
+    const bool singleObject = session_.pivotAtObjectOrigin_ && nodes.size() == 1 && session_.selection_.active() &&
                               std::holds_alternative<NodeId>(*session_.selection_.active()) &&
                               std::get<NodeId>(*session_.selection_.active()) == nodes.front();
     context.pivot = session_.pivotMode_ == PivotMode::Custom ? session_.customPivot_

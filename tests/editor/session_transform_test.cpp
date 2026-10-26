@@ -413,17 +413,17 @@ TEST_CASE("session pivots a single object on its origin unless that preference i
     session.attach(doc);
     session.perform("selection.mode.objects");
     session.selectNode(id(doc, entity));
-    REQUIRE(session.pivotAtObjectOrigin);
+    REQUIRE(session.pivotAtObjectOrigin());
     checkPoint(session.gizmoContext()->pivot, {10, 20, 30}); // Hammer: the entity origin.
-    session.pivotAtObjectOrigin = false;
+    session.setPivotAtObjectOrigin(false);
     checkPoint(session.gizmoContext()->pivot, {42, 52, 62}); // Bounds centre.
-    session.pivotAtObjectOrigin = true;
+    session.setPivotAtObjectOrigin(true);
     session.perform("gizmo.pivot.cycle"); // Active origin stays the origin either way.
     checkPoint(session.gizmoContext()->pivot, {10, 20, 30});
 }
 
 TEST_CASE("session pivots several objects on their shared bounds centre") {
     Scene scene;
-    REQUIRE(scene.session.pivotAtObjectOrigin);
+    REQUIRE(scene.session.pivotAtObjectOrigin());
     checkPoint(scene.session.gizmoContext()->pivot, {69, 37, 37});
 }

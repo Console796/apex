@@ -101,7 +101,8 @@ QString fromStd(std::string_view s) {
 
 bool isTransformAction(const editor::ActionId& id) {
     return id.starts_with("gizmo.") || id.starts_with("nudge.") || id.starts_with("edit.flip.") ||
-           id == "transform.dialog" || id == "transform.texture_lock.toggle" || id == "snap.mode.toggle";
+           id == "transform.dialog" || id == "transform.texture_lock.toggle" || id == "snap.mode.toggle" ||
+           id == "view.model_overlay.toggle";
 }
 
 // Actions whose plain (unmodified) default keys belong to the focused pane.
@@ -175,8 +176,8 @@ MainWindow::MainWindow(QWidget* parent)
         statusBar()->showMessage(message, 4000);
     });
     session_.confirmNonConvexMerge = QSettings().value("editing/confirmNonConvexMerge", true).toBool();
-    session_.pivotAtObjectOrigin = QSettings().value("editing/pivotAtObjectOrigin", true).toBool();
-    session_.modelEdgeOverlay = QSettings().value("view/modelEdgeOverlay", true).toBool();
+    session_.setPivotAtObjectOrigin(QSettings().value("editing/pivotAtObjectOrigin", true).toBool());
+    session_.setModelEdgeOverlay(QSettings().value("view/modelEdgeOverlay", true).toBool());
     session_.hollowThickness = [this]() -> std::optional<double> {
         bool ok = false;
         const auto value = QInputDialog::getDouble(this, tr("Make Hollow"),
@@ -733,6 +734,8 @@ void MainWindow::updateEditorActions() {
             action->setText(relative ? tr("Snap: Relative") : tr("Snap: Absolute"));
         }
         if (id == "transform.texture_lock.toggle") action->setChecked(session_.textureLock());
+        if (id == "gizmo.pivot.origin.toggle") action->setChecked(session_.pivotAtObjectOrigin());
+        if (id == "view.model_overlay.toggle") action->setChecked(session_.modelEdgeOverlay());
         const std::pair<const char*, editor::SelectionMode> modes[] = {
             {"selection.mode.groups", editor::SelectionMode::Groups},
             {"selection.mode.objects", editor::SelectionMode::Objects},
@@ -878,6 +881,11 @@ void MainWindow::buildTransformUi() {
             if (id == "transform.dialog") openTransformDialog();
             else if (id == "view.center_selection") centerViewsOnSelection();
             else session_.perform(id);
+            // The toolbar toggles are the preferences; keep them across sessions.
+            if (id == "gizmo.pivot.origin.toggle")
+                QSettings().setValue("editing/pivotAtObjectOrigin", session_.pivotAtObjectOrigin());
+            if (id == "view.model_overlay.toggle")
+                QSettings().setValue("view/modelEdgeOverlay", session_.modelEdgeOverlay());
             updateEditorActions();
         });
         return action;
@@ -888,6 +896,8 @@ void MainWindow::buildTransformUi() {
         make(id, viewMenu_, std::string_view(id) == "view.isolate");
     viewMenu_->addSeparator();
     make("view.center_selection", viewMenu_, false);
+    viewMenu_->addSeparator();
+    auto* modelOverlay = make("view.model_overlay.toggle", viewMenu_, true);
     viewMenu_->addSeparator();
 
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
@@ -913,6 +923,7 @@ void MainWindow::buildTransformUi() {
     gizmo->addSeparator();
     auto* space = make("gizmo.space.toggle", gizmo, true);
     make("gizmo.pivot.cycle", gizmo, false);
+    auto* pivotOrigin = make("gizmo.pivot.origin.toggle", gizmo, true);
     auto* snap = make("snap.mode.toggle", gizmo, true);
 
     auto* bar = addToolBar(tr("Transform"));
@@ -921,12 +932,15 @@ void MainWindow::buildTransformUi() {
     bar->addSeparator();
     bar->addAction(snap);
     bar->addAction(textureLock);
+    bar->addAction(pivotOrigin);
+    bar->addAction(modelOverlay);
     bar->addAction(space);
 
     // The same actions as checkable buttons in the status bar (always visible, even with the
     // toolbar hidden).
     const std::pair<const char*, QAction*> buttons[] = {
-        {"statusSnapMode", snap}, {"statusTextureLock", textureLock}};
+        {"statusSnapMode", snap}, {"statusTextureLock", textureLock}, {"statusPivotOrigin", pivotOrigin},
+        {"statusModelOverlay", modelOverlay}};
     for (const auto& [name, action] : buttons) {
         auto* button = new QToolButton;
         button->setObjectName(QString::fromLatin1(name));

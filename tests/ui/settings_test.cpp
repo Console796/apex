@@ -197,8 +197,8 @@ TEST_CASE("preferences persist the object-origin pivot and model overlay toggles
     QSettings().remove("view/modelEdgeOverlay");
     apex::ui::MainWindow window;
     auto& session = window.editorSession();
-    CHECK(session.pivotAtObjectOrigin);
-    CHECK(session.modelEdgeOverlay);
+    CHECK(session.pivotAtObjectOrigin());
+    CHECK(session.modelEdgeOverlay());
     {
         apex::ui::SettingsDialog prefs(window);
         auto* pivot = prefs.findChild<QCheckBox*>("settingsPivotAtObjectOrigin");
@@ -211,14 +211,14 @@ TEST_CASE("preferences persist the object-origin pivot and model overlay toggles
         overlay->setChecked(false);
         prefs.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Apply)->click();
     }
-    CHECK_FALSE(session.pivotAtObjectOrigin);
-    CHECK_FALSE(session.modelEdgeOverlay);
+    CHECK_FALSE(session.pivotAtObjectOrigin());
+    CHECK_FALSE(session.modelEdgeOverlay());
     CHECK_FALSE(QSettings().value("editing/pivotAtObjectOrigin", true).toBool());
     CHECK_FALSE(QSettings().value("view/modelEdgeOverlay", true).toBool());
     {
         apex::ui::MainWindow reopened;
-        CHECK_FALSE(reopened.editorSession().pivotAtObjectOrigin);
-        CHECK_FALSE(reopened.editorSession().modelEdgeOverlay);
+        CHECK_FALSE(reopened.editorSession().pivotAtObjectOrigin());
+        CHECK_FALSE(reopened.editorSession().modelEdgeOverlay());
     }
     QSettings().remove("editing/pivotAtObjectOrigin");
     QSettings().remove("view/modelEdgeOverlay");

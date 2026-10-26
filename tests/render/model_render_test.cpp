@@ -352,11 +352,15 @@ TEST_CASE("model edge overlay preference only affects the overlay in non-wirefra
     // Switching it off leaves only the overlay lines behind; the fills are the same.
     CHECK(flatOffImage.pixels != flatOnImage.pixels);
 
-    // Selection outlines keep their edges whatever the preference says.
+    // The selection outline is the same triangle wireframe, so the preference drops it too; the tint stays.
     Highlight selection; selection.selected = {1}; mirror.setHighlight(selection);
     const auto selectedOff = frame(DisplayMode::Flat, true, false);
-    REQUIRE(selectedOff.outlines.size() == 1);
-    CHECK(selectedOff.outlines.front().edgeIndexCount > 0);
+    CHECK(selectedOff.outlines.empty());
+    REQUIRE(selectedOff.meshes.size() == 1);
+    CHECK(selectedOff.meshes.front().highlight == selection.selectTint);
+    CHECK(frame(DisplayMode::Flat, true, true).outlines.size() == 1);
+    CHECK(frame(DisplayMode::Textured, false, false).outlines.empty());
+    CHECK(frame(DisplayMode::Wireframe, false, false).outlines.size() == 1);
 
     // The Wireframe mode never reads the preference.
     const auto wireOn = draw(*context, **heap, frame(DisplayMode::Wireframe, false, true));

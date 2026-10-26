@@ -658,6 +658,18 @@ TEST_CASE("transform actions route through the session, menus, toolbar and statu
     scene.window.findChild<QToolButton*>("statusTextureLock")->click();
     CHECK(session.textureLock() == !lock);
     CHECK(scene.action("transform.texture_lock.toggle")->isChecked() == !lock);
+    // Object-origin pivot and the model wireframe are toolbar toggles beside snap and texture lock.
+    const bool originPivot = session.pivotAtObjectOrigin();
+    scene.action("gizmo.pivot.origin.toggle")->trigger();
+    CHECK(session.pivotAtObjectOrigin() == !originPivot);
+    CHECK(scene.action("gizmo.pivot.origin.toggle")->isChecked() == !originPivot);
+    scene.action("gizmo.pivot.origin.toggle")->trigger();
+    const bool overlay = session.modelEdgeOverlay();
+    scene.window.findChild<QToolButton*>("statusModelOverlay")->click();
+    CHECK(session.modelEdgeOverlay() == !overlay);
+    CHECK(scene.action("view.model_overlay.toggle")->isChecked() == !overlay);
+    scene.action("view.model_overlay.toggle")->trigger();
+    CHECK(session.modelEdgeOverlay() == overlay);
     scene.action("gizmo.space.toggle")->trigger();
     CHECK(session.gizmoSpace() == editor::GizmoSpace::Local);
     CHECK(scene.action("gizmo.space.toggle")->isChecked());
