@@ -10,6 +10,8 @@
 #include "render/view_math.hpp"
 #include "editor/preview.hpp"
 #include "editor/pick_index.hpp"
+#include "editor/instance_expansion.hpp"
+#include "../editor/corpus.hpp"
 
 #include <doctest/doctest.h>
 #include <vtfpp/VTF.h>
@@ -1269,4 +1271,225 @@ TEST_CASE("mirror helpers: golden images per helper kind") {
         CHECK(g->context->validation().errorCount() == 0);
         golden::check(std::string("helper_") + kind.name, image, *g->context);
     }
+}
+
+TEST_CASE("Instance mirror shares placements fixes materials and reloads only template users") {
+    REQUIRE_GPU();
+    auto templateBytes = readFixture("render_map.vmf");
+    for (auto pos = templateBytes.find("test/red"); pos != std::string::npos; pos = templateBytes.find("test/red", pos + 9))
+        templateBytes.replace(pos, 8, "$material");
+    g->tree.put("instance-a.vmf", templateBytes);
+    g->tree.put("instance-b.vmf", readFixture("render_map.vmf"));
+    auto file = vmf::parse(R"(
+        entity { classname func_instance targetname same file instance-a.vmf replace01 "$material test/red" }
+        entity { classname func_instance targetname same file instance-a.vmf replace01 "$material test/red" origin "600 0 0" }
+        entity { classname func_instance file instance-b.vmf origin "-600 0 0" }
+        entity { classname func_instance file absent.vmf origin "0 600 0" }
+    )"); REQUIRE(file);
+    document::Document parent(*file);
+    const auto before = parent.write().value();
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 3);
+    REQUIRE(expansion.problems().size() == 1);
+    CHECK(expansion.problems()[0].file == "absent.vmf");
+    CHECK(expansion.contents()[0].keys == expansion.contents()[1].keys);
+    const auto templateBefore = expansion.contents()[0].templ->write().value();
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    auto list = mirror.buildDrawList({});
+    REQUIRE_FALSE(list.meshes.empty());
+    const auto stats = mirror.instanceStats();
+    CHECK(stats.drawnSolids == 12);
+    CHECK(stats.uniqueSolids == 8);
+    CHECK(stats.meshBytes > 0);
+    CHECK(std::ranges::any_of(list.labels, [](const auto& label) { return label.text == "absent.vmf"; }));
+    const auto* stableBuffer = list.meshes.back().vertices;
+    // A material replacement reaches the real textured draw, not just an expansion key.
+    const auto normal = drawFrame(*g, mirror, DisplayMode::Textured);
+    CHECK(count(normal, [](Px p) { return p.r > 150 && p.g < 80 && p.b < 80; }) > 0);
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Tinted);
+    const auto tinted = drawFrame(*g, mirror, DisplayMode::Textured);
+    CHECK(tinted.pixels != normal.pixels);
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Hidden);
+    const auto hiddenList = mirror.buildDrawList({});
+    CHECK(hiddenList.meshes.empty());
+    CHECK(hiddenList.boxes.size() == 4);
+    CHECK(mirror.instanceStats().drawnSolids == 0);
+    mirror.resetStats();
+    mirror.setInstanceContents(expansion.contents());
+    mirror.buildDrawList({});
+    CHECK(mirror.instanceStats().jobsSubmitted == 0);
+    CHECK(mirror.instanceStats().solidsRemeshed == 0);
+    CHECK(parent.write().value() == before);
+    CHECK(expansion.contents()[0].templ->write().value() == templateBefore);
+    // An entity-only reload keeps every solid buffer, including the unrelated B template.
+    g->tree.put("instance-a.vmf", templateBytes + "\nentity { classname info_target origin \"100 0 0\" }\n");
+    const auto reload = expansion.invalidate(g->tree.root / "instance-a.vmf");
+    REQUIRE_FALSE(reload.problem);
+    CHECK(reload.users.size() == 2);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    list = mirror.buildDrawList({});
+    CHECK(list.meshes.back().vertices == stableBuffer);
+    CHECK(mirror.instanceStats().solidsRemeshed == 0);
+    // One changed solid is remeshed once, shared by both placements.
+    auto changed = templateBytes;
+    for (auto pos = changed.find("test/floor"); pos != std::string::npos; pos = changed.find("test/floor", pos + 9))
+        changed.replace(pos, 10, "test/blue");
+    g->tree.put("instance-a.vmf", changed + "\nentity { classname info_target origin \"100 0 0\" }\n");
+    CHECK_FALSE(expansion.invalidate(g->tree.root / "instance-a.vmf").problem);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    mirror.resetStats();
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    CHECK(mirror.instanceStats().solidsRemeshed == 1);
+    CHECK(mirror.buildDrawList({}).meshes.back().vertices == stableBuffer);
+    const auto good = expansion.contents()[0].keys;
+    g->tree.put("instance-a.vmf", "world {");
+    CHECK(expansion.invalidate(g->tree.root / "instance-a.vmf").problem.has_value());
+    expansion.update(parent, g->tree.root / "map.vmf");
+    mirror.resetStats();
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    CHECK(expansion.contents()[0].keys == good);
+    CHECK(mirror.instanceStats().jobsSubmitted == 0);
+    CHECK(parent.write().value() == before);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("Instance corpus draws every resolvable nested template and reports largest map cost") {
+    const auto paths = editor_test::corpusPaths();
+    if (paths.empty()) { MESSAGE("APEX_P2CE_DIR unset; skipping instance drawing corpus"); return; }
+    REQUIRE_GPU();
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(std::getenv("APEX_P2CE_DIR")) / "p2ce";
+    auto loadedVfs = assets::Vfs::load(profile, g->jobs); REQUIRE(loadedVfs);
+    assets::MaterialCache materials(*loadedVfs, g->jobs);
+    assets::ModelCache models(*loadedVfs, g->jobs);
+    auto heap = TextureHeap::create(*g->context); REQUIRE(heap);
+    editor::InstanceTemplates templates;
+    std::filesystem::path largest;
+    std::size_t largestSolids = 0, maps = 0, solids = 0;
+    // Independent file traversal: count visible source solids and follow fixed nested files.
+    const auto expected = [&](const document::Document& doc, const std::filesystem::path& map) {
+        std::vector<std::filesystem::path> ancestors;
+        const auto count = [&](const auto& self, const document::Document& current, const std::filesystem::path& referring,
+                               const std::optional<document::InstanceFixup>& fixup) -> std::size_t {
+            std::size_t total = 0;
+            const auto walk = [&](const auto& visit, document::NodeId id) -> void {
+                const auto handle = *current.handle(id);
+                const auto* node = current.get(handle);
+                if (node->block->key() == "hidden") return;
+                if (fixup && std::holds_alternative<Handle<document::Solid>>(handle)) ++total;
+                if (std::holds_alternative<Handle<document::Entity>>(handle)) {
+                    auto block = fixup ? document::fixedInstanceKeys(*node->block, *fixup) : *node->block;
+                    const auto* cls = block.find("classname");
+                    const auto* file = block.find("file");
+                    if (cls && file && cls->decodedValue().value_or("") == "func_instance") {
+                        auto path = editor::resolveInstanceFile(referring, file->decodedValue().value_or(""), profile.gameDirectory / "maps");
+                        if (path) {
+                            auto loaded = templates.load(*path, ancestors);
+                            if (loaded) {
+                                ancestors.push_back(*path);
+                                total += self(self, **loaded, *path, document::InstanceFixup::parse(block));
+                                ancestors.pop_back();
+                            }
+                        }
+                    }
+                }
+                for (auto child : node->children) visit(visit, child);
+            };
+            for (auto root : current.roots()) walk(walk, root);
+            return total;
+        };
+        return count(count, doc, map, {});
+    };
+    for (const auto& path : paths) {
+        document::Document doc(editor_test::readCorpus(path));
+        CAPTURE(path.string());
+        editor::InstanceExpansion expansion(templates);
+        expansion.update(doc, path, profile.gameDirectory / "maps");
+        if (expansion.contents().empty()) continue;
+        const auto want = expected(doc, path);
+        RenderMirror mirror(*g->context, **heap, g->jobs, materials, nullptr, &models,
+                            [&](const std::string& material) { return loadedVfs->exists(material); });
+        // This pass measures contents only. The largest-map pass below includes the parent.
+        document::ChangeSet owners;
+        for (const auto& content : expansion.contents()) owners.created.push_back(*doc.handle(content.instance));
+        mirror.apply(doc, owners);
+        mirror.setInstanceContents(expansion.contents());
+        REQUIRE(mirror.settle());
+        mirror.buildDrawList({});
+        CHECK(mirror.instanceStats().drawnSolids == want);
+        ++maps;
+        solids += want;
+        if (want > largestSolids) { largestSolids = want; largest = path; }
+    }
+    REQUIRE(maps > 0);
+    document::Document doc(editor_test::readCorpus(largest));
+    assets::MaterialCache coldMaterials(*loadedVfs, g->jobs);
+    assets::ModelCache coldModels(*loadedVfs, g->jobs);
+    const auto start = std::chrono::steady_clock::now();
+    editor::InstanceTemplates coldTemplates;
+    editor::InstanceExpansion expansion(coldTemplates);
+    expansion.update(doc, largest, profile.gameDirectory / "maps");
+    const auto expanded = std::chrono::steady_clock::now();
+    RenderMirror mirror(*g->context, **heap, g->jobs, coldMaterials, nullptr, &coldModels,
+                        [&](const std::string& material) { return loadedVfs->exists(material); });
+    mirror.rebuild(doc);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    const auto image = drawFrame(*g, mirror, DisplayMode::Textured);
+    CHECK_FALSE(image.pixels.empty());
+    const auto done = std::chrono::steady_clock::now();
+    std::size_t copyBytes = 0;
+    std::set<const document::Document*> unique;
+    for (const auto& content : expansion.contents()) if (unique.insert(content.keys.get()).second)
+        for (auto h : editor_test::nodes(*content.keys)) copyBytes += content.keys->get(h)->block->memory();
+    std::cout << "[instance corpus] maps=" << maps << " drawn_solids=" << solids
+              << " largest=" << largest.string() << " solids=" << largestSolids
+              << " expansion_ms=" << std::chrono::duration<double, std::milli>(expanded - start).count()
+              << " expand_draw_ms=" << std::chrono::duration<double, std::milli>(done - start).count()
+              << " mirror_mesh_bytes=" << mirror.meshBytes()
+              << " instance_mesh_bytes=" << mirror.instanceStats().meshBytes
+              << " mirror_texture_bytes=" << mirror.textureBytes()
+              << " instance_texture_bytes=" << mirror.instanceStats().textureBytes
+              << " fixed_key_bytes=" << copyBytes
+              << " placements=" << mirror.instanceStats().placements
+              << " unique_solids=" << mirror.instanceStats().uniqueSolids << '\n';
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("Instance mirror draws nested fixture solids with composed world transforms") {
+    REQUIRE_GPU();
+    g->tree.put("nested-inner.vmf", readFixture("render_map.vmf"));
+    g->tree.put("nested-outer.vmf", readFixture("render_map.vmf") + R"(
+        entity { classname func_instance file nested-inner.vmf origin "32 0 0" angles "19 23 37" }
+        hidden { entity { classname func_instance file nested-inner.vmf } }
+    )");
+    auto file = vmf::parse(R"(entity { classname func_instance file nested-outer.vmf origin "1000000 2000000 0" angles "31 47 13" })"); REQUIRE(file);
+    document::Document parent(*file);
+    const auto before = parent.write().value();
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.problems().empty());
+    REQUIRE(expansion.contents().size() == 2);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    const auto list = mirror.buildDrawList({});
+    CHECK(mirror.instanceStats().drawnSolids == 8);
+    REQUIRE_FALSE(list.meshes.empty());
+    CHECK(list.previews[list.meshes.front().previewIndex - 1].matrix == expansion.contents()[0].transform);
+    CHECK(list.previews[list.meshes.back().previewIndex - 1].matrix == expansion.contents()[1].transform);
+    const auto image = drawFrame(*g, mirror, DisplayMode::Flat, false, makeView({999780.0, 1999830.0, 130.0}, {23.0, 38.0, 0.0}));
+    CHECK(count(image, [](Px p) { return p.r > 60 || p.g > 60 || p.b > 60; }) > 0);
+    CHECK(parent.write().value() == before);
 }

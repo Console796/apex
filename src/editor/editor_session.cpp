@@ -26,6 +26,8 @@
 namespace apex::editor {
 
 EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
+    instanceTemplates_ = std::make_unique<InstanceTemplates>();
+    instanceExpansion_ = std::make_unique<InstanceExpansion>(*instanceTemplates_);
     clock_ = [] {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch());
@@ -73,6 +75,7 @@ void EditorSession::attach(document::Document& doc) {
         picks_->apply(changes);
         groups_->apply(changes);
         names_->apply(changes);
+        refreshInstances();
         activeToolObject().documentChanged();
         if (transformActive()) endTransform(); // Undo/redo/external edits invalidate a drag.
         selectTool().cycle_ = {};
@@ -83,6 +86,7 @@ void EditorSession::attach(document::Document& doc) {
         selection_.prune(*document_);
         notify();
     });
+    refreshInstances();
     notify();
 }
 void EditorSession::setEntityBoundsProvider(EntityBoundsProvider provider) {
@@ -99,6 +103,7 @@ void EditorSession::detach() {
     activeToolObject().cancel();
     if (document_) document_->unobserve(documentObserver_);
     document_ = nullptr;
+    instanceExpansion_ = std::make_unique<InstanceExpansion>(*instanceTemplates_);
     visgroupHistory_.clear();
     visgroupVisibility_ = {};
     picks_.reset();
@@ -606,6 +611,33 @@ void EditorSession::setConnectionContext(std::filesystem::path map,
     if (connectionMapPath_ != map && instanceTemplates_) instanceTemplates_->clear();
     connectionMapPath_ = std::move(map);
     connectionExtraRoot_ = std::move(extraRoot);
+    refreshInstances();
+    notify();
+}
+void EditorSession::refreshInstances() {
+    if (!document_) return;
+    instanceExpansion_->update(*document_, connectionMapPath_, connectionExtraRoot_);
+    if (picks_) picks_->setInstanceContents(instanceExpansion_->contents(), instanceVisibility());
+}
+InstanceReload EditorSession::invalidateInstance(const std::filesystem::path& path) {
+    auto result = instanceExpansion_->invalidate(path);
+    refreshInstances();
+    notify();
+    return result;
+}
+document::InstanceVisibility EditorSession::instanceVisibility() const {
+    if (document_) {
+        const auto value = document_->viewSetting("nInstanceVisibility");
+        if (value == "0") return document::InstanceVisibility::Hidden;
+        if (value == "1") return document::InstanceVisibility::Tinted;
+    }
+    return document::InstanceVisibility::Normal;
+}
+void EditorSession::setInstanceVisibility(document::InstanceVisibility visibility) {
+    if (!document_ || visibility == instanceVisibility()) return;
+    if (visibility != document::InstanceVisibility::Hidden && visibility != document::InstanceVisibility::Tinted &&
+        visibility != document::InstanceVisibility::Normal) return;
+    document_->setViewSetting("nInstanceVisibility", std::to_string(static_cast<int>(visibility)));
 }
 Result<void> EditorSession::setConnectionField(std::size_t row, ConnectionModel::Field field, std::string text) {
     return runEdit("Edit connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {

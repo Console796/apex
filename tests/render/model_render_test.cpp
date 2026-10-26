@@ -413,3 +413,45 @@ TEST_CASE("model adapter rejects non-finite geometry without throwing") {
     data.vertices[0].position.x = std::numeric_limits<float>::quiet_NaN();
     CHECK(ui::makePickModel(data) == nullptr);
 }
+
+TEST_CASE("Instance model fixups reach drawn skin body and model without changing either document") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    Fixture fixture;
+    fixture.tree.put("leaf.vmf", R"(entity { classname prop_static model "$model" skin "$skin" body "$body" origin "-1000 0 0" })");
+    fixture.tree.put("nested.vmf", R"(entity { classname func_instance file leaf.vmf replace01 "$skin $parent" replace02 "$body 1" fixup_style 2 replace03 "$model models/fixture.mdl" })");
+    auto file = vmf::parse(R"(entity { classname func_instance file nested.vmf origin "1000 0 0" fixup_style 2 replace01 "$parent 1" })"); REQUIRE(file);
+    document::Document parent(*file);
+    const auto before = parent.write().value();
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, fixture.tree.root / "map.vmf");
+    REQUIRE(expansion.problems().empty());
+    REQUIRE(expansion.contents().size() == 2);
+    const auto templateBefore = expansion.contents()[1].templ->write().value();
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, nullptr, fixture.models.get(),
+                        [&](const std::string& path) { return fixture.vfs->exists(path); });
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    auto list = mirror.buildDrawList(view());
+    REQUIRE(list.meshes.size() == 1);
+    CHECK(list.meshes[0].indexCount == 6); // Body 1 is the centre quad.
+    const auto image = draw(*context, **heap, list);
+    CHECK(channel(image, 64, 64, 1) > 150); // Skin 1 is green; skin 0 is red.
+    CHECK(channel(image, 64, 64, 0) == 0);
+    CHECK(channel(image, 40, 64, 1) == 0);
+    ui::ModelPickCache modelPicks(*fixture.models);
+    editor::PickIndex picks(parent, [&](const kv1::Node& entity) { return modelPicks.shape(entity); });
+    picks.setInstanceContents(expansion.contents());
+    const auto hit = picks.first({{0, 0, 100}, {0, 0, -1}});
+    REQUIRE(hit);
+    CHECK(hit->node == expansion.contents()[0].instance);
+    CHECK(hit->modelTriangle);
+    CHECK_FALSE(hit->side);
+    CHECK_FALSE(picks.first({{12, 0, 100}, {0, 0, -1}})); // Body 1 leaves the rails empty.
+    CHECK(parent.write().value() == before);
+    CHECK(expansion.contents()[1].templ->write().value() == templateBefore);
+    CHECK(context->validation().errorCount() == 0);
+}

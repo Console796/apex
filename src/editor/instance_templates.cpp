@@ -146,4 +146,17 @@ Result<InstanceTemplates::Template> InstanceTemplates::load(const std::filesyste
     }
 }
 
+Result<InstanceTemplates::Template> InstanceTemplates::invalidate(const std::filesystem::path& resolved) {
+    std::error_code ec;
+    auto key = std::filesystem::weakly_canonical(resolved, ec);
+    if (ec) key = resolved.lexically_normal();
+    const auto found = cache_.find(key);
+    const auto previous = found == cache_.end() ? std::optional<Template>{} :
+        found->second ? std::optional<Template>{*found->second} : std::optional<Template>{};
+    cache_.erase(key);
+    auto result = load(key);
+    if (!result && previous) cache_.insert_or_assign(key, *previous);
+    return result;
+}
+
 } // namespace apex::editor

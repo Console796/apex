@@ -303,6 +303,7 @@ void ViewportArea::updateHighlight() {
         highlight.hover = session_->hoverDrawable();
     }
     if (auto* mirror = host_->mirror()) {
+        if (session_) mirror->setInstanceContents(session_->instances().contents(), session_->instanceVisibility());
         mirror->setHighlight(highlight);
         syncPreview(*mirror);
     }

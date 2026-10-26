@@ -1,5 +1,7 @@
 #pragma once
 
+#include "editor/instance_expansion.hpp"
+
 #include "editor/actions.hpp"
 #include "editor/name_index.hpp"
 #include "editor/face_edit.hpp"
@@ -107,6 +109,10 @@ public:
     ConnectionValidator connectionValidator() const;
     void setConnectionContext(std::filesystem::path map,
                               std::optional<std::filesystem::path> extraRoot = {});
+    const InstanceExpansion& instances() const { return *instanceExpansion_; }
+    InstanceReload invalidateInstance(const std::filesystem::path& path);
+    document::InstanceVisibility instanceVisibility() const;
+    void setInstanceVisibility(document::InstanceVisibility visibility);
     const CycleState& cycle() const;
     const ViewState& viewState() const { return view_; }
     void setViewState(ViewState view);
@@ -321,6 +327,8 @@ private:
     std::filesystem::path connectionMapPath_;
     std::optional<std::filesystem::path> connectionExtraRoot_;
     mutable std::unique_ptr<InstanceTemplates> instanceTemplates_;
+    std::unique_ptr<InstanceExpansion> instanceExpansion_;
+    void refreshInstances();
     Selection selection_;
     std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
     ToolId activeTool_ = Tool::Select;

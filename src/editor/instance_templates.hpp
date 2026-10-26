@@ -19,6 +19,7 @@ public:
     // Ancestors belong to the caller's traversal; traversal failures do not poison the cache.
     Result<Template> load(const std::filesystem::path& resolved,
                           std::span<const std::filesystem::path> ancestors = {});
+    Result<Template> invalidate(const std::filesystem::path& resolved);
     void clear() { cache_.clear(); }
 
 private:

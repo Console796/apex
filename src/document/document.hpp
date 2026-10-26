@@ -113,6 +113,9 @@ public:
     kv1::Node exportSubtree(NodeId id) const { return exportNode(id); }
     Result<vmf::VmfFile> toVmf() const;
     Result<std::string> write() const;
+    std::optional<std::string> viewSetting(std::string_view key) const;
+    // Per-file display preferences, like the editor grid, are outside undo history.
+    void setViewSetting(std::string key, std::string value);
 
     bool undo();
     bool redo();
@@ -156,6 +159,7 @@ private:
     };
     Pools pools_;
     kv1::Document source_;
+    std::map<std::string, std::string> viewSettings_;
     std::map<NodeId, NodeHandle> handles_;
     std::vector<NodeId> roots_, originalRoots_;
     std::map<SideId, SideLocation> sides_;

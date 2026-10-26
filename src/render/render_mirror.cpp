@@ -99,6 +99,7 @@ struct EntityState {
     document::EntityPose pose;
     const assets::EntityClass* cls = nullptr;
     std::string targetname;         // As written, for labels.
+    std::string instanceFile;
     std::string nameKey;            // Lower case; empty when unnamed.
     HelperShapes helpers;
     std::set<std::string> watching; // Names peersNamed looked up during the last evaluation.
@@ -112,6 +113,7 @@ struct MaterialState {
     TextureSlot slot = kCheckerboardSlot;
     TextureSize size;
     bool loading = false;
+    std::size_t textureBytes = 0;
     AlphaMode alpha = AlphaMode::Opaque; // From $translucent / $alphatest once the VMT has loaded.
     bool nodraw = false;                 // %compilenodraw once loaded; see isNodraw().
     std::set<NodeId> users;
@@ -137,6 +139,10 @@ struct RenderMirror::Impl {
     TextureSlot errorSlot = kCheckerboardSlot;
     std::function<bool(const std::string&)> modelMaterialExists;
     std::map<std::string, ModelMesh> models;
+    std::vector<document::InstanceContent> instances;
+    std::map<std::shared_ptr<const Document>, std::unique_ptr<RenderMirror>> instanceMirrors;
+    document::InstanceVisibility instanceVisibility = document::InstanceVisibility::Normal;
+    std::size_t drawnInstanceSolids = 0;
 
     std::map<NodeId, SolidState> solids;
     std::map<Handle<document::Solid>, NodeId> solidIds;
@@ -307,6 +313,8 @@ struct RenderMirror::Impl {
         }
         if (state.slot != kCheckerboardSlot) heap.release(state.slot);
         state.slot = *slot;
+        state.textureBytes = 0;
+        for (auto mip : mips) state.textureBytes += mip.size();
         state.size = {texture.mips[0].width, texture.mips[0].height};
         uploaded = true;
         ++stats.texturesUploaded;
@@ -496,6 +504,9 @@ struct RenderMirror::Impl {
         }
         if (lower(classname) == "worldspawn") return;
         EntityState state;
+        if (lower(classname) == "func_instance") {
+            if (const auto* file = entity->block->find("file")) state.instanceFile = file->decodedValue().value_or("");
+        }
         const auto pose = document::entityPose(*entity->block);
         state.transform = document::entityTransform(pose);
         if (modelCache) {
@@ -808,6 +819,7 @@ struct RenderMirror::Impl {
     }
 
     bool pending() const {
+        for (const auto& [keys, mirror] : instanceMirrors) if (mirror->pending()) return true;
         if (modelCache && std::ranges::any_of(models, [&](const auto& entry) {
             return !entry.second.data && (modelCache->state(entry.first) == assets::ModelState::Loading ||
                    modelCache->state(entry.first) == assets::ModelState::Unloaded);
@@ -841,6 +853,7 @@ void RenderMirror::rebuild(const Document& document) {
 
 void RenderMirror::refreshModels() {
     auto& m = *impl_;
+    for (auto& [keys, mirror] : m.instanceMirrors) mirror->refreshModels();
     std::set<std::string> oldMaterials;
     for (auto& [name, mesh] : m.models) {
         for (const auto& [index, material] : mesh.materials) oldMaterials.insert(material);
@@ -874,12 +887,85 @@ void RenderMirror::apply(const Document& document, const document::ChangeSet& ch
     impl_->apply(document, changes);
 }
 
+void RenderMirror::replaceSnapshot(const Document& before, const Document& after) {
+    const auto nodes = [](const Document& doc) {
+        std::map<NodeId, NodeHandle> result;
+        const auto walk = [&](const auto& self, NodeId id) -> void {
+            result.emplace(id, *doc.handle(id));
+            for (auto child : doc.get(*doc.handle(id))->children) self(self, child);
+        };
+        for (auto root : doc.roots()) walk(walk, root);
+        return result;
+    };
+    const auto oldNodes = nodes(before), newNodes = nodes(after);
+    const auto bytes = [](const kv1::Node& block) {
+        kv1::Document doc;
+        doc.root().append(block).value();
+        return kv1::write(doc).value();
+    };
+    document::ChangeSet removed, changed;
+    for (const auto& [id, handle] : oldNodes) {
+        const auto it = newNodes.find(id);
+        if (it == newNodes.end() || it->second != handle) removed.destroyed.push_back(handle);
+    }
+    // Retire old handle mappings before introducing possibly reused template-local IDs.
+    impl_->apply(after, removed);
+    for (const auto& [id, handle] : newNodes) {
+        const auto it = oldNodes.find(id);
+        if (it == oldNodes.end() || it->second != handle) { changed.created.push_back(handle); continue; }
+        const auto* a = before.get(it->second);
+        const auto* b = after.get(handle);
+        auto flags = document::Dirty::None;
+        const bool different = bytes(*a->block) != bytes(*b->block);
+        if (different) flags = document::Dirty::Geometry | document::Dirty::Material | document::Dirty::KeyValues;
+        if (a->parent != b->parent) flags = flags | document::Dirty::Visibility;
+        if (different || a->parent != b->parent || a->children != b->children) changed.modified.push_back({handle, flags});
+    }
+    impl_->apply(after, changed);
+}
+
+void RenderMirror::setInstanceContents(std::span<const document::InstanceContent> contents,
+                                      document::InstanceVisibility visibility) {
+    auto& m = *impl_;
+    const bool same = contents.size() == m.instances.size() && std::ranges::equal(contents, m.instances,
+        [](const auto& a, const auto& b) { return a.instance == b.instance && a.keys == b.keys && a.transform == b.transform; });
+    if (same && m.instanceVisibility == visibility) return;
+    m.instanceVisibility = visibility;
+    const auto previous = std::move(m.instances);
+    m.instances.assign(contents.begin(), contents.end());
+    std::set<std::shared_ptr<const Document>> used;
+    for (const auto& content : contents) {
+        if (!content.keys) continue;
+        used.insert(content.keys);
+        if (m.instanceMirrors.contains(content.keys)) continue;
+        const auto old = std::ranges::find_if(previous, [&](const auto& item) {
+            return item.path == content.path && item.fixup.name == content.fixup.name &&
+                item.fixup.style == content.fixup.style && item.fixup.variables == content.fixup.variables &&
+                item.keys != content.keys && m.instanceMirrors.contains(item.keys);
+        });
+        if (old != previous.end()) {
+            auto mirror = std::move(m.instanceMirrors.at(old->keys));
+            m.instanceMirrors.erase(old->keys);
+            mirror->replaceSnapshot(*old->keys, *content.keys);
+            m.instanceMirrors.emplace(content.keys, std::move(mirror));
+            continue;
+        }
+        auto mirror = std::make_unique<RenderMirror>(m.context, m.heap, m.jobs, m.cache, m.classes,
+                                                    m.modelCache, m.modelMaterialExists);
+        mirror->rebuild(*content.keys);
+        m.instanceMirrors.emplace(content.keys, std::move(mirror));
+    }
+    std::erase_if(m.instanceMirrors, [&](const auto& item) { return !used.contains(item.first); });
+    m.redraw = true;
+}
+
 bool RenderMirror::pump() {
     impl_->jobs.drainCompletions();
     impl_->pumpModels();
     impl_->pumpMaterials();
     impl_->meshPreviews();
     impl_->collectGarbage();
+    for (auto& [keys, mirror] : impl_->instanceMirrors) if (mirror->pump()) impl_->redraw = true;
     return impl_->redraw;
 }
 
@@ -893,7 +979,10 @@ bool RenderMirror::settle(std::chrono::milliseconds timeout) {
     }
 }
 
-bool RenderMirror::needsRedraw() const { return impl_->redraw || impl_->pending(); }
+bool RenderMirror::needsRedraw() const {
+    if (impl_->redraw || impl_->pending()) return true;
+    return std::ranges::any_of(impl_->instanceMirrors, [](const auto& item) { return item.second->needsRedraw(); });
+}
 bool RenderMirror::pending() const { return impl_->pending(); }
 
 void RenderMirror::setHighlight(const Highlight& highlight) {
@@ -1143,6 +1232,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 list.labels.push_back({moved(id, label.position), label.text, Vec2(0.0f), label.colour});
             if (options.showEntityNames && !entity.targetname.empty())
                 list.labels.push_back({moved(id, entity.position), entity.targetname, Vec2(8.0f, -8.0f), options.wireColour});
+            if (!entity.instanceFile.empty())
+                list.labels.push_back({moved(id, entity.position), entity.instanceFile, Vec2(8.0f, 8.0f), options.wireColour});
         }
     }
     if (options.showEntities) {
@@ -1203,11 +1294,75 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
         }
     }
+    m.drawnInstanceSolids = 0;
+    if (m.instanceVisibility != document::InstanceVisibility::Hidden) {
+        for (const auto& content : m.instances) {
+            // The parent's entity state is also its visibility gate (hidden containers etc.).
+            if (!content.keys || !m.entities.contains(content.instance)) continue;
+            auto& mirror = *m.instanceMirrors.at(content.keys);
+            Highlight highlight = m.highlight;
+            highlight.selected.clear();
+            highlight.selectedSides.clear();
+            highlight.hover.reset();
+            const bool selected = m.selected.contains(content.instance);
+            const bool hovered = m.highlight.hover == content.instance;
+            const Vec4 tint = selected ? m.highlight.selectTint : hovered ? m.highlight.hoverTint :
+                m.instanceVisibility == document::InstanceVisibility::Tinted ? Vec4(0.3f, 1.0f, 0.4f, 0.35f) : Vec4(0.0f);
+            // Selecting the owner reveals its contents' selection-dependent helpers too.
+            if (selected) for (const auto& [id, hierarchy] : mirror.impl_->hierarchy) highlight.selected.push_back(id);
+            mirror.setHighlight(highlight);
+            auto child = mirror.buildDrawList(options);
+            m.drawnInstanceSolids += mirror.meshedSolidCount();
+            DMat4 transform = content.transform;
+            if (const auto it = m.effectivePreview.find(content.instance); it != m.effectivePreview.end()) transform = it->second * transform;
+            const auto point = [&](DVec3 p) { return DVec3(transform * DVec4(p, 1.0)); };
+            const auto preview = [&](std::uint32_t index, DVec3 origin, std::uint32_t count = 1) {
+                const auto first = static_cast<std::uint32_t>(list.previews.size() + 1);
+                if (index) {
+                    for (std::uint32_t i = 0; i < count; ++i) {
+                        const auto& p = child.previews[index - 1 + i];
+                        list.previews.push_back({transform * p.matrix, p.origin});
+                    }
+                } else list.previews.push_back({transform, origin});
+                return first;
+            };
+            const auto meshes = [&](const auto& source, auto& destination, bool outline = false) {
+                for (auto draw : source) {
+                    draw.previewIndex = preview(draw.previewIndex, draw.origin, draw.instancedTransforms ? draw.instanceCount : 1);
+                    if (!outline) draw.highlight = tint;
+                    destination.push_back(draw);
+                }
+            };
+            meshes(child.meshes, list.meshes);
+            meshes(child.outlines, list.outlines, true);
+            meshes(child.ghosts, list.ghosts);
+            for (auto draw : child.boxes) {
+                draw.previewIndex = preview(draw.previewIndex, draw.origin);
+                draw.tint = tint;
+                list.boxes.push_back(draw);
+            }
+            for (auto draw : child.boxOutlines) {
+                draw.previewIndex = preview(draw.previewIndex, draw.origin);
+                list.boxOutlines.push_back(draw);
+            }
+            for (auto segment : child.worldSegments) {
+                segment.a = point(segment.a); segment.b = point(segment.b);
+                list.worldSegments.push_back(segment);
+            }
+            for (auto label : child.labels) {
+                label.position = point(label.position);
+                list.labels.push_back(std::move(label));
+            }
+        }
+    }
     return list;
 }
 
 const MirrorStats& RenderMirror::stats() const { return impl_->stats; }
-void RenderMirror::resetStats() { impl_->stats = {}; }
+void RenderMirror::resetStats() {
+    impl_->stats = {};
+    for (auto& [keys, mirror] : impl_->instanceMirrors) mirror->resetStats();
+}
 std::size_t RenderMirror::solidCount() const { return impl_->solids.size(); }
 std::size_t RenderMirror::meshedSolidCount() const {
     return static_cast<std::size_t>(std::ranges::count_if(impl_->solids, [](const auto& s) { return s.second.meshed; }));
@@ -1219,6 +1374,35 @@ std::size_t RenderMirror::batchCount() const {
     std::size_t count = 0;
     for (const auto& [id, solid] : impl_->solids) count += solid.batches.size();
     return count;
+}
+
+std::size_t RenderMirror::meshBytes() const {
+    std::size_t bytes = impl_->entityBuffer.size();
+    for (const auto& [id, solid] : impl_->solids)
+        for (const auto& batch : solid.batches) bytes += batch.vertices.size() + batch.indices.size() + batch.edges.size();
+    for (const auto& [name, model] : impl_->models) bytes += model.vertices.size() + model.indices.size() + model.edges.size();
+    for (const auto& [keys, mirror] : impl_->instanceMirrors) bytes += mirror->meshBytes();
+    return bytes;
+}
+InstanceMirrorStats RenderMirror::instanceStats() const {
+    InstanceMirrorStats result;
+    result.placements = impl_->instances.size();
+    result.drawnSolids = impl_->drawnInstanceSolids;
+    for (const auto& [keys, mirror] : impl_->instanceMirrors) {
+        result.uniqueSolids += mirror->meshedSolidCount();
+        result.meshBytes += mirror->meshBytes();
+        result.textureBytes += mirror->textureBytes();
+        result.jobsSubmitted += mirror->stats().jobsSubmitted;
+        result.solidsRemeshed += mirror->stats().solidsRemeshed;
+    }
+    return result;
+}
+
+std::size_t RenderMirror::textureBytes() const {
+    std::size_t bytes = impl_->errorSlot == kCheckerboardSlot ? 0 : 16;
+    for (const auto& [name, material] : impl_->materials) bytes += material.textureBytes;
+    for (const auto& [keys, mirror] : impl_->instanceMirrors) bytes += mirror->textureBytes();
+    return bytes;
 }
 
 } // namespace apex::render

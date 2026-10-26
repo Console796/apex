@@ -335,7 +335,36 @@ kv1::Node Document::exportNode(NodeId id) const {
 Result<std::string> Document::write() const {
     auto output = source_;
     exportChildren(output.root(), roots_, rootSlots(source_, originalRoots_));
+    if (!viewSettings_.empty()) {
+        auto* settings = output.root().find("viewsettings");
+        if (!settings) {
+            output.root().append(kv1::Node::block("viewsettings")).value();
+            settings = output.root().find("viewsettings");
+        }
+        for (const auto& [key, value] : viewSettings_) {
+            if (auto* entry = settings->find(key)) entry->setValue(value).value();
+            else settings->append(kv1::Node::value(key, value)).value();
+        }
+    }
     return kv1::write(output);
+}
+std::optional<std::string> Document::viewSetting(std::string_view key) const {
+    for (const auto& [name, value] : viewSettings_) if (ciEquals(name, key)) return value;
+    for (auto id : roots_) {
+        const auto* n = get(*handle(id));
+        if (!ciEquals(n->block->key(), "viewsettings")) continue;
+        if (const auto* entry = n->block->find(key)) return entry->decodedValue().value_or("");
+    }
+    return {};
+}
+void Document::setViewSetting(std::string key, std::string value) {
+    if (active_ || notifying_) throw std::logic_error("view settings changed during a document edit");
+    if (viewSetting(key) == value) return;
+    for (auto it = viewSettings_.begin(); it != viewSettings_.end(); ++it) {
+        if (ciEquals(it->first, key)) { viewSettings_.erase(it); break; }
+    }
+    viewSettings_.emplace(std::move(key), std::move(value));
+    notify({});
 }
 Result<vmf::VmfFile> Document::toVmf() const {
     auto bytes = write();

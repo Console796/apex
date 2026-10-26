@@ -145,6 +145,20 @@ void PickIndex::setViewState(ViewState view) {
     rebuild();
 }
 
+void PickIndex::setInstanceContents(std::span<const document::InstanceContent> contents,
+                                    document::InstanceVisibility visibility) {
+    std::map<std::shared_ptr<const document::Document>, std::shared_ptr<PickIndex>> indices;
+    for (const auto& item : instances_) indices.emplace(item.content.keys, item.index);
+    instances_.clear();
+    instanceVisibility_ = visibility;
+    for (const auto& content : contents) {
+        if (!content.keys) continue;
+        auto& index = indices[content.keys];
+        if (!index) index = std::make_shared<PickIndex>(*content.keys, bounds_);
+        instances_.push_back({content, index});
+    }
+}
+
 void PickIndex::remove(NodeId id) {
     failed_.erase(id);
     if (const auto it = items_.find(id); it != items_.end()) {
@@ -254,6 +268,7 @@ void PickIndex::refresh(NodeId id, bool building) {
 }
 
 void PickIndex::rebuild() {
+    for (auto& instance : instances_) instance.index->rebuild();
     tree_.build({});
     items_.clear();
     leaves_.clear();
@@ -387,11 +402,31 @@ std::vector<Hit> PickIndex::pick(Ray ray, double tMax) const {
         if (auto hit = intersect(leaves_.at(leaf), ray, limit)) hits.push_back(*hit);
         return std::nullopt;
     });
+    if (instanceVisibility_ != document::InstanceVisibility::Hidden) {
+        for (const auto& item : instances_) {
+            if (!isVisible(doc_, item.content.instance, view_)) continue;
+            const auto inverse = glm::inverse(item.content.transform);
+            const Ray local{DVec3(inverse * DVec4(ray.origin, 1.0)), DVec3(inverse * DVec4(ray.dir, 0.0))};
+            if (auto hit = item.index->first(local); hit && hit->t <= tMax) {
+                hit->node = item.content.instance;
+                hit->side.reset();
+                hit->point = ray.at(hit->t);
+                hit->normal = glm::normalize(glm::transpose(DMat3(inverse)) * hit->normal);
+                hits.push_back(*hit);
+            }
+        }
+    }
     std::ranges::sort(hits, hitLess);
+    std::set<NodeId> seen;
+    std::erase_if(hits, [&](const Hit& hit) { return !seen.insert(hit.node).second; });
     return hits;
 }
 
 std::optional<Hit> PickIndex::first(Ray ray) const {
+    if (!instances_.empty() && instanceVisibility_ != document::InstanceVisibility::Hidden) {
+        auto hits = pick(ray);
+        return hits.empty() ? std::nullopt : std::optional(hits.front());
+    }
     std::optional<Hit> best;
     tree_.raycast(ray, std::numeric_limits<double>::infinity(),
         [&](std::uint32_t leaf, double limit) -> std::optional<double> {
@@ -423,7 +458,21 @@ std::vector<NodeId> PickIndex::frustum(std::span<const Plane> planes, Mode mode)
         }
         if (inside) result.push_back(id);
     });
+    if (instanceVisibility_ != document::InstanceVisibility::Hidden) {
+        for (const auto& item : instances_) {
+            if (!isVisible(doc_, item.content.instance, view_)) continue;
+            std::vector<Plane> local;
+            for (const auto& plane : planes) {
+                const auto normal = glm::transpose(DMat3(item.content.transform)) * plane.normal;
+                const auto dist = plane.dist - glm::dot(plane.normal, DVec3(item.content.transform[3]));
+                const auto length = glm::length(normal);
+                local.push_back({normal / length, dist / length});
+            }
+            if (!item.index->frustum(local, mode).empty()) result.push_back(item.content.instance);
+        }
+    }
     std::ranges::sort(result);
+    result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
 }
 

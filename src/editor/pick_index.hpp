@@ -3,6 +3,7 @@
 #include "editor/visibility.hpp"
 #include "editor/pick_model.hpp"
 #include "document/entity_transform.hpp"
+#include "document/instance_contents.hpp"
 #include "geometry/bvh.hpp"
 
 #include <functional>
@@ -78,6 +79,8 @@ public:
     void detach();
     const ViewState& viewState() const { return view_; }
     void setViewState(ViewState view);
+    void setInstanceContents(std::span<const document::InstanceContent> contents,
+                             document::InstanceVisibility visibility = document::InstanceVisibility::Normal);
     std::size_t size() const { return items_.size(); }
     std::size_t skippedSolids() const { return failed_.size(); }
 
@@ -116,6 +119,12 @@ private:
     std::uint32_t nextLeaf_ = 0;
     document::Document* observed_ = nullptr;
     std::size_t observer_ = 0;
+    struct InstancePick {
+        document::InstanceContent content;
+        std::shared_ptr<PickIndex> index;
+    };
+    std::vector<InstancePick> instances_;
+    document::InstanceVisibility instanceVisibility_ = document::InstanceVisibility::Normal;
 
     void refresh(NodeId id, bool building = false);
     void remove(NodeId id);

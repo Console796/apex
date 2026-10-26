@@ -20,6 +20,7 @@
 #include "assets/model_cache.hpp"
 #include "core/job_pool.hpp"
 #include "document/document.hpp"
+#include "document/instance_contents.hpp"
 #include "render/renderer.hpp"
 #include "geometry/convex_polyhedron.hpp"
 
@@ -28,6 +29,7 @@
 #include <memory>
 #include <map>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace apex::render {
@@ -53,6 +55,16 @@ struct MirrorStats {
     std::size_t meshFailures = 0;     // Solids that do not form a valid convex polyhedron.
     std::size_t solidsFreed = 0;      // Removed solids whose buffers were released.
     std::size_t texturesUploaded = 0;
+};
+
+struct InstanceMirrorStats {
+    std::size_t placements = 0;
+    std::size_t drawnSolids = 0;
+    std::size_t uniqueSolids = 0;
+    std::size_t meshBytes = 0; // Allocated buffer payload, excluding textures and driver overhead.
+    std::size_t textureBytes = 0; // Uploaded mip payload, excluding driver overhead.
+    std::size_t jobsSubmitted = 0;
+    std::size_t solidsRemeshed = 0;
 };
 
 // Owned IDs; independent of editor selection. Tint alpha controls the colour blend.
@@ -100,6 +112,8 @@ class RenderMirror {
     void refreshModels();
     // Applies a committed ChangeSet; call after the commit/undo/redo that produced it.
     void apply(const document::Document& document, const document::ChangeSet& changes);
+    void setInstanceContents(std::span<const document::InstanceContent> contents,
+                             document::InstanceVisibility visibility = document::InstanceVisibility::Normal);
 
     // Delivers completed jobs and finished material loads, uploads results, and releases retired
     // buffers. Returns true when something visible changed.
@@ -131,10 +145,14 @@ class RenderMirror {
     std::size_t meshedSolidCount() const;
     std::size_t entityBoxCount() const;
     std::size_t batchCount() const;     // GPU batches (draws per frame at most).
+    InstanceMirrorStats instanceStats() const;
+    std::size_t meshBytes() const;
+    std::size_t textureBytes() const;
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    void replaceSnapshot(const document::Document& before, const document::Document& after);
 };
 
 } // namespace apex::render
