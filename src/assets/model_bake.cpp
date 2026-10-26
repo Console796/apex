@@ -1,5 +1,8 @@
 #include "assets/model_bake.hpp"
 
+#include "assets/vmt.hpp"
+#include "core/strings.hpp"
+
 #include <mdlpp/mdlpp.h>
 
 #include <algorithm>
@@ -220,6 +223,22 @@ std::vector<ModelDrawRange> modelDrawRanges(const ModelData& model, std::uint32_
         ranges.push_back({submesh.firstIndex, submesh.indexCount, material});
     }
     return ranges;
+}
+
+std::string resolveModelMaterial(const ModelData& model, std::int32_t material,
+                                 const std::function<bool(const std::string&)>& exists) {
+    if (material < 0 || static_cast<std::size_t>(material) >= model.materialNames.size()) return {};
+    std::string name = toLowerAscii(model.materialNames[static_cast<std::size_t>(material)]);
+    std::ranges::replace(name, '\\', '/');
+    for (const auto& source : model.materialDirectories) {
+        std::string directory = toLowerAscii(source);
+        std::ranges::replace(directory, '\\', '/');
+        while (directory.starts_with('/')) directory.erase(0, 1);
+        if (!directory.empty() && !directory.ends_with('/')) directory += '/';
+        std::string candidate = directory + name;
+        if (exists(materialPath(candidate))) return candidate;
+    }
+    return {};
 }
 
 } // namespace apex::assets

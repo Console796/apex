@@ -6,6 +6,7 @@
 #include <mdlpp/mdlpp.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <exception>
@@ -130,7 +131,7 @@ TEST_CASE("model bake corpus single-choice indices match mdlpp") {
     JobPool jobs(2);
     auto vfs = Vfs::load(profile, jobs);
     REQUIRE(vfs);
-    std::size_t eligible = 0, compared = 0, bakeErrors = 0;
+    std::size_t eligible = 0, compared = 0, bakeErrors = 0, comparedVertices = 0;
     for (const auto& mdlPath : vfs->walk("models", "*.mdl")) {
         if (eligible == 300) break; // Deterministic canonical-path prefix of eligible models.
         const auto vtxPath = mdlPath.substr(0, mdlPath.size() - 4) + ".dx90.vtx";
@@ -154,10 +155,28 @@ TEST_CASE("model bake corpus single-choice indices match mdlpp") {
             expected.insert(expected.end(), mesh.indices.begin(), mesh.indices.end());
         CAPTURE(mdlPath);
         CHECK(actual == expected);
+        // Vertex data too: same count and order, bit-identical position, normal and UV. Compared by bits
+        // because some corpus models carry NaN components, which never compare equal as floats.
+        REQUIRE(baked->vertices.size() == reference.vertices.size());
+        std::size_t vertexMismatches = 0;
+        const auto sameBits = [](float a, float b) {
+            return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+        };
+        for (std::size_t i = 0; i < reference.vertices.size(); ++i) {
+            const auto& got = baked->vertices[i];
+            const auto& want = reference.vertices[i];
+            const bool same = sameBits(got.position.x, want.position[0]) && sameBits(got.position.y, want.position[1]) &&
+                              sameBits(got.position.z, want.position[2]) && sameBits(got.normal.x, want.normal[0]) &&
+                              sameBits(got.normal.y, want.normal[1]) && sameBits(got.normal.z, want.normal[2]) &&
+                              sameBits(got.uv.x, want.uv[0]) && sameBits(got.uv.y, want.uv[1]);
+            if (!same) ++vertexMismatches;
+        }
+        CHECK(vertexMismatches == 0);
+        comparedVertices += reference.vertices.size();
         ++compared;
     }
     CHECK(compared > 0);
-    MESSAGE("single-choice equality comparisons=" << compared << " eligible sample=" << eligible
+    MESSAGE("single-choice equality comparisons=" << compared << " vertices compared=" << comparedVertices << " eligible sample=" << eligible
             << " bake errors skipped=" << bakeErrors
             << " (first 300 eligible models in canonical path order)");
 }

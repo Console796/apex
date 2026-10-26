@@ -3,6 +3,7 @@
 #include "core/math.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -46,5 +47,12 @@ struct ModelDrawRange {
 std::vector<std::uint32_t> modelBodyChoices(const ModelData& model, std::uint32_t body);
 std::vector<ModelDrawRange> modelDrawRanges(const ModelData& model, std::uint32_t body,
                                           std::uint32_t skin);
+
+// The material name (as MaterialCache takes it, no "materials/" prefix) a draw range's material index
+// resolves to: the first cdmaterials directory, in the model's order, for which `exists` finds the VMT.
+// `exists` is given the canonical virtual path ("materials/...vmt"). Empty when the index is out of range
+// or no directory holds the material.
+std::string resolveModelMaterial(const ModelData& model, std::int32_t material,
+                                 const std::function<bool(const std::string&)>& exists);
 
 } // namespace apex::assets

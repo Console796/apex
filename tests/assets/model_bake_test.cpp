@@ -4,6 +4,8 @@
 #include <mdlpp/mdlpp.h>
 
 #include <array>
+#include <set>
+#include <string>
 #include <cstdint>
 #include <vector>
 
@@ -164,4 +166,29 @@ TEST_CASE("model bake rejects strip spans that point outside their strip group")
         REQUIRE_FALSE(baked);
         CHECK(baked.error().message.starts_with("strip range out of bounds"));
     }
+}
+
+TEST_CASE("model material resolution walks cdmaterials in order and normalises names") {
+    ModelData model;
+    model.materialNames = {"Metal_Wall", "shared\\Decal", "nowhere"};
+    model.materialDirectories = {"models\\Props\\", "models/props_extra", "/materials_root"};
+    const std::set<std::string> vmts{"materials/models/props_extra/metal_wall.vmt",
+                                     "materials/models/props/metal_wall.vmt",
+                                     "materials/materials_root/shared/decal.vmt"};
+    std::vector<std::string> asked;
+    const auto exists = [&](const std::string& path) {
+        asked.push_back(path);
+        return vmts.contains(path);
+    };
+    // The first directory in the model's order wins even when a later one also holds the name.
+    CHECK(resolveModelMaterial(model, 0, exists) == "models/props/metal_wall");
+    CHECK(asked == std::vector<std::string>{"materials/models/props/metal_wall.vmt"});
+    // Backslashes, case, a missing trailing slash and a leading slash on the directory all normalise.
+    CHECK(resolveModelMaterial(model, 1, exists) == "materials_root/shared/decal");
+    // Nothing holds it, or the index is out of range: empty, so the caller draws the fallback material.
+    CHECK(resolveModelMaterial(model, 2, exists).empty());
+    CHECK(resolveModelMaterial(model, 3, exists).empty());
+    CHECK(resolveModelMaterial(model, -1, exists).empty());
+    model.materialDirectories.clear();
+    CHECK(resolveModelMaterial(model, 0, exists).empty());
 }
