@@ -28,7 +28,8 @@ void triangleModel(mdlpp::StudioModel& model, std::size_t choices, std::int32_t 
         auto& mdl = body.models[choice];
         mdl.name = std::to_string(choice);
         mdl.verticesCount = choice == 0 && choices > 1 ? secondOffset : 3;
-        mdl.verticesOffset = choice == 0 ? 0 : secondOffset;
+        // Model vertex offsets are byte offsets (48-byte mstudiovertex_t), mesh offsets are counts.
+        mdl.verticesOffset = choice == 0 ? 0 : secondOffset * 48;
         mdl.meshes.resize(1);
         mdl.meshes[0].verticesCount = mdl.verticesCount;
         auto& vtx = model.vtx.bodyParts[0].models[choice];
@@ -102,4 +103,49 @@ TEST_CASE("model bake short strips and incomplete trilists never read past indic
         // Only the normal strip contributes, with Source's winding flip.
         CHECK(baked->indices == std::vector<std::uint32_t>{1, 2, 0});
     }
+}
+
+TEST_CASE("model skin selection remaps material references and falls back to skin zero") {
+    ModelData model;
+    model.materialNames = {"red", "blue", "green"};
+    model.materialDirectories = {"models/a", "models/b"};
+    model.skins = {{2, 0}, {1, 2}};
+    model.bodyParts = {{"body", 1, {{"default", {}}}}};
+    model.submeshes = {{0, 3, 0, 0, 0, 0}, {3, 6, 0, 0, 1, 1}, {9, 3, 0, 0, 2, 7}};
+    const auto familyOne = modelDrawRanges(model, 0, 1);
+    REQUIRE(familyOne.size() == 3);
+    CHECK(familyOne[0].material == 1);
+    CHECK(familyOne[1].material == 2);
+    CHECK(familyOne[2].material == 7); // Out-of-range skin reference stays raw.
+    const auto fallback = modelDrawRanges(model, 0, 99);
+    REQUIRE(fallback.size() == 3);
+    CHECK(fallback[0].material == 2);
+    CHECK(fallback[1].material == 0);
+}
+
+TEST_CASE("model bake rejects corrupt mdl vtx and vvd bytes and out-of-range vertex IDs") {
+    for (const auto malformedSize : {0u, 1u, 7u, 31u}) {
+        CAPTURE(malformedSize);
+        const auto garbage = std::vector<std::byte>(malformedSize, std::byte{0x7f});
+        mdlpp::StudioModel parsed{};
+        bool opened = false;
+        try { opened = parsed.open(garbage, garbage, garbage); } catch (const std::exception&) { }
+        CHECK_FALSE(opened);
+        CHECK_FALSE(bakeModel(parsed));
+        for (int component = 0; component < 3; ++component) {
+            auto mdl = garbage, vtx = garbage, vvd = garbage;
+            (component == 0 ? mdl : component == 1 ? vtx : vvd).resize(malformedSize / 2);
+            mdlpp::StudioModel candidate{};
+            bool candidateOpened = false;
+            try { candidateOpened = candidate.open(mdl, vtx, vvd); } catch (const std::exception&) { }
+            CHECK_FALSE(candidateOpened);
+            CHECK_FALSE(bakeModel(candidate));
+        }
+    }
+    mdlpp::StudioModel source{};
+    triangleModel(source, 1, 0);
+    source.vtx.bodyParts[0].models[0].modelLODs[0].meshes[0].stripGroups[0].vertices[0].meshVertexID = 9;
+    const auto baked = bakeModel(source.mdl, source.vtx, source.vvd);
+    REQUIRE_FALSE(baked);
+    CHECK(baked.error().message.starts_with("vertex id out of range"));
 }

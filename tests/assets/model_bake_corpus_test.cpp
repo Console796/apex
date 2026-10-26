@@ -1,13 +1,19 @@
 #include "assets/model_bake.hpp"
 #include "assets/vfs.hpp"
+#include "geometry/bvh.hpp"
 
 #include <doctest/doctest.h>
 #include <mdlpp/mdlpp.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
+#include <map>
 #include <numeric>
+#include <optional>
+#include <thread>
 
 using namespace apex;
 using namespace apex::assets;
@@ -15,49 +21,75 @@ using namespace apex::assets;
 TEST_CASE("model bake corpus bodygroups select separate choice ranges") {
     const auto* install = std::getenv("APEX_P2CE_DIR");
     if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
-    // Scanned all 510 sdk_content/maps VMFs with srctools Keyvalues, recursively inspecting
-    // connections and resolving SetBodyGroup targets to entities' model keys. There are no
-    // such inputs: the 294 visible occurrences (12 more hidden) are entity keys. The 41
-    // distinct models on visible entities with that key have no multi-choice body parts.
-    // Use portal2/portal2/portal2_dir.vpk's models/effects/cappoint_hologram.mdl instead:
-    // its Body part has four choices, three nonempty. No shipped bytes are test fixtures.
-    const std::string stem = "models/effects/cappoint_hologram";
+    // Scanned all 510 sdk_content/maps VMFs for SetBodyGroup connections and resolved output
+    // targets to their model entities. That scan did not find a multi-choice target model, so
+    // select the first mounted corpus model with multiple nonempty, bakeable choices instead.
     GameProfile profile;
     profile.gameDirectory = std::filesystem::path(install) / "p2ce";
     JobPool jobs(2);
     auto vfs = Vfs::load(profile, jobs);
     REQUIRE(vfs);
-    const auto mdl = vfs->open(stem + ".mdl");
-    const auto vtx = vfs->open(stem + ".dx90.vtx");
-    const auto vvd = vfs->open(stem + ".vvd");
-    REQUIRE(mdl);
-    REQUIRE(vtx);
-    REQUIRE(vvd);
-    mdlpp::StudioModel source{};
-    REQUIRE(source.open(*mdl, *vtx, *vvd));
-    const auto part = std::ranges::find_if(source.mdl.bodyParts, [](const auto& body) {
-        return std::ranges::count_if(body.models, [](const auto& choice) {
-            return choice.verticesCount > 0;
-        }) > 1;
-    });
-    REQUIRE(part != source.mdl.bodyParts.end());
-    const auto bodyPart = static_cast<std::uint32_t>(part - source.mdl.bodyParts.begin());
-    const auto baked = bakeModel(source);
-    INFO((baked ? "baked" : baked.error().what()));
+    std::optional<ModelData> baked;
+    std::string modelName;
+    std::size_t bodyPart = 0, partChoiceCount = 0;
+    std::uint32_t partBase = 1;
+    std::vector<std::uint32_t> choices;
+    std::string candidateErrors;
+    std::size_t multichoiceModels = 0, multichoiceBakeSuccesses = 0;
+    const auto candidates = vfs->walk("models", "*.mdl");
+    for (const auto& mdlPath : candidates) {
+        const auto stem = mdlPath.substr(0, mdlPath.size() - 4);
+        const auto mdl = vfs->open(mdlPath);
+        const auto vtx = vfs->open(stem + ".dx90.vtx");
+        const auto vvd = vfs->open(stem + ".vvd");
+        if (!mdl || !vtx || !vvd) continue;
+        mdlpp::StudioModel source{};
+        try {
+            if (!source.open(*mdl, *vtx, *vvd)) continue;
+        } catch (const std::exception&) {
+            continue;
+        }
+        const auto part = std::ranges::find_if(source.mdl.bodyParts, [](const auto& body) {
+            return std::ranges::count_if(body.models, [](const auto& choice) {
+                return choice.verticesCount > 0;
+            }) > 1;
+        });
+        if (part == source.mdl.bodyParts.end()) continue;
+        ++multichoiceModels;
+        auto result = bakeModel(source);
+        if (!result) {
+            if (!candidateErrors.empty()) candidateErrors += "; ";
+            candidateErrors += mdlPath + ": " + result.error().message;
+            continue; // The full corpus sweep reports malformed model reasons.
+        }
+        ++multichoiceBakeSuccesses;
+        bodyPart = static_cast<std::size_t>(part - source.mdl.bodyParts.begin());
+        partChoiceCount = part->models.size();
+        partBase = part->base > 0 ? static_cast<std::uint32_t>(part->base) : 1;
+        baked = std::move(*result);
+        for (std::size_t i = 0; i < part->models.size(); ++i) {
+            const bool hasTriangles = std::ranges::any_of(baked->submeshes, [&](const auto& mesh) {
+                return mesh.bodyPart == bodyPart && mesh.choice == i && mesh.indexCount > 0;
+            });
+            if (part->models[i].verticesCount > 0 && hasTriangles)
+                choices.push_back(static_cast<std::uint32_t>(i));
+        }
+        modelName = mdlPath;
+        break;
+    }
+    INFO("bodygroup model: " << modelName << "; candidate failures: " << candidateErrors
+         << "; multichoice models=" << multichoiceModels
+         << " bake successes=" << multichoiceBakeSuccesses);
     REQUIRE(baked.has_value());
     REQUIRE(bodyPart < baked->bodyParts.size());
-    CHECK(baked->bodyParts[bodyPart].choices.size() == part->models.size());
-    std::vector<std::uint32_t> choices;
-    for (std::size_t i = 0; i < part->models.size(); ++i) {
-        if (part->models[i].verticesCount > 0) choices.push_back(static_cast<std::uint32_t>(i));
-    }
+    CHECK(baked->bodyParts[bodyPart].choices.size() == partChoiceCount);
     REQUIRE(choices.size() > 1);
     const auto allIndices = std::accumulate(baked->submeshes.begin(), baked->submeshes.end(),
                                            std::size_t{0}, [](auto sum, const auto& mesh) {
                                                return sum + mesh.indexCount;
                                            });
     for (const auto choice : {choices[0], choices[1]}) {
-        const auto body = choice * static_cast<std::uint32_t>(part->base);
+        const auto body = choice * partBase;
         const auto selected = modelBodyChoices(*baked, body);
         REQUIRE(selected.size() == baked->bodyParts.size());
         CHECK(selected[bodyPart] == choice);
@@ -86,5 +118,164 @@ TEST_CASE("model bake corpus bodygroups select separate choice ranges") {
                 }
             }
         }
+    }
+
+}
+
+TEST_CASE("model bake corpus single-choice indices match mdlpp") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    JobPool jobs(2);
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    std::size_t eligible = 0, compared = 0, bakeErrors = 0;
+    for (const auto& mdlPath : vfs->walk("models", "*.mdl")) {
+        if (eligible == 300) break; // Deterministic canonical-path prefix of eligible models.
+        const auto vtxPath = mdlPath.substr(0, mdlPath.size() - 4) + ".dx90.vtx";
+        const auto vvdPath = mdlPath.substr(0, mdlPath.size() - 4) + ".vvd";
+        const auto mdlBytes = vfs->open(mdlPath);
+        const auto vtxBytes = vfs->open(vtxPath);
+        const auto vvdBytes = vfs->open(vvdPath);
+        if (!mdlBytes || !vtxBytes || !vvdBytes) continue;
+        mdlpp::StudioModel source{};
+        if (!source.open(*mdlBytes, *vtxBytes, *vvdBytes) || source.mdl.bodyParts.size() != 1 ||
+            source.mdl.bodyParts[0].models.size() != 1 || source.vvd.vertices.size() >= 65536) continue;
+        ++eligible;
+        const auto baked = bakeModel(source);
+        if (!baked) { ++bakeErrors; continue; }
+        const auto reference = source.processModelData(0);
+        std::vector<std::uint32_t> actual, expected;
+        for (const auto& range : baked->submeshes)
+            actual.insert(actual.end(), baked->indices.begin() + range.firstIndex,
+                          baked->indices.begin() + range.firstIndex + range.indexCount);
+        for (const auto& mesh : reference.meshes)
+            expected.insert(expected.end(), mesh.indices.begin(), mesh.indices.end());
+        CAPTURE(mdlPath);
+        CHECK(actual == expected);
+        ++compared;
+    }
+    CHECK(compared > 0);
+    MESSAGE("single-choice equality comparisons=" << compared << " eligible sample=" << eligible
+            << " bake errors skipped=" << bakeErrors
+            << " (first 300 eligible models in canonical path order)");
+}
+
+TEST_CASE("model bake corpus sweep counts failures and measures largest model BVH") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    JobPool jobs(2);
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    const auto started = std::chrono::steady_clock::now();
+    struct Partial {
+        std::size_t models = 0, baked = 0, largestVertices = 0, largestTriangles = 0;
+        std::string largestName;
+        std::map<std::string, std::size_t> failures;
+        std::optional<ModelData> largest;
+    };
+    const auto paths = vfs->walk("models", "*.mdl");
+    const std::size_t workerCount = std::min<std::size_t>(4, std::max<std::size_t>(1, paths.size()));
+    std::vector<std::vector<std::string>> batches(workerCount);
+    for (std::size_t i = 0; i < paths.size(); ++i) batches[i % workerCount].push_back(paths[i]);
+    std::vector<Partial> partials;
+    std::size_t completed = 0;
+    for (auto& batch : batches) {
+        jobs.submit(Priority::Low,
+                    [batch = std::move(batch), &vfs](CancelToken) {
+            Partial part;
+            for (const auto& mdlPath : batch) {
+                ++part.models;
+                const auto stem = mdlPath.substr(0, mdlPath.size() - 4);
+                const auto mdlBytes = vfs->open(mdlPath);
+                const auto vtxBytes = vfs->open(stem + ".dx90.vtx");
+                const auto vvdBytes = vfs->open(stem + ".vvd");
+                if (!mdlBytes || !vtxBytes || !vvdBytes) {
+                    ++part.failures["missing model companion"];
+                    continue;
+                }
+                mdlpp::StudioModel source{};
+                if (!source.open(*mdlBytes, *vtxBytes, *vvdBytes)) {
+                    ++part.failures["mdlpp open failed"];
+                    continue;
+                }
+                auto baked = bakeModel(source);
+                if (!baked) {
+                    const auto& reason = baked.error().message;
+                    if (reason.empty()) {
+                        ++part.failures["empty bake reason"];
+                    } else {
+                        const auto colon = reason.find(':');
+                        ++part.failures[reason.substr(0, colon)];
+                    }
+                    continue;
+                }
+                ++part.baked;
+                const auto triangles = baked->indices.size() / 3;
+                if (baked->vertices.size() > part.largestVertices) {
+                    part.largestVertices = baked->vertices.size();
+                    part.largestTriangles = triangles;
+                    part.largestName = mdlPath;
+                    part.largest = std::move(*baked);
+                }
+            }
+            return part;
+        }, [&](Partial part) {
+            partials.push_back(std::move(part));
+            ++completed;
+        });
+    }
+    while (completed < workerCount) {
+        jobs.drainCompletions();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::size_t models = 0, bakedCount = 0, largestVertices = 0, largestTriangles = 0;
+    std::string largestName;
+    std::map<std::string, std::size_t> failures;
+    std::optional<ModelData> largest;
+    for (auto& part : partials) {
+        models += part.models;
+        bakedCount += part.baked;
+        for (const auto& [reason, count] : part.failures) failures[reason] += count;
+        if (part.largestVertices > largestVertices) {
+            largestVertices = part.largestVertices;
+            largestTriangles = part.largestTriangles;
+            largestName = std::move(part.largestName);
+            largest = std::move(part.largest);
+        }
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    std::size_t failedCount = 0;
+    for (const auto& [reason, count] : failures) failedCount += count;
+    CHECK(models == bakedCount + failedCount);
+    MESSAGE("corpus models=" << models << " baked=" << bakedCount << " failed=" << failedCount);
+    for (const auto& [reason, count] : failures) MESSAGE("failure reason " << reason << "=" << count);
+    MESSAGE("largest model=" << largestName << " vertices=" << largestVertices << " triangles=" << largestTriangles);
+    MESSAGE("corpus sweep wall time=" << std::chrono::duration<double>(elapsed).count() << " s");
+
+    if (largest && largestTriangles > 0) {
+        std::vector<geometry::Bvh::Item> items;
+        items.reserve(largestTriangles);
+        std::uint32_t triangleId = 0;
+        for (std::size_t i = 0; i + 2 < largest->indices.size(); i += 3) {
+            AABB box;
+            for (std::size_t corner = 0; corner < 3; ++corner) {
+                const auto index = largest->indices[i + corner];
+                REQUIRE(index < largest->vertices.size());
+                box.expand(DVec3(largest->vertices[index].position));
+            }
+            items.push_back({triangleId++, box});
+        }
+        geometry::Bvh bvh;
+        const auto bvhStarted = std::chrono::steady_clock::now();
+        bvh.build(items);
+        const auto bvhElapsed = std::chrono::steady_clock::now() - bvhStarted;
+        CHECK(bvh.size() == largestTriangles);
+        MESSAGE("largest model triangle BVH build time=" << std::chrono::duration<double>(bvhElapsed).count() << " s (geometry::Bvh)");
+    } else {
+        MESSAGE("largest model triangle BVH build time=unavailable (no baked triangles)");
     }
 }
