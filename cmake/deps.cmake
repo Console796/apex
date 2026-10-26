@@ -30,13 +30,15 @@ CPMAddPackage(
   OPTIONS "SPDLOG_INSTALL OFF" "SPDLOG_BUILD_EXAMPLE OFF" "SPDLOG_BUILD_TESTS OFF"
 )
 
-# SourcePP v2026.9.11: asset readers (vpkpp, steampp, vtfpp, toolpp, mdlpp).
+# SourcePP v2026.9.11: asset readers (vpkpp, steampp, vtfpp, toolpp, mdlpp, kvpp for DMX, bsppp for BSP entity lumps).
 set(SOURCEPP_LIBS_START_ENABLED OFF CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_VPKPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_STEAMPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_VTFPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_TOOLPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_MDLPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_KVPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_BSPPP ON CACHE BOOL "" FORCE)
 # We only decode VTFs; the image-import codecs are unused (and libjxl rejects mixed compilers).
 set(SOURCEPP_VTFPP_SUPPORT_EXR OFF CACHE BOOL "" FORCE)
 set(SOURCEPP_VTFPP_SUPPORT_JXL OFF CACHE BOOL "" FORCE)

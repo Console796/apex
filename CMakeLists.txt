@@ -103,7 +103,7 @@ apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/ass
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp src/assets/model_bake.cpp
                          src/assets/material_cache.cpp src/assets/model_cache.cpp src/assets/material_index.cpp src/assets/thumbnail_cache.cpp DEPS apex_core)
 target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
-                                          sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp)
+                                          sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp sourcepp::kvpp sourcepp::bsppp)
 apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp src/render/vk.cpp
                          src/render/context.cpp src/render/resources.cpp
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
