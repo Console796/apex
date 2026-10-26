@@ -1155,6 +1155,28 @@ TEST_CASE("mirror helpers: entity names are labels only on request") {
     CHECK(named->position == DVec3(1, 2, 3));
 }
 
+TEST_CASE("mirror helpers: brush entities centre on their solids and can be line targets") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_brush", {{"sphere", "radius"}}, {{"radius", "float"}}),
+                                  helperClass("helper_pointer", {{"line", "255 255 255, targetname, target"}},
+                                              {{"target", "target_destination"}})});
+    Scene scene(*g, documentOf("entity { id 1 classname helper_pointer origin \"0 0 0\" target door }\n"
+                               "entity { id 2 classname helper_brush targetname door radius 8\n" +
+                               boxSolid(3, {0, 0, 0}, {64, 64, 32}, "test/red") + "}\n"),
+                &classes);
+    REQUIRE(scene.mirror.settle());
+    CHECK(scene.mirror.entityBoxCount() == 1); // The point entity only; the brush entity has no box.
+    MirrorViewOptions options;
+    select(scene.mirror, {idOf(*scene.doc, "helper_pointer")});
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1); // The line to the brush entity.
+    CHECK(list.worldSegments[0].b == DVec3(32, 32, 16));
+    // Selecting the brush entity's solid draws its own sphere around the bounds centre.
+    select(scene.mirror, {static_cast<document::NodeId>(3)});
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1 + 3 * 48);
+}
+
 TEST_CASE("mirror helpers: sidelist highlights its SideIds through a vertex edit that keeps them") {
     REQUIRE_GPU();
     const auto classes = tableOf({helperClass("helper_sides", {{"sidelist", ""}}, {{"sides", "sidelist"}})});

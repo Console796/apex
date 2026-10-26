@@ -67,6 +67,8 @@ struct SolidState {
     bool meshed = false;
     JobHandle job;
     DVec3 origin{0.0};
+    AABB bounds;          // World bounds of the last finished mesh; brush-entity helpers centre on these.
+    bool bounded = false;
     std::vector<GpuBatch> batches;
     std::vector<std::string> materials;
 };
@@ -100,6 +102,10 @@ struct EntityState {
     std::string nameKey;            // Lower case; empty when unnamed.
     HelperShapes helpers;
     std::set<std::string> watching; // Names peersNamed looked up during the last evaluation.
+    // Brush entities have no box: their origin is the centre of their solids' bounds (or an `origin`
+    // key), known once the solids have meshed.
+    bool brush = false;
+    std::vector<NodeId> brushSolids;
 };
 
 struct MaterialState {
@@ -149,6 +155,8 @@ struct RenderMirror::Impl {
     std::map<std::string, std::set<NodeId>, std::less<>> watchers;
     std::set<std::string> touchedNames;
     std::set<NodeId> helperDirty;
+    std::map<NodeId, NodeId> brushOwner; // Solid -> brush entity.
+    std::set<NodeId> brushDirty;         // Brush entities whose solids meshed or went away.
     bool redraw = true;
     bool uploaded = false; // Texture uploads awaiting heap.flush().
 
@@ -396,6 +404,11 @@ struct RenderMirror::Impl {
         ++stats.solidsRemeshed;
         redraw = true;
         retire(solid);
+        if (mesh) {
+            solid.bounds = mesh->bounds;
+            solid.bounded = true;
+            noteBrushSolid(id);
+        }
         if (!mesh) {
             ++stats.meshFailures;
             log::warn("render mirror: solid {}: {}", static_cast<unsigned long long>(id),
@@ -442,6 +455,7 @@ struct RenderMirror::Impl {
         const auto it = solids.find(id);
         if (it == solids.end()) return;
         it->second.job.cancel();
+        noteBrushSolid(id);
         for (const std::string& name : it->second.materials) {
             if (const auto m = materials.find(name); m != materials.end()) m->second.users.erase(id);
         }
@@ -471,9 +485,10 @@ struct RenderMirror::Impl {
         eraseEntity(entity->id);
         entitiesDirty = true;
         if (!entity->block || hidden(doc, *entity)) return;
+        std::vector<NodeId> brushSolids;
         for (const NodeId child : entity->children) {
             const auto childHandle = doc.handle(child);
-            if (childHandle && std::holds_alternative<Handle<document::Solid>>(*childHandle)) return; // Brush entity.
+            if (childHandle && std::holds_alternative<Handle<document::Solid>>(*childHandle)) brushSolids.push_back(child);
         }
         std::string classname;
         if (const kv1::Node* c = entity->block->find("classname")) {
@@ -499,6 +514,9 @@ struct RenderMirror::Impl {
         state.basis = pose.basis;
         state.block = entity->block;
         state.pose = pose;
+        state.brush = !brushSolids.empty();
+        for (const NodeId solid : brushSolids) brushOwner[solid] = entity->id;
+        state.brushSolids = std::move(brushSolids);
         if (const kv1::Node* name = entity->block->find("targetname")) {
             if (auto text = name->decodedValue()) {
                 state.targetname = *text;
@@ -521,8 +539,29 @@ struct RenderMirror::Impl {
             byName[state.nameKey].insert(entity->id);
             touchedNames.insert(state.nameKey);
         }
+        placeBrush(state);
         entities[entity->id] = std::move(state);
         helperDirty.insert(entity->id);
+    }
+
+    // A brush entity sits at the centre of its meshed solids, unless it carries an `origin` key.
+    void placeBrush(EntityState& state) const {
+        if (!state.brush || state.block->find("origin")) return;
+        AABB bounds;
+        bool any = false;
+        for (const NodeId id : state.brushSolids) {
+            const auto it = solids.find(id);
+            if (it == solids.end() || !it->second.bounded) continue;
+            bounds.expand(it->second.bounds.min);
+            bounds.expand(it->second.bounds.max);
+            any = true;
+        }
+        if (!any) return;
+        state.position = state.pose.origin = (bounds.min + bounds.max) * 0.5;
+    }
+
+    void noteBrushSolid(NodeId solid) {
+        if (const auto it = brushOwner.find(solid); it != brushOwner.end()) brushDirty.insert(it->second);
     }
 
     // Drops an entity's mirror state and marks the names it carried or watched as changed.
@@ -544,6 +583,10 @@ struct RenderMirror::Impl {
             }
         }
         helperDirty.erase(id);
+        brushDirty.erase(id);
+        for (const NodeId solid : state.brushSolids) {
+            if (const auto it = brushOwner.find(solid); it != brushOwner.end() && it->second == id) brushOwner.erase(it);
+        }
         entities.erase(found);
     }
 
@@ -579,6 +622,16 @@ struct RenderMirror::Impl {
 
     // Re-evaluates the entities the change touched plus any helper that looked up a changed name.
     void refreshHelpers() {
+        // Move brush entities first, so helpers that look them up see the new position.
+        for (const NodeId id : std::exchange(brushDirty, {})) {
+            const auto found = entities.find(id);
+            if (found == entities.end()) continue;
+            const DVec3 before = found->second.position;
+            placeBrush(found->second);
+            if (found->second.position == before) continue;
+            helperDirty.insert(id);
+            if (!found->second.nameKey.empty()) touchedNames.insert(found->second.nameKey);
+        }
         std::set<NodeId> todo = std::move(helperDirty);
         helperDirty.clear();
         for (const std::string& name : touchedNames) {
@@ -597,11 +650,11 @@ struct RenderMirror::Impl {
         collectGarbage();
         if (entities.empty()) return;
         AABB bounds;
-        for (const auto& [id, e] : entities) bounds.expand(e.position);
+        for (const auto& [id, e] : entities) if (!e.brush) bounds.expand(e.position);
         entityOrigin = (bounds.min + bounds.max) * 0.5;
         std::vector<BoxInstance> boxes;
         for (const auto& [id, e] : entities) {
-            if (!e.model.empty() && models.at(e.model).data) continue;
+            if (e.brush || (!e.model.empty() && models.at(e.model).data)) continue;
             const DVec3 origin = e.position - entityOrigin;
             BoxInstance box{{static_cast<float>(e.mins.x), static_cast<float>(e.mins.y), static_cast<float>(e.mins.z)},
                             {static_cast<float>(e.maxs.x), static_cast<float>(e.maxs.y), static_cast<float>(e.maxs.z)},
@@ -890,6 +943,7 @@ std::size_t RenderMirror::pendingPreviewCount() const {
 void RenderMirror::clearPreview() { setPreview(PreviewTransforms{}); }
 
 DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
+    impl_->refreshHelpers(); // Brush entities move when their solids finish meshing, between apply() calls.
     Impl& m = *impl_;
     m.redraw = false;
     if (m.entitiesDirty) m.rebuildEntityBuffer();
@@ -911,10 +965,12 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     for (const auto& state : m.previewGeometry) if (state.node) replaced.insert(state.node);
     // A selected sidelist entity (info_overlay) highlights the faces it lists, as if they were picked.
     std::set<document::SideId> sides = m.selectedSides;
-    for (const NodeId id : m.selected) {
-        const auto entity = m.entities.find(id);
-        if (entity == m.entities.end()) continue;
-        for (const int side : entity->second.helpers.sideIds) sides.insert(static_cast<document::SideId>(side));
+    for (const auto& [id, entity] : m.entities) {
+        if (entity.helpers.sideIds.empty()) continue;
+        const bool picked = m.selected.contains(id) ||
+                            std::ranges::any_of(entity.brushSolids, [&](NodeId solid) { return m.selected.contains(solid); });
+        if (!picked) continue;
+        for (const int side : entity.helpers.sideIds) sides.insert(static_cast<document::SideId>(side));
     }
     for (const auto& [id, solid] : m.solids) {
         if (replaced.contains(id)) continue;
@@ -1031,7 +1087,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     if (options.showEntities && m.entityBuffer && m.entityCount > 0) {
         std::uint32_t instance = 0;
         for (const auto& [id, entity] : m.entities) {
-            if (!entity.model.empty() && m.models.at(entity.model).data) continue;
+            if (entity.brush || (!entity.model.empty() && m.models.at(entity.model).data)) continue;
             BoxDraw draw{&m.entityBuffer, 1, m.entityOrigin, options.mode != DisplayMode::Wireframe};
             draw.firstInstance = instance++;
             draw.previewIndex = previewIndex(id, m.entityOrigin);
@@ -1048,15 +1104,34 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         }
     }
     if (options.showEntities) {
+        // A brush entity is carried by its solids, so a preview on either counts for it.
+        const auto previewOf = [&](NodeId id) {
+            auto it = m.effectivePreview.find(id);
+            if (it != m.effectivePreview.end()) return it;
+            if (const auto entity = m.entities.find(id); entity != m.entities.end()) {
+                for (const NodeId solid : entity->second.brushSolids) {
+                    it = m.effectivePreview.find(solid);
+                    if (it != m.effectivePreview.end()) return it;
+                }
+            }
+            return m.effectivePreview.end();
+        };
         const auto moved = [&](NodeId id, DVec3 p) {
-            const auto it = m.effectivePreview.find(id);
+            const auto it = previewOf(id);
             return it == m.effectivePreview.end() ? p : DVec3(it->second * DVec4(p, 1.0));
         };
+        const auto picked = [&](NodeId id, const EntityState& entity) {
+            return m.selected.contains(id) || std::ranges::any_of(entity.brushSolids, [&](NodeId solid) { return m.selected.contains(solid); });
+        };
         for (const auto& [id, entity] : m.entities) {
-            const bool self = m.selected.contains(id);
+            const bool self = picked(id, entity);
             for (const HelperSegment& segment : entity.helpers.segments) {
-                const bool peer = (segment.peer && m.selected.contains(*segment.peer)) ||
-                                  (segment.anchor && m.selected.contains(*segment.anchor));
+                const auto peerPicked = [&](const std::optional<NodeId>& peerId) {
+                    if (!peerId) return false;
+                    const auto found = m.entities.find(*peerId);
+                    return found != m.entities.end() ? picked(*peerId, found->second) : m.selected.contains(*peerId);
+                };
+                const bool peer = peerPicked(segment.peer) || peerPicked(segment.anchor);
                 const bool shown = segment.visibility == HelperVisibility::Always ||
                                    (self && segment.visibility == HelperVisibility::WhenSelected) ||
                                    ((self || peer) && segment.visibility == HelperVisibility::WhenSelfOrPeerSelected);
@@ -1137,7 +1212,9 @@ std::size_t RenderMirror::solidCount() const { return impl_->solids.size(); }
 std::size_t RenderMirror::meshedSolidCount() const {
     return static_cast<std::size_t>(std::ranges::count_if(impl_->solids, [](const auto& s) { return s.second.meshed; }));
 }
-std::size_t RenderMirror::entityBoxCount() const { return impl_->entities.size(); }
+std::size_t RenderMirror::entityBoxCount() const {
+    return static_cast<std::size_t>(std::ranges::count_if(impl_->entities, [](const auto& e) { return !e.second.brush; }));
+}
 std::size_t RenderMirror::batchCount() const {
     std::size_t count = 0;
     for (const auto& [id, solid] : impl_->solids) count += solid.batches.size();

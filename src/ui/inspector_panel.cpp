@@ -7,11 +7,14 @@
 #include <QCompleter>
 #include <QDoubleValidator>
 #include <QEvent>
+#include <QFontMetrics>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPainter>
 #include <QPushButton>
 #include <QPointer>
 #include <QRegularExpression>
@@ -19,6 +22,7 @@
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <atomic>
 
 namespace apex::ui {
@@ -26,6 +30,41 @@ namespace {
 QString text(const std::string& value) { return QString::fromStdString(value); }
 std::atomic<std::uint64_t> nextFocus{1};
 QString token() { return QString::number(nextFocus++); }
+
+// P2CE's FGD pads sections with readonly string properties whose label is a run of dashes.
+bool isSpacerLabel(const QString& label) {
+    const QString trimmed = label.trimmed();
+    if (trimmed.size() < 3) return false;
+    return std::all_of(trimmed.begin(), trimmed.end(), [](QChar c) { return c == u'-' || c == u'=' || c == u'_'; });
+}
+
+// A form label that shrinks to the space it is given, eliding the middle of long keys. The full text
+// stays in the tooltip, so a long key never pushes the value column out of the inspector.
+class ElidedLabel : public QLabel {
+public:
+    explicit ElidedLabel(const QString& full, QWidget* parent) : QLabel(parent), full_(full) {
+        setToolTip(full);
+        setMinimumWidth(40);
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    }
+    QSize sizeHint() const override {
+        return {std::min(fontMetrics().horizontalAdvance(full_) + 2, kPreferredWidth), QLabel::sizeHint().height()};
+    }
+    QSize minimumSizeHint() const override { return {40, QLabel::minimumSizeHint().height()}; }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        const QRect area = contentsRect();
+        painter.setPen(palette().color(foregroundRole()));
+        painter.drawText(area, static_cast<int>(alignment()),
+                         fontMetrics().elidedText(full_, Qt::ElideMiddle, area.width()));
+    }
+
+private:
+    static constexpr int kPreferredWidth = 190;
+    QString full_;
+};
 }
 
 InspectorPanel::InspectorPanel(QWidget* parent) : QWidget(parent) {
@@ -274,7 +313,20 @@ void InspectorPanel::refresh() {
                     });
             }
         }
-        form->addRow(row.property && !row.property->displayName.empty() ? text(row.property->displayName) : text(row.key), field);
+        const QString label = row.property && !row.property->displayName.empty() ? text(row.property->displayName) : text(row.key);
+        if (isSpacerLabel(label) || (row.readOnly && isSpacerLabel(text(row.value)))) {
+            // Collapse the dash padding to a rule across the form.
+            delete field;
+            auto* rule = new QFrame(content);
+            rule->setObjectName(QStringLiteral("property.%1.%2").arg(text(row.key)).arg(row.occurrence));
+            rule->setFrameShape(QFrame::HLine);
+            rule->setFrameShadow(QFrame::Sunken);
+            rule->setFixedHeight(6);
+            rule->setToolTip(row.property ? text(row.property->description) : QString{});
+            form->addRow(rule);
+            continue;
+        }
+        form->addRow(new ElidedLabel(label, content), field);
     }
     rebuilding_ = false;
 }

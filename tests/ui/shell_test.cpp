@@ -1802,6 +1802,44 @@ std::map<std::string, std::string> inspectorValues(const document::Document& doc
 }
 }
 
+TEST_CASE("inspector collapses dash spacer properties and elides long labels") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("spacer.fgd");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        const QByteArray dashes(120, '-');
+        file.write("@PointClass = spaced\n[\n"
+                   "\ttext(string) : \"A deliberately very long label that must not widen the inspector at all\" : \"x\"\n"
+                   "\tsep1(string) readonly : \"" + dashes + "\"\n"
+                   "\tother(string) : \"Other\" : \"y\"\n]\n");
+    }
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    document::Document doc(editor_test::parsed(R"(entity { id 1 classname spaced })"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 600);
+    panel.show();
+    session.selectNode(doc.roots()[0]);
+    app().processEvents();
+    auto* rule = panel.findChild<QFrame*>("property.sep1.0");
+    REQUIRE(rule);
+    CHECK(rule->frameShape() == QFrame::HLine);
+    CHECK(rule->height() < 10);
+    CHECK_FALSE(panel.findChild<QLineEdit*>("edit.sep1.0"));
+    auto* edit = panel.findChild<QLineEdit*>("edit.text.0");
+    REQUIRE(edit);
+    // The value column stays inside the panel instead of being pushed out by the label.
+    CHECK(edit->mapTo(&panel, QPoint(edit->width(), 0)).x() <= panel.width());
+    CHECK(edit->width() > 60);
+}
+
 TEST_CASE("inspector builds FGD controls and coalesces one field focus") {
     app();
     QTemporaryDir dir;
