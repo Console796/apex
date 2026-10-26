@@ -16,6 +16,7 @@ def main():
     assert abs(yaw90.x) < 1e-15 and abs(yaw90.y - 1) < 1e-15 and abs(yaw90.z) < 1e-15
     cases = chain(product(GRID, repeat=3), ((450, -405, 720), (-720, 450, -450)))
     with OUTPUT.open("w") as fixture:
+        fixture.write("# Apex-authored srctools Matrix.from_angle grid: pitch yaw roll, then forward, left, up.\n")
         for pitch, yaw, roll in cases:
             matrix = Matrix.from_angle(Angle(pitch, yaw, roll))
             values = (pitch, yaw, roll, *matrix.forward(), *matrix.left(), *matrix.up())

@@ -33,6 +33,7 @@ TEST_CASE("entity transform matches srctools angle grid") {
     std::string line;
     std::size_t cases = 0;
     while (std::getline(fixture, line)) {
+        if (line.starts_with('#')) continue;
         CAPTURE(line);
         std::istringstream values(line);
         DVec3 angles, forward, left, up;
