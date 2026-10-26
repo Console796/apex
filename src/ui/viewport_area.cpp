@@ -154,6 +154,11 @@ ViewportArea::~ViewportArea() {
 void ViewportArea::setDocument(document::Document* document, const assets::GameProfile* profile) {
     document_ = document;
     host_->setDocument(document, gameContent_ ? gameContent_->vfs() : nullptr, profile);
+    if (session_) {
+        session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
+            return host->modelPicks() ? host->modelPicks()->shape(entity) : std::nullopt;
+        });
+    }
     previewRevision_ = kNoPreview;  // The mirror may be new.
     updateHighlight();
     forceDraw_ = true;
@@ -165,9 +170,15 @@ void ViewportArea::setDocument(document::Document* document, const assets::GameP
 }
 
 void ViewportArea::setEditorSession(editor::EditorSession* session) {
-    if (session_) session_->unobserve(sessionObserver_);
+    if (session_) {
+        session_->unobserve(sessionObserver_);
+        session_->setEntityBoundsProvider({});
+    }
     session_ = session;
     previewRevision_ = kNoPreview;
+    if (session_) session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
+        return host->modelPicks() ? host->modelPicks()->shape(entity) : std::nullopt;
+    });
     if (session_) sessionObserver_ = session_->observe([this] {
         updateHighlight();
         updateModeBadges();
@@ -756,7 +767,9 @@ void ViewportArea::tick() {
         gpuAnnounced_ = true;
         emit gpuNameChanged(host_->gpuName());
     }
+    const auto pickRevision = host_->modelPickRevision();
     if (gpuReady_ && host_->pump()) forceDraw_ = true;
+    if (session_ && pickRevision != host_->modelPickRevision()) session_->refreshEntityBounds();
     const bool force = forceDraw_ || drag_.has_value();
     forceDraw_ = false;
     for (auto& [id, f] : frames_) {

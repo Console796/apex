@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <functional>
 #include <map>
 #include <set>
@@ -69,7 +70,24 @@ struct SolidState {
     std::vector<std::string> materials;
 };
 
+struct ModelMesh {
+    std::shared_ptr<const assets::ModelData> data;
+    Buffer vertices, indices, edges;
+    std::map<std::int32_t, std::string> materials;
+};
+
+std::uint32_t entityUint(const kv1::Node& block, std::string_view key) {
+    const auto* node = block.find(key);
+    const auto text = node ? node->decodedValue().value_or("") : "";
+    std::uint32_t value = 0;
+    std::from_chars(text.data(), text.data() + text.size(), value);
+    return value;
+}
+
 struct EntityState {
+    std::string model;
+    std::uint32_t skin = 0, body = 0;
+    DMat4 transform{1.0};
     DVec3 position{0.0}, mins{-8.0}, maxs{8.0};
     DMat3 basis{1.0};
     Vec4 colour{0.9f, 0.4f, 0.9f, 1.0f};
@@ -100,6 +118,10 @@ struct RenderMirror::Impl {
     JobPool& jobs;
     assets::MaterialCache& cache;
     const assets::EntityClassTable* classes;
+    assets::ModelCache* modelCache = nullptr;
+    TextureSlot errorSlot = kCheckerboardSlot;
+    std::function<bool(const std::string&)> modelMaterialExists;
+    std::map<std::string, ModelMesh> models;
 
     std::map<NodeId, SolidState> solids;
     std::map<Handle<document::Solid>, NodeId> solidIds;
@@ -194,8 +216,10 @@ struct RenderMirror::Impl {
             if (!hierarchy.contains(node.parent)) walk(walk, id, nullptr);
     }
 
-    Impl(Context& c, TextureHeap& h, JobPool& j, assets::MaterialCache& m, const assets::EntityClassTable* k)
-        : context(c), heap(h), jobs(j), cache(m), classes(k) {
+    Impl(Context& c, TextureHeap& h, JobPool& j, assets::MaterialCache& m, const assets::EntityClassTable* k,
+         assets::ModelCache* modelsCache, std::function<bool(const std::string&)> exists)
+        : context(c), heap(h), jobs(j), cache(m), classes(k), modelCache(modelsCache),
+          modelMaterialExists(std::move(exists)) {
         const auto placeholder = cache.placeholder();
         if (placeholder && !placeholder->texture.mips.empty()) {
             placeholderSize = {std::max<int>(1, placeholder->texture.mips[0].width),
@@ -209,6 +233,7 @@ struct RenderMirror::Impl {
         for (auto& [name, material] : materials) {
             if (material.slot != kCheckerboardSlot) heap.release(material.slot);
         }
+        if (errorSlot != kCheckerboardSlot) heap.release(errorSlot);
         heap.collectGarbage();
     }
 
@@ -443,6 +468,19 @@ struct RenderMirror::Impl {
         if (lower(classname) == "worldspawn") return;
         EntityState state;
         const auto pose = document::entityPose(*entity->block);
+        state.transform = document::entityTransform(pose);
+        if (modelCache) {
+            if (const auto* key = entity->block->find("model")) {
+                const auto name = key->decodedValue().value_or("");
+                if (!name.empty() && name.front() != '*') {
+                    state.model = assets::modelPath(name);
+                    models.try_emplace(state.model);
+                    modelCache->request(state.model);
+                }
+            }
+        }
+        state.skin = entityUint(*entity->block, "skin");
+        state.body = entityUint(*entity->block, "body");
         state.position = pose.origin;
         state.basis = pose.basis;
         if (classes) {
@@ -471,6 +509,7 @@ struct RenderMirror::Impl {
         entityOrigin = (bounds.min + bounds.max) * 0.5;
         std::vector<BoxInstance> boxes;
         for (const auto& [id, e] : entities) {
+            if (!e.model.empty() && models.at(e.model).data) continue;
             const DVec3 origin = e.position - entityOrigin;
             BoxInstance box{{static_cast<float>(e.mins.x), static_cast<float>(e.mins.y), static_cast<float>(e.mins.z)},
                             {static_cast<float>(e.maxs.x), static_cast<float>(e.maxs.y), static_cast<float>(e.maxs.z)},
@@ -482,6 +521,7 @@ struct RenderMirror::Impl {
             }
             boxes.push_back(box);
         }
+        if (boxes.empty()) return;
         auto buffer = upload(boxes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         if (!buffer) {
             log::error("render mirror: entity upload failed");
@@ -489,6 +529,56 @@ struct RenderMirror::Impl {
         }
         entityBuffer = std::move(*buffer);
         entityCount = static_cast<std::uint32_t>(boxes.size());
+    }
+
+    void pumpModels() {
+        if (!modelCache) return;
+        for (auto& [name, mesh] : models) {
+            if (mesh.data) continue;
+            auto data = modelCache->request(name);
+            if (data == mesh.data) continue;
+            for (Buffer* buffer : {&mesh.vertices, &mesh.indices, &mesh.edges})
+                if (*buffer) garbage.push_back(std::move(*buffer));
+            mesh.data.reset();
+            mesh.materials.clear();
+            entitiesDirty = redraw = true;
+            if (!data) continue;
+            std::vector<BrushVertex> vertices;
+            for (const auto& v : data->vertices)
+                vertices.push_back({{v.position.x, v.position.y, v.position.z},
+                                    {v.normal.x, v.normal.y, v.normal.z}, {v.uv.x, v.uv.y}, 0});
+            std::vector<std::uint32_t> edges;
+            for (std::size_t i = 0; i + 2 < data->indices.size(); i += 3) {
+                const auto a = data->indices[i], b = data->indices[i + 1], c = data->indices[i + 2];
+                edges.insert(edges.end(), {a, b, b, c, c, a});
+            }
+            auto vb = upload(vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+            auto ib = upload(data->indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+            auto eb = upload(edges, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+            if (!vb || !ib || !eb) { log::error("render mirror: model upload failed: {}", name); continue; }
+            mesh.vertices = std::move(*vb);
+            mesh.indices = std::move(*ib);
+            mesh.edges = std::move(*eb);
+            mesh.data = std::move(data);
+            if (errorSlot == kCheckerboardSlot && mesh.data == modelCache->errorModel()) {
+                const std::array<std::byte, 16> pixels = {
+                    std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255},
+                    std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255},
+                    std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255},
+                    std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+                if (auto slot = heap.upload({2, 2, VK_FORMAT_R8G8B8A8_UNORM}, pixels)) {
+                    errorSlot = *slot;
+                    uploaded = true;
+                }
+            }
+            for (std::int32_t i = 0; i < static_cast<std::int32_t>(mesh.data->materialNames.size()); ++i) {
+                auto material = assets::resolveModelMaterial(*mesh.data, i, [&](const std::string& path) {
+                    return modelMaterialExists ? modelMaterialExists(path) : true;
+                });
+                if (!material.empty()) resolveMaterial(material);
+                mesh.materials.emplace(i, std::move(material));
+            }
+        }
     }
 
     // --- Change handling -------------------------------------------------------------------
@@ -572,6 +662,10 @@ struct RenderMirror::Impl {
     }
 
     bool pending() const {
+        if (modelCache && std::ranges::any_of(models, [&](const auto& entry) {
+            return !entry.second.data && (modelCache->state(entry.first) == assets::ModelState::Loading ||
+                   modelCache->state(entry.first) == assets::ModelState::Unloaded);
+        })) return true;
         if (previewCursor < previewGeometry.size()) return true;
         if (std::ranges::any_of(solids, [](const auto& s) { return s.second.inFlight; })) return true;
         return std::ranges::any_of(materials, [](const auto& m) { return m.second.loading; });
@@ -579,11 +673,13 @@ struct RenderMirror::Impl {
 };
 
 RenderMirror::RenderMirror(Context& context, TextureHeap& heap, JobPool& jobs, assets::MaterialCache& materials,
-                           const assets::EntityClassTable* entityClasses)
-    : impl_(std::make_unique<Impl>(context, heap, jobs, materials, entityClasses)) {}
+                           const assets::EntityClassTable* entityClasses, assets::ModelCache* models,
+                           std::function<bool(const std::string&)> modelMaterialExists)
+    : impl_(std::make_unique<Impl>(context, heap, jobs, materials, entityClasses, models, std::move(modelMaterialExists))) {}
 RenderMirror::~RenderMirror() = default;
 
 void RenderMirror::rebuild(const Document& document) {
+    refreshModels();
     document::ChangeSet all;
     const auto walk = [&](const auto& self, NodeId id) -> void {
         const auto handle = document.handle(id);
@@ -597,12 +693,44 @@ void RenderMirror::rebuild(const Document& document) {
     impl_->apply(document, all);
 }
 
+void RenderMirror::refreshModels() {
+    auto& m = *impl_;
+    std::set<std::string> oldMaterials;
+    for (auto& [name, mesh] : m.models) {
+        for (const auto& [index, material] : mesh.materials) oldMaterials.insert(material);
+        for (Buffer* buffer : {&mesh.vertices, &mesh.indices, &mesh.edges})
+            if (*buffer) m.garbage.push_back(std::move(*buffer));
+        mesh.data.reset();
+        mesh.materials.clear();
+        if (m.modelCache) m.modelCache->request(name);
+    }
+    for (const auto& name : oldMaterials) {
+        const auto found = m.materials.find(name);
+        if (found == m.materials.end() || !found->second.users.empty()) continue;
+        const bool previewUses = std::ranges::any_of(m.previewGeometry, [&](const auto& state) {
+            return std::ranges::any_of(state.mesh.batches, [&](const auto& batch) { return batch.material == name; });
+        });
+        if (previewUses) continue;
+        m.context.waitIdle();
+        if (found->second.slot != kCheckerboardSlot) m.heap.release(found->second.slot);
+        m.materials.erase(found);
+    }
+    if (m.errorSlot != kCheckerboardSlot) {
+        m.context.waitIdle();
+        m.heap.release(m.errorSlot);
+        m.errorSlot = kCheckerboardSlot;
+    }
+    m.heap.collectGarbage();
+    m.entitiesDirty = m.redraw = true;
+}
+
 void RenderMirror::apply(const Document& document, const document::ChangeSet& changes) {
     impl_->apply(document, changes);
 }
 
 bool RenderMirror::pump() {
     impl_->jobs.drainCompletions();
+    impl_->pumpModels();
     impl_->pumpMaterials();
     impl_->meshPreviews();
     impl_->collectGarbage();
@@ -803,7 +931,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     if (options.showEntities && m.entityBuffer && m.entityCount > 0) {
         std::uint32_t instance = 0;
         for (const auto& [id, entity] : m.entities) {
-            (void)entity;
+            if (!entity.model.empty() && m.models.at(entity.model).data) continue;
             BoxDraw draw{&m.entityBuffer, 1, m.entityOrigin, options.mode != DisplayMode::Wireframe};
             draw.firstInstance = instance++;
             draw.previewIndex = previewIndex(id, m.entityOrigin);
@@ -817,6 +945,53 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.tint = m.highlight.outlineColour;
                 list.boxOutlines.push_back(draw);
             }
+        }
+    }
+    if (options.showEntities) {
+        struct Group { MeshDraw draw; std::vector<DMat4> transforms; };
+        std::vector<Group> groups;
+        for (const auto& [id, entity] : m.entities) {
+            if (entity.model.empty()) continue;
+            const auto& mesh = m.models.at(entity.model);
+            if (!mesh.data) continue;
+            DMat4 transform = entity.transform;
+            if (const auto it = m.effectivePreview.find(id); it != m.effectivePreview.end()) transform = it->second * transform;
+            const Vec4 tint = m.selected.contains(id) ? m.highlight.selectTint
+                : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
+            for (const auto& range : assets::modelDrawRanges(*mesh.data, entity.body, entity.skin)) {
+                MeshDraw draw;
+                draw.vertices = &mesh.vertices;
+                draw.indices = &mesh.indices;
+                draw.edgeIndices = &mesh.edges;
+                draw.firstIndex = range.firstIndex;
+                draw.indexCount = range.indexCount;
+                draw.firstEdgeIndex = range.firstIndex * 2;
+                draw.edgeIndexCount = range.indexCount * 2;
+                const auto material = mesh.materials.find(range.material);
+                if (material != mesh.materials.end() && !material->second.empty()) {
+                    draw.texture = m.materials.at(material->second).slot;
+                    draw.colour = options.mode == DisplayMode::Flat ? flatColour(material->second) : Vec4(1.0f);
+                } else {
+                    draw.colour = entity.colour;
+                    if (range.material < 0) draw.texture = m.errorSlot;
+                }
+                if (options.mode == DisplayMode::Wireframe) draw.colour = options.wireColour;
+                draw.highlight = tint;
+                auto group = std::ranges::find_if(groups, [&](const Group& g) {
+                    const auto& d = g.draw;
+                    return d.vertices == draw.vertices && d.firstIndex == draw.firstIndex &&
+                        d.texture == draw.texture && d.colour == draw.colour && d.highlight == tint;
+                });
+                if (group == groups.end()) { groups.push_back({draw, {}}); group = std::prev(groups.end()); }
+                group->transforms.push_back(transform);
+            }
+        }
+        for (auto& group : groups) {
+            group.draw.previewIndex = static_cast<std::uint32_t>(list.previews.size() + 1);
+            group.draw.instanceCount = static_cast<std::uint32_t>(group.transforms.size());
+            group.draw.instancedTransforms = true;
+            for (const auto& transform : group.transforms) list.previews.push_back({transform, DVec3(0.0)});
+            list.meshes.push_back(group.draw);
         }
     }
     return list;

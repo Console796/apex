@@ -546,12 +546,13 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.offsetSlot = slotVec(toCameraRelative(mesh.origin, camera), mesh.texture);
             setup(push, mesh);
             previewPush(push, mesh.previewIndex);
+            if (mesh.instancedTransforms) push.p1.z = std::bit_cast<float>(mesh.previewIndex | 0x80000000u);
             push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha));
             // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
             const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
             for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;
             s.pushAll(commands, push);
-            vkCmdDrawIndexed(commands, n, 1, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
+            vkCmdDrawIndexed(commands, n, mesh.instanceCount, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
         }
     };
     auto trianglesOf = [](const MeshDraw& m) { return m.indexCount; };

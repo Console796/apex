@@ -155,6 +155,10 @@ void GpuHost::unbind() {
     observerToken_ = 0;
     if (context_) context_->waitIdle();
     mirror_.reset();
+    modelPicks_.reset();
+    if (models_) models_->clear();
+    models_.reset();
+    ++modelPickRevision_;
     classes_.reset();
     materials_.reset();
     vfs_.reset();
@@ -196,7 +200,10 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
             log::warn("viewports: FGD load failed: {}", table.error().what());
         }
     }
-    mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get());
+    models_ = std::make_unique<assets::ModelCache>(*vfs_, *jobs_);
+    modelPicks_ = std::make_unique<ModelPickCache>(*models_);
+    mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get(),
+        models_.get(), [this](const std::string& path) { return vfs_->exists(path); });
     mirror_->rebuild(*document);
     observerToken_ = document->observe([this](const document::ChangeSet& changes) {
         if (mirror_ && document_) mirror_->apply(*document_, changes);
@@ -206,6 +213,7 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
 bool GpuHost::pump() {
     if (!mirror_) return false;
     mirror_->pump();
+    if (modelPicks_ && modelPicks_->pump()) ++modelPickRevision_;
     return mirror_->needsRedraw();
 }
 

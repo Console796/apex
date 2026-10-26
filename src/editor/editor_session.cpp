@@ -46,6 +46,9 @@ void EditorSession::attach(document::Document& doc) {
     visgroupVisibility_ = buildVisgroupVisibility(doc);
     visgroupHistory_[doc.historyState()] = visgroupVisibility_;
     picks_ = std::make_unique<PickIndex>(doc, [this](const kv1::Node& block) -> std::optional<EntityPickShape> {
+        if (entityBoundsProvider_) {
+            if (auto shape = entityBoundsProvider_(block)) return shape;
+        }
         const auto* key = block.find("classname");
         const auto name = key ? key->decodedValue().value_or("") : "";
         const auto* cls = entityClasses_.find(name);
@@ -76,6 +79,13 @@ void EditorSession::attach(document::Document& doc) {
         notify();
     });
     notify();
+}
+void EditorSession::setEntityBoundsProvider(EntityBoundsProvider provider) {
+    entityBoundsProvider_ = std::move(provider);
+    refreshEntityBounds();
+}
+void EditorSession::refreshEntityBounds() {
+    if (picks_) picks_->rebuild();
 }
 void EditorSession::detach() {
     if (transformActive()) endTransform();

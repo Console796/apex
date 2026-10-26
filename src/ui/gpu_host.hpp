@@ -9,6 +9,7 @@
 #include <QTemporaryDir>
 
 #include "assets/fgd.hpp"
+#include "ui/model_pick.hpp"
 #include "assets/game_profile.hpp"
 #include "render/context.hpp"
 #include "render/render_mirror.hpp"
@@ -58,6 +59,8 @@ public:
     document::Document* document() const { return document_; }
 
     render::Renderer* renderer(VkFormat colorFormat);
+    ModelPickCache* modelPicks() { return modelPicks_.get(); }
+    std::uint64_t modelPickRevision() const { return modelPickRevision_; }
     render::RenderMirror* mirror() { return mirror_.get(); }
 
     // Delivers finished mesh/texture jobs; returns true when the scene needs redrawing.
@@ -79,6 +82,9 @@ private:
     std::map<VkFormat, std::unique_ptr<render::Renderer>> renderers_;
     std::shared_ptr<const assets::Vfs> vfs_;
     std::unique_ptr<assets::MaterialCache> materials_;
+    std::unique_ptr<assets::ModelCache> models_;
+    std::unique_ptr<ModelPickCache> modelPicks_;
+    std::uint64_t modelPickRevision_ = 0;
     std::unique_ptr<assets::EntityClassTable> classes_;
     std::unique_ptr<render::RenderMirror> mirror_;
     document::Document* document_ = nullptr;

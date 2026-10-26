@@ -79,6 +79,8 @@ public:
     EditorSession& operator=(const EditorSession&) = delete;
 
     void attach(document::Document& document);
+    void setEntityBoundsProvider(EntityBoundsProvider provider);
+    void refreshEntityBounds();
     void detach();
     document::Document* document() const { return document_; }
     Selection& selection() { return selection_; }
@@ -271,6 +273,7 @@ private:
     document::Document* document_ = nullptr;
     std::size_t documentObserver_ = 0;
     std::unique_ptr<PickIndex> picks_;
+    EntityBoundsProvider entityBoundsProvider_;
     std::unique_ptr<GroupIndex> groups_;
     Selection selection_;
     std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;

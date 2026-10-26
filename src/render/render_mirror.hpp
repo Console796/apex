@@ -17,6 +17,7 @@
 
 #include "assets/fgd.hpp"
 #include "assets/material_cache.hpp"
+#include "assets/model_cache.hpp"
 #include "core/job_pool.hpp"
 #include "document/document.hpp"
 #include "render/renderer.hpp"
@@ -82,13 +83,17 @@ struct MirrorViewOptions {
 class RenderMirror {
   public:
     RenderMirror(Context& context, TextureHeap& heap, JobPool& jobs, assets::MaterialCache& materials,
-                 const assets::EntityClassTable* entityClasses = nullptr);
+                 const assets::EntityClassTable* entityClasses = nullptr,
+                 assets::ModelCache* models = nullptr,
+                 std::function<bool(const std::string&)> modelMaterialExists = {});
     ~RenderMirror();
     RenderMirror(const RenderMirror&) = delete;
     RenderMirror& operator=(const RenderMirror&) = delete;
 
     // Treats every node of the document as created (initial load).
     void rebuild(const document::Document& document);
+    // After ModelCache::clear(), retire model meshes and re-request visible paths.
+    void refreshModels();
     // Applies a committed ChangeSet; call after the commit/undo/redo that produced it.
     void apply(const document::Document& document, const document::ChangeSet& changes);
 

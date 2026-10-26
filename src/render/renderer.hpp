@@ -78,6 +78,8 @@ struct MeshDraw {
     bool outlineOnlyWire = false;      // Selected wire edges are emitted by the outline pass.
     std::uint32_t previewIndex = 0;     // 0 = identity; otherwise DrawList::previews[index - 1].
     AlphaMode alpha = AlphaMode::Opaque; // Textured mode only.
+    std::uint32_t instanceCount = 1;
+    bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
 };
 
 struct BoxDraw {
@@ -187,6 +189,7 @@ struct DrawList {
 // Push constants shared by all pipelines (mirrors shaders/common.inc).
 // Preview ABI, without growing the block:
 //   brush/box: p1.xy = address low/high uint bits, p1.z = index uint bits;
+//   instanced models: p1.z high bit selects consecutive transforms by gl_InstanceIndex.
 //   sprite: offsetSlot.w / p1.w = address low/high, p0.w = (index << 1) | outline.
 // Sprite outline used to occupy both p0.w and p1.w; packing it frees the third word.
 // Grid retains every word of its existing layout. Index 0 skips all buffer reads.
