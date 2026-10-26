@@ -1,7 +1,7 @@
 include(doctest)
 
 add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core/handle_test.cpp
-               core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
+               core/entity_helpers_test.cpp core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp core/kv3_test.cpp
                document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
                document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp

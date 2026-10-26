@@ -24,10 +24,14 @@ struct EntityProperty {
 struct EntityIO {
     std::string name, type, description;
 };
+struct EntityHelper {
+    std::string name, arguments;
+};
 struct EntityClass {
     std::string name;
     std::string type; // BaseClass, PointClass, SolidClass, etc., without '@'.
     std::vector<std::string> bases;
+    std::vector<EntityHelper> helpers;
     std::optional<std::array<int, 3>> color;
     std::optional<std::array<double, 3>> mins;
     std::optional<std::array<double, 3>> maxs;

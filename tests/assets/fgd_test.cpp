@@ -1,7 +1,10 @@
 #include "assets/fgd.hpp"
+#include "core/entity_helpers.hpp"
 #include "fixture.hpp"
 
 #include <cstdlib>
+#include <set>
+#include <sstream>
 #include <doctest/doctest.h>
 
 using namespace apex::assets;
@@ -101,4 +104,79 @@ TEST_CASE("FGD property order spans kinds includes bases and overrides") {
     CHECK(table->find("Second")->properties[0].defaultValue == "second");
     REQUIRE(table->find("inherited"));
     CHECK(table->find("inherited")->properties[0].defaultValue == "base");
+}
+
+TEST_CASE("FGD helpers preserve raw arguments declaration order and all inherited helpers") {
+    GameTree tree;
+    tree.put("base.fgd", R"fgd(@BaseClass sphere(firstRadius) color(12 34 56) = First []
+        @BaseClass studio("models/base.mdl") = Second []
+        @BaseClass base(fIrSt, SECOND) sphere(middleRadius) = Middle []
+    )fgd");
+    tree.put("helpers.fgd", R"fgd(@include "base.fgd"
+        @PointClass base(MIDDLE, second)
+            Studio("models/a,b(c).mdl") Foo(a, (b, c))
+            sphere(ownRadius) iconsprite("editor/a,b(c).vmt")
+            size(8 16 32) bbox(-1 -2 -3, 4 5 6) color(1 2 3)
+            = Example []
+        @PointClass sprite() = after []
+    )fgd");
+    auto table = loadEntityClasses(tree.root / "helpers.fgd");
+    REQUIRE_MESSAGE(table, (table ? "" : table.error().what()));
+    const auto* entity = table->find("EXAMPLE");
+    REQUIRE(entity);
+    std::vector<std::string> names;
+    for (const auto& h : entity->helpers) names.push_back(h.name);
+    REQUIRE(names == std::vector<std::string>{"sphere", "color", "studio", "sphere", "studio",
+        "studio", "foo", "sphere", "iconsprite", "size", "bbox", "color"});
+    CHECK(entity->helpers[0].arguments == "firstRadius");
+    CHECK(entity->helpers[3].arguments == "middleRadius");
+    CHECK(entity->helpers[5].arguments == R"("models/a,b(c).mdl")");
+    CHECK(entity->helpers[6].arguments == "a, (b, c)");
+    CHECK(splitHelperArguments(entity->helpers[6].arguments) == std::vector<std::string>{"a", "(b, c)"});
+    CHECK(std::get<StudioHelper>(parseHelper(entity->helpers[5])).model == "models/a,b(c).mdl");
+    CHECK(std::get<UnknownHelper>(parseHelper(entity->helpers[6])).arguments == "a, (b, c)");
+    CHECK(entity->iconSprite == "editor/a,b(c).vmt");
+    CHECK(entity->color == std::array<int, 3>{1, 2, 3});
+    CHECK(entity->mins == std::array<double, 3>{-1, -2, -3});
+    CHECK(entity->maxs == std::array<double, 3>{4, 5, 6});
+    REQUIRE(table->find("after"));
+    REQUIRE(table->find("after")->helpers.size() == 1);
+    CHECK(table->find("after")->helpers[0].arguments.empty());
+    REQUIRE(table->find("first"));
+    CHECK(table->find("first")->helpers.size() == 2);
+}
+
+TEST_CASE("FGD helper corpus parses all supported kinds and reports unknown names") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    auto table = loadEntityClasses(std::filesystem::path(install) / "p2ce/p2ce.fgd");
+    REQUIRE_MESSAGE(table, (table ? "" : table.error().what()));
+    const std::set<std::string> known{"sphere", "line", "iconsprite", "studio", "studioprop",
+        "size", "frustum", "animator", "keyframe", "cylinder", "sidelist", "lightprop", "sprite",
+        "wirebox", "lightcone", "worldtext", "decal", "orientedwidthheight", "orientedwidthheighthalf",
+        "bbox", "clusteredlight", "overlay_transition", "instance", "sweptplayerhull", "overlay",
+        "orientedboundingbox", "light", "quadbounds", "catapult", "color"};
+    std::set<std::string> unknown;
+    std::map<std::string, std::size_t> counts;
+    for (const auto& [name, entity] : table->classes) {
+        for (const auto& h : entity.helpers) {
+            INFO(name, ": ", h.name, "(", h.arguments, ")");
+            const auto typed = parseHelper(h);
+            const auto* other = std::get_if<UnknownHelper>(&typed);
+            CHECK((other == nullptr) == known.contains(h.name));
+            if (other) {
+                unknown.insert(other->name);
+                CHECK(other->arguments == h.arguments);
+            }
+            ++counts[h.name];
+        }
+    }
+    CHECK(counts["sphere"] > 0);
+    CHECK(counts["line"] > 0);
+    CHECK(counts["studio"] > 0);
+    std::ostringstream names;
+    for (const auto& name : unknown) names << name << ' ';
+    MESSAGE("Unknown FGD helpers: {", names.str(), "}");
+    MESSAGE("Inherited helper counts: sphere=", counts["sphere"], ", line=", counts["line"],
+        ", studio=", counts["studio"]);
 }

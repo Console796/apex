@@ -80,7 +80,7 @@ endif()
 include(deps)
 
 # Layer graph, plan 0.1 section 2. tools/check_layers.py enforces the same edges on #includes.
-apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths.cpp
+apex_layer(core SOURCES src/core/entity_helpers.cpp src/core/version.cpp src/core/strings.cpp src/core/paths.cpp
                        src/core/log.cpp src/core/job_pool.cpp src/core/json.cpp src/core/kv3.cpp
                        src/core/kv1.cpp src/core/kv1_parse.cpp src/core/kv1_write.cpp
            DEPS glm::glm spdlog::spdlog)
