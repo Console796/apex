@@ -15,7 +15,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
 editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/measure_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
                editor/pie_menu_test.cpp
                editor/snapper_test.cpp editor/pick_index_test.cpp editor/pick_model_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp editor/preset_io_test.cpp
-               editor/group_index_test.cpp editor/name_index_test.cpp editor/connection_model_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
+               editor/group_index_test.cpp editor/name_index_test.cpp editor/connection_model_test.cpp editor/connection_validation_test.cpp editor/instance_templates_test.cpp assets/connection_corpus_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
                editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/hide_corpus_test.cpp editor/history_property_test.cpp editor/work_plane_test.cpp
                editor/transform_test.cpp editor/vector_key_test.cpp editor/preview_test.cpp editor/preview_geometry_test.cpp
                editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp
