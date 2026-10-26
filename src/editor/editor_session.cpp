@@ -588,6 +588,45 @@ void EditorSession::setEntityClasses(assets::EntityClassTable classes) {
     if (picks_) picks_->rebuild();
     notify();
 }
+ConnectionModel EditorSession::connectionModel() const {
+    if (!document_) throw std::logic_error("no document");
+    return ConnectionModel(*document_, selection_);
+}
+Result<void> EditorSession::setConnectionField(std::size_t row, ConnectionModel::Field field, std::string text) {
+    return runEdit("Edit connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().setField(tx, row, field, std::move(text));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::setConnectionOutput(std::size_t row, std::string name) {
+    return runEdit("Rename output", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().setOutput(tx, row, std::move(name));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::addConnection(std::string output, document::Connection connection) {
+    return runEdit("Add connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().add(tx, std::move(output), std::move(connection));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::removeConnection(std::size_t row) {
+    return runEdit("Delete connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().remove(tx, row);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::duplicateConnection(std::size_t row) {
+    return runEdit("Duplicate connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().duplicate(tx, row);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
 InspectorModel EditorSession::inspectorModel(bool raw) const {
     if (!document_) throw std::logic_error("no document");
     return InspectorModel(*document_, selection_, entityClasses_, raw);

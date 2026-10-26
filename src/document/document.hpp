@@ -217,6 +217,9 @@ public:
     void setKeyValue(NodeHandle handle, std::string key, std::optional<std::string> value);
     // Edit one scalar occurrence without replacing or dropping duplicate keys.
     void setKeyValueOccurrence(NodeHandle handle, std::string key, std::size_t occurrence, std::string value);
+    // Replace the scalar entries of an entity connections block, retaining KV1 provenance.
+    // An empty block removes it; no existing block creates one.
+    void setConnections(NodeHandle entity, kv1::Node block);
     void setEditor(NodeHandle handle, EditorEdit edit);
     // Side identity is stable; the face index is resolved internally for each write.
     void setSideKeyValue(SideId side, std::string key, std::string value);

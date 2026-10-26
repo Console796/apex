@@ -801,6 +801,32 @@ void Transaction::setKeyValueOccurrence(NodeHandle h, std::string key, std::size
     }
     throw std::invalid_argument("missing key occurrence");
 }
+void Transaction::setConnections(NodeHandle entity, kv1::Node block) {
+    const auto id = checked(entity);
+    if (!std::holds_alternative<Handle<Entity>>(entity) ||
+        block.kind() != kv1::NodeKind::Block || !ciEquals(block.key(), "connections"))
+        throw std::invalid_argument("setConnections needs an entity and connections block");
+    for (const auto& child : block.children())
+        if (child.kind() != kv1::NodeKind::Value)
+            throw std::invalid_argument("connections entries must be scalar values");
+    NodeId existing = 0;
+    for (const auto child : doc_->node(id)->children) {
+        if (!ciEquals(doc_->node(child)->block->key(), "connections")) continue;
+        if (existing) throw std::invalid_argument("multiple connections blocks");
+        existing = child;
+    }
+    if (!existing) {
+        if (!block.children().empty()) create(std::move(block), entity);
+        return;
+    }
+    if (!doc_->node(existing)->children.empty())
+        throw std::invalid_argument("connections block has non-scalar children");
+    if (block.children().empty()) { destroy(*doc_->handle(existing)); return; }
+    touch(existing, Dirty::KeyValues);
+    doc_->node(existing)->block = std::make_shared<const kv1::Node>(std::move(block));
+    key_.reset();
+    ++operations_;
+}
 void Transaction::setEditor(NodeHandle h, EditorEdit edit) {
     const auto id = checked(h);
     const bool solid = std::holds_alternative<Handle<Solid>>(h);

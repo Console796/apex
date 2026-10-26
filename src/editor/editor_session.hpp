@@ -7,6 +7,7 @@
 #include "editor/tool.hpp"
 #include "editor/clipboard.hpp"
 #include "editor/inspector_model.hpp"
+#include "editor/connection_model.hpp"
 #include "editor/placement.hpp"
 #include "editor/modal_transform.hpp"
 #include "editor/overlay_palette.hpp"
@@ -174,6 +175,12 @@ public:
     void setEntityClasses(assets::EntityClassTable classes);
     const assets::EntityClassTable& entityClasses() const { return entityClasses_; }
     std::uint64_t entityClassesRevision() const { return entityClassesRevision_; }
+    ConnectionModel connectionModel() const;
+    Result<void> setConnectionField(std::size_t row, ConnectionModel::Field field, std::string text);
+    Result<void> setConnectionOutput(std::size_t row, std::string name);
+    Result<void> addConnection(std::string output, document::Connection connection);
+    Result<void> removeConnection(std::size_t row);
+    Result<void> duplicateConnection(std::size_t row);
     InspectorModel inspectorModel(bool raw = false) const;
     // Supply a unique nonempty token for each field focus to coalesce typing. Rebuild the
     // model after each commit; raw selects occurrence-aware rows. Empty means one undo step.
