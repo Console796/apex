@@ -98,6 +98,8 @@ private:
     QPushButton* themeDelete_ = nullptr;
     QPushButton* themeExport_ = nullptr;
     QCheckBox* confirmMerge_ = nullptr;
+    QCheckBox* pivotAtOrigin_ = nullptr;
+    QCheckBox* modelEdgeOverlay_ = nullptr;
     QCheckBox* autosave_ = nullptr;
     QSpinBox* autosaveMinutes_ = nullptr;
     QSpinBox* undoMiB_ = nullptr;

@@ -221,6 +221,11 @@ public:
     bool isToolEnabled(const ActionId& action) const;
     bool perform(const ActionId& action);
     bool confirmNonConvexMerge = true;
+    // Hammer's behaviour: a single selected object rotates and scales about its own origin. Off pivots on the
+    // selection's bounds centre. Only applies while the pivot mode is BoundsCentre.
+    bool pivotAtObjectOrigin = true;
+    // Triangle edges drawn over models in Flat mode (Wireframe mode always draws them).
+    bool modelEdgeOverlay = true;
     // The host sees preview() populated during the callback. Missing host means Cancel.
     std::function<bool(const MergePlan&)> confirmMerge;
     std::function<std::optional<double>()> hollowThickness;

@@ -599,7 +599,8 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
                    list.ghosts, brushColour, trianglesOf, trianglesBuf, false);
     if (list.edgeOverlay && list.mode != DisplayMode::Wireframe && s.has(Kind::Edges)) {
         vkCmdSetDepthBias(commands, list.edgeDepthBias, 0.0f, 1.0f);
-        drawMeshes(Kind::Edges, list.meshes, [&](PushConstants& p, const MeshDraw&) { p.colour = list.edgeColour; }, edgesOf, edgesBuf, true);
+        drawMeshes(Kind::Edges, list.meshes, [&](PushConstants& p, const MeshDraw&) { p.colour = list.edgeColour; },
+                   [](const MeshDraw& m) { return m.edgeOverlay ? m.edgeIndexCount : 0u; }, edgesBuf, true);
         vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
     }
 

@@ -190,3 +190,36 @@ TEST_CASE("active material and UV alignment persist without a new solid material
     if (oldExtrapolation.isValid()) settings.setValue("editor/faceExtrapolation", oldExtrapolation);
     else settings.remove("editor/faceExtrapolation");
 }
+
+TEST_CASE("preferences persist the object-origin pivot and model overlay toggles") {
+    apex::ui_test::app();
+    QSettings().remove("editing/pivotAtObjectOrigin");
+    QSettings().remove("view/modelEdgeOverlay");
+    apex::ui::MainWindow window;
+    auto& session = window.editorSession();
+    CHECK(session.pivotAtObjectOrigin);
+    CHECK(session.modelEdgeOverlay);
+    {
+        apex::ui::SettingsDialog prefs(window);
+        auto* pivot = prefs.findChild<QCheckBox*>("settingsPivotAtObjectOrigin");
+        auto* overlay = prefs.findChild<QCheckBox*>("settingsModelEdgeOverlay");
+        REQUIRE(pivot);
+        REQUIRE(overlay);
+        CHECK(pivot->isChecked());
+        CHECK(overlay->isChecked());
+        pivot->setChecked(false);
+        overlay->setChecked(false);
+        prefs.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Apply)->click();
+    }
+    CHECK_FALSE(session.pivotAtObjectOrigin);
+    CHECK_FALSE(session.modelEdgeOverlay);
+    CHECK_FALSE(QSettings().value("editing/pivotAtObjectOrigin", true).toBool());
+    CHECK_FALSE(QSettings().value("view/modelEdgeOverlay", true).toBool());
+    {
+        apex::ui::MainWindow reopened;
+        CHECK_FALSE(reopened.editorSession().pivotAtObjectOrigin);
+        CHECK_FALSE(reopened.editorSession().modelEdgeOverlay);
+    }
+    QSettings().remove("editing/pivotAtObjectOrigin");
+    QSettings().remove("view/modelEdgeOverlay");
+}

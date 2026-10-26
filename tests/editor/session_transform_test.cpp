@@ -401,3 +401,29 @@ TEST_CASE("session 2000 solid drag publishes previews without touching the docum
     CHECK(session.perform("edit.undo"));
     CHECK(doc.write().value() == bytes);
 }
+
+TEST_CASE("session pivots a single object on its origin unless that preference is off") {
+    Document doc(parsed());
+    const auto entity = addBlock(doc, "entity { \"classname\" \"prop_static\" \"model\" \"models/x.mdl\" \"origin\" \"10 20 30\" }");
+    EditorSession session;
+    // A model whose bounds sit well off its origin, like a prop modelled away from (0, 0, 0).
+    session.setEntityBoundsProvider([](const kv1::Node&) {
+        return std::optional<EntityPickShape>(EntityPickShape{nullptr, 0, LocalBox{{0, 0, 0}, {64, 64, 64}}});
+    });
+    session.attach(doc);
+    session.perform("selection.mode.objects");
+    session.selectNode(id(doc, entity));
+    REQUIRE(session.pivotAtObjectOrigin);
+    checkPoint(session.gizmoContext()->pivot, {10, 20, 30}); // Hammer: the entity origin.
+    session.pivotAtObjectOrigin = false;
+    checkPoint(session.gizmoContext()->pivot, {42, 52, 62}); // Bounds centre.
+    session.pivotAtObjectOrigin = true;
+    session.perform("gizmo.pivot.cycle"); // Active origin stays the origin either way.
+    checkPoint(session.gizmoContext()->pivot, {10, 20, 30});
+}
+
+TEST_CASE("session pivots several objects on their shared bounds centre") {
+    Scene scene;
+    REQUIRE(scene.session.pivotAtObjectOrigin);
+    checkPoint(scene.session.gizmoContext()->pivot, {69, 37, 37});
+}

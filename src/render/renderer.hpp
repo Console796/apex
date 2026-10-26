@@ -80,6 +80,7 @@ struct MeshDraw {
     AlphaMode alpha = AlphaMode::Opaque; // Textured mode only.
     std::uint32_t instanceCount = 1;
     bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
+    bool edgeOverlay = true;          // False skips this mesh in the Textured/Flat edge overlay pass.
 };
 
 struct BoxDraw {

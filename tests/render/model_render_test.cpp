@@ -323,6 +323,48 @@ TEST_CASE("model mirror instances share geometry through edits and display modes
     CHECK(context->validation().errorCount() == 0);
 }
 
+TEST_CASE("model edge overlay preference only affects the overlay in non-wireframe modes") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    Fixture fixture;
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    auto parsed = vmf::parse(R"(entity { id 1 classname prop_static model models/fixture.mdl body 1 origin "0 0 0" })");
+    REQUIRE(parsed); document::Document doc(*parsed);
+    RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, nullptr, fixture.models.get());
+    mirror.rebuild(doc); REQUIRE(mirror.settle());
+    const auto frame = [&](DisplayMode mode, bool overlay, bool modelOverlay) {
+        auto options = view(); options.mode = mode; options.edgeOverlay = overlay;
+        options.modelEdgeOverlay = modelOverlay; options.edgeColour = Vec4(1.0f);
+        return mirror.buildDrawList(options);
+    };
+    const auto flatOn = frame(DisplayMode::Flat, true, true);
+    const auto flatOff = frame(DisplayMode::Flat, true, false);
+    REQUIRE(flatOn.meshes.size() == 1); REQUIRE(flatOff.meshes.size() == 1);
+    CHECK(flatOn.meshes.front().edgeOverlay);
+    CHECK_FALSE(flatOff.meshes.front().edgeOverlay);
+    CHECK(flatOff.meshes.front().edgeIndexCount > 0);
+
+    const auto flatOnImage = draw(*context, **heap, flatOn);
+    const auto flatOffImage = draw(*context, **heap, flatOff);
+    const auto flatNoOverlay = draw(*context, **heap, frame(DisplayMode::Flat, false, true));
+    CHECK(flatOnImage.pixels != flatNoOverlay.pixels);
+    CHECK(flatOffImage.pixels == draw(*context, **heap, frame(DisplayMode::Flat, false, false)).pixels);
+    // Switching it off leaves only the overlay lines behind; the fills are the same.
+    CHECK(flatOffImage.pixels != flatOnImage.pixels);
+
+    // Selection outlines keep their edges whatever the preference says.
+    Highlight selection; selection.selected = {1}; mirror.setHighlight(selection);
+    const auto selectedOff = frame(DisplayMode::Flat, true, false);
+    REQUIRE(selectedOff.outlines.size() == 1);
+    CHECK(selectedOff.outlines.front().edgeIndexCount > 0);
+
+    // The Wireframe mode never reads the preference.
+    const auto wireOn = draw(*context, **heap, frame(DisplayMode::Wireframe, false, true));
+    const auto wireOff = draw(*context, **heap, frame(DisplayMode::Wireframe, false, false));
+    CHECK(wireOn.pixels == wireOff.pixels);
+    CHECK(context->validation().errorCount() == 0);
+}
+
 TEST_CASE("model adapter reorders interleaved choices and session refresh keeps fallback") {
     Fixture fixture;
     auto doc = map("model models/fixture.mdl body 0");

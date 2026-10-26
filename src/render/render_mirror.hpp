@@ -72,6 +72,8 @@ struct MirrorViewOptions {
     FrameView view;
     GridSettings grid;
     bool edgeOverlay = false;
+    // False leaves model triangle edges out of the overlay (other display modes; Wireframe is unaffected).
+    bool modelEdgeOverlay = true;
     Vec4 edgeColour{0.0f, 0.0f, 0.0f, 1.0f};
     Vec4 wireColour{0.85f, 0.9f, 1.0f, 1.0f}; // Wireframe mode line colour.
     bool showEntities = true;

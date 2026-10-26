@@ -130,7 +130,7 @@ std::shared_ptr<const ModelData> ModelCache::request(std::string_view name) {
                 mdlpp::StudioModel source{};
                 if (!source.open(mdl, vtx, vvd))
                     return std::unexpected(Error{ErrorCode::ParseError, "mdlpp could not open the model"});
-                return bakeModel(source);
+                return bakeModel(source, mdl);
             } catch (const std::exception& e) {
                 return std::unexpected(Error{ErrorCode::ParseError, std::string("mdlpp exception: ") + e.what()});
             }

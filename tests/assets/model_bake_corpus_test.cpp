@@ -298,3 +298,47 @@ TEST_CASE("model bake corpus sweep counts failures and measures largest model BV
         MESSAGE("largest model triangle BVH build time=unavailable (no baked triangles)");
     }
 }
+
+TEST_CASE("model bake corpus poses sequence 0 frame 0 so bounds agree with the studio hull") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    JobPool jobs(2);
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    // Each of these has a hull that is an axis permutation of its reference-space vertices: studiomdl computes
+    // the hull from the first sequence's pose (a turned root bone, or a posed hierarchy).
+    const char* names[] = {"models/props/80s_entrydoor.mdl", "models/props/door_02.mdl", "models/props/clock.mdl",
+                           "models/props/bed_body_reference.mdl", "models/props/portal_door.mdl",
+                           "models/props/pincher_cable.mdl"};
+    for (const char* name : names) {
+        CAPTURE(name);
+        const std::string path = name;
+        const auto stem = path.substr(0, path.size() - 4);
+        const auto mdl = vfs->open(path);
+        const auto vtx = vfs->open(stem + ".dx90.vtx");
+        const auto vvd = vfs->open(stem + ".vvd");
+        if (!mdl || !vtx || !vvd) { MESSAGE("Skipped: model not mounted"); continue; }
+        mdlpp::StudioModel source{};
+        REQUIRE(source.open(*mdl, *vtx, *vvd));
+        const auto hullGap = [&](const ModelData& data) {
+            float gap = 0.0f;
+            const float lo[3] = {data.bounds.min.x, data.bounds.min.y, data.bounds.min.z};
+            const float hi[3] = {data.bounds.max.x, data.bounds.max.y, data.bounds.max.z};
+            for (int axis = 0; axis < 3; ++axis) {
+                gap = std::max(gap, std::abs(lo[axis] - source.mdl.hullMin[axis]));
+                gap = std::max(gap, std::abs(hi[axis] - source.mdl.hullMax[axis]));
+            }
+            return gap;
+        };
+        const auto reference = bakeModel(source);
+        const auto posed = bakeModel(source, *mdl);
+        REQUIRE(reference);
+        REQUIRE(posed);
+        CHECK(hullGap(*reference) > 20.0f);
+        CHECK(hullGap(*posed) < 8.0f);
+        CHECK(posed->vertices.size() == reference->vertices.size());
+        CHECK(posed->indices == reference->indices);
+    }
+}

@@ -1,5 +1,6 @@
 #include "assets/model_bake.hpp"
 
+#include "assets/model_pose.hpp"
 #include "assets/vmt.hpp"
 #include "core/strings.hpp"
 
@@ -7,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -32,16 +34,43 @@ bool spanWithin(std::span<T> span, const std::vector<std::remove_const_t<T>>& ow
     return first >= begin && first <= end && span.size() <= (end - first) / sizeof(T);
 }
 
-ModelVertex convertVertex(const mdlpp::VVD::Vertex& vertex) {
-    return {{vertex.position[0], vertex.position[1], vertex.position[2]},
-            {vertex.normal[0], vertex.normal[1], vertex.normal[2]}, {vertex.uv[0], vertex.uv[1]}};
+// `skinning` holds one matrix per bone (empty to leave the vertex in reference space).
+ModelVertex convertVertex(const mdlpp::VVD::Vertex& vertex, const std::vector<BoneMatrix>& skinning) {
+    std::array<float, 3> position{vertex.position[0], vertex.position[1], vertex.position[2]};
+    std::array<float, 3> normal{vertex.normal[0], vertex.normal[1], vertex.normal[2]};
+    if (!skinning.empty()) {
+        const auto& ids = vertex.boneWeight.bones;
+        const std::size_t count = ids.empty() ? 1 : std::min<std::size_t>(ids.size(), vertex.boneWeight.weight.size());
+        std::array<float, 3> posed{}, turned{};
+        float total = 0.0f;
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::size_t bone = ids.empty() ? 0 : (ids[i] < 0 ? 0 : static_cast<std::size_t>(ids[i]));
+            const float weight = ids.empty() ? 1.0f : vertex.boneWeight.weight[i];
+            if (bone >= skinning.size() || !(weight > 0.0f)) continue;
+            const auto& m = skinning[bone];
+            for (int r = 0; r < 3; ++r) {
+                posed[r] += weight * (m[r * 4] * position[0] + m[r * 4 + 1] * position[1] + m[r * 4 + 2] * position[2] + m[r * 4 + 3]);
+                turned[r] += weight * (m[r * 4] * normal[0] + m[r * 4 + 1] * normal[1] + m[r * 4 + 2] * normal[2]);
+            }
+            total += weight;
+        }
+        if (total > 0.0f) {
+            const float length = std::sqrt(turned[0] * turned[0] + turned[1] * turned[1] + turned[2] * turned[2]);
+            for (int r = 0; r < 3; ++r) {
+                position[r] = posed[r] / total;
+                if (length > 1e-6f) normal[r] = turned[r] / length;
+            }
+        }
+    }
+    return {{position[0], position[1], position[2]}, {normal[0], normal[1], normal[2]}, {vertex.uv[0], vertex.uv[1]}};
 }
 
 } // namespace
 
-Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& vtx,
-                            const mdlpp::VVD::VVD& vvd) {
+Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& vtx, const mdlpp::VVD::VVD& vvd,
+                            std::span<const std::byte> mdlBytes) {
     try {
+        const auto skinning = sequenceZeroSkinning(mdl, mdlBytes);
         if (vtx.bodyParts.empty()) return std::unexpected(bakeError("empty vtx body parts"));
         if (vtx.numLODs <= 0) return std::unexpected(bakeError("missing lod 0"));
         if (mdl.bodyParts.size() != vtx.bodyParts.size())
@@ -58,7 +87,7 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
             for (std::size_t i = 0; i < vvd.vertices.size(); ++i) {
                 if (i >= std::numeric_limits<std::uint32_t>::max())
                     return std::unexpected(bakeError("vertex id out of range: model exceeds uint32"));
-                result.vertices.push_back(convertVertex(vvd.vertices[i]));
+                result.vertices.push_back(convertVertex(vvd.vertices[i], skinning));
             }
         } else {
             for (const auto& fixup : vvd.fixups) {
@@ -73,7 +102,7 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
                     if (result.vertices.size() >= std::numeric_limits<std::uint32_t>::max())
                         return std::unexpected(bakeError("vertex id out of range: model exceeds uint32"));
                     const auto sourceIndex = static_cast<std::size_t>(fixup.sourceVertexID + i);
-                    result.vertices.push_back(convertVertex(vvd.vertices.at(sourceIndex)));
+                    result.vertices.push_back(convertVertex(vvd.vertices.at(sourceIndex), skinning));
                 }
             }
         }
@@ -191,8 +220,8 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
     }
 }
 
-Result<ModelData> bakeModel(const mdlpp::StudioModel& model) {
-    return bakeModel(model.mdl, model.vtx, model.vvd);
+Result<ModelData> bakeModel(const mdlpp::StudioModel& model, std::span<const std::byte> mdlBytes) {
+    return bakeModel(model.mdl, model.vtx, model.vvd, mdlBytes);
 }
 
 std::vector<std::uint32_t> modelBodyChoices(const ModelData& model, std::uint32_t body) {
