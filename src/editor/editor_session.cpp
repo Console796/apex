@@ -795,9 +795,22 @@ Result<void> EditorSession::moveNodesInto(std::vector<NodeId> nodes, NodeId cont
         return stageMoveNodesInto(*document_, *groups_, std::move(nodes), container, tx);
     });
 }
+RenamePlan EditorSession::planEntityRename(NodeId entity, std::string_view targetname) const {
+    if (!document_) return {};
+    return planRename(*document_, entityClasses_, entity, targetname);
+}
 Result<void> EditorSession::renameEntity(NodeId entity, std::string_view targetname) {
     return runEdit("Rename entity", AfterEdit::Keep, [&](document::Transaction& tx) {
         return stageRenameEntity(*document_, entity, targetname, tx);
+    });
+}
+Result<void> EditorSession::renameEntity(NodeId entity, std::string_view targetname, bool updateReferences) {
+    if (!updateReferences) return renameEntity(entity, targetname);
+    const auto plan = planEntityRename(entity, targetname);
+    return runEdit("Rename entity", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto staged = stageRename(*document_, plan, entity, tx);
+        if (!staged) return std::unexpected(staged.error());
+        return EditedObjects{};
     });
 }
 Result<void> EditorSession::setNodeHidden(std::vector<NodeId> nodes, bool hidden) {

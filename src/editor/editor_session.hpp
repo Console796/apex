@@ -8,6 +8,7 @@
 #include "editor/clipboard.hpp"
 #include "editor/inspector_model.hpp"
 #include "editor/connection_model.hpp"
+#include "editor/rename_propagation.hpp"
 #include "editor/placement.hpp"
 #include "editor/modal_transform.hpp"
 #include "editor/overlay_palette.hpp"
@@ -210,7 +211,9 @@ public:
     Result<void> tieToEntity(const TieParams& params = {});
     Result<void> moveToWorld();
     Result<void> moveNodesInto(std::vector<NodeId> nodes, NodeId container);
+    RenamePlan planEntityRename(NodeId entity, std::string_view targetname) const;
     Result<void> renameEntity(NodeId entity, std::string_view targetname);
+    Result<void> renameEntity(NodeId entity, std::string_view targetname, bool updateReferences);
     Result<void> setNodeHidden(std::vector<NodeId> nodes, bool hidden);
     bool nodeHidden(NodeId node) const;
     Result<void> hideSelection();

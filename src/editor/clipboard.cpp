@@ -1,6 +1,7 @@
 #include "editor/clipboard.hpp"
 
 #include "core/strings.hpp"
+#include "document/connection_codec.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -225,12 +226,15 @@ void rewriteReferences(Kv& entity, const std::map<std::string, std::string>& nam
             if (const auto it = names.find(lower(*value)); it != names.end()) (void)child.setValue(it->second);
         } else if (isBlock(child, "connections")) {
             for (auto& entry : child.children()) {
+                if (entry.kind() != kv1::NodeKind::Value) continue;
                 const auto value = entry.decodedValue();
-                if (entry.kind() != kv1::NodeKind::Value || !value) continue;
-                const auto comma = value->find(',');
-                const auto head = value->substr(0, comma);
-                if (const auto it = names.find(lower(head)); it != names.end())
-                    (void)entry.setValue(it->second + (comma == std::string::npos ? "" : value->substr(comma)));
+                if (!value) continue;
+                auto connection = document::parseConnection(*value);
+                if (!connection.wellFormed) continue;
+                if (const auto it = names.find(lower(connection.target)); it != names.end()) {
+                    connection.setField(document::ConnectionField::Target, it->second);
+                    (void)entry.setValue(document::serialize(connection));
+                }
             }
         }
     }
