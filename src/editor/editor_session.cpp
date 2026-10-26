@@ -635,6 +635,21 @@ Result<void> EditorSession::removeConnection(std::size_t row) {
         return EditedObjects{};
     });
 }
+Result<void> EditorSession::removeConnections(std::vector<std::size_t> rows) {
+    return runEdit("Delete connections", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().removeMany(tx, std::move(rows));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::addConnections(std::vector<std::pair<std::string, document::Connection>> connections,
+                                          std::optional<std::size_t> after) {
+    return runEdit("Paste connections", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().addMany(tx, std::move(connections), after);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
 Result<void> EditorSession::duplicateConnection(std::size_t row) {
     return runEdit("Duplicate connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
         auto result = connectionModel().duplicate(tx, row);

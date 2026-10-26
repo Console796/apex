@@ -16,8 +16,9 @@ assets::EntityClassTable table() {
     result.classes["func_instance"] = {};
     result.classes["func_instance_io_proxy"] = {};
     result.classes["func_instance_io_proxy"].inputs = {{"ProxyRelay", "string", ""}};
-    result.classes["logic_relay"].inputs = {{"Trigger", "void", ""}};
+    result.classes["logic_relay"].inputs = {{"Trigger", "integer", ""}};
     result.classes["logic_relay"].outputs = {{"OnTrigger", "void", ""}};
+    result.classes["logic_float"].inputs = {{"Trigger", "float", ""}};
     return result;
 }
 bool has(const std::vector<ConnectionIssue>& issues, ConnectionIssueKind kind) {
@@ -74,6 +75,14 @@ TEST_CASE("Connection validation marks outputs targets inputs parameters and num
         c.input = input; c.parameter = "anything";
         CHECK(validator.validate(source, c).empty());
     }
+    for (auto value : {"-1", "+1"}) {
+        c.input = "Int"; c.parameter = value;
+        CHECK_FALSE(has(validator.validate(source, c), ConnectionIssueKind::BadParameter));
+    }
+    for (auto value : {"+-1", "++1"}) {
+        c.input = "Int"; c.parameter = value;
+        CHECK(has(validator.validate(source, c), ConnectionIssueKind::BadParameter));
+    }
     for (auto delay : {"", "0", "-2", "+1.5"}) {
         c.delay = delay; CHECK_FALSE(has(validator.validate(source, c), ConnectionIssueKind::BadDelay));
     }
@@ -88,6 +97,9 @@ TEST_CASE("Connection validation marks outputs targets inputs parameters and num
     for (auto times : {"", "-2", "1.2", "bad"}) {
         c.times = times; CHECK(has(validator.validate(source, c), ConnectionIssueKind::BadTimes));
     }
+    c.times = "+-1"; CHECK(has(validator.validate(source, c), ConnectionIssueKind::BadTimes));
+    c.times = "++1"; CHECK(has(validator.validate(source, c), ConnectionIssueKind::BadTimes));
+    c.times = "+1"; CHECK_FALSE(has(validator.validate(source, c), ConnectionIssueKind::BadTimes));
     const auto malformed = validator.validate(source, document::parseConnection("broken"));
     REQUIRE(malformed.size() == 1);
     CHECK(malformed[0].kind == ConnectionIssueKind::Malformed);
@@ -117,7 +129,7 @@ TEST_CASE("Connection instance proxy validation completion and instance file len
     struct Cleanup { std::filesystem::path dir; ~Cleanup() { std::filesystem::remove_all(dir); } } cleanup{dir};
     std::ofstream(dir / "child.vmf") << "entity { classname func_instance_io_proxy targetname public_proxy "
         "connections { OnProxyRelay \"internal,Trigger,,0,-1\" } } "
-        "entity { classname logic_relay targetname internal }";
+        "entity { classname logic_relay targetname internal } entity { classname logic_float targetname internal }";
     std::ofstream(dir / "broken.vmf") << "entity {";
     Document doc(parsed("entity { classname alpha } entity { classname func_instance targetname inst file child.vmf } "
         "entity { classname func_instance targetname missing file missing.vmf } entity { classname func_instance_io_proxy } "
@@ -130,6 +142,11 @@ TEST_CASE("Connection instance proxy validation completion and instance file len
     auto c = document::parseConnection("inst,instance:relay;ProxyRelay,,0,-1");
     c.input = "instance:internal;Trigger";
     CHECK(validator.validate(doc.roots()[0], c).empty());
+    c.parameter = "+2.5";
+    CHECK_FALSE(has(validator.validate(doc.roots()[0], c), ConnectionIssueKind::BadParameter));
+    c.parameter = "not-a-number";
+    CHECK(has(validator.validate(doc.roots()[0], c), ConnectionIssueKind::BadParameter));
+    c.parameter = "";
     const auto completions = inputsFor(validator, "inst");
     CHECK(completions == std::vector<std::string>{"instance:internal;Trigger", "instance:public_proxy;ProxyRelay"});
     c.input = "instance:absent;Trigger";

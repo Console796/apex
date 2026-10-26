@@ -21,7 +21,10 @@ const assets::EntityIO* input(const assets::EntityClass* cls, std::string_view n
     return nullptr;
 }
 template<class T> bool number(std::string_view text, T& value) {
-    if (text.starts_with('+')) text.remove_prefix(1);
+    if (text.starts_with('+')) {
+        text.remove_prefix(1);
+        if (text.starts_with('+') || text.starts_with('-')) return false;
+    }
     const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), value);
     return !text.empty() && error == std::errc{} && end == text.data() + text.size();
 }
@@ -177,7 +180,7 @@ std::vector<ConnectionIssue> ConnectionValidator::validate(document::NodeId sour
                 std::string_view(c.input).substr(9, semicolon - 9);
             const auto internalInput = semicolon == std::string::npos ? std::string_view{} :
                 std::string_view(c.input).substr(semicolon + 1);
-            bool valid = false, unavailable = false, candidate = false, found = false, known = false, unknownClass = false;
+            bool valid = false, unavailable = false, candidate = false, found = false, known = false, unknownClass = false, declared = false;
             for (auto id : entities) {
                 if (!isInstance(id)) continue;
                 candidate = true;
@@ -199,8 +202,11 @@ std::vector<ConnectionIssue> ConnectionValidator::validate(document::NodeId sour
                             if (!cls) unknownClass = true;
                             else {
                                 known = true;
-                                if (std::ranges::any_of(cls->inputs, [&](const auto& io) { return ciEquals(io.name, internalInput); }))
-                                    valid = true;
+                                for (const auto& io : cls->inputs) {
+                                    if (!ciEquals(io.name, internalInput)) continue;
+                                    declared = true;
+                                    if (parameter(io.type, c.parameter)) valid = true;
+                                }
                             }
                         }
                     }
@@ -208,9 +214,13 @@ std::vector<ConnectionIssue> ConnectionValidator::validate(document::NodeId sour
                 };
                 for (const auto root : templateDoc.roots()) walk(walk, root);
             }
-            if (!valid && !unavailable && ((candidate && !found) || (!candidate && !entities.empty() && !isSpecialTarget(c.target)) ||
-                (found && known && !unknownClass)))
-                add(Kind::UnknownInput, Field::Input, "instance template has no matching named input for " + c.input);
+            if (!valid && !unavailable) {
+                if (found && known && !unknownClass && declared)
+                    add(Kind::BadParameter, Field::Parameter, "parameter does not parse as the declared input type");
+                else if ((candidate && !found) || (!candidate && !entities.empty() && !isSpecialTarget(c.target)) ||
+                         (found && known && !unknownClass))
+                    add(Kind::UnknownInput, Field::Input, "instance template has no matching named input for " + c.input);
+            }
         } else {
             bool known = false, declared = false, validParameter = false;
             for (auto id : entities) {

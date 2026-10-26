@@ -8,6 +8,7 @@ namespace apex::document {
 
 enum class ConnectionField { Target, Input, Parameter, Delay, Times };
 struct Connection {
+    // Editing a malformed row and serializing it normalizes it to the five codec fields.
     std::string target, input, parameter, delay, times;
     char separator = '\x1b';
     std::string raw;

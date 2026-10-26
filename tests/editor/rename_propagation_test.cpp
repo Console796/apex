@@ -121,6 +121,35 @@ TEST_CASE("Rename without propagation and empty or unchanged plans preserve refe
     CHECK(bytes(doc) == original);
 }
 
+TEST_CASE("Rename plans use live connections and reject stale plans") {
+    Document doc(parsed("entity { id 1 classname info_target targetname door } entity { id 2 classname info_target }"));
+    auto target = named(doc, "door");
+    auto source = doc.get(*doc.handle(doc.roots()[1]))->id;
+    EditorSession session;
+    session.attach(doc);
+    session.selectNode(source);
+    const auto entry = document::parseConnection("door,Open,,0,-1");
+    REQUIRE(session.addConnection("OnTrigger", entry));
+    CHECK(session.connectionModel().rows().size() == 1);
+    auto plan = planRename(doc, renameClasses(), target, "door2");
+    REQUIRE(plan.changes.size() == 1);
+    CHECK(plan.changes[0].entity == source);
+    auto tx = doc.begin("stale rename");
+    tx.setKeyValue(*doc.handle(target), "targetname", "changed");
+    const auto staged = stageRename(doc, plan, target, tx);
+    CHECK_FALSE(staged);
+}
+
+TEST_CASE("Rename planning tolerates deleted connections blocks") {
+    Document doc(parsed("entity { id 1 classname info_target targetname door } entity { id 2 classname info_target connections { OnTrigger \"door,Open,,0,-1\" } }"));
+    const auto target = named(doc, "door");
+    const auto sourceHandle = doc.handle(doc.roots()[1]);
+    auto tx = doc.begin("remove connections");
+    tx.setConnections(*sourceHandle, kv1::Node::block("connections"));
+    tx.commit(false);
+    CHECK(planRename(doc, renameClasses(), target, "door2").changes.empty());
+}
+
 TEST_CASE("Rename plan corpus scan keeps every reported before value tied to its targetname") {
     const auto* install = std::getenv("APEX_P2CE_DIR");
     if (!install || !*install) { MESSAGE("APEX_P2CE_DIR unset; skipping rename propagation corpus"); return; }

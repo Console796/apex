@@ -28,6 +28,13 @@ TEST_CASE("Instance resolution searches ordered roots and Source path spelling")
     std::filesystem::remove_all(tree.root / "maps/sub/Parts");
     CHECK(resolveInstanceFile(map, "parts/file.vmf", extra) == std::filesystem::canonical(tree.root / "maps/Parts/File.VMF"));
     CHECK(resolveInstanceFile(map, "../Parts/File.VMF") == std::filesystem::canonical(tree.root / "maps/Parts/File.VMF"));
+    CHECK(resolveInstanceFile(map, "../../outside.vmf", extra) == std::nullopt);
+    CHECK(resolveInstanceFile(map, (tree.root / "maps/sub/Parts/File.VMF").string(), extra) == std::nullopt);
+    CHECK(resolveInstanceFile(map, "C:\\maps\\sub\\Parts\\File.VMF", extra) == std::nullopt);
+    tree.put("outside.vmf");
+    std::error_code symlinkError;
+    std::filesystem::create_symlink(tree.root / "outside.vmf", tree.root / "maps/sub/linked.vmf", symlinkError);
+    if (!symlinkError) CHECK(resolveInstanceFile(map, "linked.vmf", extra) == std::nullopt);
     std::filesystem::remove_all(tree.root / "maps/Parts");
     CHECK(resolveInstanceFile(map, "parts/file.vmf", extra) == std::filesystem::canonical(extra / "Parts/File.VMF"));
     CHECK_FALSE(resolveInstanceFile(map, "missing.vmf", extra));

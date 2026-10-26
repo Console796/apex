@@ -193,6 +193,55 @@ TEST_CASE("Connection transaction rejects non scalar replacement and rolls back 
     CHECK(doc.undoCount() == 0);
 }
 
+TEST_CASE("Session batches connection deletion and paste into one undo step") {
+    const std::string original = "entity { id 1 classname func_button connections { OnA \"a,Open,,0,-1\" OnB \"b,Open,,0,-1\" OnC \"c,Open,,0,-1\" } }";
+    Document doc(parsed(original));
+    EditorSession session;
+    session.attach(doc);
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    const auto beforeDelete = text(doc);
+    auto history = doc.undoCount();
+    REQUIRE(session.removeConnections({0, 1, 2}));
+    CHECK(doc.undoCount() == history + 1);
+    REQUIRE(doc.undo());
+    CHECK(text(doc) == beforeDelete);
+
+    history = doc.undoCount();
+    REQUIRE(session.addConnections({{"OnX", document::parseConnection("x,Open,,0,-1")},
+                                    {"OnY", document::parseConnection("y,Open,,0,-1")},
+                                    {"OnZ", document::parseConnection("z,Open,,0,-1")}}, 0));
+    CHECK(doc.undoCount() == history + 1);
+    const auto* pasted = connections(doc, doc.get(*doc.handle(doc.roots()[0]))->id);
+    REQUIRE(pasted);
+    REQUIRE(pasted->children().size() == 6);
+    CHECK(pasted->children()[0].key() == "OnA");
+    CHECK(pasted->children()[1].key() == "OnX");
+    CHECK(pasted->children()[2].key() == "OnY");
+    CHECK(pasted->children()[3].key() == "OnZ");
+    CHECK(pasted->children()[4].key() == "OnB");
+    REQUIRE(doc.undo());
+    CHECK(text(doc) == beforeDelete);
+}
+
+TEST_CASE("Batched paste inserts duplicate common rows for every selected entity") {
+    Document doc(parsed("entity { id 1 connections { OnA \"a,Open,,0,-1\" } } entity { id 2 connections { OnA \"a,Open,,0,-1\" } }"));
+    EditorSession session;
+    session.attach(doc);
+    session.selection().add(doc.get(*doc.handle(doc.roots()[0]))->id);
+    session.selection().add(doc.get(*doc.handle(doc.roots()[1]))->id);
+    const auto history = doc.undoCount();
+    REQUIRE(session.addConnections({{"OnA", document::parseConnection("a,Open,,0,-1")},
+                                    {"OnB", document::parseConnection("b,Open,,0,-1")}}, 0));
+    CHECK(doc.undoCount() == history + 1);
+    for (const auto root : doc.roots()) {
+        const auto* block = connections(doc, doc.get(*doc.handle(root))->id);
+        REQUIRE(block);
+        REQUIRE(block->children().size() == 3);
+        CHECK(block->children()[1].key() == "OnA");
+        CHECK(block->children()[2].key() == "OnB");
+    }
+}
+
 TEST_CASE("Connection P2CE corpus codec and document preserve every connections block") {
     namespace fs = std::filesystem;
     const char* install = std::getenv("APEX_P2CE_DIR");

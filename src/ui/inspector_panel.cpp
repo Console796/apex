@@ -161,6 +161,7 @@ InspectorPanel::InspectorPanel(QWidget* parent) : QWidget(parent) {
         if (!session_ || !document_) return result;
         const auto model = session_->connectionModel();
         if (row < 0 || static_cast<std::size_t>(row) >= model.rows().size()) return result;
+        const auto validator = session_->connectionValidator();
         const auto& connection = model.rows()[static_cast<std::size_t>(row)].connection;
         std::vector<std::string> candidates;
         if (column == OutputName) {
@@ -175,11 +176,10 @@ InspectorPanel::InspectorPanel(QWidget* parent) : QWidget(parent) {
             }
             if (same) candidates = editor::outputsFor(session_->entityClasses(), common);
         } else if (column == TargetColumn) {
-            candidates = editor::targetsFor(session_->names(), outputs_->item(row, column)->text().toStdString());
+            candidates = editor::targetsFor(session_->names(), "");
         } else if (column == InputColumn) {
-            candidates = editor::inputsFor(session_->connectionValidator(), connection.target);
+            candidates = editor::inputsFor(validator, connection.target);
         } else if (column == ParameterColumn) {
-            auto validator = session_->connectionValidator();
             for (const auto target : validator.matching(connection.target)) {
                 if (const auto* cls = validator.entityClass(target))
                     for (const auto& input : cls->inputs)
@@ -200,18 +200,36 @@ InspectorPanel::InspectorPanel(QWidget* parent) : QWidget(parent) {
         return result;
     }, outputs_));
     connect(outputs_->itemDelegate(), &QAbstractItemDelegate::closeEditor, this,
-            [this](QWidget*, QAbstractItemDelegate::EndEditHint) { requestRefresh(); });
+            [this](QWidget*, QAbstractItemDelegate::EndEditHint) {
+                // Tab/Backtab opens the next cell editor before this runs; keep it. The stale-row
+                // guard in itemChanged rejects an edit that follows a row-set change.
+                const auto* focus = QApplication::focusWidget();
+                if (focus && focus != outputs_ && outputs_->isAncestorOf(focus)) { requestRefresh(); return; }
+                outputs_->setFocus(Qt::OtherFocusReason);
+                refresh();
+            });
+    connect(tabs_, &QTabWidget::currentChanged, this, [this](int index) {
+        if (index == 2) refreshConnectionTabs(true);
+    });
     static_cast<ConnectionTable*>(outputs_)->keyHandler = [this](QKeyEvent* event) { handleConnectionKey(event); };
     outputs_->installEventFilter(this);
     inputs_->installEventFilter(this);
     connect(outputs_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem* item) {
         if (rebuilding_ || !session_ || !item) return;
         const int row = item->row(), column = item->column();
+        if (!connectionRowMatches(row, column)) {
+            QTimer::singleShot(0, this, [this] {
+                outputs_->setFocus(Qt::OtherFocusReason);
+                refresh();
+            });
+            return;
+        }
         if (column == OutputName) session_->setConnectionOutput(static_cast<std::size_t>(row), item->text().toStdString());
         else if (column >= TargetColumn && column <= DelayColumn)
             session_->setConnectionField(static_cast<std::size_t>(row), static_cast<editor::ConnectionModel::Field>(column - 1), item->text().toStdString());
         else if (column == TimesColumn)
             session_->setConnectionField(static_cast<std::size_t>(row), document::ConnectionField::Times, item->text().toStdString());
+        requestRefresh();
     });
     connect(inputs_, &QTableWidget::cellActivated, this, [this](int row, int) {
         if (!session_ || row < 0) return;
@@ -308,7 +326,7 @@ void InspectorPanel::refresh() {
     if (entities_.empty()) {
         classPicker_->setCurrentIndex(-1);
         form->addRow(new QLabel(tr("Select an entity to inspect."), content));
-        refreshConnectionTabs();
+        refreshConnectionTabs(tabs_->currentWidget() == inputs_);
         rebuilding_ = false;
         return;
     }
@@ -444,11 +462,15 @@ void InspectorPanel::refresh() {
                                                                      value.toStdString(), focusKey.toStdString());
                 });
                 if (count == 1 && entities.size() == 1 && ciEquals(row.key, "targetname")) {
-                    connect(edit, &QLineEdit::editingFinished, this, [this, valid, edit, id = entities.front(), oldName = row.value] {
-                        if (!valid()) return;
+                    connect(edit, &QLineEdit::editingFinished, this, [this, valid, edit = QPointer<QLineEdit>(edit), id = entities.front(), oldName = row.value] {
+                        if (!edit || !valid() || !session_ || !document_ || session_->document() != document_) return;
                         const auto next = edit->text().toStdString();
                         if (next == oldName) return;
-                        if (!renameWithConfirmation(*session_, id, next, this, renamePresenter_)) {
+                        const auto stillValid = [this, valid, edit] {
+                            return edit && session_ && document_ && session_->document() == document_ && valid();
+                        };
+                        if (!renameWithConfirmation(*session_, id, next, this, renamePresenter_, stillValid)) {
+                            if (!edit) return;
                             edit->setText(text(oldName));
                             edit->setModified(false);
                         }
@@ -485,7 +507,7 @@ void InspectorPanel::refresh() {
         }
         form->addRow(new ElidedLabel(label, content), field);
     }
-    refreshConnectionTabs();
+    refreshConnectionTabs(tabs_->currentWidget() == inputs_);
     rebuilding_ = false;
     if (restoreOutputFocus) {
         outputs_->setFocus();
@@ -494,14 +516,30 @@ void InspectorPanel::refresh() {
     }
 }
 
-void InspectorPanel::refreshConnectionTabs() {
+bool InspectorPanel::connectionRowMatches(int row, int editedColumn) const {
+    if (!session_ || row < 0 || static_cast<std::size_t>(row) >= displayedConnections_.size()) return false;
+    const auto model = session_->connectionModel();
+    if (static_cast<std::size_t>(row) >= model.rows().size()) return false;
+    const auto& current = model.rows()[static_cast<std::size_t>(row)];
+    const std::array<QString, 6> values{text(current.output), text(current.connection.target), text(current.connection.input),
+        text(current.connection.parameter), text(current.connection.delay), text(current.connection.times)};
+    const auto& previous = displayedConnections_[static_cast<std::size_t>(row)];
+    for (int column = 0; column < 6; ++column)
+        if (column != editedColumn && values[static_cast<std::size_t>(column)] != previous[static_cast<std::size_t>(column)]) return false;
+    return true;
+}
+
+void InspectorPanel::refreshConnectionTabs(bool refreshInputs) {
     const bool restoreFocus = QApplication::focusWidget() == outputs_;
     const int oldRow = outputs_->currentRow(), oldColumn = outputs_->currentColumn();
     const QSignalBlocker outputBlock(outputs_);
     outputs_->clearContents();
     outputs_->setRowCount(0);
-    inputs_->clearContents();
-    inputs_->setRowCount(0);
+    if (refreshInputs) {
+        inputs_->clearContents();
+        inputs_->setRowCount(0);
+    }
+    displayedConnections_.clear();
     if (!session_ || !document_ || session_->document() != document_ || entities_.empty()) return;
 
     const auto model = session_->connectionModel();
@@ -515,6 +553,8 @@ void InspectorPanel::refreshConnectionTabs() {
     outputs_->setRowCount(static_cast<int>(model.rows().size()));
     for (std::size_t row = 0; row < model.rows().size(); ++row) {
         const auto& entry = model.rows()[row];
+        displayedConnections_.push_back({text(entry.output), text(entry.connection.target), text(entry.connection.input),
+            text(entry.connection.parameter), text(entry.connection.delay), text(entry.connection.times)});
         setCell(static_cast<int>(row), OutputName, text(entry.output));
         setCell(static_cast<int>(row), TargetColumn, text(entry.connection.target));
         setCell(static_cast<int>(row), InputColumn, text(entry.connection.input));
@@ -527,7 +567,17 @@ void InspectorPanel::refreshConnectionTabs() {
             once->setToolTip(tr("Checked means times = 1 (fire once). Unchecking sets the count to -1 (unlimited)."));
             outputs_->setCellWidget(static_cast<int>(row), TimesColumn, once);
             connect(once, &QCheckBox::toggled, this, [this, row](bool checked) {
-                if (!rebuilding_ && session_) session_->setConnectionField(row, document::ConnectionField::Times, checked ? "1" : "-1");
+                if (!rebuilding_ && session_) {
+                    if (!connectionRowMatches(static_cast<int>(row))) {
+                        QTimer::singleShot(0, this, [this] { refresh(); });
+                        return;
+                    }
+                    session_->setConnectionField(row, document::ConnectionField::Times, checked ? "1" : "-1");
+                    QTimer::singleShot(0, this, [this] {
+                        outputs_->setFocus(Qt::OtherFocusReason);
+                        refresh();
+                    });
+                }
             });
         } else {
             auto* item = setCell(static_cast<int>(row), TimesColumn, text(entry.connection.times));
@@ -549,16 +599,20 @@ void InspectorPanel::refreshConnectionTabs() {
                 if (auto* cell = outputs_->item(static_cast<int>(row), column)) {
                     cell->setBackground(QColor(255, 220, 220));
                     const auto old = cell->toolTip();
-                    cell->setToolTip(old.isEmpty() ? text(issue.message) : old + '\n' + text(issue.message));
+                    const auto message = issue.kind == editor::ConnectionIssueKind::Malformed
+                        ? tr("editing rewrites this row as five fields") : text(issue.message);
+                    cell->setToolTip(old.isEmpty() ? message : old + '\n' + message);
                 } else if (column == TimesColumn) {
                     if (auto* check = qobject_cast<QCheckBox*>(outputs_->cellWidget(static_cast<int>(row), column)))
-                        check->setToolTip(check->toolTip() + '\n' + text(issue.message));
+                        check->setToolTip(check->toolTip() + '\n' + (issue.kind == editor::ConnectionIssueKind::Malformed
+                            ? tr("editing rewrites this row as five fields") : text(issue.message)));
                 }
             }
         }
     }
     outputs_->resizeColumnsToContents();
 
+    if (refreshInputs) {
     const auto incoming = editor::incomingConnections(validator, *document_, model.entities());
     inputs_->setRowCount(static_cast<int>(incoming.size()));
     for (std::size_t row = 0; row < incoming.size(); ++row) {
@@ -574,6 +628,7 @@ void InspectorPanel::refreshConnectionTabs() {
         for (int column = 0; column < values.size(); ++column)
             inputs_->setItem(static_cast<int>(row), column, new QTableWidgetItem(values[column]));
         inputs_->item(static_cast<int>(row), 0)->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(item.source));
+    }
     }
     if (restoreFocus) {
         outputs_->setFocus();
@@ -598,6 +653,11 @@ void InspectorPanel::handleConnectionKey(QKeyEvent* event) {
     const auto modifiers = event->modifiers();
     const auto current = outputs_->currentRow();
     if ((modifiers.testFlag(Qt::ControlModifier) && event->key() == Qt::Key_N) || event->key() == Qt::Key_Insert) {
+        if (current >= 0 && !connectionRowMatches(current)) {
+            refresh();
+            event->accept();
+            return;
+        }
         auto connection = document::parseConnection(std::string("\x1b\x1b\x1b") + "0\x1b-1");
         const auto model = session_->connectionModel();
         const auto after = current >= 0 ? std::optional(static_cast<std::size_t>(current)) : std::nullopt;
@@ -611,14 +671,21 @@ void InspectorPanel::handleConnectionKey(QKeyEvent* event) {
         std::vector<int> indices;
         for (const auto& index : rows) indices.push_back(index.row());
         if (indices.empty() && current >= 0) indices.push_back(current);
-        std::ranges::sort(indices, std::greater{});
+        std::ranges::sort(indices);
         indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
-        for (const auto row : indices) if (row >= 0) session_->removeConnection(static_cast<std::size_t>(row));
+        if (std::ranges::all_of(indices, [&](int row) { return connectionRowMatches(row); })) {
+            std::vector<std::size_t> selectedRows;
+            for (const auto row : indices) if (row >= 0) selectedRows.push_back(static_cast<std::size_t>(row));
+            if (!selectedRows.empty()) session_->removeConnections(std::move(selectedRows));
+        } else refresh();
+        requestRefresh();
         event->accept();
         return;
     }
     if (modifiers.testFlag(Qt::ControlModifier) && event->key() == Qt::Key_D) {
-        if (current >= 0) session_->duplicateConnection(static_cast<std::size_t>(current));
+        if (current >= 0 && connectionRowMatches(current)) session_->duplicateConnection(static_cast<std::size_t>(current));
+        else if (current >= 0) refresh();
+        requestRefresh();
         event->accept();
         return;
     }
@@ -645,19 +712,22 @@ void InspectorPanel::handleConnectionKey(QKeyEvent* event) {
         const auto clipboard = QGuiApplication::clipboard()->text();
         auto model = session_->connectionModel();
         std::optional<std::size_t> after = current >= 0 ? std::optional(static_cast<std::size_t>(current)) : std::nullopt;
+        std::vector<std::pair<std::string, document::Connection>> additions;
         for (auto line : clipboard.split('\n', Qt::SkipEmptyParts)) {
             if (line.endsWith('\r')) line.chop(1);
             const auto values = line.split('\t');
-            if (values.size() != 6) continue;
+            if (values.size() != 6) { additions.clear(); break; }
             const auto esc = QChar(0x1b);
             QStringList fields;
             for (qsizetype i = 1; i < values.size(); ++i) fields.push_back(values[i]);
             const QString encoded = fields.join(esc);
             auto connection = document::parseConnection(encoded.toStdString());
-            if (!connection.wellFormed) continue;
-            session_->addConnection(values[0].toStdString(), std::move(connection), after);
-            after = after ? *after + 1 : model.rows().size();
+            if (!connection.wellFormed) { additions.clear(); break; }
+            additions.emplace_back(values[0].toStdString(), std::move(connection));
         }
+        if (!additions.empty() && (current < 0 || connectionRowMatches(current)))
+            session_->addConnections(std::move(additions), after);
+        requestRefresh();
         event->accept();
         return;
     }

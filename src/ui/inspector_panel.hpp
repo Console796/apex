@@ -4,6 +4,7 @@
 #include "ui/rename_confirmation.hpp"
 #include <QWidget>
 #include <functional>
+#include <array>
 
 class QCheckBox;
 class QComboBox;
@@ -32,7 +33,8 @@ private:
     void requestRefresh();
     bool current(const std::vector<document::NodeId>& entities) const;
     void watch(QWidget* field);
-    void refreshConnectionTabs();
+    void refreshConnectionTabs(bool refreshInputs = false);
+    bool connectionRowMatches(int row, int editedColumn = -1) const;
     void handleConnectionKey(QKeyEvent* event);
     document::Document* document_ = nullptr;
     editor::EditorSession* session_ = nullptr;
@@ -52,6 +54,7 @@ private:
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
     RenameDialogPresenter renamePresenter_;
     std::optional<std::size_t> pendingOutputEdit_;
+    std::vector<std::array<QString, 6>> displayedConnections_;
 };
 
 } // namespace apex::ui

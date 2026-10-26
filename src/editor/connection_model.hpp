@@ -24,6 +24,10 @@ public:
     Result<void> add(document::Transaction& tx, std::string output, document::Connection connection,
                      std::optional<std::size_t> after = {}) const;
     Result<void> remove(document::Transaction& tx, std::size_t row) const;
+    Result<void> removeMany(document::Transaction& tx, std::vector<std::size_t> rows) const;
+    Result<void> addMany(document::Transaction& tx,
+        std::vector<std::pair<std::string, document::Connection>> connections,
+        std::optional<std::size_t> after = {}) const;
     Result<void> duplicate(document::Transaction& tx, std::size_t row) const;
 
 private:

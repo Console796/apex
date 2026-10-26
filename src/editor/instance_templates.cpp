@@ -28,6 +28,11 @@ std::optional<std::filesystem::path> casePath(const std::filesystem::path& path)
     auto canonical = fs::canonical(current, ec);
     return ec ? std::nullopt : std::optional(canonical);
 }
+bool contained(const std::filesystem::path& path, const std::filesystem::path& root) {
+    auto p = path.begin(), r = root.begin();
+    for (; r != root.end(); ++r, ++p) if (p == path.end() || *p != *r) return false;
+    return true;
+}
 }
 
 std::optional<std::filesystem::path> resolveInstanceFile(const std::filesystem::path& map,
@@ -36,16 +41,36 @@ std::optional<std::filesystem::path> resolveInstanceFile(const std::filesystem::
     try {
         std::string spelling(file);
         std::ranges::replace(spelling, '\\', '/');
-        std::vector<std::filesystem::path> roots{map.parent_path()};
+        if (spelling.starts_with('/') || (spelling.size() >= 2 &&
+            ((spelling[0] >= 'A' && spelling[0] <= 'Z') || (spelling[0] >= 'a' && spelling[0] <= 'z')) && spelling[1] == ':'))
+            return {};
+        std::optional<std::filesystem::path> mapsRoot;
         for (auto parent = map.parent_path(); !parent.empty();) {
-            if (ciEquals(parent.filename().string(), "maps")) { roots.push_back(parent); break; }
+            if (ciEquals(parent.filename().string(), "maps")) { mapsRoot = parent; break; }
             const auto next = parent.parent_path();
             if (next == parent) break;
             parent = next;
         }
+        std::vector<std::filesystem::path> roots{map.parent_path()};
+        if (mapsRoot && *mapsRoot != map.parent_path()) roots.push_back(*mapsRoot);
         if (extraRoot) roots.push_back(*extraRoot);
-        for (const auto& root : roots)
-            if (auto path = casePath(root / spelling)) return path;
+        std::vector<std::filesystem::path> allowed;
+        const auto allowedMapRoot = mapsRoot.value_or(map.parent_path());
+        {
+            std::error_code ec;
+            auto canonical = std::filesystem::canonical(allowedMapRoot, ec);
+            if (!ec) allowed.push_back(std::move(canonical));
+        }
+        if (extraRoot) {
+            std::error_code ec;
+            auto canonical = std::filesystem::canonical(*extraRoot, ec);
+            if (!ec) allowed.push_back(std::move(canonical));
+        }
+        for (const auto& root : roots) {
+            std::error_code ec;
+            if (auto path = casePath(root / spelling); path && std::ranges::any_of(allowed,
+                [&](const auto& allowedRoot) { return contained(*path, allowedRoot); })) return path;
+        }
     } catch (const std::exception&) { }
     return {};
 }

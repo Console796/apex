@@ -108,6 +108,52 @@ Result<void> ConnectionModel::add(document::Transaction& tx, std::string output,
 Result<void> ConnectionModel::remove(document::Transaction& tx, std::size_t row) const {
     return edit(tx, row, [](auto& block, auto index) { block.remove(index).value(); return true; });
 }
+Result<void> ConnectionModel::removeMany(document::Transaction& tx, std::vector<std::size_t> rows) const {
+    if (entities_.empty()) return invalid("invalid connection selection");
+    std::ranges::sort(rows);
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    if (rows.empty() || rows.back() >= rows_.size()) return invalid("invalid connection row");
+    try {
+        for (std::size_t e = 0; e < entities_.size(); ++e) {
+            const auto handle = doc_.handle(entities_[e]);
+            if (!handle) return invalid("stale connection entity");
+            const auto* existing = connections(doc_, entities_[e]);
+            if (!existing) return invalid("stale connection block");
+            auto block = *existing;
+            std::vector<std::size_t> indices;
+            for (const auto row : rows) {
+                const auto index = rows_[row].indices[e];
+                if (index >= block.children().size() || !matches(rows_[row], block.children()[index]))
+                    return invalid("stale connection row");
+                indices.push_back(index);
+            }
+            std::ranges::sort(indices, std::greater{});
+            for (const auto index : indices) block.remove(index).value();
+            tx.setConnections(*handle, std::move(block));
+        }
+    } catch (const std::exception& error) { return invalid(error.what()); }
+    return {};
+}
+Result<void> ConnectionModel::addMany(document::Transaction& tx,
+    std::vector<std::pair<std::string, document::Connection>> additions,
+    std::optional<std::size_t> after) const {
+    if (entities_.empty() || (after && *after >= rows_.size())) return invalid("invalid connection insertion row");
+    try {
+        for (std::size_t e = 0; e < entities_.size(); ++e) {
+            const auto handle = doc_.handle(entities_[e]);
+            if (!handle) return invalid("stale connection entity");
+            const auto* existing = connections(doc_, entities_[e]);
+            auto block = existing ? *existing : kv1::Node::block("connections");
+            const auto index = after ? rows_[*after].indices[e] + 1 : block.children().size();
+            for (std::size_t i = 0; i < additions.size(); ++i) {
+                const auto& [output, connection] = additions[i];
+                block.insert(index + i, kv1::Node::value(output, document::serialize(connection))).value();
+            }
+            if (!additions.empty()) tx.setConnections(*handle, std::move(block));
+        }
+    } catch (const std::exception& error) { return invalid(error.what()); }
+    return {};
+}
 Result<void> ConnectionModel::duplicate(document::Transaction& tx, std::size_t row) const {
     return edit(tx, row, [](auto& block, auto index) {
         auto entry = block.children()[index];

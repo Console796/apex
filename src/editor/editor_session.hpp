@@ -189,6 +189,9 @@ public:
     Result<void> addConnection(std::string output, document::Connection connection,
                                std::optional<std::size_t> after = {});
     Result<void> removeConnection(std::size_t row);
+    Result<void> removeConnections(std::vector<std::size_t> rows);
+    Result<void> addConnections(std::vector<std::pair<std::string, document::Connection>> connections,
+                               std::optional<std::size_t> after = {});
     Result<void> duplicateConnection(std::size_t row);
     InspectorModel inspectorModel(bool raw = false) const;
     // Supply a unique nonempty token for each field focus to coalesce typing. Rebuild the

@@ -9,7 +9,8 @@ namespace apex::ui {
 
 bool renameWithConfirmation(editor::EditorSession& session, document::NodeId entity,
                             std::string name, QWidget* parent,
-                            const RenameDialogPresenter& presenter) {
+                            const RenameDialogPresenter& presenter,
+                            const std::function<bool()>& stillValid) {
     const auto plan = session.planEntityRename(entity, name);
     if (plan.changes.empty()) return static_cast<bool>(session.renameEntity(entity, name, true));
 
@@ -33,6 +34,7 @@ bool renameWithConfirmation(editor::EditorSession& session, document::NodeId ent
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     const bool accepted = presenter ? presenter(&dialog) : dialog.exec() == QDialog::Accepted;
+    if (stillValid && !stillValid()) return false;
     return accepted && static_cast<bool>(session.renameEntity(entity, name, update->isChecked()));
 }
 

@@ -74,10 +74,22 @@ RenamePlan planRename(const document::Document& doc, const assets::EntityClassTa
             const auto* cls = classValue ? classes.find(classValue->decodedValue().value_or("")) : nullptr;
             const auto keys = referenceKeys(cls);
             std::map<std::string, std::size_t> occurrences;
-            std::map<std::size_t, document::NodeId> sourceBlocks;
-            for (const auto& [index, child] : node->sourceChildren) sourceBlocks.emplace(index, child);
-            for (std::size_t i = 0; i < node->block->children().size(); ++i) {
-                const auto& entry = node->block->children()[i];
+            for (const auto childId : node->children) {
+                const auto childHandle = doc.handle(childId);
+                const auto* child = childHandle ? doc.get(*childHandle) : nullptr;
+                if (!child || !child->block || !ciEquals(child->block->key(), "connections")) continue;
+                for (std::size_t index = 0; index < child->block->children().size(); ++index) {
+                    const auto& connectionEntry = child->block->children()[index];
+                    if (connectionEntry.kind() != kv1::NodeKind::Value) continue;
+                    const auto connection = document::parseConnection(connectionEntry.decodedValue().value_or(""));
+                    if (!connection.wellFormed || !referenceMatch(connection.target, plan.oldName)) continue;
+                    plan.changes.push_back({id, RenameChange::Kind::Connection,
+                        std::string(connectionEntry.key()) + " #" + std::to_string(index + 1), index,
+                        connection.target, plan.newName});
+                    plan.entityLabels.try_emplace(id, label(*node->block, id));
+                }
+            }
+            for (const auto& entry : node->block->children()) {
                 if (entry.kind() == kv1::NodeKind::Value) {
                     const auto key = toLowerAscii(entry.key());
                     const auto occurrence = occurrences[key]++;
@@ -89,21 +101,6 @@ RenamePlan planRename(const document::Document& doc, const assets::EntityClassTa
                             plan.entityLabels.try_emplace(id, label(*node->block, id));
                         }
                     }
-                    continue;
-                }
-                const auto blockId = sourceBlocks.find(i);
-                if (blockId == sourceBlocks.end()) continue;
-                const auto* child = doc.get(*doc.handle(blockId->second));
-                if (!child || !child->block || !ciEquals(child->block->key(), "connections")) continue;
-                for (std::size_t index = 0; index < child->block->children().size(); ++index) {
-                    const auto& connectionEntry = child->block->children()[index];
-                    if (connectionEntry.kind() != kv1::NodeKind::Value) continue;
-                    const auto connection = document::parseConnection(connectionEntry.decodedValue().value_or(""));
-                    if (!connection.wellFormed || !referenceMatch(connection.target, plan.oldName)) continue;
-                    plan.changes.push_back({id, RenameChange::Kind::Connection,
-                        std::string(connectionEntry.key()) + " #" + std::to_string(index + 1), index,
-                        connection.target, plan.newName});
-                    plan.entityLabels.try_emplace(id, label(*node->block, id));
                 }
             }
         }
@@ -120,6 +117,9 @@ Result<void> stageRename(const document::Document& doc, const RenamePlan& plan, 
     if (!entityNode(doc, entity)) return invalid("only entities can be renamed");
     const auto handle = doc.handle(entity);
     if (!handle) return invalid("stale rename entity");
+    const auto* renamed = doc.get(*handle);
+    if (!renamed || !renamed->block || !ciEquals(value(*renamed->block, "targetname"), plan.oldName))
+        return invalid("stale rename plan");
     try {
         tx.setKeyValue(*handle, "targetname", plan.newName.empty() ? std::nullopt : std::optional(plan.newName));
         std::map<document::NodeId, kv1::Node> connectionBlocks;
@@ -143,7 +143,8 @@ Result<void> stageRename(const document::Document& doc, const RenamePlan& plan, 
             if (found == connectionBlocks.end()) {
                 const kv1::Node* block = nullptr;
                 for (const auto childId : source->children) {
-                    const auto* child = doc.get(*doc.handle(childId));
+                    const auto childHandle = doc.handle(childId);
+                    const auto* child = childHandle ? doc.get(*childHandle) : nullptr;
                     if (child && child->block && ciEquals(child->block->key(), "connections")) { block = child->block.get(); break; }
                 }
                 if (!block) return invalid("missing rename connections block");
