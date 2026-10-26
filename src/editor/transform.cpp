@@ -37,6 +37,21 @@ std::string vectorText(DVec3 value) {
     return node.decodedValue().value();
 }
 
+std::optional<DVec3> vectorPoint(std::string_view text) {
+    const auto parsed = kv1::Node::value("", std::string(text)).asVec3();
+    if (!parsed) return std::nullopt;
+    return DVec3{(*parsed)[0], (*parsed)[1], (*parsed)[2]};
+}
+
+std::optional<std::string> axisText(std::string_view text, const Transform& transform) {
+    const auto comma = text.find(',');
+    if (comma == std::string_view::npos) return std::nullopt;
+    const auto first = vectorPoint(text.substr(0, comma));
+    const auto second = vectorPoint(text.substr(comma + 1));
+    if (!first || !second) return std::nullopt;
+    return vectorText(transform.point(*first)) + ", " + vectorText(transform.point(*second));
+}
+
 bool world(const kv1::Node& block) {
     const auto* classname = block.find("classname");
     return ciEquals(block.key(), "world") ||
@@ -194,7 +209,8 @@ Result<geometry::SolidGeometry> applyToSolid(const geometry::SolidGeometry& soli
 }
 
 Result<EntityTransform> applyToEntity(const document::Document& doc, NodeId entity,
-                                       const Transform& transform, bool textureLock) {
+                                       const Transform& transform, bool textureLock,
+                                       const assets::EntityClassTable* classes) {
     const auto handle = doc.handle(entity);
     const auto* node = handle ? doc.get(*handle) : nullptr;
     if (!node || !std::holds_alternative<Handle<document::Entity>>(*handle) || world(*node->block))
@@ -233,6 +249,21 @@ Result<EntityTransform> applyToEntity(const document::Document& doc, NodeId enti
         if (!finite(forward) || !finite(up)) return std::unexpected(invalid("invalid entity basis"));
         result.angles = anglesFromForward(forward, up);
     }
+    const auto* classname = node->block->find("classname");
+    const auto* cls = classes && classname ? classes->find(classname->decodedValue().value_or("")) : nullptr;
+    if (cls) {
+        for (const auto& property : cls->properties) {
+            const auto* value = node->block->find(property.name);
+            if (!value) continue;
+            const auto text = value->decodedValue().value_or("");
+            if (ciEquals(property.type, "vecline")) {
+                if (const auto p = vectorPoint(text))
+                    result.keys[property.name] = vectorText(transform.point(*p));
+            } else if (ciEquals(property.type, "axis")) {
+                if (auto axis = axisText(text, transform)) result.keys[property.name] = std::move(*axis);
+            }
+        }
+    }
     return result;
 }
 
@@ -255,7 +286,7 @@ Result<void> stageTransform(const document::Document& doc, document::Transaction
         const auto h = *doc.handle(id);
         const auto* node = doc.get(h);
         if (std::holds_alternative<Handle<document::Entity>>(h) && !world(*node->block)) {
-            auto entity = applyToEntity(doc, id, transform, options.textureLock);
+            auto entity = applyToEntity(doc, id, transform, options.textureLock, options.classes);
             if (!entity) return std::unexpected(entity.error());
             solids.merge(entity->solids);
             entities.emplace(id, std::move(*entity));
@@ -277,6 +308,7 @@ Result<void> stageTransform(const document::Document& doc, document::Transaction
             const auto h = *doc.handle(id);
             if (entity.origin) tx.setKeyValue(h, "origin", vectorText(*entity.origin));
             if (entity.angles) tx.setKeyValue(h, "angles", vectorText(*entity.angles));
+            for (const auto& [key, value] : entity.keys) tx.setKeyValue(h, key, value);
         }
     } catch (const std::invalid_argument& error) {
         return std::unexpected(invalid(error.what()));

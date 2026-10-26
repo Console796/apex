@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/name_index.hpp"
 #include "editor/face_edit.hpp"
 #include "editor/topology_ops.hpp"
 #include "editor/tool.hpp"
@@ -89,6 +90,7 @@ public:
     std::optional<AABB> selectionBounds() const;
     const PickIndex& picks() const { return *picks_; }
     const GroupIndex& groups() const { return *groups_; }
+    const NameIndex& names() const { return *names_; }
     const CycleState& cycle() const;
     const ViewState& viewState() const { return view_; }
     void setViewState(ViewState view);
@@ -283,6 +285,7 @@ private:
     std::unique_ptr<PickIndex> picks_;
     EntityBoundsProvider entityBoundsProvider_;
     std::unique_ptr<GroupIndex> groups_;
+    std::unique_ptr<NameIndex> names_;
     Selection selection_;
     std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
     ToolId activeTool_ = Tool::Select;

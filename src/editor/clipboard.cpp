@@ -559,7 +559,7 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             result.items.push_back(std::move(item));
         }
         if (current.matrix() != DMat4{1.0} && !moved.empty()) {
-            if (auto done = stageTransform(doc, tx, moved, current, {options.textureLock.value_or(true)}); !done)
+            if (auto done = stageTransform(doc, tx, moved, current, {options.textureLock.value_or(true), options.classes}); !done)
                 return std::unexpected(done.error());
         }
     }

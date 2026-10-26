@@ -47,6 +47,7 @@ struct PasteOptions {
     std::optional<SnapSettings> snap;
     std::optional<bool> textureLock; // Default: the session setting, else on.
     std::optional<PasteSpecial> special;
+    const assets::EntityClassTable* classes = nullptr;
 };
 
 // Copy: the selected groups (with every member), entities (with their solids) and solids.

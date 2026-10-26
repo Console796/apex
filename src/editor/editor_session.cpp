@@ -57,6 +57,7 @@ void EditorSession::attach(document::Document& doc) {
                                             {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]}}};
     });
     groups_ = std::make_unique<GroupIndex>(doc);
+    names_ = std::make_unique<NameIndex>(doc);
     documentObserver_ = doc.observe([this](const document::ChangeSet& changes) {
         const auto count = document_->historyState();
         if (visgroupHistory_.contains(count))
@@ -68,6 +69,7 @@ void EditorSession::attach(document::Document& doc) {
         }
         picks_->apply(changes);
         groups_->apply(changes);
+        names_->apply(changes);
         activeToolObject().documentChanged();
         if (transformActive()) endTransform(); // Undo/redo/external edits invalidate a drag.
         selectTool().cycle_ = {};
@@ -98,6 +100,7 @@ void EditorSession::detach() {
     visgroupVisibility_ = {};
     picks_.reset();
     groups_.reset();
+    names_.reset();
     selectTool().cycle_ = {};
     view_ = {};
     hover_.reset();
@@ -705,6 +708,7 @@ Result<void> EditorSession::pasteText(std::string_view text, PasteOptions option
     }
     if (!options.snap) options.snap = snap_;
     if (!options.textureLock) options.textureLock = textureLock_;
+    options.classes = &entityClasses_;
     return runEdit(options.special ? "Paste special" : "Paste", AfterEdit::Computed, [&](document::Transaction& tx) {
         return stagePaste(*document_, tx, text, options);
     });
@@ -715,6 +719,7 @@ Result<void> EditorSession::duplicateSelection() {
     PasteOptions options;
     options.inPlace = true;
     options.textureLock = textureLock_;
+    options.classes = &entityClasses_;
     return runEdit("Duplicate", AfterEdit::Computed, [&](document::Transaction& tx) {
         return stagePaste(*document_, tx, *text, options);
     });
@@ -924,7 +929,7 @@ bool EditorSession::commitNow(const Transform& transform, std::string label) {
     const auto nodes = selectTool().transformNodes();
     if (nodes.empty()) return false;
     if (transform.matrix() == DMat4{1.0}) return true;
-    return commitTransform(*document_, nodes, transform, {textureLock_}, std::move(label)).has_value();
+    return commitTransform(*document_, nodes, transform, {textureLock_, &entityClasses_}, std::move(label)).has_value();
 }
 
 const TransformReadout& EditorSession::activeReadout() const { return selectTool().activeReadout(); }

@@ -92,7 +92,7 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp src/document/entity_transform.cpp DEPS apex_geometry apex_core)
 apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp src/editor/pick_model.cpp
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
-                          src/editor/group_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
+                          src/editor/group_index.cpp src/editor/name_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
                           src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
                           src/editor/transform.cpp src/editor/preview.cpp src/editor/preset_io.cpp
