@@ -21,6 +21,7 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QTimer>
+#include <QWheelEvent>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <atomic>
@@ -37,6 +38,16 @@ bool isSpacerLabel(const QString& label) {
     if (trimmed.size() < 3) return false;
     return std::all_of(trimmed.begin(), trimmed.end(), [](QChar c) { return c == u'-' || c == u'=' || c == u'_'; });
 }
+
+// The inspector sits in a scroll area the user scrolls often; a wheel over a combo must scroll the
+// panel, never step the value.
+class NoWheelComboBox : public QComboBox {
+public:
+    using QComboBox::QComboBox;
+
+protected:
+    void wheelEvent(QWheelEvent* event) override { event->ignore(); }
+};
 
 // A form label that shrinks to the space it is given, eliding the middle of long keys. The full text
 // stays in the tooltip, so a long key never pushes the value column out of the inspector.
@@ -70,7 +81,7 @@ private:
 InspectorPanel::InspectorPanel(QWidget* parent) : QWidget(parent) {
     layout_ = new QVBoxLayout(this);
     auto* header = new QHBoxLayout;
-    classPicker_ = new QComboBox(this);
+    classPicker_ = new NoWheelComboBox(this);
     classPicker_->setObjectName(QStringLiteral("inspectorClass"));
     classPicker_->setEditable(true);
     classPicker_->setInsertPolicy(QComboBox::NoInsert);
@@ -209,7 +220,7 @@ void InspectorPanel::refresh() {
                 session_->editProperty(index, value.toStdString(), focusToken.toStdString(), raw);
         };
         if (type == "choices") {
-            auto* combo = new QComboBox(field);
+            auto* combo = new NoWheelComboBox(field);
             combo->setObjectName(QStringLiteral("choice.%1").arg(text(row.key)));
             for (const auto& choice : row.property->choices) combo->addItem(text(choice.label), text(choice.value));
             combo->setCurrentIndex(row.mixed ? -1 : combo->findData(text(row.value)));

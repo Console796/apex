@@ -13,6 +13,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QComboBox>
+#include <QWheelEvent>
 #include <QCoreApplication>
 #include <QDir>
 #include <QSettings>
@@ -1838,6 +1839,41 @@ TEST_CASE("inspector collapses dash spacer properties and elides long labels") {
     // The value column stays inside the panel instead of being pushed out by the label.
     CHECK(edit->mapTo(&panel, QPoint(edit->width(), 0)).x() <= panel.width());
     CHECK(edit->width() > 60);
+}
+
+TEST_CASE("inspector choice combos ignore the mouse wheel") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("wheel.fgd");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write("@PointClass = wheeled\n[\n"
+                   "\tmode(choices) : \"Mode\" : \"0\" = [ \"0\" : \"Zero\" \"1\" : \"One\" \"2\" : \"Two\" ]\n]\n");
+    }
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    document::Document doc(editor_test::parsed(R"(entity { id 1 classname wheeled mode 0 })"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 400);
+    panel.show();
+    session.selectNode(doc.roots()[0]);
+    app().processEvents();
+    auto* combo = panel.findChild<QComboBox*>("choice.mode");
+    REQUIRE(combo);
+    const int before = combo->currentIndex();
+    QWheelEvent wheel(QPointF(5, 5), combo->mapToGlobal(QPointF(5, 5)), {}, QPoint(0, -120), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(combo, &wheel);
+    app().processEvents();
+    CHECK_FALSE(wheel.isAccepted());
+    CHECK(combo->currentIndex() == before);
+    CHECK(doc.get(*doc.handle(doc.roots()[0]))->block->find("mode")->decodedValue().value_or("") == "0");
 }
 
 TEST_CASE("inspector builds FGD controls and coalesces one field focus") {
