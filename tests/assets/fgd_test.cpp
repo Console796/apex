@@ -146,6 +146,52 @@ TEST_CASE("FGD helpers preserve raw arguments declaration order and all inherite
     CHECK(table->find("first")->helpers.size() == 2);
 }
 
+TEST_CASE("FGD helper headers recovered from the corpus keep their names, order and arguments") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    auto table = loadEntityClasses(std::filesystem::path(install) / "p2ce/p2ce.fgd");
+    REQUIRE_MESSAGE(table, (table ? "" : table.error().what()));
+    // Expected values are copied from the class headers in p2ce.fgd, not derived from the parser.
+    const auto squash = [](std::string text) {
+        std::erase_if(text, [](char c) { return c == ' ' || c == '\t'; });
+        return text;
+    };
+    using Expected = std::vector<std::pair<std::string, std::string>>;
+    const std::map<std::string, Expected> expected{
+        {"comp_entity_mover", {{"iconsprite", ""}, {"sphere", "distance"}, {"line", "255255255,targetname,target"}}},
+        {"info_mass_center", {{"iconsprite", ""}, {"color", "128128128"}, {"line", "128128128,targetname,target"}}},
+        {"comp_propcombine_set", {{"iconsprite", ""}, {"wirebox", "mins,maxs"}}},
+        {"func_fish_pool", {{"sphere", "max_range"}, {"iconsprite", ""}}},
+        {"env_cubemap", {{"color", "00255"}, {"sidelist", ""}, {"iconsprite", ""}, {"line", "255255255,targetname,parallaxobb"}}},
+    };
+    for (const auto& [name, helpers] : expected) {
+        INFO(name);
+        const auto* entity = table->find(name);
+        REQUIRE(entity);
+        // Inherited helpers may precede; compare the class's own tail by name and arguments.
+        std::vector<std::pair<std::string, std::string>> own;
+        for (const auto& h : entity->helpers) own.emplace_back(h.name, squash(h.arguments));
+        for (const auto& [helper, args] : helpers) {
+            INFO(helper);
+            bool found = false;
+            for (const auto& [n, a] : own) {
+                if (n != helper) continue;
+                if (helper == "iconsprite") { found = true; continue; }
+                found = found || a == args;
+            }
+            CHECK(found);
+        }
+    }
+    const auto* finder = table->find("comp_entity_finder");
+    REQUIRE(finder);
+    std::size_t lines = 0;
+    for (const auto& h : finder->helpers) {
+        if (h.name == "cylinder") CHECK(squash(h.arguments) == "255255255,targetname,targetref,radius");
+        if (h.name == "line") ++lines;
+    }
+    CHECK(lines >= 2);
+}
+
 TEST_CASE("FGD helper corpus parses all supported kinds and reports unknown names") {
     const auto* install = std::getenv("APEX_P2CE_DIR");
     if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }

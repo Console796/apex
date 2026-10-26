@@ -1225,14 +1225,26 @@ TEST_CASE("mirror helpers: golden images per helper kind") {
         auto list = scene.mirror.buildDrawList(options);
         CHECK_FALSE(list.worldSegments.empty());
         list.viewportSize = Vec2(static_cast<float>(kSize));
-        REQUIRE(g->context->oneShot([&](VkCommandBuffer commands) {
-            g->target.begin(commands, kClear);
-            g->renderer->record(commands, list);
-            g->target.end(commands);
-        }));
-        const auto image = g->target.readback();
-        REQUIRE(image);
+        const auto render = [&](const DrawList& drawn) {
+            REQUIRE(g->context->oneShot([&](VkCommandBuffer commands) {
+                g->target.begin(commands, kClear);
+                g->renderer->record(commands, drawn);
+                g->target.end(commands);
+            }));
+            auto readback = g->target.readback();
+            REQUIRE(readback);
+            return *readback;
+        };
+        const auto image = render(list);
+        // Hardware tolerance would pass a render that ignores the helper, so require the helper's own pixels.
+        auto without = list;
+        without.worldSegments.clear();
+        const auto bare = render(without);
+        std::size_t differing = 0;
+        for (std::size_t i = 0; i + 3 < image.pixels.size(); i += 4)
+            if (!std::equal(image.pixels.begin() + i, image.pixels.begin() + i + 4, bare.pixels.begin() + i)) ++differing;
+        CHECK(differing >= 10);
         CHECK(g->context->validation().errorCount() == 0);
-        golden::check(std::string("helper_") + kind.name, *image, *g->context);
+        golden::check(std::string("helper_") + kind.name, image, *g->context);
     }
 }

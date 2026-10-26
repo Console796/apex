@@ -1055,12 +1055,13 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         for (const auto& [id, entity] : m.entities) {
             const bool self = m.selected.contains(id);
             for (const HelperSegment& segment : entity.helpers.segments) {
-                const bool peer = segment.peer && m.selected.contains(*segment.peer);
+                const bool peer = (segment.peer && m.selected.contains(*segment.peer)) ||
+                                  (segment.anchor && m.selected.contains(*segment.anchor));
                 const bool shown = segment.visibility == HelperVisibility::Always ||
                                    (self && segment.visibility == HelperVisibility::WhenSelected) ||
                                    ((self || peer) && segment.visibility == HelperVisibility::WhenSelfOrPeerSelected);
                 if (!shown) continue;
-                list.worldSegments.push_back({moved(id, segment.a), moved(segment.peer.value_or(id), segment.b),
+                list.worldSegments.push_back({moved(segment.anchor.value_or(id), segment.a), moved(segment.peer.value_or(id), segment.b),
                                               segment.colour, 1.0f});
             }
             for (const HelperLabel& label : entity.helpers.labels)

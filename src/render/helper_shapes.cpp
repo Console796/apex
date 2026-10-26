@@ -89,9 +89,9 @@ struct Builder {
 
     DVec3 world(DVec3 p) const { return c.pose.origin + c.pose.basis * p; }
     void segment(DVec3 a, DVec3 b, Vec4 col, HelperVisibility visibility,
-                 std::optional<document::NodeId> peer = {}) {
+                 std::optional<document::NodeId> peer = {}, std::optional<document::NodeId> anchor = {}) {
         if (!finite(a) || !finite(b) || !finite(col)) { invalid = true; return; }
-        shapes.segments.push_back({a, b, col, visibility, peer});
+        shapes.segments.push_back({a, b, col, visibility, peer, anchor});
     }
     void ring(DVec3 center, DVec3 u, DVec3 v, double radius, int count, Vec4 col,
               HelperVisibility visibility, std::optional<document::NodeId> peer = {}) {
@@ -99,7 +99,7 @@ struct Builder {
             const double angle = 2 * std::numbers::pi * static_cast<double>(i) / count;
             return center + radius * (u * std::cos(angle) + v * std::sin(angle));
         };
-        for (int i = 0; i < count; ++i) segment(point(i), point((i + 1) % count), col, visibility, peer);
+        for (int i = 0; i < count; ++i) segment(point(i), point((i + 1) % count), col, visibility, peer, peer);
     }
     void rectangle(const std::array<DVec3, 4>& p, Vec4 col, HelperVisibility visibility) {
         for (std::size_t i = 0; i < 4; ++i) segment(p[i], p[(i + 1) % 4], col, visibility);
@@ -136,11 +136,11 @@ struct Builder {
         if (h.startKey.empty() || h.startValue.empty()) return;
         const auto start = endpoint(h.startKey, h.startValue);
         if (h.endKey.empty() && h.endValue.empty()) {
-            for (const auto& peer : start) draw(c.pose.origin, peer.position, peer.peer);
+            for (const auto& peer : start) draw(c.pose.origin, std::nullopt, peer.position, peer.peer);
         } else if (!h.endKey.empty() && !h.endValue.empty()) {
             const auto end = endpoint(h.endKey, h.endValue);
             for (const auto& a : start)
-                for (const auto& b : end) draw(a.position, b.position, b.peer ? b.peer : a.peer);
+                for (const auto& b : end) draw(a.position, a.peer, b.position, b.peer);
         }
     }
     void draw(const assets::SphereHelper& h) {
@@ -152,8 +152,8 @@ struct Builder {
         ring(c.pose.origin, {0, 1, 0}, {0, 0, 1}, *radius, 48, col, selected);
     }
     void draw(const assets::LineHelper& h) {
-        connections(h, [&](DVec3 a, DVec3 b, std::optional<document::NodeId> peer) {
-            segment(a, b, colour(h.colour, c.defaultColour), HelperVisibility::WhenSelfOrPeerSelected, peer);
+        connections(h, [&](DVec3 a, std::optional<document::NodeId> aPeer, DVec3 b, std::optional<document::NodeId> bPeer) {
+            segment(a, b, colour(h.colour, c.defaultColour), HelperVisibility::WhenSelfOrPeerSelected, bPeer, aPeer);
         });
     }
     void draw(const assets::WireboxHelper& h) {
@@ -188,16 +188,17 @@ struct Builder {
         const auto r1 = h.endRadiusKey.empty() ? r0 : number(c.block, h.endRadiusKey);
         if (!r0 || !r1 || *r0 < 0 || *r1 < 0 || (*r0 == 0 && *r1 == 0)) return;
         const auto col = colour(h.colour, c.defaultColour);
-        connections(h, [&](DVec3 a, DVec3 b, std::optional<document::NodeId> peer) {
+        connections(h, [&](DVec3 a, std::optional<document::NodeId> aPeer, DVec3 b, std::optional<document::NodeId> bPeer) {
             const auto delta = b - a;
             const double length = glm::length(delta);
             if (!std::isfinite(length) || length <= 0) return;
             const auto axis = delta / length;
             const auto u = glm::normalize(glm::cross(axis, std::abs(axis.z) < 0.9 ? DVec3{0, 0, 1} : DVec3{0, 1, 0}));
             const auto v = glm::cross(axis, u);
-            ring(a, u, v, *r0, 24, col, selected, peer);
-            ring(b, u, v, *r1, 24, col, selected, peer);
-            for (const auto offset : {u, v, -u, -v}) segment(a + offset * *r0, b + offset * *r1, col, selected, peer);
+            ring(a, u, v, *r0, 24, col, selected, aPeer);
+            ring(b, u, v, *r1, 24, col, selected, bPeer);
+            for (const auto offset : {u, v, -u, -v})
+                segment(a + offset * *r0, b + offset * *r1, col, selected, bPeer, aPeer);
         });
     }
     void draw(const assets::LightconeHelper&) {

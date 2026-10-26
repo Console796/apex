@@ -118,6 +118,7 @@ TEST_CASE("helper shapes line resolves all names and five-argument endpoints") {
     point(shapes.segments[0].a, {1, 2, 3});
     point(shapes.segments[0].b, {4, 5, 6});
     CHECK(shapes.segments[0].peer == 22);
+    CHECK(shapes.segments[0].anchor == 21); // The start rides the subject, the end rides the target.
     f.helper("line", "255 255 255, lightingorigin, targetname");
     CHECK(f.build().segments.empty()); // Peer keyvalues are deliberately outside this API.
 }
@@ -192,7 +193,10 @@ TEST_CASE("helper shapes cylinder and lightcone rings have checkable corners") {
     REQUIRE(shapes.segments.size() == 52);
     point(shapes.segments[0].a, {12, 20, 30});
     point(shapes.segments[24].a, {12, 30, 30});
-    for (const auto& s : shapes.segments) CHECK(s.peer == 11);
+    for (std::size_t i = 0; i < shapes.segments.size(); ++i) { // Ring at the owner, ring and sides toward the peer.
+        CHECK(shapes.segments[i].peer == (i < 24 ? std::optional<document::NodeId>{} : std::optional<document::NodeId>{11}));
+        CHECK(shapes.segments[i].anchor == (i >= 24 && i < 48 ? std::optional<document::NodeId>{11} : std::optional<document::NodeId>{}));
+    }
     visibility(shapes, HelperVisibility::WhenSelected);
     f.helper("cylinder", "255 255 0, targetname, target, radius, targetname, end, endRadius");
     f.set("end", "destination"); f.set("endRadius", "4");
@@ -209,7 +213,10 @@ TEST_CASE("helper shapes cylinder and lightcone rings have checkable corners") {
     REQUIRE(shapes.segments.size() == 52);
     point(shapes.segments[0].a, {8, 30, 30});
     point(shapes.segments[24].a, {6, 20, 30});
-    for (const auto& s : shapes.segments) CHECK(s.peer == 11);
+    for (std::size_t i = 0; i < shapes.segments.size(); ++i) { // Start ring rides the peer, end ring the owner.
+        CHECK(shapes.segments[i].anchor == (i < 24 || i >= 48 ? std::optional<document::NodeId>{11} : std::optional<document::NodeId>{}));
+        CHECK(shapes.segments[i].peer == (i < 24 ? std::optional<document::NodeId>{11} : std::optional<document::NodeId>{}));
+    }
 
     f.helper("lightcone"); f.set("_cone", "45"); f.set("_inner_cone", "10"); f.set("_distance", "8");
     shapes = f.build();

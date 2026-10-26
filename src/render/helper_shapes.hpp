@@ -26,7 +26,9 @@ struct HelperSegment {
     DVec3 a, b;
     Vec4 colour;
     HelperVisibility visibility = HelperVisibility::Always;
+    // The entity whose move carries b, and the one that carries a; empty means the owner.
     std::optional<document::NodeId> peer;
+    std::optional<document::NodeId> anchor;
 };
 struct HelperLabel { DVec3 position; std::string text; Vec4 colour; };
 struct HelperShapes {
