@@ -21,7 +21,8 @@ public:
     const std::vector<NodeId>& entities() const { return entities_; }
     Result<void> setField(document::Transaction& tx, std::size_t row, Field field, std::string text) const;
     Result<void> setOutput(document::Transaction& tx, std::size_t row, std::string name) const;
-    Result<void> add(document::Transaction& tx, std::string output, document::Connection connection) const;
+    Result<void> add(document::Transaction& tx, std::string output, document::Connection connection,
+                     std::optional<std::size_t> after = {}) const;
     Result<void> remove(document::Transaction& tx, std::size_t row) const;
     Result<void> duplicate(document::Transaction& tx, std::size_t row) const;
 
@@ -30,7 +31,8 @@ private:
     std::vector<NodeId> entities_;
     std::vector<Row> rows_;
     Result<void> edit(document::Transaction& tx, std::optional<std::size_t> row,
-                      const std::function<bool(kv1::Node&, std::size_t)>& stage) const;
+                      const std::function<bool(kv1::Node&, std::size_t)>& stage,
+                      std::optional<std::size_t> after = {}) const;
 };
 
 } // namespace apex::editor

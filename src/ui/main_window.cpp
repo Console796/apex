@@ -416,6 +416,9 @@ void MainWindow::buildMenus() {
         if (i < 0 || static_cast<std::size_t>(i) >= profiles_.size()) return;
         QSettings().setValue(QStringLiteral("profile/last"), QString::fromStdString(profiles_[static_cast<std::size_t>(i)].name));
         loadEntityClasses();
+        const auto* profile = currentProfile();
+        session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+            profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
         log::info("game profile: {}", profiles_[static_cast<std::size_t>(i)].name);
         reloadGameContent();
     });
@@ -1264,12 +1267,16 @@ void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {
         profileCombo_->addItem(tr("(no game profiles)"));
         profileCombo_->setEnabled(false);
         loadEntityClasses();
+        session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()));
         reloadGameContent();
         return;
     }
     profileCombo_->setEnabled(true);
     if (const int i = profileCombo_->findText(previous); i >= 0) profileCombo_->setCurrentIndex(i);
     loadEntityClasses();
+    const auto* profile = currentProfile();
+    session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+        profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
     reloadGameContent();
 }
 
@@ -1336,6 +1343,9 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
     session_.attach(*document_);
     path_ = path;
+    const auto* profile = currentProfile();
+    session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+        profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
     unsaved_ = unsaved;
     savedState_ = document_->historyState();
     viewport_->setDocument(document_.get(), currentProfile());
@@ -1448,6 +1458,9 @@ bool MainWindow::saveFile(const QString& path) {
     if (path_ != path) {
         autosave_.reset();
         path_ = path;
+        const auto* profile = currentProfile();
+        session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+            profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
         startAutosave();
     }
     unsaved_ = false;

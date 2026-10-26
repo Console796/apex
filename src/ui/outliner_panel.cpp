@@ -1,4 +1,5 @@
 #include "ui/outliner_panel.hpp"
+#include "ui/rename_confirmation.hpp"
 
 #include <QString>
 #include <QLineEdit>
@@ -73,8 +74,12 @@ public:
         const auto name = static_cast<QLineEdit*>(editor)->text().toStdString();
         const auto* document = session ? session->document() : nullptr;
         // Document notifications rebuild the tree; let Qt finish closing the editor first.
-        QTimer::singleShot(0, this, [this, id, name, document] {
-            if (session && session->document() == document) session->renameEntity(id, name);
+        auto* tree = qobject_cast<OutlinerPanel*>(parent());
+        QTimer::singleShot(0, this, [this, id, name, document, tree] {
+            if (session && session->document() == document && tree) {
+                renameWithConfirmation(*session, id, name, tree);
+                tree->refresh();
+            }
         });
     }
 };

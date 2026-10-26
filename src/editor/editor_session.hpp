@@ -23,9 +23,13 @@
 #include <memory>
 #include <span>
 #include <chrono>
+#include <filesystem>
 #include <functional>
 
 namespace apex::editor {
+
+class ConnectionValidator;
+class InstanceTemplates;
 
 class SelectTool;
 class EntityTool;
@@ -93,6 +97,9 @@ public:
     const PickIndex& picks() const { return *picks_; }
     const GroupIndex& groups() const { return *groups_; }
     const NameIndex& names() const { return *names_; }
+    ConnectionValidator connectionValidator() const;
+    void setConnectionContext(std::filesystem::path map,
+                              std::optional<std::filesystem::path> extraRoot = {});
     const CycleState& cycle() const;
     const ViewState& viewState() const { return view_; }
     void setViewState(ViewState view);
@@ -179,7 +186,8 @@ public:
     ConnectionModel connectionModel() const;
     Result<void> setConnectionField(std::size_t row, ConnectionModel::Field field, std::string text);
     Result<void> setConnectionOutput(std::size_t row, std::string name);
-    Result<void> addConnection(std::string output, document::Connection connection);
+    Result<void> addConnection(std::string output, document::Connection connection,
+                               std::optional<std::size_t> after = {});
     Result<void> removeConnection(std::size_t row);
     Result<void> duplicateConnection(std::size_t row);
     InspectorModel inspectorModel(bool raw = false) const;
@@ -296,6 +304,9 @@ private:
     EntityBoundsProvider entityBoundsProvider_;
     std::unique_ptr<GroupIndex> groups_;
     std::unique_ptr<NameIndex> names_;
+    std::filesystem::path connectionMapPath_;
+    std::optional<std::filesystem::path> connectionExtraRoot_;
+    mutable std::unique_ptr<InstanceTemplates> instanceTemplates_;
     Selection selection_;
     std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
     ToolId activeTool_ = Tool::Select;

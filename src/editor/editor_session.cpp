@@ -1,4 +1,6 @@
 #include "editor/editor_session.hpp"
+#include "editor/connection_validation.hpp"
+#include "editor/instance_templates.hpp"
 #include "editor/pie_menus.hpp"
 
 #include "core/strings.hpp"
@@ -592,6 +594,18 @@ ConnectionModel EditorSession::connectionModel() const {
     if (!document_) throw std::logic_error("no document");
     return ConnectionModel(*document_, selection_);
 }
+ConnectionValidator EditorSession::connectionValidator() const {
+    if (!document_) throw std::logic_error("no document");
+    if (!instanceTemplates_) instanceTemplates_ = std::make_unique<InstanceTemplates>();
+    return ConnectionValidator(*document_, *names_, entityClasses_, instanceTemplates_.get(),
+                               connectionMapPath_, connectionExtraRoot_);
+}
+void EditorSession::setConnectionContext(std::filesystem::path map,
+                                         std::optional<std::filesystem::path> extraRoot) {
+    if (connectionMapPath_ != map && instanceTemplates_) instanceTemplates_->clear();
+    connectionMapPath_ = std::move(map);
+    connectionExtraRoot_ = std::move(extraRoot);
+}
 Result<void> EditorSession::setConnectionField(std::size_t row, ConnectionModel::Field field, std::string text) {
     return runEdit("Edit connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
         auto result = connectionModel().setField(tx, row, field, std::move(text));
@@ -606,9 +620,10 @@ Result<void> EditorSession::setConnectionOutput(std::size_t row, std::string nam
         return EditedObjects{};
     });
 }
-Result<void> EditorSession::addConnection(std::string output, document::Connection connection) {
+Result<void> EditorSession::addConnection(std::string output, document::Connection connection,
+                                          std::optional<std::size_t> after) {
     return runEdit("Add connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
-        auto result = connectionModel().add(tx, std::move(output), std::move(connection));
+        auto result = connectionModel().add(tx, std::move(output), std::move(connection), after);
         if (!result) return std::unexpected(result.error());
         return EditedObjects{};
     });

@@ -18,9 +18,13 @@
 #include <QDir>
 #include <QSettings>
 #include <QTabBar>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QCheckBox>
 #include <QTemporaryDir>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <set>
 
 #include "core/log.hpp"
 #include "../editor/fixtures.hpp"
@@ -38,7 +42,6 @@
 #include "ui/transform_input.hpp"
 #include "viewport/pick_math.hpp"
 #include <QLineEdit>
-#include <QCheckBox>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QToolBar>
@@ -1282,6 +1285,7 @@ TEST_CASE("quad splitter bars stay aligned and the crossing drags both axes") {
 
 #include "ui/area_frame.hpp"
 #include "ui/inspector_panel.hpp"
+#include "editor/connection_validation.hpp"
 #include "ui/workspace_bar.hpp"
 #include "ui/visgroup_panel.hpp"
 #include "ui/history_panel.hpp"
@@ -1801,6 +1805,32 @@ std::map<std::string, std::string> inspectorValues(const document::Document& doc
         if (key.kind() == kv1::NodeKind::Value) values[std::string(key.key())] = key.decodedValue().value();
     return values;
 }
+assets::EntityClassTable connectionUiClasses() {
+    assets::EntityClassTable table;
+    auto& button = table.classes["func_button"];
+    button.name = "func_button";
+    button.type = "PointClass";
+    button.outputs.push_back({"OnPressed", "void", ""});
+    assets::EntityProperty targetname;
+    targetname.name = "targetname";
+    targetname.type = "target_name_or_class";
+    button.properties.push_back(targetname);
+    auto& door = table.classes["prop_door_rotating"];
+    door.name = "prop_door_rotating";
+    door.type = "PointClass";
+    door.inputs.push_back({"Open", "void", ""});
+    door.properties.push_back(targetname);
+    auto& relay = table.classes["logic_relay"];
+    relay.name = "logic_relay";
+    relay.type = "PointClass";
+    relay.inputs.push_back({"Trigger", "void", ""});
+    return table;
+}
+void key(QWidget* widget, int key, Qt::KeyboardModifiers modifiers = {}, QString value = {}) {
+    QKeyEvent event(QEvent::KeyPress, key, modifiers, value);
+    QApplication::sendEvent(widget, &event);
+    app().processEvents();
+}
 }
 
 TEST_CASE("inspector collapses dash spacer properties and elides long labels") {
@@ -2028,6 +2058,342 @@ TEST_CASE("raw inspector preserves duplicate order and edits one occurrence") {
     CHECK(keys[1]->decodedValue().value() == "replacement");
     panel.setDocument(nullptr);
     CHECK(panel.findChildren<QLineEdit*>().size() == 1); // Class picker's editor only.
+}
+
+TEST_CASE("inspector connection tabs show validation, completions, and incoming sources") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname button connections { "
+        "OnPressed \"door" + esc + "Missing" + esc + esc + "0" + esc + "-1\" "
+        "OnPressed \"*" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door } "
+        "entity { id 3 classname logic_relay targetname relay }"));
+    const auto button = doc.get(*doc.handle(doc.roots()[0]))->id;
+    const auto door = doc.get(*doc.handle(doc.roots()[1]))->id;
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(button);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(700, 500);
+    panel.show();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    auto* inputs = panel.findChild<QTableWidget*>("inspectorInputs");
+    REQUIRE(tabs);
+    REQUIRE(outputs);
+    REQUIRE(inputs);
+    CHECK(tabs->tabText(0) == "Properties");
+    CHECK(tabs->tabText(1) == "Outputs");
+    CHECK(tabs->tabText(2) == "Inputs");
+    CHECK(outputs->rowCount() == 2);
+    CHECK_FALSE(outputs->item(0, 2)->toolTip().isEmpty());
+
+    tabs->setCurrentWidget(outputs);
+    outputs->editItem(outputs->item(1, 1));
+    app().processEvents();
+    auto* edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    auto* completer = edit->completer();
+    REQUIRE(completer);
+    std::set<QString> targetValues;
+    for (int row = 0; row < completer->model()->rowCount(); ++row)
+        targetValues.insert(completer->model()->index(row, 0).data().toString());
+    CHECK(targetValues.contains("door"));
+    CHECK(targetValues.contains("!activator"));
+    key(edit, Qt::Key_Escape);
+    app().processEvents();
+    outputs->editItem(outputs->item(1, 2));
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    completer = edit->completer();
+    REQUIRE(completer);
+    std::set<QString> inputValues;
+    for (int row = 0; row < completer->model()->rowCount(); ++row)
+        inputValues.insert(completer->model()->index(row, 0).data().toString());
+    CHECK(inputValues.contains("Open"));
+    CHECK(inputValues.contains("Trigger"));
+    key(edit, Qt::Key_Escape);
+
+    session.selectNode(door);
+    app().processEvents();
+    CHECK(inputs->rowCount() == 2);
+    CHECK(inputs->item(0, 0)->text().contains("func_button"));
+    inputs->setCurrentCell(0, 0);
+    inputs->setFocus();
+    key(inputs, Qt::Key_Enter);
+    CHECK(session.selection().contains(button));
+}
+
+TEST_CASE("inspector output cells preserve ESC edits and provide keyboard row operations") {
+    app();
+    const std::string esc(1, '\x1b');
+    const std::string original = "entity { id 1 classname func_button targetname button connections { "
+        "OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door } "
+        "entity { id 3 classname func_button targetname other_button }";
+    document::Document doc(editor_test::parsed(original));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs);
+    REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs);
+    outputs->setCurrentCell(0, 1);
+    outputs->editItem(outputs->item(0, 1));
+    app().processEvents();
+    auto* edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    const auto before = doc.write().value();
+    const auto history = doc.undoCount();
+    typeText(edit, "door2");
+    key(edit, Qt::Key_Return);
+    app().processEvents();
+    CHECK(doc.undoCount() == history + 1);
+    CHECK(doc.write()->find("\"door2" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == before);
+
+    outputs->setFocus();
+    key(outputs, Qt::Key_N, Qt::ControlModifier);
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "OnPressed");
+    key(edit, Qt::Key_Enter);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 2);
+    const int added = outputs->rowCount() - 1;
+    outputs->setCurrentCell(added, 1);
+    outputs->editItem(outputs->item(added, 1));
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "door");
+    key(edit, Qt::Key_Enter);
+    app().processEvents();
+    outputs->setCurrentCell(added, 2);
+    outputs->editItem(outputs->item(added, 2));
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "Open");
+    key(edit, Qt::Key_Enter);
+    app().processEvents();
+    const auto saved = doc.write().value();
+    CHECK(saved.find("\"OnPressed\" \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+    CHECK(session.connectionValidator().validate(session.connectionModel().entities()[0],
+          session.connectionModel().rows().back().connection, session.connectionModel().rows().back().output).empty());
+
+    outputs->setCurrentCell(added, 0);
+    key(outputs, Qt::Key_D, Qt::ControlModifier);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 3);
+    outputs->selectRow(added);
+    key(outputs, Qt::Key_C, Qt::ControlModifier);
+    session.selectNode(doc.get(*doc.handle(doc.roots()[2]))->id);
+    app().processEvents();
+    tabs->setCurrentWidget(outputs);
+    outputs->setFocus();
+    key(outputs, Qt::Key_V, Qt::ControlModifier);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 1);
+    outputs->setCurrentCell(0, 0);
+    key(outputs, Qt::Key_Delete);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 0);
+}
+
+TEST_CASE("inspector targetname commit uses the injected reference confirmation") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button targetname button connections { "
+        "OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door }"));
+    const auto door = doc.get(*doc.handle(doc.roots()[1]))->id;
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(door);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    int dialogs = 0;
+    bool update = true;
+    panel.setRenameDialogPresenter([&](QDialog* dialog) {
+        ++dialogs;
+        auto* check = dialog->findChild<QCheckBox*>("renameUpdateReferences");
+        REQUIRE(check);
+        check->setChecked(update);
+        return true;
+    });
+    auto* edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    const auto before = doc.write().value();
+    const auto history = doc.undoCount();
+    edit->setText("door_new");
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(dialogs == 1);
+    CHECK(doc.undoCount() == history + 1);
+    CHECK(doc.write()->find("targetname\" \"door_new") != std::string::npos);
+    CHECK(doc.write()->find("\"door_new" + esc + "Open") != std::string::npos);
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == before);
+
+    panel.setRenameDialogPresenter([&](QDialog*) { ++dialogs; return false; });
+    edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setText("cancelled");
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(doc.write().value() == before);
+
+    update = false;
+    panel.setRenameDialogPresenter([&](QDialog* dialog) {
+        ++dialogs;
+        dialog->findChild<QCheckBox*>("renameUpdateReferences")->setChecked(false);
+        return true;
+    });
+    edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setText("door_other");
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(doc.get(*doc.handle(door))->block->find("targetname")->decodedValue().value() == "door_other");
+    CHECK(doc.write()->find("\"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+    const auto beforeNoRefs = dialogs;
+    edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setText("door_final");
+    panel.setRenameDialogPresenter([&](QDialog*) { ++dialogs; return true; });
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(dialogs == beforeNoRefs);
+    CHECK(doc.get(*doc.handle(door))->block->find("targetname")->decodedValue().value() == "door_final");
+}
+
+TEST_CASE("keyboard wires a button output to a door input") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname button } "
+        "entity { id 2 classname prop_door_rotating targetname door }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs);
+    REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs);
+    outputs->setFocus();
+    key(outputs, Qt::Key_N, Qt::ControlModifier);
+    app().processEvents();
+    auto* edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "OnPressed");
+    key(edit, Qt::Key_Enter);
+    key(outputs, Qt::Key_Tab);
+    key(outputs, Qt::Key_unknown, Qt::NoModifier, "door");
+    auto* targetEdit = outputs->findChild<QLineEdit*>();
+    REQUIRE(targetEdit);
+    key(targetEdit, Qt::Key_Enter);
+    key(outputs, Qt::Key_Tab);
+    key(outputs, Qt::Key_unknown, Qt::NoModifier, "Open");
+    auto* inputEdit = outputs->findChild<QLineEdit*>();
+    REQUIRE(inputEdit);
+    key(inputEdit, Qt::Key_Enter);
+    const auto saved = doc.write().value();
+    CHECK(saved.find("\"OnPressed\" \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+}
+
+TEST_CASE("inspector multi-selection exposes only common connection rows") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname a connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" OnOther \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname func_button targetname b connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 3 classname prop_door_rotating targetname door }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selection().add(doc.get(*doc.handle(doc.roots()[0]))->id);
+    session.selection().add(doc.get(*doc.handle(doc.roots()[1]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    app().processEvents();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(outputs);
+    CHECK(outputs->rowCount() == 1);
+    CHECK(outputs->item(0, 0)->text() == "OnPressed");
+}
+
+TEST_CASE("inspector Once checkbox toggles between 1 and unlimited") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname a connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "1\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    app().processEvents();
+    auto* once = panel.findChild<QCheckBox*>("connectionOnce.0");
+    REQUIRE(once);
+    CHECK(once->isChecked());
+    once->setChecked(false);
+    app().processEvents();
+    CHECK(doc.write()->find("\"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+}
+
+TEST_CASE("inspector targetname edits still write for a multi-selection") {
+    app();
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname a } entity { id 2 classname func_button targetname b }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selection().add(doc.get(*doc.handle(doc.roots()[0]))->id);
+    session.selection().add(doc.get(*doc.handle(doc.roots()[1]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setFocus();
+    typeText(edit, "shared");
+    app().processEvents();
+    const auto written = doc.write().value();
+    CHECK(written.find("targetname\" \"shared\"") != std::string::npos);
 }
 
 TEST_CASE("entity toolbar follows session actions and loads point classes from profile") {

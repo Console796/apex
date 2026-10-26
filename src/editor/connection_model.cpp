@@ -62,7 +62,8 @@ ConnectionModel::ConnectionModel(const document::Document& doc, const Selection&
     }
 }
 Result<void> ConnectionModel::edit(document::Transaction& tx, std::optional<std::size_t> row,
-                                  const std::function<bool(kv1::Node&, std::size_t)>& stage) const {
+                                  const std::function<bool(kv1::Node&, std::size_t)>& stage,
+                                  std::optional<std::size_t> after) const {
     if (entities_.empty() || (row && *row >= rows_.size())) return invalid("invalid connection row or selection");
     try {
         for (std::size_t e = 0; e < entities_.size(); ++e) {
@@ -70,7 +71,7 @@ Result<void> ConnectionModel::edit(document::Transaction& tx, std::optional<std:
             if (!h) return invalid("stale connection entity");
             const auto* existing = connections(doc_, entities_[e]);
             auto block = existing ? *existing : kv1::Node::block("connections");
-            const auto index = row ? rows_[*row].indices[e] : block.children().size();
+            const auto index = row ? rows_[*row].indices[e] : after ? rows_[*after].indices[e] + 1 : block.children().size();
             if (row && (index >= block.children().size() || !matches(rows_[*row], block.children()[index])))
                 return invalid("stale connection row");
             if (stage(block, index)) tx.setConnections(*h, std::move(block));
@@ -96,11 +97,13 @@ Result<void> ConnectionModel::setOutput(document::Transaction& tx, std::size_t r
         return true;
     });
 }
-Result<void> ConnectionModel::add(document::Transaction& tx, std::string output, document::Connection connection) const {
-    return edit(tx, {}, [&](auto& block, auto) {
-        block.append(kv1::Node::value(output, document::serialize(connection))).value();
+Result<void> ConnectionModel::add(document::Transaction& tx, std::string output, document::Connection connection,
+                                  std::optional<std::size_t> after) const {
+    if (after && *after >= rows_.size()) return invalid("invalid connection insertion row");
+    return edit(tx, {}, [&](auto& block, auto index) {
+        block.insert(index, kv1::Node::value(output, document::serialize(connection))).value();
         return true;
-    });
+    }, after);
 }
 Result<void> ConnectionModel::remove(document::Transaction& tx, std::size_t row) const {
     return edit(tx, row, [](auto& block, auto index) { block.remove(index).value(); return true; });
