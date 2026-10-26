@@ -385,6 +385,25 @@ Result<std::string> serializeSelection(const document::Document& doc, const Grou
     return kv1::write(out);
 }
 
+
+static void collectSideIds(const Kv& block, std::vector<int>& out) {
+    for (const auto& child : block.children()) {
+        if (child.kind() != kv1::NodeKind::Block) continue;
+        if (ciEquals(child.key(), "side")) {
+            if (const auto id = intOf(child.find("id"))) out.push_back(*id);
+        } else if (ciEquals(child.key(), "solid")) {
+            collectSideIds(child, out);
+        }
+    }
+}
+// Pair the source block's sides with the created ones; the document re-ids them in order.
+static void recordSideIds(const Kv& source, const Kv& created, std::map<int, int>& out) {
+    std::vector<int> from, to;
+    collectSideIds(source, from);
+    collectSideIds(created, to);
+    for (std::size_t i = 0; i < from.size() && i < to.size(); ++i) out[from[i]] = to[i];
+}
+
 Result<EditedObjects> stagePaste(const document::Document& doc, document::Transaction& tx,
                                  std::string_view text, const PasteOptions& options) {
     using Kind = EditedObjects::Item::Kind;
@@ -535,6 +554,7 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             const auto group = rewriteEditor(block, groupMap, &visMap, wrapperId);
             const auto handle = tx.create(std::move(block), world);
             const auto node = doc.get(handle)->id;
+            recordSideIds(source, doc.exportSubtree(node), result.sideIds);
             moved.push_back(node);
             EditedObjects::Item item;
             item.node = node;
@@ -554,6 +574,7 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             }
             const auto handle = tx.create(std::move(block));
             const auto node = doc.get(handle)->id;
+            recordSideIds(source, doc.exportSubtree(node), result.sideIds);
             moved.push_back(node);
             EditedObjects::Item item;
             item.node = node;

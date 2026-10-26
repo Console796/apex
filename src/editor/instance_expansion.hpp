@@ -30,6 +30,9 @@ public:
     const std::vector<document::InstanceContent>& contents() const { return contents_; }
     const std::vector<InstanceProblem>& problems() const { return problems_; }
     const std::map<std::filesystem::path, std::set<document::NodeId>>& dependencies() const { return dependencies_; }
+    // Where unresolved instance files would have to appear. Watching these lets a template that was
+    // deleted or not yet created come back without reopening the map.
+    const std::set<std::filesystem::path>& missing() const { return missing_; }
 
 private:
     InstanceTemplates& templates_;
@@ -38,6 +41,7 @@ private:
     std::vector<document::InstanceContent> contents_;
     std::vector<InstanceProblem> problems_;
     std::map<std::filesystem::path, std::set<document::NodeId>> dependencies_;
+    std::set<std::filesystem::path> missing_;
     std::map<std::filesystem::path, InstanceProblem> reloadProblems_;
 };
 

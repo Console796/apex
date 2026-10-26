@@ -254,9 +254,12 @@ MainWindow::MainWindow(QWidget* parent)
         instanceReloadTimer_->start();
     });
     connect(instanceWatcher_, &QFileSystemWatcher::directoryChanged, this, [this](const QString& changed) {
-        const auto directory = std::filesystem::path(changed.toStdU16String());
-        for (const auto& [path, users] : session_.instances().dependencies())
-            if (!users.empty() && path.parent_path() == directory) pendingInstanceReloads_.insert(path);
+        // The notification only says something in the folder changed: reload the templates whose
+        // file actually did, and pick up a missing template that came back.
+        auto reload = instanceWatch_.directoryChanged(std::filesystem::path(changed.toStdU16String()));
+        // A folder a missing template was waiting for may have appeared; listen deeper and look again.
+        for (const auto& added : syncInstanceWatches()) reload.merge(instanceWatch_.directoryChanged(added));
+        pendingInstanceReloads_.merge(reload);
         if (!pendingInstanceReloads_.empty()) instanceReloadTimer_->start();
     });
     connect(instanceReloadTimer_, &QTimer::timeout, this, &MainWindow::reloadChangedInstances);
@@ -837,18 +840,21 @@ void MainWindow::openSelectedInstance(document::NodeId instance) {
     if (!started) statusBar()->showMessage(tr("Could not open instance: %1").arg(arguments.front()), 5000);
 }
 
-void MainWindow::syncInstanceWatches() {
-    if (!instanceWatcher_) return;
+std::vector<std::filesystem::path> MainWindow::syncInstanceWatches() {
+    std::vector<std::filesystem::path> added;
+    if (!instanceWatcher_) return added;
+    std::set<std::filesystem::path> dependencies;
+    for (const auto& [path, users] : session_.instances().dependencies()) if (!users.empty()) dependencies.insert(path);
+    const auto watches = instanceWatch_.sync(dependencies, session_.instances().missing());
     std::set<QString> files, directories;
-    for (const auto& [path, users] : session_.instances().dependencies()) if (!users.empty()) {
-        const auto file = QString::fromStdU16String(path.u16string());
-        files.insert(file);
-        directories.insert(QFileInfo(file).absolutePath());
-    }
+    for (const auto& path : watches.files) files.insert(QString::fromStdU16String(path.u16string()));
+    for (const auto& path : watches.directories) directories.insert(QString::fromStdU16String(path.u16string()));
     for (const auto& path : instanceWatcher_->files()) if (!files.contains(path)) instanceWatcher_->removePath(path);
     for (const auto& path : instanceWatcher_->directories()) if (!directories.contains(path)) instanceWatcher_->removePath(path);
     for (const auto& path : files) if (QFileInfo::exists(path) && !instanceWatcher_->files().contains(path)) instanceWatcher_->addPath(path);
-    for (const auto& path : directories) if (QFileInfo(path).isDir() && !instanceWatcher_->directories().contains(path)) instanceWatcher_->addPath(path);
+    for (const auto& path : directories)
+        if (QFileInfo(path).isDir() && !instanceWatcher_->directories().contains(path) && instanceWatcher_->addPath(path))
+            added.emplace_back(path.toStdU16String());
     for (const auto& problem : session_.instances().problems()) {
         const auto key = problem.path.empty() ? std::filesystem::path(problem.file) : problem.path;
         const std::string signature = problem.message;
@@ -857,12 +863,14 @@ void MainWindow::syncInstanceWatches() {
             log::warn("{}", problem.message);
         }
     }
+    return added;
 }
 
 void MainWindow::reloadChangedInstances() {
     const auto changed = std::exchange(pendingInstanceReloads_, {});
     for (const auto& path : changed) {
         const auto result = session_.invalidateInstance(path);
+        instanceWatch_.restamp(path);
         if (result.problem) {
             const auto signature = result.problem->message;
             if (reportedInstanceProblems_[path] != signature) {

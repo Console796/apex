@@ -39,6 +39,7 @@ void InstanceExpansion::update(const document::Document& document, const std::fi
     contents_.clear();
     problems_.clear();
     dependencies_.clear();
+    missing_.clear();
     std::map<Key, std::shared_ptr<const document::Document>> used;
     std::vector<std::filesystem::path> ancestors;
     unsigned autoName = 1;
@@ -48,6 +49,7 @@ void InstanceExpansion::update(const document::Document& document, const std::fi
         const auto path = resolveInstanceFile(referring, file, extraRoot);
         if (!path) {
             problems_.push_back({InstanceProblem::Kind::Unresolved, owner, {}, file, "unresolved instance: " + file});
+            for (auto& candidate : instanceFileCandidates(referring, file, extraRoot)) missing_.insert(std::move(candidate));
             return;
         }
         dependencies_[*path].insert(owner);

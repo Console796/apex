@@ -25,6 +25,7 @@ struct InstanceCollapseResult {
     // These parent IDs must not go through the fragment's local ID remapping.
     kv1::Node parentMembership = kv1::Node::block("editor");
     unsigned nextAutoName = 1;
+    std::size_t objectCount = 0; // Root objects in the fragment; zero for a template with no contents.
 };
 
 // No mutations, history, ID allocation in the parent, or filesystem access. Eight template

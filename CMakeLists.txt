@@ -97,10 +97,10 @@ apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp 
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
                           src/editor/group_index.cpp src/editor/name_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
-                          src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp src/editor/instance_collapse_command.cpp
+                          src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp src/editor/instance_collapse_command.cpp src/editor/instance_key_types.cpp
                           src/editor/transform.cpp src/editor/preview.cpp src/editor/preset_io.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
-                          src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
+                          src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
                           src/editor/connection_model.cpp src/editor/incoming_connections.cpp src/editor/rename_propagation.cpp src/editor/inspector_model.cpp src/editor/placement.cpp
            DEPS apex_document apex_geometry apex_core)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp

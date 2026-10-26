@@ -35,44 +35,68 @@ bool contained(const std::filesystem::path& path, const std::filesystem::path& r
 }
 }
 
+namespace {
+struct InstanceRoots {
+    std::string spelling;
+    std::vector<std::filesystem::path> roots;
+    std::vector<std::filesystem::path> allowed;
+};
+std::optional<InstanceRoots> instanceRoots(const std::filesystem::path& map, std::string_view file,
+                                           const std::optional<std::filesystem::path>& extraRoot) {
+    if (file.empty()) return {};
+    InstanceRoots result;
+    result.spelling = std::string(file);
+    std::ranges::replace(result.spelling, '\\', '/');
+    const auto& spelling = result.spelling;
+    if (spelling.starts_with('/') || (spelling.size() >= 2 &&
+        ((spelling[0] >= 'A' && spelling[0] <= 'Z') || (spelling[0] >= 'a' && spelling[0] <= 'z')) && spelling[1] == ':'))
+        return {};
+    std::optional<std::filesystem::path> mapsRoot;
+    for (auto parent = map.parent_path(); !parent.empty();) {
+        if (ciEquals(parent.filename().string(), "maps")) { mapsRoot = parent; break; }
+        const auto next = parent.parent_path();
+        if (next == parent) break;
+        parent = next;
+    }
+    result.roots.push_back(map.parent_path());
+    if (mapsRoot && *mapsRoot != map.parent_path()) result.roots.push_back(*mapsRoot);
+    if (extraRoot) result.roots.push_back(*extraRoot);
+    const auto allowedMapRoot = mapsRoot.value_or(map.parent_path());
+    {
+        std::error_code ec;
+        auto canonical = std::filesystem::canonical(allowedMapRoot, ec);
+        if (!ec) result.allowed.push_back(std::move(canonical));
+    }
+    if (extraRoot) {
+        std::error_code ec;
+        auto canonical = std::filesystem::canonical(*extraRoot, ec);
+        if (!ec) result.allowed.push_back(std::move(canonical));
+    }
+    return result;
+}
+}
+
 std::optional<std::filesystem::path> resolveInstanceFile(const std::filesystem::path& map,
     std::string_view file, const std::optional<std::filesystem::path>& extraRoot) {
-    if (file.empty()) return {};
     try {
-        std::string spelling(file);
-        std::ranges::replace(spelling, '\\', '/');
-        if (spelling.starts_with('/') || (spelling.size() >= 2 &&
-            ((spelling[0] >= 'A' && spelling[0] <= 'Z') || (spelling[0] >= 'a' && spelling[0] <= 'z')) && spelling[1] == ':'))
-            return {};
-        std::optional<std::filesystem::path> mapsRoot;
-        for (auto parent = map.parent_path(); !parent.empty();) {
-            if (ciEquals(parent.filename().string(), "maps")) { mapsRoot = parent; break; }
-            const auto next = parent.parent_path();
-            if (next == parent) break;
-            parent = next;
-        }
-        std::vector<std::filesystem::path> roots{map.parent_path()};
-        if (mapsRoot && *mapsRoot != map.parent_path()) roots.push_back(*mapsRoot);
-        if (extraRoot) roots.push_back(*extraRoot);
-        std::vector<std::filesystem::path> allowed;
-        const auto allowedMapRoot = mapsRoot.value_or(map.parent_path());
-        {
-            std::error_code ec;
-            auto canonical = std::filesystem::canonical(allowedMapRoot, ec);
-            if (!ec) allowed.push_back(std::move(canonical));
-        }
-        if (extraRoot) {
-            std::error_code ec;
-            auto canonical = std::filesystem::canonical(*extraRoot, ec);
-            if (!ec) allowed.push_back(std::move(canonical));
-        }
-        for (const auto& root : roots) {
-            std::error_code ec;
-            if (auto path = casePath(root / spelling); path && std::ranges::any_of(allowed,
+        const auto roots = instanceRoots(map, file, extraRoot);
+        if (!roots) return {};
+        for (const auto& root : roots->roots) {
+            if (auto path = casePath(root / roots->spelling); path && std::ranges::any_of(roots->allowed,
                 [&](const auto& allowedRoot) { return contained(*path, allowedRoot); })) return path;
         }
     } catch (const std::exception&) { }
     return {};
+}
+
+std::vector<std::filesystem::path> instanceFileCandidates(const std::filesystem::path& map,
+    std::string_view file, const std::optional<std::filesystem::path>& extraRoot) {
+    std::vector<std::filesystem::path> result;
+    try {
+        if (const auto roots = instanceRoots(map, file, extraRoot))
+            for (const auto& root : roots->roots) result.push_back((root / roots->spelling).lexically_normal());
+    } catch (const std::exception&) { }
+    return result;
 }
 
 std::vector<std::string> proxyNames(const document::Document& doc) {

@@ -165,6 +165,53 @@ TEST_CASE("instance watcher reloads changed and atomically replaced templates, p
     CHECK(window.document()->write().value() == parentBytes);
 }
 
+TEST_CASE("instance watcher recovers a template that goes missing across the debounce and ignores neighbouring activity") {
+    ui_test::app();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const auto leaf = dir.filePath(QStringLiteral("leaf.vmf"));
+    const auto other = dir.filePath(QStringLiteral("other.vmf"));
+    const auto map = dir.filePath(QStringLiteral("parent.vmf"));
+    REQUIRE(writeFile(leaf, relay("one").toUtf8()));
+    REQUIRE(writeFile(other, relay("two").toUtf8()));
+    auto text = parentMap("leaf.vmf");
+    text += QStringLiteral("entity { \"id\" \"9\" \"classname\" \"func_instance\" \"targetname\" \"o\" \"file\" \"other.vmf\" \"origin\" \"0 512 0\" \"angles\" \"0 0 0\" }\n");
+    REQUIRE(writeFile(map, text.toUtf8()));
+    ui::MainWindow window;
+    REQUIRE(window.openFile(map));
+    auto* watcher = window.findChild<QFileSystemWatcher*>(QStringLiteral("instanceWatcher"));
+    REQUIRE(watcher);
+    REQUIRE(waitFor([&] { return watcher->files().contains(leaf) && watcher->files().contains(other); }));
+    const auto templates = [&] {
+        std::map<std::string, const document::Document*> result;
+        for (const auto& content : window.editorSession().instances().contents()) result[content.path.filename().string()] = content.templ.get();
+        return result;
+    };
+    const auto before = templates();
+    REQUIRE(before.size() == 2);
+
+    // Unrelated activity in the same folder reloads no template.
+    REQUIRE(writeFile(dir.filePath(QStringLiteral("notes.txt")), "x"));
+    QTest::qWait(600);
+    CHECK(templates() == before);
+
+    // The template disappears for longer than the reload debounce, then returns with new content.
+    REQUIRE(QFile::remove(leaf));
+    REQUIRE(waitFor([&] { return templates().size() == 1; }));
+    QTest::qWait(400);
+    CHECK_FALSE(window.editorSession().instances().problems().empty());
+    REQUIRE(writeFile(leaf, relay("restored").toUtf8()));
+    REQUIRE(waitFor([&] { return templates().size() == 2; }));
+    bool restored = false;
+    for (const auto& content : window.editorSession().instances().contents())
+        restored |= content.templ->write()->find("restored") != std::string::npos;
+    CHECK(restored);
+    CHECK(window.editorSession().instances().problems().empty());
+    // The untouched neighbour kept its template through all of that.
+    for (const auto& content : window.editorSession().instances().contents())
+        if (content.path.filename() == "other.vmf") CHECK(content.templ.get() == before.at("other.vmf"));
+}
+
 TEST_CASE("instance visibility header control cycles and persists in viewsettings") {
     ui_test::app();
     QTemporaryDir dir;

@@ -345,6 +345,7 @@ Result<InstanceCollapseResult> collapseInstance(const Document& parent, NodeId i
     if (!content) return std::unexpected(content.error());
     InstanceCollapseResult result;
     result.nextAutoName = collapse.autoName;
+    result.objectCount = content->objects.size();
     if (const auto* editor = instance.find("editor")) {
         for (const auto& value : editor->children())
             if (ciEquals(value.key(), "groupid") || ciEquals(value.key(), "visgroupid")) (void)result.parentMembership.append(value);

@@ -1362,6 +1362,27 @@ TEST_CASE("Instance mirror shares placements fixes materials and reloads only te
     CHECK(g->context->validation().errorCount() == 0);
 }
 
+TEST_CASE("Instance mirror opened hidden does not request frames forever") {
+    REQUIRE_GPU();
+    g->tree.put("instance-hidden.vmf", readFixture("render_map.vmf"));
+    auto file = vmf::parse(R"(entity { classname func_instance file instance-hidden.vmf })");
+    REQUIRE(file);
+    document::Document parent(*file);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 1);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Hidden);
+    mirror.settle();
+    mirror.buildDrawList({});
+    CHECK_FALSE(mirror.needsRedraw());
+    // Showing the contents wakes the viewport again.
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Normal);
+    CHECK(mirror.needsRedraw());
+}
+
 TEST_CASE("Instance corpus draws every resolvable nested template and reports largest map cost") {
     const auto paths = editor_test::corpusPaths();
     if (paths.empty()) { MESSAGE("APEX_P2CE_DIR unset; skipping instance drawing corpus"); return; }

@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <set>
 
 using namespace editor_test;
 
@@ -150,6 +151,117 @@ entity { "id" "4" "classname" "func_instance" "targetname" "cycle" "file" "insta
     CHECK((*result)[2].reason.find("cycle") != std::string::npos);
     CHECK(namedClassCount(doc, "func_instance") == 2);
     CHECK(namedClassCount(doc, "logic_relay") == 1);
+}
+
+namespace {
+assets::EntityClassTable overlayClasses() {
+    assets::EntityClassTable table;
+    assets::EntityClass overlay;
+    overlay.name = "info_overlay";
+    overlay.properties.push_back({.name = "sides", .type = "sidelist"});
+    assets::EntityClass door;
+    door.name = "func_door";
+    door.properties.push_back({.name = "movedir", .type = "vec_dir"});
+    table.classes["info_overlay"] = std::move(overlay);
+    table.classes["func_door"] = std::move(door);
+    return table;
+}
+NodeId instanceIdOf(const Document& doc) {
+    for (const auto h : nodes(doc)) {
+        const auto* c = doc.get(h)->block->find("classname");
+        if (c && c->decodedValue().value_or("") == "func_instance") return doc.get(h)->id;
+    }
+    return 0;
+}
+std::vector<kv1::Node> entitiesOf(const Document& doc, std::string_view classname) {
+    std::vector<kv1::Node> found;
+    for (const auto h : nodes(doc)) {
+        auto block = doc.exportSubtree(doc.get(h)->id);
+        const auto* cls = block.find("classname");
+        if (cls && ciEquals(cls->decodedValue().value_or(""), classname)) found.push_back(std::move(block));
+    }
+    return found;
+}
+}
+
+TEST_CASE("[editor][instance] collapse applies FGD key types and follows re-id'd sides") {
+    Document doc(parsed(R"vmf(versioninfo { "editorversion" "400" }
+world { "id" "1" "classname" "worldspawn" }
+entity { "id" "2" "classname" "func_instance" "targetname" "rot" "file" "instance_command_overlay.vmf" "origin" "0 0 0" "angles" "0 90 0" }
+)vmf"));
+    EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(overlayClasses());
+    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "instances" / "map.vmf");
+    const std::array<NodeId, 1> selected{instanceIdOf(doc)};
+    const auto result = session.collapseInstances(selected);
+    REQUIRE(result);
+    CAPTURE(result->front().reason);
+    REQUIRE(result->front().collapsed);
+    const auto doors = entitiesOf(doc, "func_door");
+    REQUIRE(doors.size() == 1);
+    // Yaw 90 turns +X into +Y; the key is a direction only because the FGD says so.
+    CHECK(doors[0].find("movedir")->decodedValue().value_or("") == "0 1 0");
+    const auto overlays = entitiesOf(doc, "info_overlay");
+    REQUIRE(overlays.size() == 1);
+    std::set<int> liveSides;
+    for (const auto h : nodes(doc)) {
+        const auto block = doc.exportSubtree(doc.get(h)->id);
+        for (const auto& child : block.children())
+            if (child.key() == "side") liveSides.insert(child.find("id")->asInt().value());
+    }
+    REQUIRE(liveSides.size() == 6);
+    std::vector<int> listed;
+    for (const auto word : split(overlays[0].find("sides")->decodedValue().value_or(""), ' '))
+        listed.push_back(kv1::Node::value("", std::string(word)).asInt().value());
+    REQUIRE(listed.size() == 2);
+    for (const auto id : listed) CHECK(liveSides.contains(id));
+}
+
+TEST_CASE("[editor][instance] collapse all rewrites connections between instances being collapsed") {
+    Document doc(parsed(R"vmf(versioninfo { "editorversion" "400" }
+world { "id" "1" "classname" "worldspawn" }
+entity { "id" "2" "classname" "func_instance" "targetname" "a" "file" "instance_command_template.vmf" connections { "instance:inside;OnTrigger" "b,instance:inside;Trigger,,0,-1" } }
+entity { "id" "3" "classname" "func_instance" "targetname" "b" "file" "instance_command_template.vmf" }
+)vmf"));
+    EditorSession session;
+    session.attach(doc);
+    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "instances" / "map.vmf");
+    const auto result = session.collapseAllInstances();
+    REQUIRE(result);
+    REQUIRE(result->size() == 2);
+    CHECK(std::ranges::all_of(*result, [](const auto& item) { return item.collapsed; }));
+    bool found = false;
+    for (const auto& relay : entitiesOf(doc, "logic_relay")) {
+        if (relay.find("targetname")->decodedValue().value_or("") != "a-inside") continue;
+        for (const auto& row : relay.find("connections")->children()) {
+            const auto value = row.decodedValue().value_or("");
+            CHECK(value.find("instance:") == std::string::npos);
+            if (row.key() == "OnTrigger" && value.rfind("b-inside,Trigger", 0) == 0) found = true;
+        }
+    }
+    CHECK(found);
+}
+
+TEST_CASE("[editor][instance] an empty template collapses to nothing without aborting the batch") {
+    Document doc(parsed(R"vmf(versioninfo { "editorversion" "400" }
+world { "id" "1" "classname" "worldspawn" }
+entity { "id" "2" "classname" "func_instance" "targetname" "good" "file" "instance_command_template.vmf" }
+entity { "id" "3" "classname" "func_instance" "targetname" "hollow" "file" "instance_command_empty.vmf" }
+)vmf"));
+    EditorSession session;
+    session.attach(doc);
+    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "instances" / "map.vmf");
+    const auto before = doc.write().value();
+    const auto result = session.collapseAllInstances();
+    REQUIRE(result);
+    REQUIRE(result->size() == 2);
+    CHECK((*result)[0].collapsed);
+    CHECK((*result)[1].collapsed);
+    CHECK(namedClassCount(doc, "func_instance") == 0);
+    CHECK(namedClassCount(doc, "logic_relay") == 1);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(doc.write().value() == before);
 }
 
 TEST_CASE("[editor][instance][corpus] collapse all removes resolvable instances") {

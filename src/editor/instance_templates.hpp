@@ -9,6 +9,9 @@ namespace apex::editor {
 
 std::optional<std::filesystem::path> resolveInstanceFile(const std::filesystem::path& map,
     std::string_view file, const std::optional<std::filesystem::path>& extraRoot = {});
+// Where a missing instance file would have to appear to resolve: one path per search root.
+std::vector<std::filesystem::path> instanceFileCandidates(const std::filesystem::path& map,
+    std::string_view file, const std::optional<std::filesystem::path>& extraRoot = {});
 std::vector<std::string> proxyNames(const document::Document& doc);
 bool looksLikeInstanceFile(const document::Document& doc);
 

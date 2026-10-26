@@ -965,7 +965,9 @@ bool RenderMirror::pump() {
     impl_->pumpMaterials();
     impl_->meshPreviews();
     impl_->collectGarbage();
-    for (auto& [keys, mirror] : impl_->instanceMirrors) if (mirror->pump()) impl_->redraw = true;
+    // Hidden contents are never drawn, so their dirty flags would never clear.
+    if (impl_->instanceVisibility != document::InstanceVisibility::Hidden)
+        for (auto& [keys, mirror] : impl_->instanceMirrors) if (mirror->pump()) impl_->redraw = true;
     return impl_->redraw;
 }
 
@@ -981,6 +983,7 @@ bool RenderMirror::settle(std::chrono::milliseconds timeout) {
 
 bool RenderMirror::needsRedraw() const {
     if (impl_->redraw || impl_->pending()) return true;
+    if (impl_->instanceVisibility == document::InstanceVisibility::Hidden) return false;
     return std::ranges::any_of(impl_->instanceMirrors, [](const auto& item) { return item.second->needsRedraw(); });
 }
 bool RenderMirror::pending() const { return impl_->pending(); }

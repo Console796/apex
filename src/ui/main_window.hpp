@@ -11,6 +11,7 @@
 #include "assets/game_profile.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/autosave.hpp"
+#include "editor/instance_watch_state.hpp"
 #include "editor/preset_io.hpp"
 #include "ui/theme.hpp"
 
@@ -152,7 +153,8 @@ private:
     void addRecent(const QString& path);
     void rebuildRecentMenu();
     void updateTitle();
-    void syncInstanceWatches();
+    // Returns the directories that only just came under watch.
+    std::vector<std::filesystem::path> syncInstanceWatches();
     void reloadChangedInstances();
     void openSelectedInstance(document::NodeId instance = 0);
     void collapseSelectedInstances();
@@ -171,6 +173,7 @@ private:
     QFileSystemWatcher* instanceWatcher_ = nullptr;
     QTimer* instanceReloadTimer_ = nullptr;
     std::set<std::filesystem::path> pendingInstanceReloads_;
+    editor::InstanceWatchState instanceWatch_;
     std::map<std::filesystem::path, std::string> reportedInstanceProblems_;
     std::function<bool(const QString&, const QStringList&)> instanceLauncher_;
     std::uint64_t savedState_ = 0;

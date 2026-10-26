@@ -1,0 +1,7 @@
+// Apex-authored fixture: a template with no contents.
+entity
+{
+    "id" "1"
+    "classname" "func_instance_parms"
+    "targetname" "parms"
+}
