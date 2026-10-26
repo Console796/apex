@@ -7,7 +7,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp
                assets/vfs_test.cpp assets/addons_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
-               assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp
+               assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/thumbnail_test.cpp core/json_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
