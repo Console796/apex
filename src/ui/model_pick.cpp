@@ -1,10 +1,27 @@
 #include "ui/model_pick.hpp"
 
+#include "core/log.hpp"
+
 #include <charconv>
+#include <exception>
 
 namespace apex::ui {
 
+namespace {
+std::shared_ptr<const editor::PickModel> buildPickModel(const assets::ModelData& model);
+}
+
 std::shared_ptr<const editor::PickModel> makePickModel(const assets::ModelData& model) {
+    try {
+        return buildPickModel(model);
+    } catch (const std::exception& e) {
+        log::warn("model pick: {}", e.what()); // Invalid geometry falls back to the class box.
+        return nullptr;
+    }
+}
+
+namespace {
+std::shared_ptr<const editor::PickModel> buildPickModel(const assets::ModelData& model) {
     std::vector<DVec3> positions;
     positions.reserve(model.vertices.size());
     for (const auto& vertex : model.vertices) positions.emplace_back(vertex.position);
@@ -26,6 +43,7 @@ std::shared_ptr<const editor::PickModel> makePickModel(const assets::ModelData& 
     }
     if (parts.empty()) indices = model.indices;
     return std::make_shared<editor::PickModel>(std::move(positions), std::move(indices), std::move(parts));
+}
 }
 
 std::optional<editor::EntityPickShape> ModelPickCache::shape(const kv1::Node& entity) {

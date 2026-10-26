@@ -1,3 +1,4 @@
+#include <limits>
 #include "../assets/fixture.hpp"
 #include "golden_image.hpp"
 #include "shared_context.hpp"
@@ -315,6 +316,10 @@ TEST_CASE("model mirror instances share geometry through edits and display modes
     REQUIRE(changed.meshes.size() == 2);
     CHECK(changed.meshes[0].vertices->handle() == vertices);
     CHECK(changed.meshes[1].vertices->handle() == vertices);
+    Highlight selection; selection.selected = {2}; mirror.setHighlight(selection);
+    const auto selectedList = mirror.buildDrawList(view());
+    CHECK(selectedList.outlines.size() == 1);
+    CHECK(selectedList.outlines.front().colour == selection.outlineColour);
     CHECK(context->validation().errorCount() == 0);
 }
 
@@ -349,4 +354,16 @@ TEST_CASE("model adapter reorders interleaved choices and session refresh keeps 
     session.setEntityBoundsProvider({});
     REQUIRE(session.picks().first({{0, 0, 30}, {0, 0, -1}}));
     CHECK_FALSE(session.picks().first({{0, 0, 30}, {0, 0, -1}})->modelTriangle);
+}
+
+TEST_CASE("model adapter rejects non-finite geometry without throwing") {
+    Fixture fixture;
+    fixture.models->request("models/fixture.mdl");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (fixture.models->state("models/fixture.mdl") == assets::ModelState::Loading &&
+           std::chrono::steady_clock::now() < deadline) fixture.jobs.drainCompletions();
+    const auto loaded = fixture.models->request("models/fixture.mdl"); REQUIRE(loaded);
+    auto data = *loaded;
+    data.vertices[0].position.x = std::numeric_limits<float>::quiet_NaN();
+    CHECK(ui::makePickModel(data) == nullptr);
 }

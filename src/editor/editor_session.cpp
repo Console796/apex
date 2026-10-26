@@ -85,7 +85,9 @@ void EditorSession::setEntityBoundsProvider(EntityBoundsProvider provider) {
     refreshEntityBounds();
 }
 void EditorSession::refreshEntityBounds() {
-    if (picks_) picks_->rebuild();
+    if (!picks_) return;
+    picks_->rebuild();
+    notify();
 }
 void EditorSession::detach() {
     if (transformActive()) endTransform();

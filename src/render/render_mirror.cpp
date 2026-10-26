@@ -959,6 +959,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             const Vec4 tint = m.selected.contains(id) ? m.highlight.selectTint
                 : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
             for (const auto& range : assets::modelDrawRanges(*mesh.data, entity.body, entity.skin)) {
+                if (range.indexCount == 0) continue;
                 MeshDraw draw;
                 draw.vertices = &mesh.vertices;
                 draw.indices = &mesh.indices;
@@ -969,7 +970,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.edgeIndexCount = range.indexCount * 2;
                 const auto material = mesh.materials.find(range.material);
                 if (material != mesh.materials.end() && !material->second.empty()) {
-                    draw.texture = m.materials.at(material->second).slot;
+                    const auto& state = m.materials.at(material->second);
+                    draw.texture = state.slot;
+                    if (options.mode == DisplayMode::Textured) draw.alpha = state.alpha;
                     draw.colour = options.mode == DisplayMode::Flat ? flatColour(material->second) : Vec4(1.0f);
                 } else {
                     draw.colour = entity.colour;
@@ -980,7 +983,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 auto group = std::ranges::find_if(groups, [&](const Group& g) {
                     const auto& d = g.draw;
                     return d.vertices == draw.vertices && d.firstIndex == draw.firstIndex &&
-                        d.texture == draw.texture && d.colour == draw.colour && d.highlight == tint;
+                        d.indexCount == draw.indexCount && d.alpha == draw.alpha && d.texture == draw.texture && d.colour == draw.colour && d.highlight == tint;
                 });
                 if (group == groups.end()) { groups.push_back({draw, {}}); group = std::prev(groups.end()); }
                 group->transforms.push_back(transform);
@@ -992,6 +995,12 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             group.draw.instancedTransforms = true;
             for (const auto& transform : group.transforms) list.previews.push_back({transform, DVec3(0.0)});
             list.meshes.push_back(group.draw);
+            if (group.draw.highlight == m.highlight.selectTint && !m.selected.empty()) {
+                MeshDraw outline = group.draw;
+                outline.colour = m.highlight.outlineColour;
+                outline.highlight = Vec4(0.0f);
+                list.outlines.push_back(outline);
+            }
         }
     }
     return list;
