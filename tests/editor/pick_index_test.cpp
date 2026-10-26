@@ -385,3 +385,30 @@ TEST_CASE("Pick P2CE corpus 10000 rays per map match brute force and report buil
                 " ms (release targets: <100 ms / <1 ms; no timing assertions)");
     }
 }
+
+TEST_CASE("pick rotated asymmetric entity box follows angles on both sides") {
+    for (const auto angles : {"0 90 0", "0 -90 0", "0 0 0"}) {
+        CAPTURE(angles);
+        Document doc(parsed());
+        const auto entity = addBlock(doc, std::string("entity { classname asymmetric origin \"0 0 0\" angles \"") + angles + "\" }");
+        PickIndex index(doc, [](std::string_view classname) -> std::optional<LocalBox> {
+            if (classname == "asymmetric") return LocalBox{{-8, -2, -2}, {8, 2, 2}};
+            return std::nullopt;
+        });
+        const bool rotated = std::string_view(angles) != "0 0 0";
+        for (const double side : {-6.0, 6.0}) {
+            CAPTURE(side);
+            for (const double direction : {-1.0, 1.0}) {
+                CAPTURE(direction);
+                const auto hit = index.first({{-20 * direction, side, 0}, {direction, 0, 0}});
+                CHECK(hit.has_value() == rotated);
+                if (hit && rotated) {
+                    CHECK(hit->node == id(doc, entity));
+                    CHECK(hit->t == doctest::Approx(18));
+                }
+                const auto perpendicular = index.first({{side, -20 * direction, 0}, {0, direction, 0}});
+                CHECK(perpendicular.has_value() == !rotated);
+            }
+        }
+    }
+}

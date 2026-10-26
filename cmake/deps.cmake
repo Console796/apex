@@ -30,12 +30,13 @@ CPMAddPackage(
   OPTIONS "SPDLOG_INSTALL OFF" "SPDLOG_BUILD_EXAMPLE OFF" "SPDLOG_BUILD_TESTS OFF"
 )
 
-# SourcePP v2026.9.11: only the libraries 0.1 needs (vpkpp, steampp, vtfpp, toolpp).
+# SourcePP v2026.9.11: asset readers (vpkpp, steampp, vtfpp, toolpp, mdlpp).
 set(SOURCEPP_LIBS_START_ENABLED OFF CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_VPKPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_STEAMPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_VTFPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_TOOLPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_MDLPP ON CACHE BOOL "" FORCE)
 # We only decode VTFs; the image-import codecs are unused (and libjxl rejects mixed compilers).
 set(SOURCEPP_VTFPP_SUPPORT_EXR OFF CACHE BOOL "" FORCE)
 set(SOURCEPP_VTFPP_SUPPORT_JXL OFF CACHE BOOL "" FORCE)

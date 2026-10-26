@@ -970,3 +970,37 @@ TEST_CASE("mirror: translucent faces win against a coplanar opaque face") {
     CHECK(centre.g > 40);
     CHECK(centre.r > 40);
 }
+
+TEST_CASE("mirror rotated asymmetric entity box follows angles in offscreen coverage") {
+    REQUIRE_GPU();
+    assets::EntityClassTable classes;
+    assets::EntityClass cls;
+    cls.name = "asymmetric";
+    cls.type = "PointClass";
+    cls.mins = {-8, -2, -2};
+    cls.maxs = {8, 2, 2};
+    cls.color = {255, 0, 0};
+    classes.classes.emplace(cls.name, cls);
+    for (const auto angles : {"0 90 0", "0 -90 0", "0 0 0"}) {
+        CAPTURE(angles);
+        auto file = vmf::parse(std::string("entity { id 1 classname asymmetric origin \"0 0 0\" angles \"") + angles + "\" }");
+        REQUIRE(file);
+        document::Document doc(*file);
+        RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache, &classes);
+        mirror.rebuild(doc);
+        REQUIRE(mirror.settle());
+        REQUIRE(mirror.entityBoxCount() == 1);
+        const bool rotated = std::string_view(angles) != "0 0 0";
+        // A +X view at y = +/-6 intersects only the rotated box. The +Y view at x =
+        // +/-6 intersects only the unrotated box. Both signs guard against a shifted box.
+        for (const double side : {-6.0, 6.0}) {
+            CAPTURE(side);
+            const auto alongX = drawFrame(*g, mirror, DisplayMode::Flat, false,
+                                          makeView({-32, side, 0}, {0, 0, 0}));
+            const auto alongY = drawFrame(*g, mirror, DisplayMode::Flat, false,
+                                          makeView({side, -32, 0}, {0, 90, 0}));
+            CHECK(isBackground(at(alongX, kSize / 2, kSize / 2)) == !rotated);
+            CHECK(isBackground(at(alongY, kSize / 2, kSize / 2)) == rotated);
+        }
+    }
+}

@@ -7,6 +7,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp
                assets/vfs_test.cpp assets/addons_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
+               assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/thumbnail_test.cpp core/json_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
@@ -22,7 +23,7 @@ editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.c
                render/p0_point_data_test.cpp render/preview_overlay_test.cpp
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
 target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
-                                         sourcepp::vtfpp sourcepp::toolpp
+                                         sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp
                                          apex_editor apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
 doctest_discover_tests(apex_tests
