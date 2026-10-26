@@ -64,8 +64,9 @@ TEST_CASE("Pick entity provider boxes defaults world and brush entities") {
     const auto brush = addBlock(doc, "entity { classname func_detail }");
     const auto wrapper = addBlock(doc, "hidden {}", brush);
     addBox(doc, DVec3{-8}, DVec3{8}, wrapper);
-    PickIndex index(doc, [](std::string_view classname) -> std::optional<LocalBox> {
-        if (classname == "custom") return LocalBox{{-2, -3, -4}, {6, 7, 8}};
+    PickIndex index(doc, [](const kv1::Node& block) -> std::optional<EntityPickShape> {
+        const auto classname = block.find("classname")->decodedValue().value();
+        if (classname == "custom") return EntityPickShape{{}, 0, LocalBox{{-2, -3, -4}, {6, 7, 8}}};
         return std::nullopt;
     });
     CHECK(index.size() == 2);
@@ -169,7 +170,7 @@ TEST_CASE("Pick incremental inserts removals and entity hierarchy changes avoid 
     }
     const auto entity = addBlock(doc, "entity { classname target }");
     std::size_t providerCalls = 0;
-    PickIndex index(doc, [&](std::string_view) -> std::optional<LocalBox> {
+    PickIndex index(doc, [&](const kv1::Node&) -> std::optional<EntityPickShape> {
         ++providerCalls;
         return std::nullopt;
     });
@@ -393,8 +394,9 @@ TEST_CASE("pick rotated asymmetric entity box follows angles on both sides") {
         CAPTURE(angles);
         Document doc(parsed());
         const auto entity = addBlock(doc, std::string("entity { classname asymmetric origin \"0 0 0\" angles \"") + angles + "\" }");
-        PickIndex index(doc, [](std::string_view classname) -> std::optional<LocalBox> {
-            if (classname == "asymmetric") return LocalBox{{-8, -2, -2}, {8, 2, 2}};
+        PickIndex index(doc, [](const kv1::Node& block) -> std::optional<EntityPickShape> {
+            const auto classname = block.find("classname")->decodedValue().value();
+            if (classname == "asymmetric") return EntityPickShape{{}, 0, LocalBox{{-8, -2, -2}, {8, 2, 2}}};
             return std::nullopt;
         });
         const bool rotated = std::string_view(angles) != "0 0 0";
@@ -420,8 +422,8 @@ TEST_CASE("pick entity transform mixed angles preserves points normals and bound
         CAPTURE(angles);
         Document doc(parsed());
         const auto entity = addBlock(doc, std::string("entity { classname asymmetric origin \"100 -20 30\" modelscale 9 angles \"") + angles + "\" }");
-        PickIndex index(doc, [](std::string_view) -> std::optional<LocalBox> {
-            return LocalBox{{-8, -2, -3}, {12, 4, 7}};
+        PickIndex index(doc, [](const kv1::Node&) -> std::optional<EntityPickShape> {
+            return EntityPickShape{{}, 0, LocalBox{{-8, -2, -3}, {12, 4, 7}}};
         });
         const auto pose = document::entityPose(*doc.get(entity)->block);
         const DVec3 center{2, 1, 2};

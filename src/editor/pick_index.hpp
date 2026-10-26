@@ -1,11 +1,14 @@
 #pragma once
 
 #include "editor/visibility.hpp"
+#include "editor/pick_model.hpp"
+#include "document/entity_transform.hpp"
 #include "geometry/bvh.hpp"
 
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <span>
 #include <string_view>
 #include <unordered_map>
@@ -18,13 +21,19 @@ struct ToolView;
 struct LocalBox {
     DVec3 mins{-4.0}, maxs{4.0};
 };
-using EntityBoundsProvider = std::function<std::optional<LocalBox>(std::string_view classname)>;
+struct EntityPickShape {
+    std::shared_ptr<const PickModel> model;
+    std::uint32_t body = 0;
+    LocalBox fallback;
+};
+using EntityBoundsProvider = std::function<std::optional<EntityPickShape>(const kv1::Node& entity)>;
 
 struct Hit {
     NodeId node;
     std::optional<SideId> side;
     DVec3 point, normal;
     double t;
+    bool modelTriangle = false; // Model surfaces have no brush SideId.
 };
 struct NearHit {
     NodeId node;
@@ -93,6 +102,8 @@ private:
         std::uint32_t leaf;
         geometry::ConvexPolyhedron poly;
         bool entity;
+        EntityPickShape shape;
+        document::EntityPose pose;
     };
     const document::Document& doc_;
     EntityBoundsProvider bounds_;

@@ -45,11 +45,13 @@ void EditorSession::attach(document::Document& doc) {
     document_ = &doc;
     visgroupVisibility_ = buildVisgroupVisibility(doc);
     visgroupHistory_[doc.historyState()] = visgroupVisibility_;
-    picks_ = std::make_unique<PickIndex>(doc, [this](std::string_view name) -> std::optional<LocalBox> {
+    picks_ = std::make_unique<PickIndex>(doc, [this](const kv1::Node& block) -> std::optional<EntityPickShape> {
+        const auto* key = block.find("classname");
+        const auto name = key ? key->decodedValue().value_or("") : "";
         const auto* cls = entityClasses_.find(name);
         if (!cls || !cls->mins || !cls->maxs) return {};
-        return LocalBox{{(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]},
-                        {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]}};
+        return EntityPickShape{{}, 0, LocalBox{{(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]},
+                                            {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]}}};
     });
     groups_ = std::make_unique<GroupIndex>(doc);
     documentObserver_ = doc.observe([this](const document::ChangeSet& changes) {
@@ -641,7 +643,7 @@ Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
 Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool align) {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
     for (const auto& hit : picks_->pick(ray)) {
-        if (hit.side) return placeEntity(std::move(classname), hit.point, hit.normal, align);
+        if (hit.side || hit.modelTriangle) return placeEntity(std::move(classname), hit.point, hit.normal, align);
     }
     const auto resolved = workPlane_.resolve();
     const auto& plane = resolved ? resolved->plane : fallbackPlane_;

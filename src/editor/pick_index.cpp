@@ -163,6 +163,8 @@ void PickIndex::refresh(NodeId id, bool building) {
         return;
     }
     ConvexPolyhedron poly;
+    EntityPickShape shape;
+    document::EntityPose pose;
     const bool entity = std::holds_alternative<Handle<document::Entity>>(*handle);
     if (std::holds_alternative<Handle<document::Solid>>(*handle)) {
         auto geometry = geometry::solidGeometry(*node->block);
@@ -195,15 +197,33 @@ void PickIndex::refresh(NodeId id, bool building) {
             remove(id);
             return;
         }
-        const auto pose = document::entityPose(*node->block);
-        LocalBox local;
-        if (bounds_) local = bounds_(classname).value_or(local);
+        pose = document::entityPose(*node->block);
+        if (bounds_) shape = bounds_(*node->block).value_or(shape);
+        LocalBox local = shape.fallback;
+        if (shape.model) {
+            auto bounds = shape.model->bounds(shape.body);
+            if (bounds.empty()) {
+                remove(id);
+                return;
+            }
+            // A planar mesh still needs a volume for the box/frustum path.
+            for (int axis = 0; axis < 3; ++axis) {
+                if (bounds.max[axis] - bounds.min[axis] < 1e-4) {
+                    bounds.min[axis] -= 1e-4;
+                    bounds.max[axis] += 1e-4;
+                }
+            }
+            local = {bounds.min, bounds.max};
+        }
+        auto boxPose = pose;
+        if (!shape.model) boxPose.scale = 1.0;
+        const auto transform = document::entityTransform(boxPose);
         std::array<DVec3, 8> corners;
         for (unsigned i = 0; i < corners.size(); ++i) {
             const DVec3 point{i & 1 ? local.maxs.x : local.mins.x,
                               i & 2 ? local.maxs.y : local.mins.y,
                               i & 4 ? local.maxs.z : local.mins.z};
-            corners[i] = pose.origin + pose.basis * point;
+            corners[i] = DVec3{transform * DVec4{point, 1.0}};
         }
         auto hull = geometry::convexHull(corners);
         if (!hull) {
@@ -219,13 +239,15 @@ void PickIndex::refresh(NodeId id, bool building) {
     const auto bounds = poly.bounds();
     if (const auto it = items_.find(id); it != items_.end()) {
         it->second.poly = std::move(poly);
+        it->second.shape = std::move(shape);
+        it->second.pose = pose;
         if (!building) tree_.update(it->second.leaf, bounds);
     } else {
         if (nextLeaf_ == std::numeric_limits<std::uint32_t>::max()) {
             throw std::overflow_error("PickIndex leaf IDs exhausted; rebuild required");
         }
         const auto leaf = nextLeaf_++;
-        items_.emplace(id, Item{leaf, std::move(poly), entity});
+        items_.emplace(id, Item{leaf, std::move(poly), entity, std::move(shape), pose});
         leaves_.emplace(leaf, id);
         if (!building) tree_.insert(leaf, bounds);
     }
@@ -318,6 +340,33 @@ void PickIndex::apply(const document::ChangeSet& changes) {
 std::optional<Hit> PickIndex::intersect(NodeId id, Ray ray, double tMax) const {
     const auto& item = items_.at(id);
     std::optional<Hit> best;
+    if (item.shape.model) {
+        const auto& model = *item.shape.model;
+        const auto inverse = glm::inverse(document::entityTransform(item.pose));
+        const Ray local{DVec3{inverse * DVec4{ray.origin, 1.0}},
+                        DVec3{inverse * DVec4{ray.dir, 0.0}}};
+        model.tree_.raycast(local, tMax, [&](std::uint32_t triangle, double limit) -> std::optional<double> {
+            if (!model.selected(triangle, item.shape.body)) return std::nullopt;
+            const auto offset = std::size_t(triangle) * 3;
+            const auto a = model.positions_[model.indices_[offset]];
+            const auto e1 = model.positions_[model.indices_[offset + 1]] - a;
+            const auto e2 = model.positions_[model.indices_[offset + 2]] - a;
+            const auto p = glm::cross(local.dir, e2);
+            const double det = glm::dot(e1, p);
+            if (det == 0.0) return std::nullopt;
+            const auto s = local.origin - a;
+            const double u = glm::dot(s, p) / det;
+            const auto q = glm::cross(s, e1);
+            const double v = glm::dot(local.dir, q) / det;
+            if (u < 0.0 || v < 0.0 || u + v > 1.0) return std::nullopt;
+            const double t = glm::dot(e2, q) / det;
+            if (!(t >= 0.0 && t <= limit) || (best && t >= best->t)) return std::nullopt;
+            const auto normal = glm::normalize(item.pose.basis * glm::cross(e1, e2));
+            best = Hit{id, std::nullopt, ray.at(t), normal, t, true};
+            return t;
+        });
+        return best;
+    }
     for (const auto& face : item.poly.faces) {
         const double denominator = glm::dot(face.plane.normal, ray.dir);
         if (denominator == 0.0) continue;
