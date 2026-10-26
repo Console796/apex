@@ -1,6 +1,6 @@
 #pragma once
 
-#include "assets/game_profile.hpp"
+#include "assets/addons.hpp"
 #include "core/job_pool.hpp"
 
 #include <cstddef>
@@ -33,13 +33,25 @@ public:
     Result<void> refresh(JobPool& jobs);
     Result<Blob> open(std::string_view path) const;
     bool exists(std::string_view path) const;
+    const AddonList& addons() const;
+    std::optional<std::size_t> provider(std::string_view path) const;
     // Immediate files only, sorted canonical virtual paths, duplicates removed. '*' and '?'
     // match filenames case-insensitively; directories themselves are not returned.
     std::vector<std::string> list(std::string_view directory, std::string_view glob = "*") const;
+    // Recursive files across all mounts, with list's filename glob and canonical ordering.
+    // May run concurrently on workers while Vfs is immutable: no refresh, move or destruction
+    // until readers finish. Reads only indices, never the archive objects.
+    // Owns the backing indices, so queued walks survive Vfs destruction. No refresh or
+    // mutation until the task finishes; the task never borrows the Vfs wrapper.
+    std::function<std::vector<std::string>()> walkTask(
+        std::string directory, std::string glob = "*") const;
+    // Original spelling of the winning provider, for display.
+    std::string displayPath(std::string_view path) const;
+    std::vector<std::string> walk(std::string_view directory, std::string_view glob = "*") const;
 
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    std::shared_ptr<Impl> impl_;
 };
 
 } // namespace apex::assets

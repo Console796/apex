@@ -18,9 +18,16 @@
 #include <QSettings>
 #include <QTabBar>
 #include <QTemporaryDir>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "core/log.hpp"
 #include "../editor/fixtures.hpp"
+#include "../assets/fixture.hpp"
+#include "assets/addons.hpp"
+#include "core/json.hpp"
+#include <QMenuBar>
+#include <QStatusBar>
 #include "document/document.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
@@ -36,6 +43,7 @@
 #include <QToolBar>
 #include "ui/theme.hpp"
 #include "ui/viewport_area.hpp"
+#include "ui/gpu_host.hpp"
 #include "ui/viewport_pane.hpp"
 #include <QMenu>
 #include <QSplitter>
@@ -61,6 +69,88 @@ TEST_CASE("theme tokens expand into QSS with no placeholders left") {
         CHECK(qss.contains(apex::ui::tokens(theme).window.name()));
     }
     CHECK(apex::ui::tokens(apex::ui::Theme::Dark).window != apex::ui::tokens(apex::ui::Theme::Light).window);
+}
+
+TEST_CASE("built-in themes are distinct and fully expand") {
+    app();
+    const auto& all = apex::ui::themes();
+    REQUIRE(all.size() >= 6);
+    for (const auto& t : all) {
+        CHECK_FALSE(apex::ui::renderQss(t.tokens).contains(QLatin1Char('@')));
+        for (const auto& u : all)
+            if (&t != &u) CHECK(t.id != u.id);
+    }
+    CHECK(apex::ui::findTheme("solarized-light") != nullptr);
+}
+
+TEST_CASE("custom themes round-trip through files and inherit from a base") {
+    auto& a = app();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    auto custom = *apex::ui::findTheme("midnight");
+    custom.name = "My Theme!";
+    custom.tokens.accent = QColor("#12ab34");
+    custom.tokens.radius = 9;
+    QString error;
+    const QString id = apex::ui::saveCustomTheme(custom, dir.path(), &error);
+    CHECK(id == "custom:my-theme");
+    const auto* loaded = apex::ui::findTheme(id);
+    REQUIRE(loaded);
+    CHECK_FALSE(loaded->builtin);
+    CHECK(loaded->name == "My Theme!");
+    CHECK(loaded->tokens.accent == QColor("#12ab34"));
+    CHECK(loaded->tokens.radius == 9);
+    CHECK(loaded->tokens.window == custom.tokens.window);
+
+    // A sparse file inherits everything else from its base; a bad colour is rejected.
+    apex::ui::ThemeEntry sparse;
+    CHECK(apex::ui::themeFromJson(QJsonDocument::fromJson(R"({"name":"S","base":"light","colors":{"accent":"#ff0000"}})").object(), sparse));
+    CHECK(sparse.tokens.accent == QColor("#ff0000"));
+    CHECK(sparse.tokens.window == apex::ui::tokens(apex::ui::Theme::Light).window);
+    CHECK_FALSE(apex::ui::themeFromJson(QJsonDocument::fromJson(R"({"name":"B","colors":{"accent":"nope"}})").object(), sparse, &error));
+
+    CHECK(apex::ui::applyThemeId(a, id) == id);
+    CHECK(apex::ui::currentThemeId() == id);
+    CHECK(apex::ui::removeCustomTheme(id, dir.path()));
+    CHECK(apex::ui::findTheme(id) == nullptr);
+    CHECK(apex::ui::applyThemeId(a, "gone") == "dark");
+}
+
+TEST_CASE("viewport overlay colours are theme tokens fed to the editor palette") {
+    auto& a = app();
+    const auto& names = apex::ui::colourTokenNames();
+    for (const char* name : {"vertexHandle", "vertexSelected", "vertexInactive", "vertexEdge", "vertexInvalid",
+                             "vertexSplit", "faceHover", "gizmoX", "gizmoY", "gizmoZ", "gizmoScreen",
+                             "gizmoHighlight", "clip", "clipDiscard", "block"})
+        CHECK(names.contains(QLatin1StringView(name)));
+    CHECK(names.indexOf(QLatin1StringView(apex::ui::kFirstViewportToken)) == 15);
+
+    // Built-ins carry the editor's default overlay colours.
+    const apex::editor::OverlayPalette defaults;
+    for (const auto& theme : apex::ui::themes()) {
+        if (!theme.builtin) continue;
+        const auto palette = apex::ui::overlayPalette(theme.tokens);
+        const auto near = [](apex::Vec4 a, apex::Vec4 b) { return glm::length(a - b) < 1.0f / 255; };
+        CHECK(near(palette.vertexHandle, defaults.vertexHandle));
+        CHECK(near(palette.gizmoZ, defaults.gizmoZ));
+    }
+
+    // A theme file sets a viewport token and inherits the rest from its base.
+    apex::ui::ThemeEntry entry;
+    REQUIRE(apex::ui::themeFromJson(QJsonDocument::fromJson(
+        R"({"name":"V","base":"dark","colors":{"vertexHandle":"#00ff00"}})").object(), entry));
+    CHECK(entry.tokens.vertexHandle == QColor("#00ff00"));
+    CHECK(entry.tokens.gizmoX == apex::ui::tokens(apex::ui::Theme::Dark).gizmoX);
+    CHECK(apex::ui::themeToJson(entry)["colors"].toObject()["vertexHandle"].toString() == "#00ff00");
+
+    // The window feeds the session from the applied theme, including theme-editor previews.
+    apex::ui::applyThemeId(a, "dark");
+    apex::ui::MainWindow window;
+    CHECK(window.editorSession().overlayPalette() == apex::ui::overlayPalette(apex::ui::currentTokens()));
+    window.previewTokens(entry.tokens);
+    CHECK(window.editorSession().overlayPalette().vertexHandle == apex::Vec4(0.0f, 1.0f, 0.0f, 1.0f));
+    window.setThemeId("dark");
+    CHECK(window.editorSession().overlayPalette() == apex::ui::overlayPalette(apex::ui::tokens(apex::ui::Theme::Dark)));
 }
 
 TEST_CASE("shell opens a VMF, fills the outliner and round-trips on save") {
@@ -295,7 +385,7 @@ TEST_CASE("UI key chord conversion round trips preset shortcuts") {
             const auto* chords = std::get_if<std::vector<apex::editor::KeyChord>>(&binding.value);
             if (!chords) continue;
             for (const auto& chord : *chords) {
-                if (chord.key == "Ctrl" || chord.key == "Alt") continue;
+                if (chord.key == "Ctrl" || chord.key == "Shift" || chord.key == "Alt") continue; // Modifier holds.
                 const auto sequence = apex::ui::keySequence(chord);
                 REQUIRE_FALSE(sequence.isEmpty());
                 const auto combination = sequence[0];
@@ -359,6 +449,25 @@ TEST_CASE("grid shortcuts and work plane session changes update shell status") {
     }
 }
 
+TEST_CASE("pane world axes run from the origin in axis colours and follow the grid overlay") {
+    using namespace editor_test;
+    auto view = viewport::makePreset(viewport::Preset::Camera);
+    render::DrawList list;
+    ui::appendWorldAxes(list, view);
+    REQUIRE(list.worldSegments.size() == 3);
+    const std::array<DVec3, 3> directions{DVec3{1, 0, 0}, DVec3{0, 1, 0}, DVec3{0, 0, 1}};
+    for (std::size_t i = 0; i < 3; ++i) {
+        CHECK(list.worldSegments[i].a == DVec3{0});
+        CHECK(glm::normalize(list.worldSegments[i].b) == directions[i]);
+        CHECK(list.worldSegments[i].colour[static_cast<int>(i)] ==
+              std::max({list.worldSegments[i].colour.r, list.worldSegments[i].colour.g, list.worldSegments[i].colour.b}));
+    }
+    view.overlays.grid = false;
+    list = {};
+    ui::appendWorldAxes(list, view);
+    CHECK(list.worldSegments.empty());
+}
+
 TEST_CASE("pane grids use surface bounds pinned precedence and every axis fallback") {
     using namespace editor_test;
     Document doc(parsed());
@@ -378,7 +487,7 @@ TEST_CASE("pane grids use surface bounds pinned precedence and every axis fallba
     session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
     grid = ui::makeGridSettings(perspective, &session);
     CHECK(grid.normal == DVec3{-1, 0, 0});
-    CHECK(grid.origin == DVec3{0, 10, 15});
+    CHECK(grid.origin == DVec3{0, 0, 0}); // World-anchored (0.2 D9).
     const auto plane = session.resolvedWorkPlane()->plane;
     REQUIRE(grid.bounds);
     CHECK(grid.bounds->uMin == plane.bounds->min.x);
@@ -1381,8 +1490,26 @@ TEST_CASE("view actions hide unhide isolate and track selection") {
     scene.action("view.hide_unselected")->trigger();
     CHECK(editor::isVisible(doc, scene.boxId));
     CHECK(doc.undoCount() > count);
-    // Every panel role has a Show area entry that expands its collapsed area.
     auto* area = scene.window.viewportArea();
+    // Center views on selection frames every viewport on the selection without turning it.
+    session.selectNode(scene.boxId);
+    REQUIRE(scene.action("view.center_selection")->isEnabled());
+    const auto bounds = session.selectionBounds();
+    REQUIRE(bounds);
+    std::vector<DVec3> angles;
+    for (const auto pane : area->viewportLayout().viewportIds()) angles.push_back(area->viewportLayout().viewport(pane)->camera.angles);
+    scene.action("view.center_selection")->trigger();
+    const auto panes = area->viewportLayout().viewportIds();
+    for (std::size_t i = 0; i < panes.size(); ++i) {
+        const auto& camera = area->viewportLayout().viewport(panes[i])->camera;
+        CHECK(camera.angles == angles[i]);
+        const auto offset = bounds->center() - camera.position;
+        const auto along = glm::dot(offset, camera.forward()) * camera.forward();
+        CHECK(glm::length(offset - along) == doctest::Approx(0.0).scale(1.0));
+    }
+    REQUIRE(session.perform("selection.none"));
+    CHECK_FALSE(scene.action("view.center_selection")->isEnabled());
+    // Every panel role has a Show area entry that expands its collapsed area.
     for (const auto role : {viewport::AreaRole::Inspector, viewport::AreaRole::Visgroups, viewport::AreaRole::History}) {
         auto* show = scene.window.findChild<QAction*>(QStringLiteral("actionShowArea_") + QString::fromLatin1(viewport::nameOf(role)));
         REQUIRE(show);
@@ -1838,26 +1965,30 @@ TEST_CASE("entity toolbar follows session actions and loads point classes from p
     CHECK(window.editorSession().currentEntityClass() == "second");
     auto* entity = window.findChild<QAction*>("tool.entity");
     auto* select = window.findChild<QAction*>("tool.select");
-    auto* toolbar = window.findChild<QToolBar*>("toolbarTransform");
+    auto* toolbar = window.findChild<QToolBar*>("toolbarTools");
     REQUIRE(entity);
     REQUIRE(select);
     REQUIRE(toolbar);
-    CHECK(toolbar->actions().contains(entity));
-    CHECK(toolbar->actions().contains(select));
+    auto* dropdown = toolbar->findChild<QToolButton*>("toolDropDown");
+    REQUIRE(dropdown);
+    CHECK(dropdown->menu()->actions().contains(entity));
+    CHECK(dropdown->menu()->actions().contains(select));
+    window.newFile();
     window.findChild<QAction*>("preset.Hammer")->trigger();
     CHECK(entity->shortcut() == QKeySequence("Shift+E"));
     CHECK(select->shortcut() == QKeySequence("Shift+S"));
     REQUIRE(window.editorSession().perform("tool.entity"));
     CHECK(entity->isChecked());
     CHECK_FALSE(select->isChecked());
-    CHECK(qobject_cast<QToolButton*>(toolbar->widgetForAction(entity))->isChecked());
-    select->trigger();
-    CHECK(window.editorSession().activeTool() == editor::EditorSession::Tool::Select);
-    CHECK(select->isChecked());
+    CHECK(dropdown->text() == entity->text());
+    // The entity options only show, and so only take clicks, while the entity tool is active (D21).
     auto* align = window.findChild<QCheckBox*>("entityAlignToSurface");
     REQUIRE(align);
     align->click();
     CHECK(window.editorSession().alignToSurface());
+    select->trigger();
+    CHECK(window.editorSession().activeTool() == editor::EditorSession::Tool::Select);
+    CHECK(select->isChecked());
     picker->setCurrentIndex(picker->findText("test"));
     CHECK(window.editorSession().currentEntityClass() == "test");
     CHECK(settings.value("editor/entityClass").toString() == "test");
@@ -2169,4 +2300,247 @@ TEST_CASE("scripted 200-step splitter drag preserves frames between resize inter
         CHECK(window->recreateCount() == count + 1);
     }
     if (initial.empty()) MESSAGE("No native GPU panes on this platform; run with QT_QPA_PLATFORM=xcb for frame measurements");
+}
+
+TEST_CASE("block tool draws through the pane's TransformInput path despite CancelPointer after consumed events") {
+    app();
+    TransformScene scene;
+    auto& session = scene.session();
+    REQUIRE(session.perform("tool.block"));
+    session.selection().clear();
+    const auto camera = cameraLooking({37, -60, 260}, {37, 37, 69});
+    ui::TransformInput input;
+    input.setSession(&session);
+    // PaneWindow::handleMouse sends CancelPointer whenever the active tool consumes an event.
+    const auto send = [&](QEvent::Type type, QPointF at, Qt::MouseButton button, Qt::MouseButtons buttons) {
+        auto event = mouseEvent(type, at, button, buttons);
+        const bool consumed = input.mouse(event, camera, kPane);
+        if (consumed) input.cancelPointer();
+        return consumed;
+    };
+    // Pixel whose ray meets the plane z = target.z closest to target.
+    const auto pixelFor = [&](DVec3 target) {
+        QPointF best;
+        double bestDistance = 1e18;
+        for (double y = 0; y < kPane.height(); y += 1)
+            for (double x = 0; x < kPane.width(); x += 1) {
+                const auto ray = rayAtPixel(camera, {x, y});
+                if (std::abs(ray.dir.z) < 1e-9) continue;
+                const double t = (target.z - ray.origin.z) / ray.dir.z;
+                if (t <= 0) continue;
+                const double d = glm::length(ray.at(t) - target);
+                if (d < bestDistance) { bestDistance = d; best = {x, y}; }
+            }
+        return best;
+    };
+    const QPointF a = pixelFor({20, 20, 69}), b = pixelFor({55, 50, 69}), up = b - QPointF(0, 80);
+    const auto before = scene.undo();
+    send(QEvent::MouseMove, a, Qt::NoButton, Qt::NoButton);
+    CHECK(send(QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::LeftButton));
+    CHECK(send(QEvent::MouseMove, b, Qt::NoButton, Qt::LeftButton));
+    CHECK(send(QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::NoButton));
+    CHECK(send(QEvent::MouseMove, up, Qt::NoButton, Qt::NoButton));
+    REQUIRE(session.preview().ghosts().size() == 1);
+    CHECK(scene.undo() == before);
+    CHECK(send(QEvent::MouseButtonPress, up, Qt::LeftButton, Qt::LeftButton));
+    send(QEvent::MouseButtonRelease, up, Qt::LeftButton, Qt::NoButton);
+    CHECK(scene.undo() == before + 1);
+    CHECK(session.preview().empty());
+    REQUIRE(session.selection().ordered().size() == 1);
+    const auto handle = scene.window.document()->handle(std::get<document::NodeId>(session.selection().ordered().front()));
+    REQUIRE(handle);
+    const auto solid = geometry::solidGeometry(*scene.window.document()->get(*handle)->block);
+    REQUIRE(solid);
+    CHECK(solid->poly.bounds().min.z == doctest::Approx(69));  // Drawn on the box's top face.
+    CHECK(solid->poly.bounds().max.z > 69);
+
+    // Esc through the key path drops a gesture without touching the document.
+    send(QEvent::MouseButtonPress, a, Qt::LeftButton, Qt::LeftButton);
+    send(QEvent::MouseMove, b, Qt::NoButton, Qt::LeftButton);
+    send(QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::NoButton);
+    QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+    input.key(esc, camera, kPane, true);
+    CHECK(session.preview().empty());
+    CHECK(scene.undo() == before + 1);
+}
+
+// Destroying a native pane hides its window, which cancels tool input and can notify session
+// observers mid-teardown; updateModeBadges then wrote to a frame being destroyed (segfault switching
+// layouts with the block tool active). Offscreen panes never hide natively, so notify from a child.
+TEST_CASE("viewport area survives session notifications while it destroys panes") {
+    app();
+    ui::MainWindow window;
+    window.show();
+    auto* area = window.viewportArea();
+    area->flush();
+    auto& session = window.editorSession();
+    REQUIRE(session.perform("tool.block"));
+    const auto frames = area->findChildren<ui::PaneFrame*>();
+    REQUIRE(frames.size() == 4);
+    int notified = 0;
+    for (auto* frame : frames) {
+        auto* spy = new QObject(frame);  // Created last, so destroyed after the frame's labels.
+        QObject::connect(spy, &QObject::destroyed, [&session, &notified] {
+            session.setAlignToSurface(!session.alignToSurface());  // Any change notifies observers.
+            ++notified;
+        });
+    }
+    auto maximized = viewport::ViewportLayout(area->viewportLayout());
+    maximized.toggleMaximize(maximized.paneIds().front());
+    area->setLayout(std::move(maximized));
+    area->flush();
+    CHECK(notified == 4);
+    area->setLayout(viewport::ViewportLayout(area->viewportLayout()));  // Rebuilt frames take badge updates.
+    session.setAlignToSurface(!session.alignToSurface());
+}
+
+TEST_CASE("assets reload menu action keeps the current document and editor state") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("reload.vmf");
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::WriteOnly));
+    file.write(kVmf);
+    file.close();
+    apex::ui::MainWindow window;
+    auto* action = window.findChild<QAction*>(QStringLiteral("assets.reload"));
+    REQUIRE(action);
+    CHECK(action->text() == QStringLiteral("Reload Game Content"));
+    CHECK(action->shortcut().isEmpty());
+    CHECK(action->isEnabled());
+    auto* menu = window.findChild<QMenu*>(QStringLiteral("menuAddons"));
+    auto* edit = window.findChild<QMenu*>(QStringLiteral("menuEdit"));
+    REQUIRE(menu);
+    REQUIRE(edit);
+    CHECK(menu->actions().contains(action));
+    CHECK_FALSE(edit->actions().contains(action));
+    action->trigger();
+    CHECK(window.document() == nullptr);
+    CHECK(window.performEditAction("assets.reload"));
+    REQUIRE(window.openFile(path));
+    REQUIRE(action->isEnabled());
+    auto* document = window.document();
+    const auto before = document->write();
+    REQUIRE(before);
+    const auto undo = document->undoCount();
+    action->trigger();
+    CHECK(window.document() == document);
+    CHECK(window.viewportArea()->host().document() == document);
+    CHECK(document->undoCount() == undo);
+    const auto after = document->write();
+    REQUIRE(after);
+    CHECK(*after == *before);
+}
+
+TEST_CASE("addons menu reflects list order toggles and stale file errors") {
+    using namespace apex;
+    using namespace apex::assets;
+    app();
+    GameTree tree;
+    tree.put("Game/gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    const std::string header = "<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->\n";
+    tree.put("First/addon.kv3", header + "{ mod = \"First fixture\" }");
+    tree.put("Second/addon.kv3", header + "{ mod = \"Second fixture\" }");
+    auto entry = [&](const char* dir, bool mounted, const char* type) {
+        return "{ dir = " + json::write({(tree.root / dir).string()}) + " mounted = " +
+               (mounted ? "true" : "false") + " type = \"" + type + "\" vpks = [] }";
+    };
+    const auto original = header + "{ addons = [" + entry("First", true, "local") +
+        entry("Second", false, "steam") + entry("Missing", true, "local") + "] }";
+    tree.put("Game/addons/addonlist.kv3", original);
+    GameProfile profile;
+    profile.name = "Addon fixture";
+    profile.gameDirectory = tree.root / "Game";
+    ui::MainWindow window;
+    auto* menu = window.findChild<QMenu*>(QStringLiteral("menuAddons"));
+    REQUIRE(menu);
+    auto show = [&] { REQUIRE(QMetaObject::invokeMethod(menu, "aboutToShow", Qt::DirectConnection)); };
+    show();
+    CHECK(menu->actions().front()->text() == QStringLiteral("No game profile"));
+    CHECK_FALSE(menu->actions().front()->isEnabled());
+    const auto menus = window.menuBar()->actions();
+    const auto position = menus.indexOf(menu->menuAction());
+    REQUIRE(position > 0);
+    REQUIRE(position + 1 < menus.size());
+    CHECK(menus[position - 1]->menu()->objectName() == QStringLiteral("menuView"));
+    CHECK(menus[position + 1]->text() == QStringLiteral("&Help"));
+    window.setProfiles({profile});
+    show();
+    auto actions = menu->actions();
+    REQUIRE(actions.size() == 5);
+    CHECK(actions[0]->text() == QStringLiteral("Game list"));
+    CHECK_FALSE(actions[0]->isEnabled());
+    CHECK(actions[0]->toolTip() == QString::fromStdString((tree.root / "Game" / "addons" / "addonlist.kv3").string()));
+    CHECK(actions[0]->statusTip() == actions[0]->toolTip());
+    auto* workshop = window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop"));
+    auto* local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(workshop);
+    REQUIRE(local);
+    CHECK(workshop->title() == QStringLiteral("Workshop (0 of 1 on)"));
+    CHECK(local->title() == QStringLiteral("Local (2 of 2 on)"));
+    REQUIRE(workshop->actions().size() == 1);
+    REQUIRE(local->actions().size() == 2);
+    CHECK(local->actions()[0]->text() == QStringLiteral("First fixture"));
+    CHECK(local->actions()[0]->isChecked());
+    CHECK(local->actions()[0]->isEnabled());
+    CHECK(local->actions()[0]->isCheckable());
+    CHECK(local->actions()[0]->toolTip() == QString::fromStdString((tree.root / "First").string()));
+    CHECK(local->actions()[0]->statusTip() == local->actions()[0]->toolTip());
+    CHECK(workshop->actions()[0]->text() == QStringLiteral("Second fixture"));
+    CHECK_FALSE(workshop->actions()[0]->isChecked());
+    CHECK(workshop->actions()[0]->isEnabled());
+    CHECK(local->actions()[1]->text() == QStringLiteral("Missing (missing)"));
+    CHECK(local->actions()[1]->isChecked());
+    CHECK_FALSE(local->actions()[1]->isEnabled());
+    local->actions()[0]->trigger();  // Works without a document.
+    auto list = readAddonList(profile);
+    REQUIRE(list);
+    CHECK_FALSE(list->entries[0].mounted);
+    show();
+    local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(local);
+    CHECK_FALSE(local->actions()[0]->isChecked());
+    // The open menu's snapshot must not overwrite an entry replaced on disk.
+    tree.put("Game/addons/addonlist.kv3", header + "{ addons = [" + entry("Second", true, "local") + "] }");
+    local->actions()[0]->trigger();
+    CHECK(window.statusBar()->currentMessage().contains(QStringLiteral("changed on disk")));
+    local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(local);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop")) == nullptr);
+    CHECK(local->actions()[0]->text() == QStringLiteral("Second fixture"));
+    CHECK(local->actions()[0]->isChecked());
+    list = readAddonList(profile);
+    REQUIRE(list);
+    CHECK(list->entries[0].mounted);
+    profile.addons.list = AddonSettings::List::Apex;
+    profile.addons.apexMounted = {tree.root / "First", tree.root / "Missing"};
+    window.setProfiles({profile});
+    show();
+    CHECK(menu->actions()[0]->text() == QStringLiteral("Game profile list"));
+    local = window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal"));
+    REQUIRE(local);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop")) == nullptr);
+    REQUIRE(local->actions().size() == 2);
+    for (auto* action : local->actions()) {
+        CHECK(action->isChecked());
+        CHECK_FALSE(action->isEnabled());
+        CHECK(action->toolTip() == QStringLiteral("Listed in the game profile's addons.mounted"));
+    }
+    profile.addons.list = AddonSettings::List::Hammer;
+    window.setProfiles({profile});
+    tree.put("hammer/addons/addonlist.kv3", original);
+    show();
+    CHECK(menu->actions()[0]->text() == QStringLiteral("Hammer list"));
+    CHECK(menu->actions()[0]->toolTip() == QString::fromStdString((tree.root / "hammer" / "addons" / "addonlist.kv3").string()));
+    tree.put("hammer/addons/addonlist.kv3", "invalid fixture");
+    show();
+    CHECK(menu->actions().size() == 3);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsWorkshop")) == nullptr);
+    CHECK(window.findChild<QMenu*>(QStringLiteral("menuAddonsLocal")) == nullptr);
+    CHECK_FALSE(menu->actions()[0]->isEnabled());
+    CHECK(menu->actions()[0]->text().contains(QStringLiteral("Missing KV3 header")));
+    std::filesystem::remove(tree.root / "hammer/addons/addonlist.kv3");
+    std::filesystem::remove(tree.root / "Game/addons/addonlist.kv3");
+    show();
+    CHECK(menu->actions()[0]->text() == QStringLiteral("No addon list found"));
 }

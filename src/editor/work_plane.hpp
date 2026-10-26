@@ -45,6 +45,7 @@ class WorkPlaneState {
 public:
     void setHovered(std::optional<SurfacePlane> plane);
     void pinHovered();
+    void pin(const SurfacePlane& plane);
     void pinAxisPlane(Axis axis, DVec3 through);
     void unpin();
     bool pinned() const { return pinned_.has_value(); }

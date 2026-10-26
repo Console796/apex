@@ -77,8 +77,18 @@ struct MaterialState {
     TextureSlot slot = kCheckerboardSlot;
     TextureSize size;
     bool loading = false;
+    AlphaMode alpha = AlphaMode::Opaque; // From $translucent / $alphatest once the VMT has loaded.
+    bool nodraw = false;                 // %compilenodraw once loaded; see isNodraw().
     std::set<NodeId> users;
 };
+
+// toolsnodraw is recognised by name so it hides before its VMT has loaded.
+bool isNodraw(std::string_view name, const MaterialState* state) {
+    constexpr std::string_view kName = "tools/toolsnodraw";
+    const bool named = name.size() == kName.size() &&
+                       std::ranges::equal(name, kName, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; });
+    return named || (state && state->nodraw);
+}
 
 } // namespace
 
@@ -117,6 +127,52 @@ struct RenderMirror::Impl {
     std::map<NodeHandle, NodeId> hierarchyIds;
     std::unordered_map<NodeId, DMat4> effectivePreview;
     bool previewDirty = false;
+    struct PreviewState {
+        NodeId node = 0; // Zero is a ghost, never an indexed document node.
+        PreviewGhost shape;
+        SolidState mesh;
+    };
+    std::vector<PreviewState> previewGeometry;
+    std::size_t previewCursor = 0;
+    std::optional<std::uint64_t> previewRevision;
+    std::chrono::nanoseconds previewBudget = std::chrono::milliseconds(2);
+    // Seeded so the first tick of a drag reserves upload time too (about 6 us per box measured on
+    // an RTX 4060 Ti at the 0.3 release); a zero seed let that tick run to 4.8 ms with 500 solids.
+    std::chrono::nanoseconds previewFlushPerSolid = std::chrono::microseconds(10);
+
+    void clearGeometry() {
+        for (auto& state : previewGeometry) retire(state.mesh);
+        previewGeometry.clear();
+        previewCursor = 0;
+        previewRevision.reset();
+    }
+
+    // The tick's upload submission counts against the budget: its cost per solid is learned from
+    // the previous tick and reserved while meshing. At least one solid is meshed per tick.
+    void meshPreviews() {
+        using Clock = std::chrono::steady_clock;
+        const auto start = Clock::now();
+        std::size_t meshed = 0;
+        while (previewCursor < previewGeometry.size()) {
+            auto& state = previewGeometry[previewCursor++];
+            auto poly = state.shape.poly;
+            for (auto& face : poly.faces) {
+                if (!state.shape.material.empty()) face.material = state.shape.material;
+                resolveMaterial(lower(face.material));
+            }
+            auto mesh = meshSolid(poly, [&](std::string_view name) { return materials.find(name)->second.size; });
+            uploadMesh(state.mesh, std::move(mesh), false);
+            ++meshed;
+            if (Clock::now() - start + previewFlushPerSolid * meshed >= previewBudget) break;
+        }
+        if (!meshed) return;
+        redraw = true;
+        // One submission per tick instead of three per batch; buffers are drawn only after this.
+        const auto flushStart = Clock::now();
+        if (auto flushed = heap.uploadRing().flush(); !flushed)
+            log::error("render mirror: preview upload: {}", flushed.error().what());
+        previewFlushPerSolid = (Clock::now() - flushStart) / meshed;
+    }
 
     void resolvePreview() {
         if (!previewDirty) return;
@@ -188,6 +244,11 @@ struct RenderMirror::Impl {
             h = std::max(1u, h / 2);
         }
         if (mips.empty()) return;
+        const assets::Material& vmt = material.material;
+        state.alpha = vmt.translucent ? AlphaMode::Blend : vmt.alphaTest ? AlphaMode::Test : AlphaMode::Opaque;
+        if (const auto flag = vmt.compileFlags.find("%compilenodraw"); flag != vmt.compileFlags.end()) {
+            state.nodraw = !flag->second.empty() && flag->second != "0";
+        }
         auto slot = heap.upload({texture.mips[0].width, texture.mips[0].height, *format}, mips);
         if (!slot) {
             log::warn("render mirror: texture upload for '{}' failed: {}", std::string_view(name),
@@ -227,7 +288,11 @@ struct RenderMirror::Impl {
             if (current != assets::MaterialState::Ready) continue;
             const TextureSize before = state.size;
             if (const auto material = cache.request(name)) uploadMaterial(name, state, *material);
-            if (!(before == state.size)) remesh.insert(remesh.end(), state.users.begin(), state.users.end());
+            if (!(before == state.size)) {
+                remesh.insert(remesh.end(), state.users.begin(), state.users.end());
+                for (auto& previewState : previewGeometry) retire(previewState.mesh);
+                previewCursor = 0;
+            }
         }
         for (const NodeId id : remesh) requestMesh(id);
         if (uploaded) {
@@ -277,8 +342,8 @@ struct RenderMirror::Impl {
             [this, id, version](Result<SolidMesh> mesh) { complete(id, version, std::move(mesh)); });
     }
 
-    Result<Buffer> upload(const auto& data, VkBufferUsageFlags usage) {
-        return uploadBuffer(context, heap.uploadRing(), std::as_bytes(std::span{data}), usage);
+    Result<Buffer> upload(const auto& data, VkBufferUsageFlags usage, bool flush = true) {
+        return uploadBuffer(context, heap.uploadRing(), std::as_bytes(std::span{data}), usage, flush);
     }
 
     void complete(NodeId id, std::uint64_t version, Result<SolidMesh> mesh) {
@@ -295,14 +360,26 @@ struct RenderMirror::Impl {
                       std::string_view(mesh.error().message));
             return;
         }
+        uploadMesh(solid, std::move(mesh));
+    }
+
+    // flush false leaves the copies recorded; meshPreviews flushes once per tick.
+    void uploadMesh(SolidState& solid, Result<SolidMesh> mesh, bool flush = true) {
+        if (!mesh) {
+            log::warn("render mirror: preview mesh: {}", std::string_view(mesh.error().message));
+            return;
+        }
         solid.origin = mesh->origin;
         for (BatchMesh& batch : mesh->batches) {
             if (batch.indices.empty()) continue;
-            auto vertices = upload(batch.vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-            auto indices = upload(batch.indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-            auto edges = upload(batch.edges, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+            auto vertices = upload(batch.vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, flush);
+            auto indices = upload(batch.indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, flush);
+            auto edges = upload(batch.edges, VK_BUFFER_USAGE_INDEX_BUFFER_BIT, flush);
             if (!vertices || !indices || !edges) {
-                log::error("render mirror: mesh upload failed for solid {}", static_cast<unsigned long long>(id));
+                log::error("render mirror: mesh upload failed");
+                // Copies into the buffers that did upload may still be recorded and unsubmitted.
+                for (auto* buffer : {&vertices, &indices, &edges})
+                    if (*buffer) garbage.push_back(std::move(**buffer));
                 retire(solid);
                 return;
             }
@@ -487,6 +564,7 @@ struct RenderMirror::Impl {
     }
 
     bool pending() const {
+        if (previewCursor < previewGeometry.size()) return true;
         if (std::ranges::any_of(solids, [](const auto& s) { return s.second.inFlight; })) return true;
         return std::ranges::any_of(materials, [](const auto& m) { return m.second.loading; });
     }
@@ -518,6 +596,7 @@ void RenderMirror::apply(const Document& document, const document::ChangeSet& ch
 bool RenderMirror::pump() {
     impl_->jobs.drainCompletions();
     impl_->pumpMaterials();
+    impl_->meshPreviews();
     impl_->collectGarbage();
     return impl_->redraw;
 }
@@ -544,13 +623,42 @@ void RenderMirror::setHighlight(const Highlight& highlight) {
 }
 
 void RenderMirror::setPreview(const PreviewTransforms& preview) {
-    if (impl_->preview == preview) return;
+    if (impl_->preview == preview && impl_->previewGeometry.empty()) return;
+    impl_->clearGeometry();
     impl_->preview = preview;
     impl_->previewDirty = true;
     impl_->redraw = true;
 }
 
-void RenderMirror::clearPreview() { setPreview({}); }
+void RenderMirror::setPreview(const PreviewTransforms& transforms, const PreviewGeometry& geometry, std::uint64_t revision) {
+    if (impl_->previewRevision == revision) return;
+    impl_->clearGeometry();
+    impl_->previewRevision = revision;
+    impl_->preview = transforms;
+    impl_->previewDirty = true;
+    impl_->redraw = true;
+    for (const auto& [id, poly] : geometry.replacements) {
+        Impl::PreviewState state;
+        state.node = id;
+        state.shape.poly = poly;
+        state.shape.opacity = 1.0f;
+        impl_->previewGeometry.push_back(std::move(state));
+    }
+    for (const auto& ghost : geometry.ghosts) {
+        Impl::PreviewState state;
+        state.shape = ghost;
+        impl_->previewGeometry.push_back(std::move(state));
+    }
+    // Meshing waits for pump(), so several revisions between ticks share one budget and one submit.
+}
+
+void RenderMirror::setPreviewBudget(std::chrono::nanoseconds budget) {
+    impl_->previewBudget = std::max(budget, std::chrono::nanoseconds::zero());
+}
+std::size_t RenderMirror::pendingPreviewCount() const {
+    return impl_->previewGeometry.size() - impl_->previewCursor;
+}
+void RenderMirror::clearPreview() { setPreview(PreviewTransforms{}); }
 
 DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     Impl& m = *impl_;
@@ -570,7 +678,10 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         list.previews.push_back({found->second, origin});
         return static_cast<std::uint32_t>(list.previews.size());
     };
+    std::set<NodeId> replaced;
+    for (const auto& state : m.previewGeometry) if (state.node) replaced.insert(state.node);
     for (const auto& [id, solid] : m.solids) {
+        if (replaced.contains(id)) continue;
         if (solid.hidden || !solid.meshed) continue;
         const auto preview = previewIndex(id, solid.origin);
         for (const GpuBatch& batch : solid.batches) {
@@ -582,9 +693,14 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.edgeIndexCount = batch.edgeCount;
             draw.origin = solid.origin;
             draw.previewIndex = preview;
-            if (const auto material = m.materials.find(batch.material); material != m.materials.end()) {
+            const auto material = m.materials.find(batch.material);
+            if (material != m.materials.end()) {
                 draw.texture = material->second.slot;
             }
+            // Wireframe keeps every edge: 2D views would otherwise lose the nodraw faces' outline.
+            const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
+                                  isNodraw(batch.material, material != m.materials.end() ? &material->second : nullptr);
+            if (options.mode == DisplayMode::Textured && material != m.materials.end()) draw.alpha = material->second.alpha;
             switch (options.mode) {
             case DisplayMode::Textured: draw.colour = Vec4(1.0f); break;
             case DisplayMode::Flat: draw.colour = flatColour(batch.material); break;
@@ -614,14 +730,64 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                         outline.highlight = Vec4(0.0f);
                         list.outlines.push_back(outline);
                     }
-                    list.meshes.push_back(part);
+                    if (!hideFill) list.meshes.push_back(part);
                 }
-            } else {
+            } else if (!hideFill) {
                 list.meshes.push_back(draw);
             }
             if (selected) {
                 draw.colour = m.highlight.outlineColour;
                 draw.highlight = Vec4(0.0f);
+                list.outlines.push_back(draw);
+            }
+        }
+    }
+    for (const auto& state : m.previewGeometry) {
+        if (state.node) {
+            const auto original = m.solids.find(state.node);
+            if (original == m.solids.end() || original->second.hidden) continue;
+        }
+        const auto matrix = m.effectivePreview.find(state.node);
+        const auto point = [&](DVec3 p) {
+            return matrix == m.effectivePreview.end() ? p : DVec3(matrix->second * DVec4(p, 1.0));
+        };
+        if (!state.mesh.meshed) {
+            const auto& poly = state.shape.poly;
+            for (const auto& face : poly.faces) {
+                for (std::size_t i = 0; i < face.vertices.size(); ++i) {
+                    const auto a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.size()];
+                    if (a < poly.vertices.size() && b < poly.vertices.size())
+                        list.worldSegments.push_back({point(poly.vertices[a]), point(poly.vertices[b]), state.shape.outline, 1.0f});
+                }
+            }
+            continue;
+        }
+        const auto preview = previewIndex(state.node, state.mesh.origin);
+        for (const auto& batch : state.mesh.batches) {
+            MeshDraw draw;
+            draw.vertices = &batch.vertices;
+            draw.indices = &batch.indices;
+            draw.indexCount = batch.indexCount;
+            draw.edgeIndices = &batch.edges;
+            draw.edgeIndexCount = batch.edgeCount;
+            draw.origin = state.mesh.origin;
+            draw.previewIndex = preview;
+            const MaterialState& material = m.materials.at(batch.material);
+            draw.texture = material.slot;
+            draw.colour = options.mode == DisplayMode::Flat ? flatColour(batch.material) : Vec4(1.0f);
+            draw.colour.a = state.shape.opacity;
+            if (state.node) {
+                if (options.mode == DisplayMode::Textured) draw.alpha = material.alpha; // Ghosts stay uniformly translucent.
+                if (m.selected.contains(state.node)) draw.highlight = m.highlight.selectTint;
+                else if (m.highlight.hover == state.node) draw.highlight = m.highlight.hoverTint;
+                const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
+                                      isNodraw(batch.material, &material);
+                if (!hideFill) list.meshes.push_back(draw);
+            } else {
+                list.ghosts.push_back(draw);
+            }
+            if (!state.node || m.selected.contains(state.node)) {
+                draw.colour = state.node ? m.highlight.outlineColour : state.shape.outline;
                 list.outlines.push_back(draw);
             }
         }

@@ -24,7 +24,8 @@ Result<std::string> checkPresetName(std::string_view name);
 
 // The action that already holds this chord, if any (the action `except` is ignored).
 std::optional<ActionId> chordOwner(const Preset& preset, const KeyChord& chord,
-                                   std::string_view except = {});
+                                   std::string_view except = {},
+                                   BindingContext context = BindingContext::Always);
 // Replaces the action's chords. A chord held by another action is taken from it; an action left
 // with no chord becomes unbound. Returns the actions that lost a chord.
 std::vector<ActionId> assignChords(Preset& preset, const ActionId& id, std::vector<KeyChord> chords);

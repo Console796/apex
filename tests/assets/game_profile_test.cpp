@@ -17,6 +17,7 @@ TEST_CASE("GameProfile JSON round trips paths options and escaping") {
     profile.toolPaths = {{"vbsp", "C:\\tools\\vbsp.exe"}, {"vrad", "bin/vrad"}};
     profile.escapeMode = kv1::EscapeMode::Legacy;
     profile.vmfWrite = {false, false};
+    profile.addons = {AddonSettings::List::Apex, false, {"addon/a", "addon/b"}};
     auto decoded = parseGameProfile(writeGameProfile(profile));
     REQUIRE(decoded);
     CHECK(*decoded == profile);
@@ -31,6 +32,19 @@ TEST_CASE("GameProfile JSON round trips paths options and escaping") {
     CHECK_FALSE(parseGameProfile(R"({"name":"test","game_directory":"g","vmf_write":{"markers":1}})"));
     auto defaults = parseGameProfile(R"({"name":"test","game_directory":"g","future":null})");
     REQUIRE(defaults);
+    CHECK(defaults->addons.list == AddonSettings::List::Game);
+    CHECK(defaults->addons.enabled);
+    CHECK(defaults->addons.apexMounted.empty());
+    for (const auto list : {AddonSettings::List::Hammer, AddonSettings::List::Game, AddonSettings::List::Apex}) {
+        profile.addons.list = list;
+        auto roundTrip = parseGameProfile(writeGameProfile(profile));
+        REQUIRE(roundTrip);
+        CHECK(*roundTrip == profile);
+    }
+    for (const auto* options : {"null", "[]", "{\"enabled\":1}", "{\"list\":true}",
+                                "{\"list\":\"invalid\"}", "{\"mounted\":false}", "{\"mounted\":[1]}"}) {
+        CHECK_FALSE(parseGameProfile(std::string(R"({"name":"test","game_directory":"g","addons":)") + options + "}"));
+    }
     CHECK(defaults->vmfWrite.pointData);
     CHECK(defaults->escapeMode == kv1::EscapeMode::Strata);
 }

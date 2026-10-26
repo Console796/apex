@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manual D8 gate: compile original/re-planed test1 in isolation; compare vbspinfo.
+"""Manual D8 gate: compile an original and a re-planed copy of a map in isolation; compare vbspinfo.
 
 Requires APEX_P2CE_DIR and a built apex_replane. Never modifies the game install.
 Exit 0 means matching counts, 1 means differences, 2 means the check could not run.
@@ -21,6 +21,22 @@ def run(command, cwd, log):
         raise RuntimeError(f"{' '.join(map(str, command))}: exit {result.returncode}\n"
                            f"{result.stdout[-6000:]}")
     return result.stdout
+
+
+def game_directory(root):
+    """Find the game used by the native Linux compile gates."""
+    game = next((root / name for name in ('p2ce', 'portal2')
+                 if (root / name / 'gameinfo.txt').is_file()), None)
+    if game is None:
+        raise OSError('no p2ce or portal2 gameinfo.txt found')
+    return game
+
+
+def compile_vbsp(root, game, vmf):
+    """Compile a copied VMF in its own directory, inheriting the caller's env."""
+    return run([root / 'bin/linux64/vbsp', '-game', game,
+                '-instancepath', root / 'sdk_content/maps', vmf],
+               vmf.parent, vmf.parent / 'vbsp.log')
 
 
 def counts(output):
@@ -46,16 +62,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--replane', type=Path,
                         default=Path(__file__).resolve().parent.parent / 'build/linux-gcc-release/apex_replane')
+    parser.add_argument('map', type=Path, help='a complete, sealed VMF to compile (it is copied, never modified)')
     parser.add_argument('--output-dir', type=Path, help='retain VMFs, BSPs and logs here')
     args = parser.parse_args()
     install = os.environ.get('APEX_P2CE_DIR')
     if not install:
         parser.error('APEX_P2CE_DIR is unset')
     root = Path(install).resolve()
-    game = next((root / name for name in ('p2ce', 'portal2')
-                 if (root / name / 'gameinfo.txt').is_file()), None)
-    if game is None:
-        parser.error('no p2ce or portal2 gameinfo.txt found')
+    try:
+        game = game_directory(root)
+    except OSError as error:
+        parser.error(str(error))
     temporary = None
     try:
         if args.output_dir:
@@ -64,9 +81,9 @@ def main():
         else:
             temporary = tempfile.TemporaryDirectory(prefix='apex-vbsp-')
             work = Path(temporary.name)
-        source = root / 'sdk_content/maps/test1.vmf'
-        original = work / 'original' / 'test1.vmf'
-        replaned = work / 'replaned' / 'test1.vmf'
+        source = args.map.resolve()
+        original = work / 'original' / source.name
+        replaned = work / 'replaned' / source.name
         original.parent.mkdir()
         replaned.parent.mkdir()
         shutil.copyfile(source, original)
@@ -78,8 +95,7 @@ def main():
             raise RuntimeError('replane changed content outside plane strings')
         tables = []
         for vmf in (original, replaned):
-            run([root / 'bin/linux64/vbsp', '-game', game, '-instancepath', source.parent,
-                 vmf], vmf.parent, vmf.parent / 'vbsp.log')
+            compile_vbsp(root, game, vmf)
             bsp = vmf.with_suffix('.bsp')
             if not bsp.is_file():
                 raise RuntimeError(f'vbsp did not produce {bsp}')

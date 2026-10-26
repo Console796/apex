@@ -98,7 +98,7 @@ def bundle_qt_linux(stage: Path, exe: Path, qt_prefix):
                 plugdir = qt_prefix / "plugins"
     plugins = stage / "plugins"
     if plugdir and plugdir.exists():
-        for sub in ("platforms", "imageformats", "wayland-decoration-client",
+        for sub in ("platforms", "iconengines", "imageformats", "wayland-decoration-client",
                     "wayland-graphics-integration-client", "wayland-shell-integration",
                     "xcbglintegrations"):
             if (plugdir / sub).is_dir():
@@ -145,7 +145,8 @@ def package_windows(build_dir, out, bundle, qt_prefix, ver):
         exe = str(tool) if tool and tool.exists() else shutil.which("windeployqt")
         if not exe:
             sys.exit("windeployqt not found; pass --qt-prefix or --no-bundle-qt")
-        run([exe, "--no-translations", "--no-system-d3d-compiler", str(stage / "apex.exe")])
+        # Include Qt6Svg.dll and both SVG loaders even though icons render through QSvgRenderer.
+        run([exe, "--svg", "--include-plugins", "qsvg,qsvgicon", "--no-translations", "--no-system-d3d-compiler", str(stage / "apex.exe")])
     archive = out / f"{top}-windows-x64.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(stage.rglob("*")):

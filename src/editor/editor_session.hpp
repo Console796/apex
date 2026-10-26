@@ -1,30 +1,77 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/face_edit.hpp"
+#include "editor/topology_ops.hpp"
+#include "editor/tool.hpp"
 #include "editor/clipboard.hpp"
 #include "editor/inspector_model.hpp"
 #include "editor/placement.hpp"
 #include "editor/modal_transform.hpp"
+#include "editor/overlay_palette.hpp"
 #include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
+#include "editor/pie_menu.hpp"
 #include "editor/visgroups.hpp"
 #include "editor/work_plane.hpp"
+#include "editor/snapper.hpp"
+#include "geometry/solid_block.hpp"
 
 #include <memory>
+#include <span>
+#include <chrono>
+#include <functional>
 
 namespace apex::editor {
+
+class SelectTool;
+class EntityTool;
+class VertexTool;
 
 // One document's editor state. The attached document must outlive the session or
 // detach(). Selection-only gestures never write to Document or its undo history.
 class EditorSession {
 public:
-    enum class Tool { Select, Entity };
-    Tool activeTool() const { return activeTool_; }
-    void setActiveTool(Tool tool);
+    // 0.2 compatibility spellings; tool identity is now the registry action id.
+    struct Tool {
+        static constexpr const char* Select = "tool.select";
+        static constexpr const char* Entity = "tool.entity";
+        static constexpr const char* Block = "tool.block";
+        static constexpr const char* Clip = "tool.clip";
+        static constexpr const char* Primitive = "tool.primitive";
+        static constexpr const char* Vertex = "tool.vertex";
+        static constexpr const char* Apply = "tool.apply";
+        static constexpr const char* Measure = "tool.measure";
+    };
+    const ToolId& activeTool() const { return activeTool_; }
+    void setActiveTool(ToolId tool);
+    editor::Tool& activeToolObject();
+    const editor::Tool& activeToolObject() const;
+    bool input(const InputEvent& event, const ToolView& view);
+    void setClock(std::function<std::chrono::milliseconds()> clock) { clock_ = std::move(clock); }
+    const PieSettings& pieSettings() const { return pieSettings_; }
+    std::chrono::milliseconds pieTime() const { return clock_(); }
+    void setPieSettings(PieSettings settings) { pieSettings_ = settings; }
+    using PieTrace = std::function<void(std::string_view, std::string_view, std::chrono::milliseconds)>;
+    void setPieTrace(PieTrace trace) { pieTrace_ = std::move(trace); }
+    void tickPie();
+    void pieFocusLost();
+    const PieGesture* pie() const { return pie_.get(); }
+    std::optional<InputSource> pieSource() const { return pieSource_; }
+    const std::string& pieRefusal() const { return pieRefusal_; }
+    // Every tool drops the per-pane state of a pane that is going away.
+    void forgetInputSource(InputSource source);
     const std::string& currentEntityClass() const { return currentEntityClass_; }
     void setCurrentEntityClass(std::string classname);
     bool alignToSurface() const { return alignToSurface_; }
     void setAlignToSurface(bool align);
+
+    const geometry::NewSolidStyle& newSolidStyle() const { return newSolidStyle_; }
+    void setNewSolidMaterial(std::string material);
+    void setNewSolidUvAlignment(geometry::UvAlignment alignment);
+    FaceExtrapolation faceExtrapolation() const { return faceExtrapolation_; }
+    void setFaceExtrapolation(FaceExtrapolation mode);
+    void cycleFaceExtrapolation();
 
     EditorSession();
     ~EditorSession();
@@ -36,9 +83,11 @@ public:
     document::Document* document() const { return document_; }
     Selection& selection() { return selection_; }
     const Selection& selection() const { return selection_; }
+    // Bounds of the expanded selection (group members, brush children, selected faces).
+    std::optional<AABB> selectionBounds() const;
     const PickIndex& picks() const { return *picks_; }
     const GroupIndex& groups() const { return *groups_; }
-    const CycleState& cycle() const { return cycle_; }
+    const CycleState& cycle() const;
     const ViewState& viewState() const { return view_; }
     void setViewState(ViewState view);
     std::optional<Target> hoverTarget() const { return hover_; }
@@ -48,10 +97,16 @@ public:
     const WorkPlaneState& workPlane() const { return workPlane_; }
     std::optional<WorkPlaneState::Resolved> resolvedWorkPlane() const { return workPlane_.resolve(); }
     void pinWorkPlane();
+    void pinWorkPlane(const SurfacePlane& plane);
     void pinAxisWorkPlane(Axis axis, DVec3 through);
     void unpinWorkPlane();
     double gridSize() const { return gridSize_; }
     void setGridSize(double units);
+    const OverlayPalette& overlayPalette() const { return overlayPalette_; }
+    void setOverlayPalette(const OverlayPalette& palette);
+    SnapResult snap(Ray ray, const ToolView& view, bool suspended = false,
+                    std::optional<SurfacePlane> plane = {}, bool edges = true,
+                    std::vector<FeatureRef> excluded = {}) const;
     void pointerClick(Ray ray, Modifiers modifiers = {}, bool sameSpot = false);
     void marquee(std::span<const Plane> planes, Modifiers modifiers = {});
     void selectNode(NodeId node, Modifiers modifiers = {});
@@ -77,10 +132,10 @@ public:
     // Work plane used by nudge when nothing is hovered or pinned (the viewport supplies it).
     void setFallbackPlane(SurfacePlane plane) { fallbackPlane_ = std::move(plane); }
     const SurfacePlane& fallbackPlane() const { return fallbackPlane_; }
-    const Preview& preview() const { return preview_; }
+    const Preview& preview() const { return topologyPreview_.empty() ? activeToolObject().preview() : topologyPreview_; }
     // Null while nothing transformable is selected (empty, or face mode).
     std::optional<GizmoContext> gizmoContext() const;
-    bool transformActive() const { return dragging_ || modalActive_; }
+    bool transformActive() const;
     // Gizmo drag: begin on a handle, update on pointer motion, end to commit.
     bool beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray);
     bool updateGizmoDrag(Ray ray, TransformModifiers modifiers = {});
@@ -89,7 +144,7 @@ public:
     bool beginModal(GizmoMode mode, const GizmoView& view, Ray ray, DVec2 screenAnchor = DVec2{0.0});
     bool updateModal(Ray ray, TransformModifiers modifiers = {});
     ModalEvent modalKey(std::string_view key, bool shift = false);
-    const ModalTransform& modal() const { return modal_; }
+    const ModalTransform& modal() const;
     const TransformReadout& activeReadout() const;
     // Aborts any active drag/modal: clears the preview, leaves document and undo untouched.
     void cancelTransform();
@@ -161,32 +216,77 @@ public:
     const Preset& preset() const { return preset_; }
     const Keymap& keymap() const { return keymap_; }
     void setPreset(const Preset& preset);
+    bool isToolEnabled(const ActionId& action) const;
     bool perform(const ActionId& action);
+    bool confirmNonConvexMerge = true;
+    // The host sees preview() populated during the callback. Missing host means Cancel.
+    std::function<bool(const MergePlan&)> confirmMerge;
+    std::function<std::optional<double>()> hollowThickness;
+    const std::string& topologyMessage() const { return topologyMessage_; }
+    Result<void> mergeSelection();
+    // One "Apply Material" edit over `sides`, skipping sides that already have it (any case).
+    // Returns how many changed; zero leaves no undo entry.
+    std::size_t applyMaterial(std::span<const document::SideId> sides, const std::string& material);
+    // Applies to the face `ray` hits first (a material drop); false when no face is hit.
+    bool applyMaterialAt(Ray ray, const std::string& material);
+    // Face edits use Faces selection only. Rotation is an absolute angle derived from axes.
+    Result<std::size_t> setFaceField(FaceField field, FaceValue value, std::string token = {});
+    Result<std::size_t> justifyFaces(geometry::Justify mode, bool treatAsOne = false);
+    Result<std::size_t> justifyFaces(geometry::HorizontalAlignment horizontal,
+                                     geometry::VerticalAlignment vertical, bool treatAsOne = false);
+    Result<std::size_t> editFaceGesture(FaceGesture gesture, double u, double v, DVec3 activePivot,
+                                        std::string token = {});
+    Result<std::size_t> alignFaces(FaceAlignment alignment);
+    Result<std::size_t> rotateFaces(double degrees, std::string token = {});
+    Result<std::size_t> toggleFaceSmoothingGroup(std::uint32_t bit, bool enabled);
+    Result<FaceApplyResult> applyMaterialWrapped(Ray ray);
+    bool liftMaterialAt(Ray ray, bool alignSource = false);
+    // Host supplies actual dimensions; unknown materials use the editor's 256x256 fallback.
+    std::function<std::pair<int, int>(std::string_view)> faceTextureSize =
+        [](std::string_view) { return std::pair{256, 256}; };
     // Document edits go through this seam to capture before/after selection metadata.
-    // Direct Document edits still update indices and prune dead selection targets.
-    void edit(std::string label, const std::function<void(document::Transaction&)>& operation);
+    // Direct Document edits still update indices and prune dead selection targets. A nonempty
+    // coalesceKey merges with the previous edit of the same key (typing); empty is its own undo step.
+    void edit(std::string label, const std::function<void(document::Transaction&)>& operation,
+              std::string coalesceKey = {});
 
     using Observer = std::function<void()>;
     std::size_t observe(Observer observer);
     void unobserve(std::size_t token);
+    // A tool calls this after changing transient data exposed through readout().
+    void publishToolStatus() { notify(); }
 
 private:
+    void finishPie(PieResult result);
+    Preview topologyPreview_;
+    std::string topologyMessage_;
+    friend class SelectTool;
+    friend class DrawExtrudeTool;
+    friend class PrimitiveTool;
+    friend class ClipTool;
+    friend class MeasureTool;
+    friend class VertexTool;
+    SelectTool& selectTool();
+    const SelectTool& selectTool() const;
     document::Document* document_ = nullptr;
     std::size_t documentObserver_ = 0;
     std::unique_ptr<PickIndex> picks_;
     std::unique_ptr<GroupIndex> groups_;
     Selection selection_;
-    Tool activeTool_ = Tool::Select;
+    std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
+    ToolId activeTool_ = Tool::Select;
     std::string currentEntityClass_;
     bool alignToSurface_ = false;
+    geometry::NewSolidStyle newSolidStyle_{"dev/dev_measuregeneric01"};
+    FaceExtrapolation faceExtrapolation_ = FaceExtrapolation::Wrap;
     assets::EntityClassTable entityClasses_;
     std::uint64_t entityClassesRevision_ = 0;
-    CycleState cycle_;
     ViewState view_;
     std::optional<Target> hover_;
     std::optional<NodeId> hoverDrawable_;
     std::optional<std::pair<NodeId, SideId>> hoverFace_;
     WorkPlaneState workPlane_;
+    OverlayPalette overlayPalette_;
     double gridSize_ = GridLadder::kDefault;
     MarqueeMode marqueeMode_ = MarqueeMode::Enclosed;
     GizmoMode gizmoMode_ = GizmoMode::Translate;
@@ -196,16 +296,17 @@ private:
     SnapSettings snap_;
     bool textureLock_ = true;
     SurfacePlane fallbackPlane_{{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}, {}};
-    Preview preview_;
-    GizmoDrag drag_;
-    ModalTransform modal_;
-    bool dragging_ = false, modalActive_ = false;
-    GizmoMode activeMode_ = GizmoMode::Translate;
-    std::vector<NodeId> activeNodes_;
     Preset preset_;
     Keymap keymap_;
     std::map<std::size_t, Observer> observers_;
     std::size_t nextObserver_ = 1;
+    PieTrace pieTrace_;
+    PieSettings pieSettings_;
+    std::optional<KeyChord> pieRelease_;
+    std::unique_ptr<PieGesture> pie_;
+    std::optional<InputSource> pieSource_;
+    std::string pieRefusal_;
+    std::function<std::chrono::milliseconds()> clock_;
     void notify();
     VisgroupVisibility visgroupVisibility_;
     std::map<std::uint64_t, VisgroupVisibility> visgroupHistory_;
@@ -217,9 +318,6 @@ private:
                          const std::function<Result<EditedObjects>(document::Transaction&)>& stage,
                          std::string coalesceKey = {});
     std::string inspectorCoalesceKey(std::size_t row, std::string_view focusKey, bool raw = false) const;
-    std::vector<NodeId> transformNodes() const;
-    void publishPreview(const Transform& transform);
-    bool commitActive(const Transform& transform, GizmoMode mode);
     bool commitNow(const Transform& transform, std::string label);
     void endTransform();
 };

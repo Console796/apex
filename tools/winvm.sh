@@ -7,7 +7,37 @@
 # Keep $APEX_WINVM_DIR on an SSD. Suspend-to-file (QMP migrate) was tried and fails on this
 # host with "Bad address" at completion regardless of CPU model, so stop is a plain ACPI shutdown.
 # Set APEX_WINVM_DISPLAY=gtk to get a window (setup/debugging).
+#
+# With APEX_WINVM_LIBVIRT=<domain> the guest is a libvirt domain on qemu:///system instead: start,
+# stop and status go through virsh, and SSH reaches the guest's own address on libvirt's NAT
+# (APEX_WIN_SSH=<user>@<reserved IP>, APEX_WIN_SSH_PORT=22). Open it with virt-manager for setup.
 set -euo pipefail
+
+if [[ -n "${APEX_WINVM_LIBVIRT:-}" ]]; then
+  domain="$APEX_WINVM_LIBVIRT"
+  virsh=(virsh -q -c "${APEX_WINVM_LIBVIRT_URI:-qemu:///system}")
+  state() { "${virsh[@]}" domstate "$domain" 2>/dev/null | head -1; }
+  case "${1:-}" in
+    start)
+      rf="${XDG_STATE_HOME:-$HOME/.local/state}/apex/winvm.restrict"
+      if [[ -f "$rf" ]]; then
+        echo "winvm: the Windows VM is restricted by the user:" >&2; cat "$rf" >&2; exit 3
+      fi
+      if [[ "$(state)" == running ]]; then echo "already running"; exit 0; fi
+      "${virsh[@]}" start "$domain" >/dev/null
+      ;;
+    stop)
+      if [[ "$(state)" != running ]]; then echo "not running"; exit 0; fi
+      "${virsh[@]}" shutdown "$domain" >/dev/null || true
+      for _ in $(seq 60); do [[ "$(state)" == running ]] || exit 0; sleep 2; done
+      echo "guest did not power down in 120s; destroying" >&2
+      "${virsh[@]}" destroy "$domain" >/dev/null
+      ;;
+    status) [[ "$(state)" == running ]] && echo running || echo stopped ;;
+    *) echo "usage: $0 start|stop|status" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
 dir="${APEX_WINVM_DIR:-$HOME/winvm}"
 port="${APEX_WINVM_SSH_PORT:-2222}"
 pidfile="$dir/ci.pid"
@@ -43,7 +73,7 @@ case "${1:-}" in
     cd "$dir"
     qemu-system-x86_64 -name win10-ci -machine q35,accel=kvm \
       -cpu host,hv_relaxed,hv_spinlocks=0x1fff,hv_vapic,hv_time \
-      -smp "${CPUS:-8}" -m "${RAM:-8G}" \
+      -smp "${CPUS:-8}" -m "${RAM:-6G}" \
       -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
       -drive if=pflash,format=raw,file=OVMF_VARS.fd \
       -drive id=disk0,file=win10.qcow2,format=qcow2,if=none,cache=writeback,discard=unmap \

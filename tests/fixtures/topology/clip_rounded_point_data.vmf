@@ -1,0 +1,125 @@
+// Apex-authored fixture (MIT): a box rotated about Z with Hammer-rounded coordinates whose
+// point_data is inconsistent with its planes, so geometry falls back to the planes.
+world
+{
+	"id" "1"
+	"classname" "worldspawn"
+	solid
+	{
+		"id" "2"
+		side
+		{
+			"id" "1"
+			"plane" "(192.106 -37.9462 272) (229.272 -23.1563 272) (255.894 -90.0538 272)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 192.106 -37.9484 272"
+				"point" "1 229.272 -23.1585 272"
+				"point" "2 255.894 -90.056 272"
+				"point" "3 218.728 -104.846 272"
+			}
+			"material" "TOOLS/TOOLSNODRAW"
+			"uaxis" "[0.929133 0.369747 0 0] 0.25"
+			"vaxis" "[-0.369747 0.929133 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "2"
+			"plane" "(255.894 -90.0538 144) (229.272 -23.1563 144) (192.106 -37.9462 144)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 255.896 -90.0538 144"
+				"point" "1 229.274 -23.1563 144"
+				"point" "2 192.109 -37.9462 144"
+				"point" "3 218.73 -104.844 144"
+			}
+			"material" "TOOLS/TOOLSNODRAW"
+			"uaxis" "[0.929133 0.369747 0 0] 0.25"
+			"vaxis" "[-0.369747 0.929133 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "3"
+			"plane" "(218.728 -104.844 272) (255.894 -90.0538 272) (255.894 -90.0538 144)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 218.727 -104.842 272"
+				"point" "1 255.892 -90.0516 272"
+				"point" "2 255.892 -90.0516 144"
+				"point" "3 218.727 -104.842 144"
+			}
+			"material" "TOOLS/TOOLSNODRAW"
+			"uaxis" "[0.929133 0.369747 0 0] 0.25"
+			"vaxis" "[-0.369747 0.929133 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "4"
+			"plane" "(229.272 -23.1563 144) (229.272 -23.1563 272) (192.106 -37.9462 272)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 229.273 -23.1574 144"
+				"point" "1 229.273 -23.1574 272"
+				"point" "2 192.108 -37.9473 272"
+				"point" "3 192.108 -37.9473 144"
+			}
+			"material" "TOOLS/TOOLSNODRAW"
+			"uaxis" "[0.929133 0.369747 0 0] 0.25"
+			"vaxis" "[-0.369747 0.929133 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "5"
+			"plane" "(192.106 -37.9462 144) (192.106 -37.9462 272) (218.728 -104.844 272)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 192.104 -37.9451 144"
+				"point" "1 192.104 -37.9451 272"
+				"point" "2 218.726 -104.843 272"
+				"point" "3 218.726 -104.843 144"
+			}
+			"material" "TOOLS/TOOLSNODRAW"
+			"uaxis" "[0.929133 0.369747 0 0] 0.25"
+			"vaxis" "[-0.369747 0.929133 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "6"
+			"plane" "(255.894 -90.0538 272) (229.272 -23.1563 272) (229.272 -23.1563 144)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 255.894 -90.056 272"
+				"point" "1 229.272 -23.1585 272"
+				"point" "2 229.272 -23.1585 144"
+				"point" "3 255.894 -90.056 144"
+			}
+			"material" "TOOLS/TOOLSNODRAW"
+			"uaxis" "[0.929133 0.369747 0 0] 0.25"
+			"vaxis" "[-0.369747 0.929133 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+	}
+}

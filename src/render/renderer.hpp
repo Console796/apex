@@ -13,6 +13,7 @@
 #include "core/math.hpp"
 #include "core/result.hpp"
 #include "render/resources.hpp"
+#include "render/glyph_atlas.hpp"
 #include "render/texture_heap.hpp"
 
 #include <array>
@@ -55,6 +56,11 @@ static_assert(sizeof(SpriteInstance) == 48);
 
 inline constexpr std::uint32_t kVertexMaterial = 0xFFFFFFFFu;
 
+// How the textured pass treats the texture's alpha channel. Opaque ignores it. Test discards
+// below 0.5 in the opaque pass ($alphatest). Blend draws in the sorted translucent pass with no
+// depth writes ($translucent); other display modes treat Blend draws as Opaque.
+enum class AlphaMode : std::uint32_t { Opaque = 0, Test = 1, Blend = 2 };
+
 struct MeshDraw {
     const Buffer* vertices = nullptr;  // BrushVertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT.
     const Buffer* indices = nullptr;   // uint32 triangle list, INDEX_BUFFER_BIT.
@@ -69,6 +75,7 @@ struct MeshDraw {
     std::uint32_t firstEdgeIndex = 0;
     bool outlineOnlyWire = false;      // Selected wire edges are emitted by the outline pass.
     std::uint32_t previewIndex = 0;     // 0 = identity; otherwise DrawList::previews[index - 1].
+    AlphaMode alpha = AlphaMode::Opaque; // Textured mode only.
 };
 
 struct BoxDraw {
@@ -135,10 +142,23 @@ struct OverlayTriangle {
     Vec4 colour{1.0f};
 };
 
+struct OverlayPoint {
+    DVec3 position{0.0};
+    Vec4 colour{1.0f};
+    float sizePixels = 7.0f;
+};
+struct Label {
+    DVec3 position{0.0};
+    std::string text; // UTF-8; ASCII/Latin-1 supported, other code points use '?'.
+    Vec2 offset{0.0f}; // Baseline offset in pixels, y down.
+    Vec4 colour{1.0f};
+};
+
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     FrameView view;
     std::vector<MeshDraw> meshes;
+    std::vector<MeshDraw> ghosts; // Blended material pass, no depth writes.
     std::vector<BoxDraw> boxes;
     std::vector<SpriteDraw> sprites;
     // Recorded last: dim depth-disabled lines, then full-strength visible lines. No depth writes.
@@ -154,6 +174,11 @@ struct DrawList {
     // Empty by default, which leaves every other frame untouched.
     std::vector<OverlaySegment> overlaySegments;
     std::vector<OverlayTriangle> overlayTriangles;
+    std::vector<OverlaySegment> worldSegments;
+    std::vector<OverlayPoint> worldPoints;
+    std::vector<OverlayTriangle> worldTriangles;
+    std::vector<Label> labels;
+    float labelScale = 1.0f; // Physical pixels per atlas pixel.
     Vec2 viewportSize{0.0f};            // Pixels; required when overlay primitives are present.
 };
 
@@ -187,6 +212,8 @@ class Renderer {
     // record once per recording, and finish its previous submission before reusing it (as
     // Swapchain does). Preview buffers are retained per slot, including across preview clears.
     void record(VkCommandBuffer commands, const DrawList& list);
+    // The atlas may be shared by renderers with different attachment formats.
+    void setGlyphAtlas(std::shared_ptr<const GlyphAtlas> atlas);
 
     // Debug builds: recompiles any shader under APEX_SHADER_DIR whose source changed (glslc on
     // PATH) and rebuilds the pipelines. Returns true if pipelines were rebuilt; a compile error
@@ -222,8 +249,9 @@ class SwapchainDepth {
     bool depthReady_ = false;
 };
 
-// Creates a device-local buffer holding `data` (staged through the ring and flushed).
+// Creates a device-local buffer holding `data` (staged through the ring and flushed). With
+// flush false the copy stays recorded in the ring; the caller flushes before the buffer is used.
 Result<Buffer> uploadBuffer(Context& context, UploadRing& ring, std::span<const std::byte> data,
-                            VkBufferUsageFlags usage);
+                            VkBufferUsageFlags usage, bool flush = true);
 
 } // namespace apex::render

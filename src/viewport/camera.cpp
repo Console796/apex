@@ -59,6 +59,24 @@ void setAxis(Camera& camera, ViewAxis axis) {
     }
 }
 
+void frameBounds(Camera& camera, const AABB& bounds, double aspect, double margin) {
+    if (bounds.empty()) return;
+    if (!(aspect > 0.0)) aspect = 1.0;
+    const auto centre = bounds.center();
+    // A point entity or a thin face still gets a usable view.
+    const double radius = std::max(glm::length(bounds.max - bounds.min) * 0.5, 16.0) * margin;
+    const auto forward = camera.forward();
+    if (camera.isOrtho()) {
+        camera.position = centre + forward * glm::dot(camera.position - centre, forward);
+        camera.orthoHeight = 2.0 * radius / std::min(aspect, 1.0);
+        return;
+    }
+    const double halfY = glm::radians(camera.fovYDegrees) * 0.5;
+    const double half = std::min(halfY, std::atan(std::tan(halfY) * aspect));
+    camera.orbitDistance = radius / std::sin(half);
+    camera.position = centre - forward * camera.orbitDistance;
+}
+
 namespace {
 struct AxisName { ViewAxis axis; const char* name; };
 constexpr AxisName kAxes[] = {{ViewAxis::Free, "free"}, {ViewAxis::PosX, "+x"},

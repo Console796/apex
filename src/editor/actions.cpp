@@ -6,6 +6,9 @@
 
 namespace apex::editor {
 
+const BindingContext BindingContext::Always{};
+const BindingContext BindingContext::SelectToolActive{"tool.select"};
+
 Actions::Actions()
     : entries_{
         {"edit.undo", "Undo", "Edit", "Undo the last edit and restore its selection."},
@@ -41,6 +44,8 @@ Actions::Actions()
         {"view.unhide", "Unhide all", "View", "Unhide all hidden objects."},
         {"view.isolate", "Isolate", "View", "Toggle session isolation of the selection."},
         {"view.hide_unselected", "Hide unselected", "View", "Hide objects outside the selection."},
+        {"view.center_selection", "Center views on selection", "View",
+         "Move every viewport to the selection without turning it."},
         {"grid.larger", "Larger grid", "Grid", "Increase the grid spacing."},
         {"grid.smaller", "Smaller grid", "Grid", "Decrease the grid spacing."},
         {"workplane.pin", "Pin work plane to hovered surface", "Grid", "Pin work plane to hovered surface."},
@@ -49,8 +54,27 @@ Actions::Actions()
         {"workplane.axis_z", "Pin Z axis plane", "Grid", "Pin work plane to the Z axis plane through the selection."},
         {"snap.suspend", "Suspend snapping", "Transform",
          "Hold this key to suspend snapping during a transform."},
+        {"pie.tools", "Tool pie", "Tool", "Open the tool pie at the cursor."},
         {"tool.select", "Select tool", "Tool", "Activate the select tool."},
+        {"edit.carve", "Carve", "Edit", "Subtract selected carvers from visible solids."},
+        {"edit.hollow", "Make Hollow…", "Edit", "Replace selected solids with walls."},
+        {"assets.reload", "Reload Game Content", "Addons", "Reload game content and addon mounts."},
+        {"edit.merge", "Merge", "Edit", "Merge selected solids into their convex hull."},
         {"tool.entity", "Entity tool", "Tool", "Activate point entity placement."},
+        {"block.pick_plane", "Pick block plane", "Tool", "Hold and click a face to pin its plane; empty space unpins."},
+        {"tool.primitive", "Primitive tool", "Tool", "Draw wedges, cylinders, spikes, arches and spheres."},
+        {"tool.clip", "Clip tool", "Tool", "Place points to clip selected solids; repeat to cycle kept side."},
+        {"tool.vertex", "Vertex tool", "Tool", "Edit vertices, edges and faces of selected solids."},
+        {"vertex.mode.vertex", "Vertex mode", "Vertex", "Select and move vertices."},
+        {"vertex.mode.edge", "Edge mode", "Vertex", "Select and move edges."},
+        {"vertex.mode.face", "Face mode", "Vertex", "Select and move faces."},
+        {"clip.cycle_keep", "Cycle clip kept side", "Tool", "Keep front, back or both halves."},
+        {"tool.apply", "Face edit tool", "Tool", "Edit selected faces; apply materials (Hammer texture application mode)."},
+        {"tool.measure", "Measure tool", "Tool", "Measure distance, delta and face angles."},
+        {"apply.click", "Apply with click modifier", "Tool", "Hold while clicking to apply; Alt applies with the selected alignment mode."},
+        {"apply.lift_aligned", "Lift material with alignment", "Tool", "Hold Shift with Alt-click to lift the material and set the alignment source."},
+        {"face.extrapolation.cycle", "Cycle face extrapolation", "Tool", "Cycle Wrap, Projected and Match face alignment modes."},
+        {"tool.block", "Block tool", "Tool", "Draw a base and extrude a new solid."},
         {"gizmo.mode.translate", "Translate gizmo", "Transform",
          "Use the translation gizmo with the select tool."},
         {"gizmo.mode.rotate", "Rotate gizmo", "Transform",
@@ -161,14 +185,18 @@ Binding unbound(std::string reason) { return {Unbound{std::move(reason)}}; }
 const Preset& hammerPreset() {
     static const Preset preset{"Hammer", {
         {"edit.undo", bound({"Ctrl+Z"})},
+        {"edit.carve", bound({"Ctrl+Shift+C"})},
+        {"edit.hollow", unbound("Available through the Edit menu.")},
+        {"assets.reload", unbound("Available through the menu.")},
+        {"edit.merge", unbound("Available through the Edit menu.")},
         {"edit.redo", bound({"Ctrl+Y"})},
         {"selection.all", bound({"Ctrl+A"}, BindingContext::Always, true)},
         {"selection.none", bound({"Escape"}, BindingContext::Always, true)},
         {"selection.invert", unbound("Available through the Selection menu.")},
-        {"selection.mode.groups", unbound("Choose the mode in the selection controls.")},
-        {"selection.mode.objects", unbound("Choose the mode in the selection controls.")},
-        {"selection.mode.solids", unbound("Choose the mode in the selection controls.")},
-        {"selection.mode.faces", unbound("Choose the mode in the selection controls.")},
+        {"selection.mode.groups", bound({"1"})},
+        {"selection.mode.objects", bound({"2"})},
+        {"selection.mode.solids", bound({"3"})},
+        {"selection.mode.faces", bound({"4"})},
         {"selection.ignore_groups", bound({"Ctrl+W"})},
         {"selection.box", unbound("Drag with the select tool to start a marquee.")},
         {"selection.marquee_toggle", unbound("Choose Enclosed/Touching in the selection controls.")},
@@ -187,6 +215,7 @@ const Preset& hammerPreset() {
         {"view.unhide", bound({"Alt+H"}, BindingContext::Always, true)},
         {"view.isolate", bound({"Shift+H"}, BindingContext::Always, true)},
         {"view.hide_unselected", unbound("Use isolate for session visibility, or the View menu to hide.")},
+        {"view.center_selection", bound({"Ctrl+E", "Ctrl+Shift+E"})},
         {"grid.larger", bound({"]"})},
         {"grid.smaller", bound({"["})},
         {"workplane.pin", bound({"Alt+P"}, BindingContext::Always, true)},
@@ -194,8 +223,23 @@ const Preset& hammerPreset() {
         {"workplane.axis_y", unbound("Available through View > Grid.")},
         {"workplane.axis_z", unbound("Available through View > Grid.")},
         {"snap.suspend", bound({"Alt"})},
+        {"block.pick_plane", bound({"Ctrl"})},
+        {"tool.apply", bound({"Shift+A"})},
+        {"tool.measure", bound({"Shift+M"})},
+        {"pie.tools", bound({"Q"})},
+        {"apply.click", unbound("Right click applies; Alt+right click uses the selected extrapolation mode.")},
+        {"apply.lift_aligned", bound({"Shift"}, BindingContext::forTool("tool.apply"))},
+        {"face.extrapolation.cycle", unbound("Cycle the mode in Face Properties, or assign a key here.")},
         {"tool.select", bound({"Shift+S"})},
         {"tool.entity", bound({"Shift+E"})},
+        {"tool.block", bound({"Shift+B"})},
+        {"tool.primitive", bound({"Shift+P"})},
+        {"tool.clip", bound({"Shift+X"})},
+        {"tool.vertex", bound({"Shift+V"})},
+        {"vertex.mode.vertex", bound({"1"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.edge", bound({"2"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.face", bound({"3"}, BindingContext::forTool("tool.vertex"))},
+        {"clip.cycle_keep", unbound("Repeat Shift+X while the clip tool is active.")},
         {"gizmo.mode.translate", bound({"W"}, BindingContext::SelectToolActive)},
         {"gizmo.mode.rotate", bound({"E"}, BindingContext::SelectToolActive)},
         {"gizmo.mode.scale", bound({"R"}, BindingContext::SelectToolActive)},
@@ -224,14 +268,18 @@ const Preset& hammerPreset() {
 const Preset& blenderPreset() {
     static const Preset preset{"Blender", {
         {"edit.undo", bound({"Ctrl+Z"})},
+        {"edit.carve", unbound("Available through the Edit menu.")},
+        {"edit.hollow", unbound("Available through the Edit menu.")},
+        {"assets.reload", unbound("Available through the menu.")},
+        {"edit.merge", unbound("Available through the Edit menu.")},
         {"edit.redo", bound({"Ctrl+Shift+Z"})},
         {"selection.all", bound({"A"})},
         {"selection.none", bound({"Alt+A", "Escape"})},
         {"selection.invert", unbound("Available through the Selection menu.")},
-        {"selection.mode.groups", unbound("Choose the mode in the selection controls.")},
-        {"selection.mode.objects", unbound("Choose the mode in the selection controls.")},
-        {"selection.mode.solids", unbound("Choose the mode in the selection controls.")},
-        {"selection.mode.faces", unbound("Choose the mode in the selection controls.")},
+        {"selection.mode.groups", bound({"1"})},
+        {"selection.mode.objects", bound({"2"})},
+        {"selection.mode.solids", bound({"3"})},
+        {"selection.mode.faces", bound({"4"})},
         {"selection.ignore_groups", unbound("Available through the Selection menu.")},
         {"selection.box", bound({"B"})},
         {"selection.marquee_toggle", unbound("Choose Enclosed/Touching in the selection controls.")},
@@ -250,6 +298,7 @@ const Preset& blenderPreset() {
         {"view.unhide", bound({"Alt+H"})},
         {"view.isolate", unbound("Available through the View menu.")},
         {"view.hide_unselected", bound({"Shift+H"})},
+        {"view.center_selection", bound({"Ctrl+E"})},
         {"grid.larger", unbound("Choose spacing in the grid controls.")},
         {"grid.smaller", unbound("Choose spacing in the grid controls.")},
         {"workplane.pin", unbound("Available through View > Grid; no Blender surface pin binding.")},
@@ -257,8 +306,22 @@ const Preset& blenderPreset() {
         {"workplane.axis_y", unbound("Available through View > Grid.")},
         {"workplane.axis_z", unbound("Available through View > Grid.")},
         {"snap.suspend", bound({"Ctrl"})},
-        {"tool.select", unbound("Choose the select tool in the toolbar.")},
-        {"tool.entity", unbound("Choose the entity tool in the toolbar.")},
+        {"block.pick_plane", bound({"Alt"})},
+        {"tool.apply", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"tool.measure", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"apply.click", bound({"Ctrl"}, BindingContext::forTool("tool.apply"))},
+        {"apply.lift_aligned", bound({"Shift"}, BindingContext::forTool("tool.apply"))},
+        {"face.extrapolation.cycle", unbound("Cycle the mode in Face Properties, or assign a key here.")},
+        {"tool.select", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"tool.entity", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"tool.block", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"tool.primitive", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"tool.clip", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"tool.vertex", unbound("Use the tool pie (Shift+Space) or the Tools drop-down.")},
+        {"vertex.mode.vertex", bound({"1"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.edge", bound({"2"}, BindingContext::forTool("tool.vertex"))},
+        {"vertex.mode.face", bound({"3"}, BindingContext::forTool("tool.vertex"))},
+        {"clip.cycle_keep", unbound("Repeat the clip tool action to cycle the kept side.")},
         {"gizmo.mode.translate", unbound("Choose the gizmo in the toolbar; G starts modal translation.")},
         {"gizmo.mode.rotate", unbound("Choose the gizmo in the toolbar; R starts modal rotation.")},
         {"gizmo.mode.scale", unbound("Choose the gizmo in the toolbar; S starts modal scaling.")},
@@ -267,6 +330,7 @@ const Preset& blenderPreset() {
         {"transform.modal.rotate", bound({"R"})},
         {"transform.modal.scale", bound({"S"})},
         {"gizmo.space.toggle", bound({"Alt+Space"})},
+        {"pie.tools", bound({"Shift+Space"})},
         {"gizmo.pivot.cycle", unbound("Choose the pivot in the transform toolbar.")},
         {"snap.mode.toggle", bound({"Shift+Tab"})},
         {"transform.texture_lock.toggle", unbound("Available through the Edit menu.")},
@@ -299,7 +363,7 @@ std::vector<std::string> validate(const Preset& preset, const Actions& actions) 
     for (const auto& action : actions.entries()) {
         if (!preset.bindings.contains(action.id)) problems.push_back("Missing action: " + action.id);
     }
-    std::map<KeyChord, ActionId> chords;
+    std::map<std::pair<BindingContext, KeyChord>, ActionId> chords;
     for (const auto& [id, binding] : preset.bindings) {
         if (!actions.find(id)) problems.push_back("Unknown action: " + id);
         if (const auto* unboundValue = std::get_if<Unbound>(&binding.value)) {
@@ -312,8 +376,7 @@ std::vector<std::string> validate(const Preset& preset, const Actions& actions) 
         for (const auto& chord : keys) {
             const auto parsed = KeyChord::parse(chord.toString());
             if (!parsed || *parsed != chord) problems.push_back("Invalid key chord for action: " + id);
-            // Both supported contexts overlap when the select tool is active.
-            const auto [it, inserted] = chords.emplace(chord, id);
+            const auto [it, inserted] = chords.emplace(std::pair{binding.context, chord}, id);
             if (!inserted)
                 problems.push_back("Duplicate chord " + chord.toString() + ": " +
                                    it->second + " and " + id);
@@ -331,17 +394,17 @@ Keymap::Keymap(const Preset& preset, const Actions& actions) {
     }
     for (const auto& [id, binding] : preset.bindings) {
         if (const auto* keys = std::get_if<std::vector<KeyChord>>(&binding.value)) {
-            for (const auto& chord : *keys) entries_.emplace(chord, Entry{id, binding.context});
+            for (const auto& chord : *keys) entries_.emplace(std::pair{binding.context, chord}, id);
         }
     }
 }
 
 std::optional<ActionId> Keymap::lookup(const KeyChord& chord, BindingContext context) const {
-    const auto it = entries_.find(chord);
-    if (it == entries_.end() || (it->second.context == BindingContext::SelectToolActive &&
-                                context != BindingContext::SelectToolActive))
-        return std::nullopt;
-    return it->second.action;
+    if (!context.toolId.empty()) {
+        if (const auto it = entries_.find({context, chord}); it != entries_.end()) return it->second;
+    }
+    if (const auto it = entries_.find({BindingContext::Always, chord}); it != entries_.end()) return it->second;
+    return std::nullopt;
 }
 
 } // namespace apex::editor

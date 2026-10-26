@@ -8,6 +8,7 @@
 #include <QTimer>
 #include <QWidget>
 #include <map>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -37,6 +38,7 @@ class GpuHost;
 class PaneFrame;
 class AreaSplitter;
 class FloatingPanel;
+class GameContent;
 
 // The window's area tree (plan 0.1, D15/D16; area roles 0.2.12): the viewport::ViewportLayout split
 // tree mirrored into nested QSplitters. Each leaf takes a role, as in Blender: a Viewport leaf is a
@@ -59,6 +61,8 @@ public:
     void setDocument(document::Document* document, const assets::GameProfile* profile = nullptr);
     document::Document* document() const { return document_; }
     void setEditorSession(editor::EditorSession* session);
+    void setGameContent(GameContent* content);
+    void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
     void updateHighlight();
     void updateModeBadges();
 
@@ -88,6 +92,8 @@ public:
 
     // Per-map views: the first four panes follow v0..v3 of the VMF's viewsettings.
     void applyMapViews(const viewport::MapViews& views);
+    // Frames every viewport on `bounds`, keeping each camera's orientation.
+    void centerOn(const AABB& bounds);
     viewport::MapViews captureMapViews() const;
 
     // The world ray under the mouse pointer when it is over a pane (Paste places at its work-plane
@@ -123,6 +129,8 @@ signals:
     void frameTimeChanged(double milliseconds);
     void gpuNameChanged(const QString& name);
     void layoutChanged();  // Structure or viewport settings changed (a persistence hint).
+    void activeMaterialRequested(const QString& name);
+    void materialStatusMessage(const QString& message);
 
 private:
     void syncPreview(render::RenderMirror& mirror);
@@ -132,6 +140,8 @@ private:
     QWidget* makeArea(const viewport::LayoutNode& node, bool maximized, bool canClose, bool verticalStrip);
     PaneFrame* makeFrame(viewport::NodeId pane, bool maximized, bool canClose);
     QWidget* panelFor(viewport::NodeId pane, viewport::AreaRole role);
+    QWidget* makePanel(viewport::AreaRole role);
+    void configurePanel(QWidget* panel);
     template <typename Frame> void connectArea(Frame* frame);  // Defined in the .cpp; used there only.
     void tick();
     void setActive(viewport::NodeId pane);
@@ -162,6 +172,8 @@ private:
     std::optional<HandleDrag> drag_;
 
     editor::EditorSession* session_ = nullptr;
+    GameContent* gameContent_ = nullptr;
+    std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
     static constexpr std::uint64_t kNoPreview = ~std::uint64_t{0};
     std::uint64_t previewRevision_ = kNoPreview;
     bool previewEmpty_ = true;

@@ -71,6 +71,8 @@ struct Polygon {
     PlaneSide side;
     std::vector<DVec3> points;
     std::optional<std::size_t> sourceIndex; // Absent for the six seed-box faces.
+    bool isCap = false;
+    std::optional<std::size_t> carverFace = std::nullopt;
 };
 
 void appendDistinct(std::vector<DVec3>& points, DVec3 point) {
@@ -116,6 +118,71 @@ std::vector<Polygon> seedBox() {
     return result;
 }
 
+std::vector<Polygon> clipPolygons(std::vector<Polygon> polygons, const PlaneSide& side,
+                                  std::size_t sideIndex, bool isCap = false) {
+    std::vector<Polygon> clipped;
+    std::vector<DVec3> cap;
+    const auto addCap = [&cap](DVec3 point) {
+        if (std::none_of(cap.begin(), cap.end(), [point](DVec3 p) { return near(p, point); })) {
+            cap.push_back(point);
+        }
+    };
+    for (auto& polygon : polygons) {
+        std::vector<DVec3> loop;
+        for (std::size_t i = 0; i < polygon.points.size(); ++i) {
+            const auto a = polygon.points[i];
+            const auto b = polygon.points[(i + 1) % polygon.points.size()];
+            double da = side.plane.signedDistance(a);
+            double db = side.plane.signedDistance(b);
+            // Classify near-plane endpoints as on the boundary without projecting them.
+            if (std::abs(da) <= kPlanarEps) {
+                da = 0.0;
+            }
+            if (std::abs(db) <= kPlanarEps) {
+                db = 0.0;
+            }
+            if (da <= 0.0) {
+                appendDistinct(loop, a);
+                if (da == 0.0) {
+                    addCap(a);
+                }
+            }
+            if ((da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0)) {
+                const auto point = a + (b - a) * (da / (da - db));
+                appendDistinct(loop, point);
+                addCap(point);
+            }
+        }
+        closeLoop(loop);
+        polygon.points = std::move(loop);
+        if (substantial(polygon)) {
+            clipped.push_back(std::move(polygon));
+        }
+    }
+    if (cap.size() >= 3) {
+        DVec3 midpoint{0.0};
+        for (const auto point : cap) {
+            midpoint += point / static_cast<double>(cap.size());
+        }
+        const auto normal = side.plane.normal;
+        const auto reference = std::abs(normal.z) < 0.5 ? DVec3{0.0, 0.0, 1.0}
+                                                       : DVec3{1.0, 0.0, 0.0};
+        const auto u = glm::normalize(glm::cross(reference, normal));
+        const auto v = glm::cross(normal, u);
+        std::stable_sort(cap.begin(), cap.end(), [=](DVec3 a, DVec3 b) {
+            const auto pa = a - midpoint;
+            const auto pb = b - midpoint;
+            return std::atan2(glm::dot(pa, v), glm::dot(pa, u)) <
+                   std::atan2(glm::dot(pb, v), glm::dot(pb, u));
+        });
+        Polygon polygon{side, std::move(cap), sideIndex, isCap};
+        if (substantial(polygon)) {
+            clipped.push_back(std::move(polygon));
+        }
+    }
+    return clipped;
+}
+
 std::expected<std::vector<Polygon>, std::vector<Problem>>
 clipPlanes(std::span<const PlaneSide> sides) {
     std::vector<Problem> problems;
@@ -146,67 +213,7 @@ clipPlanes(std::span<const PlaneSide> sides) {
             return std::unexpected(std::vector<Problem>{
                 {ProblemCode::Empty, "Plane half-spaces have no solid interior", sideIndex}});
         }
-        std::vector<Polygon> clipped;
-        std::vector<DVec3> cap;
-        const auto addCap = [&cap](DVec3 point) {
-            if (std::none_of(cap.begin(), cap.end(), [point](DVec3 p) { return near(p, point); })) {
-                cap.push_back(point);
-            }
-        };
-        for (auto& polygon : polygons) {
-            std::vector<DVec3> loop;
-            for (std::size_t i = 0; i < polygon.points.size(); ++i) {
-                const auto a = polygon.points[i];
-                const auto b = polygon.points[(i + 1) % polygon.points.size()];
-                double da = side.plane.signedDistance(a);
-                double db = side.plane.signedDistance(b);
-                // Classify near-plane endpoints as on the boundary without projecting them.
-                if (std::abs(da) <= kPlanarEps) {
-                    da = 0.0;
-                }
-                if (std::abs(db) <= kPlanarEps) {
-                    db = 0.0;
-                }
-                if (da <= 0.0) {
-                    appendDistinct(loop, a);
-                    if (da == 0.0) {
-                        addCap(a);
-                    }
-                }
-                if ((da < 0.0 && db > 0.0) || (da > 0.0 && db < 0.0)) {
-                    const auto point = a + (b - a) * (da / (da - db));
-                    appendDistinct(loop, point);
-                    addCap(point);
-                }
-            }
-            closeLoop(loop);
-            polygon.points = std::move(loop);
-            if (substantial(polygon)) {
-                clipped.push_back(std::move(polygon));
-            }
-        }
-        if (cap.size() >= 3) {
-            DVec3 midpoint{0.0};
-            for (const auto point : cap) {
-                midpoint += point / static_cast<double>(cap.size());
-            }
-            const auto normal = side.plane.normal;
-            const auto reference = std::abs(normal.z) < 0.5 ? DVec3{0.0, 0.0, 1.0}
-                                                           : DVec3{1.0, 0.0, 0.0};
-            const auto u = glm::normalize(glm::cross(reference, normal));
-            const auto v = glm::cross(normal, u);
-            std::stable_sort(cap.begin(), cap.end(), [=](DVec3 a, DVec3 b) {
-                const auto pa = a - midpoint;
-                const auto pb = b - midpoint;
-                return std::atan2(glm::dot(pa, v), glm::dot(pa, u)) <
-                       std::atan2(glm::dot(pb, v), glm::dot(pb, u));
-            });
-            Polygon polygon{side, std::move(cap), sideIndex};
-            if (substantial(polygon)) {
-                clipped.push_back(std::move(polygon));
-            }
-        }
-        polygons = std::move(clipped);
+        polygons = clipPolygons(std::move(polygons), side, sideIndex);
     }
     if (std::any_of(polygons.begin(), polygons.end(), [](const Polygon& polygon) {
             return !polygon.sourceIndex.has_value();
@@ -223,6 +230,8 @@ std::expected<ConvexPolyhedron, std::vector<Problem>> assemble(std::span<const P
     for (const auto& polygon : polygons) {
         Face face;
         static_cast<FaceAttributes&>(face) = polygon.side;
+        face.isCap = polygon.isCap;
+        face.carverFace = polygon.carverFace;
         for (const auto point : polygon.points) {
             const auto found = std::find_if(result.vertices.begin(), result.vertices.end(),
                                             [point](DVec3 p) { return near(p, point); });
@@ -452,6 +461,72 @@ std::vector<std::array<std::size_t, 3>> ConvexPolyhedron::triangulate(const Face
 
 double ConvexPolyhedron::faceArea(const Face& face) const {
     return glm::length(areaVector(facePoints(*this, face)));
+}
+
+double ConvexPolyhedron::volume() const {
+    if (vertices.empty()) return 0.0;
+    // Tetrahedra from a vertex: the bounds center is far from a sliver's faces and loses precision.
+    const auto origin = vertices.front();
+    double result = 0.0;
+    for (const auto& face : faces) {
+        const auto points = facePoints(*this, face);
+        for (std::size_t i = 1; i + 1 < points.size(); ++i)
+            result += glm::dot(points[0] - origin, glm::cross(points[i] - origin, points[i + 1] - origin)) / 6.0;
+    }
+    return result;
+}
+
+SplitResult split(const ConvexPolyhedron& poly, const Plane& plane) {
+    if (!validPlane(plane) || !poly.isValid())
+        throw std::invalid_argument("Split requires a valid solid and finite unit plane");
+    bool front = false, back = false;
+    for (const auto point : poly.vertices) {
+        const double distance = plane.signedDistance(point);
+        front |= distance > kPlanarEps;
+        back |= distance < -kPlanarEps;
+    }
+    SplitResult result;
+    if (!front) { result.back = poly; return result; }
+    if (!back) { result.front = poly; return result; }
+    const auto piece = [&](Plane boundary) {
+        std::vector<Polygon> polygons;
+        for (std::size_t i = 0; i < poly.faces.size(); ++i) {
+            const auto& face = poly.faces[i];
+            PlaneSide side;
+            static_cast<FaceAttributes&>(side) = face;
+            side.plane = face.plane;
+            polygons.push_back({side, facePoints(poly, face), i, face.isCap, face.carverFace});
+        }
+        PlaneSide cap;
+        cap.plane = boundary;
+        auto clipped = clipPolygons(std::move(polygons), cap, poly.faces.size(), true);
+        auto assembled = assemble(clipped);
+        if (!assembled) throw std::invalid_argument("Split: " + assembled.error().front().message);
+        return std::move(*assembled);
+    };
+    result.back = piece(plane);
+    result.front = piece({-plane.normal, -plane.dist});
+    result.backCap = result.back->faces.size() - 1;
+    result.frontCap = result.front->faces.size() - 1;
+    return result;
+}
+
+std::vector<ConvexPolyhedron> subtract(const ConvexPolyhedron& target,
+                                       const ConvexPolyhedron& carver) {
+    if (!target.isValid() || !carver.isValid())
+        throw std::invalid_argument("Subtract requires valid solids");
+    std::vector<ConvexPolyhedron> fragments;
+    std::optional<ConvexPolyhedron> remainder = target;
+    for (std::size_t i = 0; i < carver.faces.size() && remainder; ++i) {
+        auto cut = split(*remainder, carver.faces[i].plane);
+        if (cut.frontCap) cut.front->faces[*cut.frontCap].carverFace = i;
+        if (cut.backCap) cut.back->faces[*cut.backCap].carverFace = i;
+        if (cut.front) fragments.push_back(std::move(*cut.front));
+        remainder = std::move(cut.back);
+    }
+    // Earlier planes can cut an entirely disjoint target into several temporary pieces.
+    if (!remainder) return {target};
+    return fragments;
 }
 
 AABB ConvexPolyhedron::bounds() const {

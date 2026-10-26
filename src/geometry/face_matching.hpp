@@ -2,7 +2,16 @@
 
 #include "geometry/convex_polyhedron.hpp"
 
+#include <cstdint>
+#include <map>
+#include <optional>
+
 namespace apex::geometry {
+
+// Absent means plane matching; a supplied map identifies surviving faces by old side ID.
+// Unlisted faces are new. If children share a parent ID, the largest keeps its identity
+// (ties prefer the lower new index); the others inherit from that parent.
+using FaceCorrespondence = std::optional<std::map<std::size_t, std::uint32_t>>;
 
 struct FaceMatch {
     std::size_t newIndex;

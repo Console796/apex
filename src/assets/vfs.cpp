@@ -1,5 +1,6 @@
 #include "assets/vfs.hpp"
 
+#include "assets/path_expand.hpp"
 #include "core/paths.hpp"
 #include "core/strings.hpp"
 
@@ -19,55 +20,8 @@ namespace apex::assets {
 namespace {
 namespace fs = std::filesystem;
 
-bool matches(std::string_view pattern, std::string_view value) {
-    std::size_t p = 0, v = 0, star = std::string_view::npos, retry = 0;
-    while (v < value.size()) {
-        if (p < pattern.size() && (pattern[p] == '?' || pattern[p] == value[v])) {
-            ++p;
-            ++v;
-        } else if (p < pattern.size() && pattern[p] == '*') {
-            star = p++;
-            retry = v;
-        } else if (star != std::string_view::npos) {
-            p = star + 1;
-            v = ++retry;
-        } else {
-            return false;
-        }
-    }
-    while (p < pattern.size() && pattern[p] == '*') {
-        ++p;
-    }
-    return p == pattern.size();
-}
-
-// Resolve physical mount paths with the same ASCII case policy as virtual lookups. Expands
-// wildcards component by component, so both custom/* and custom/*/*.vpk work on Linux.
-std::vector<fs::path> expand(const fs::path& path) {
-    std::vector<fs::path> paths{path.is_absolute() ? path.root_path() : fs::path{"."}};
-    for (const auto& component : path.relative_path()) {
-        std::vector<fs::path> next;
-        for (const auto& parent : paths) {
-            if (component == "." || component == "..") {
-                next.push_back(parent / component);
-                continue;
-            }
-            std::error_code ec;
-            for (fs::directory_iterator it(parent, ec), end; !ec && it != end; it.increment(ec)) {
-                if (matches(toLowerAscii(component.string()),
-                            toLowerAscii(it->path().filename().string()))) {
-                    next.push_back(it->path());
-                }
-            }
-        }
-        std::ranges::sort(next);
-        paths = std::move(next);
-        if (paths.empty()) {
-            break;
-        }
-    }
-    return paths;
-}
+using detail::expand;
+using detail::matches;
 
 Result<std::string> readText(const fs::path& path) {
     std::ifstream input(path, std::ios::binary);
@@ -120,6 +74,7 @@ bool active(const kv1::Node& node) {
 struct Vfs::Impl {
     struct Mount {
         fs::path directory;
+        std::optional<std::size_t> addon;
         std::unique_ptr<vpkpp::PackFile> archive;
         std::map<std::string, std::string> entries;
     };
@@ -127,10 +82,12 @@ struct Vfs::Impl {
         std::size_t mount;
         fs::path path;
     };
+    AddonList addons;
     std::vector<Mount> mounts;
     std::map<std::string, LooseFile> loose;
 
-    Result<void> add(const fs::path& requested, bool required = false) {
+    Result<void> add(const fs::path& requested, bool required = false,
+                     std::optional<std::size_t> addon = {}) {
         auto paths = expand(requested);
         if (paths.empty() && ciEquals(requested.extension().string(), ".vpk") &&
             !toLowerAscii(requested.stem().string()).ends_with("_dir")) {
@@ -141,7 +98,7 @@ struct Vfs::Impl {
         for (const auto& path : paths) {
             std::error_code ec;
             if (fs::is_directory(path, ec)) {
-                mounts.push_back({path, {}, {}});
+                mounts.push_back({path, addon, {}, {}});
                 mounted = true;
             } else if (ciEquals(path.extension().string(), ".vpk")) {
                 auto archive = vpkpp::VPK::open(path.string());
@@ -167,7 +124,7 @@ struct Vfs::Impl {
                 if (!archives.insert(std::string(archive->getFilepath())).second) {
                     continue;
                 }
-                Mount mount{{}, std::move(archive), {}};
+                Mount mount{{}, addon, std::move(archive), {}};
                 mount.archive->runForAllEntries([&](const std::string& entry, const vpkpp::Entry&) {
                     mount.entries.try_emplace(lookupKey(entry), entry);
                 });
@@ -307,6 +264,26 @@ Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver app
         all.insert(all.begin(), std::make_move_iterator(heads.begin()),
                    std::make_move_iterator(heads.end()));
     }
+    result.impl_->addons.source = profile.addons.list;
+    auto addons = readAddonList(profile);
+    if (!addons) result.impl_->addons.problems.push_back(addons.error().what());
+    else result.impl_->addons = std::move(*addons);
+    auto& impl = *result.impl_;
+    const auto baseCount = impl.mounts.size();
+    for (std::size_t i = 0; i < impl.addons.entries.size(); ++i) {
+        const auto& entry = impl.addons.entries[i];
+        if (!entry.mounted || entry.resolved.empty()) continue;
+        const bool looseFirst = impl.addons.source == AddonSettings::List::Hammer;
+        if (looseFirst) impl.add(entry.resolved, false, i);
+        // Multiple VPK priority is unmeasured; retain declaration order.
+        for (const auto& vpk : entry.vpks) {
+            auto added = impl.add(entry.resolved / vpk, true, i);
+            if (!added) impl.addons.problems.push_back(added.error().what());
+        }
+        if (!looseFirst) impl.add(entry.resolved, false, i);
+    }
+    std::rotate(impl.mounts.begin(), impl.mounts.begin() + static_cast<std::ptrdiff_t>(baseCount),
+                impl.mounts.end());
     auto refreshed = result.refresh(jobs);
     if (!refreshed) {
         return std::unexpected(refreshed.error());
@@ -317,10 +294,11 @@ Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver app
 }
 
 Result<void> Vfs::refresh(JobPool& jobs) {
-    std::vector<std::pair<std::size_t, fs::path>> directories;
+    struct Directory { std::size_t mount; fs::path path; bool addon; };
+    std::vector<Directory> directories;
     for (std::size_t i = 0; i < impl_->mounts.size(); ++i)
         if (!impl_->mounts[i].directory.empty()) {
-            directories.emplace_back(i, impl_->mounts[i].directory);
+            directories.push_back({i, impl_->mounts[i].directory, impl_->mounts[i].addon.has_value()});
         }
     using Index = decltype(impl_->loose);
     auto promise = std::make_shared<std::promise<Result<Index>>>();
@@ -329,7 +307,7 @@ Result<void> Vfs::refresh(JobPool& jobs) {
                 [directories = std::move(directories), promise](CancelToken token) {
         try {
             Index index;
-            for (const auto& [mountIndex, directory] : directories) {
+            for (const auto& [mountIndex, directory, addon] : directories) {
                 std::vector<fs::path> files;
                 std::error_code ec;
                 for (fs::recursive_directory_iterator it(directory, ec), end;
@@ -338,6 +316,11 @@ Result<void> Vfs::refresh(JobPool& jobs) {
                         promise->set_value(std::unexpected(
                             Error{ErrorCode::Internal, "VFS refresh cancelled"}));
                         return;
+                    }
+                    const auto relative = it->path().lexically_relative(directory);
+                    if (addon && ciEquals(relative.begin()->string(), ".assets")) {
+                        if (it->is_directory()) it.disable_recursion_pending();
+                        continue;
                     }
                     if (it->is_regular_file()) {
                         files.push_back(it->path());
@@ -394,6 +377,20 @@ Result<Blob> Vfs::open(std::string_view path) const {
     return std::unexpected(Error{ErrorCode::NotFound, "Asset missing: " + key});
 }
 
+const AddonList& Vfs::addons() const { return impl_->addons; }
+
+std::optional<std::size_t> Vfs::provider(std::string_view path) const {
+    const auto key = lookupKey(path);
+    if (!virtualPath(key)) return {};
+    const auto loose = impl_->loose.find(key);
+    for (std::size_t i = 0; i < impl_->mounts.size(); ++i) {
+        const auto& mount = impl_->mounts[i];
+        if ((loose != impl_->loose.end() && loose->second.mount == i) || mount.entries.contains(key))
+            return mount.addon;
+    }
+    return {};
+}
+
 bool Vfs::exists(std::string_view path) const {
     const auto key = lookupKey(path);
     if (!virtualPath(key)) {
@@ -433,6 +430,46 @@ std::vector<std::string> Vfs::list(std::string_view directory, std::string_view 
             append(key);
         }
     return {paths.begin(), paths.end()};
+}
+
+std::vector<std::string> Vfs::walk(std::string_view directory, std::string_view glob) const {
+    auto prefix = lookupKey(directory);
+    if (!prefix.empty() && !virtualPath(prefix)) return {};
+    if (!prefix.empty()) prefix += '/';
+    const auto pattern = toLowerAscii(glob);
+    std::set<std::string> paths;
+    const auto append = [&](const auto& entries) {
+        for (auto it = entries.lower_bound(prefix);
+             it != entries.end() && it->first.starts_with(prefix); ++it) {
+            const auto& key = it->first;
+            const auto slash = key.rfind('/');
+            const auto filename = std::string_view(key).substr(
+                slash == std::string::npos ? 0 : slash + 1);
+            if (matches(pattern, filename)) paths.insert(key);
+        }
+    };
+    append(impl_->loose);
+    for (const auto& mount : impl_->mounts) append(mount.entries);
+    return {paths.begin(), paths.end()};
+}
+
+std::function<std::vector<std::string>()> Vfs::walkTask(std::string directory, std::string glob) const {
+    return [state = impl_, directory = std::move(directory), glob = std::move(glob)] {
+        Vfs view;
+        view.impl_ = state;
+        return view.walk(directory, glob);
+    };
+}
+std::string Vfs::displayPath(std::string_view path) const {
+    const auto key = lookupKey(path);
+    auto loose = impl_->loose.find(key);
+    for (std::size_t i = 0; i < impl_->mounts.size(); ++i) {
+        const auto& mount = impl_->mounts[i];
+        if (loose != impl_->loose.end() && loose->second.mount == i)
+            return loose->second.path.lexically_relative(mount.directory).generic_string();
+        if (auto entry = mount.entries.find(key); entry != mount.entries.end()) return entry->second;
+    }
+    return key;
 }
 
 } // namespace apex::assets

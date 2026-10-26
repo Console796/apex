@@ -720,7 +720,8 @@ TEST_CASE("Corpus maps paste across documents keeping every connections block") 
         MESSAGE("APEX_P2CE_DIR is unset; skipping clipboard corpus paste");
         return;
     }
-    const fs::path root = fs::path(install) / "sdk_content/maps";
+    // Two elevator logic instances: many connections blocks, and a group to remap.
+    const fs::path root = fs::path(install) / "sdk_content/maps/instances";
     const auto load = [&](const char* name) {
         std::ifstream stream(root / name, std::ios::binary);
         REQUIRE(stream.good());
@@ -730,8 +731,8 @@ TEST_CASE("Corpus maps paste across documents keeping every connections block") 
         REQUIRE(file);
         return std::move(*file);
     };
-    Document source(load("test1.vmf"));
-    Document target(load("hammertest.vmf"));
+    Document source(load("community/elevators/logic/elevator_departure_down_logic.vmf"));
+    Document target(load("turbine_elevator/departure_elevator_a4_logic.vmf"));
     EditorSession from, to;
     from.attach(source);
     to.attach(target);

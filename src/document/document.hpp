@@ -2,6 +2,7 @@
 
 #include "core/handle.hpp"
 #include "document/vmf.hpp"
+#include "geometry/face_matching.hpp"
 #include "geometry/solid_geometry.hpp"
 
 #include <cstdint>
@@ -221,6 +222,14 @@ public:
     void setSideKeyValue(SideId side, std::string key, std::string value);
     // The polyhedron supplies vertices and UVs. Input side IDs must remain unchanged.
     void setSolidGeometry(Handle<Solid> solid, const geometry::SolidGeometry& geometry);
+    // Preserve matched side blocks; allocate IDs for new faces, ignoring input sideId.
+    // Matched faces take only geometry from poly. setSolidGeometry also writes changed UVs.
+    void rebuildSolid(Handle<Solid> solid, const geometry::ConvexPolyhedron& poly,
+                      const geometry::FaceCorrespondence& correspondence = {});
+    // Fresh solid/side IDs, inherited side blocks and editor membership. Without a parent,
+    // use the source's parent. Plane matching determines which source sides survive.
+    Handle<Solid> createFragment(Handle<Solid> source, const geometry::ConvexPolyhedron& poly,
+                                 std::optional<NodeHandle> parent = {});
     // Opaque caller state; metadata alone does not create an undo entry.
     void setSelection(SelectionBlob before, SelectionBlob after);
     // Consecutive single edits of the same node/key coalesce unless disabled for a gesture.
@@ -240,6 +249,8 @@ private:
     void touch(NodeId id, Dirty flags);
     void detach(NodeId id);
     void destroyId(NodeId id);
+    void rebuildSolidImpl(Handle<Solid> solid, const geometry::ConvexPolyhedron& poly,
+                          const geometry::FaceCorrespondence& correspondence, bool writeUv);
 };
 
 } // namespace apex::document

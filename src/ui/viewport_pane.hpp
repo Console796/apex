@@ -22,8 +22,11 @@ class QMenu;
 namespace apex::ui {
 
 class GpuHost;
+class ToolParameterStrip;
 
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session);
+// Red X, green Y and blue Z from the world origin while the grid overlay is on.
+void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view);
 
 // The native Vulkan child window of one pane (plan 0.1, D15; pattern from spikes/wayland-vulkan).
 // Renders on demand into its own swapchain through the shared Renderer and RenderMirror, and turns
@@ -69,7 +72,6 @@ protected:
 
 private:
     bool handleMouse(QMouseEvent* event);
-    void selectionMouse(QMouseEvent* event);
     void cancelSelectionGesture();
     void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);
     bool handleKey(QKeyEvent* event);
@@ -81,11 +83,6 @@ private:
     editor::EditorSession* session_ = nullptr;
     TransformInput transform_;
     bool pointerInside_ = false;
-    bool selectionPending_ = false, marqueeAllowed_ = false, marqueeDragging_ = false;
-    QPointF selectionStart_, lastClick_;
-    QSize lastClickSize_;
-    editor::Modifiers selectionModifiers_;
-    std::optional<viewport::Camera> clickCamera_, gestureCamera_;
 
     GpuHost& host_;
     viewport::NodeId pane_;
@@ -135,6 +132,7 @@ public:
     QWidget* container() const { return container_; }
     void setActive(bool active);
     void refreshTitle();
+    void setTool(editor::Tool& tool);
     void setModeText(const QString& text, bool entityTool);
     void restyle();
     QMenu* menu() const { return menu_; }
@@ -157,6 +155,7 @@ private:
     QWidget* container_ = nullptr;
     QLabel* title_ = nullptr;
     QLabel* mode_ = nullptr;
+    ToolParameterStrip* parameters_ = nullptr;
     QToolButton* menuButton_ = nullptr;
     QMenu* menu_ = nullptr;
     bool active_ = false;

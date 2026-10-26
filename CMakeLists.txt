@@ -81,32 +81,34 @@ include(deps)
 
 # Layer graph, plan 0.1 section 2. tools/check_layers.py enforces the same edges on #includes.
 apex_layer(core SOURCES src/core/version.cpp src/core/strings.cpp src/core/paths.cpp
-                       src/core/log.cpp src/core/job_pool.cpp src/core/json.cpp
+                       src/core/log.cpp src/core/job_pool.cpp src/core/json.cpp src/core/kv3.cpp
                        src/core/kv1.cpp src/core/kv1_parse.cpp src/core/kv1_write.cpp
            DEPS glm::glm spdlog::spdlog)
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
-apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_matching.cpp
+apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_uv.cpp src/geometry/face_matching.cpp
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
+                           src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/document.cpp DEPS apex_geometry apex_core)
-apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
+apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp
+                          src/editor/pie_menu.cpp src/editor/pie_menus.cpp
                           src/editor/group_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
-                          src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
+                          src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp
                           src/editor/transform.cpp src/editor/preview.cpp src/editor/preset_io.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/inspector_model.cpp src/editor/placement.cpp
            DEPS apex_document apex_geometry apex_core)
-apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp
+apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp
-                         src/assets/material_cache.cpp DEPS apex_core)
+                         src/assets/material_cache.cpp src/assets/material_index.cpp src/assets/thumbnail_cache.cpp DEPS apex_core)
 target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
                                           sourcepp::vtfpp sourcepp::toolpp)
 apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp src/render/vk.cpp
                          src/render/context.cpp src/render/resources.cpp
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
                          src/render/render_target.cpp src/render/swapchain.cpp
-                         src/render/renderer.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
+                         src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
            DEPS apex_document apex_assets volk::volk GPUOpen::VulkanMemoryAllocator
                 Vulkan::Headers)
 # GLSL in src/render/shaders is compiled to SPIR-V and embedded in gen/render/shaders_spv.hpp (D14).
@@ -118,12 +120,13 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
            DEPS apex_render apex_document)
 
 if(APEX_BUILD_APP)
-  find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
-  apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/theme.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/gpu_host.cpp
-                        src/ui/pointer_lock.cpp src/ui/input_log.cpp
-                        src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
-             DEPS apex_viewport apex_editor Qt6::Widgets)
-  set_target_properties(apex_ui PROPERTIES AUTOMOC ON)
+  find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Svg)
+  apex_layer(ui SOURCES src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/game_content.cpp src/ui/materials_panel.cpp src/ui/face_properties_panel.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/tool_parameter_strip.cpp src/ui/gpu_host.cpp
+                        src/ui/uv_view.cpp src/ui/pointer_lock.cpp src/ui/input_log.cpp
+                        src/ui/pie_menu_popup.cpp src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
+             DEPS apex_viewport apex_editor Qt6::Widgets Qt6::Svg)
+  set_target_properties(apex_ui PROPERTIES AUTOMOC ON AUTORCC ON)
+  target_sources(apex_ui PRIVATE src/ui/icons/icons.qrc)
   # Pointer lock is optional: other platforms and minimal Linux builds retain local input.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig QUIET)
@@ -161,8 +164,8 @@ if(APEX_BUILD_APP)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
   if(APEX_BUILD_TESTS)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
-    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp)
-    target_link_libraries(apex_ui_tests PRIVATE apex_ui apex_warnings doctest::doctest)
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/materials_test.cpp tests/ui/face_properties_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp tests/ui/tool_controls_test.cpp tests/ui/pie_popup_test.cpp)
+    target_link_libraries(apex_ui_tests PRIVATE apex_ui sourcepp::vtfpp apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME apex_ui_tests COMMAND apex_ui_tests)
@@ -207,6 +210,13 @@ if(APEX_BUILD_FUZZ)
     target_compile_options(vmf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined
                            -fno-omit-frame-pointer)
     target_link_options(vmf_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
+    add_executable(hull_fuzz tests/fuzz/hull_fuzz.cpp src/geometry/convex_hull.cpp
+                   src/geometry/convex_polyhedron.cpp)
+    target_include_directories(hull_fuzz PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(hull_fuzz PRIVATE glm::glm apex_warnings)
+    target_compile_options(hull_fuzz PRIVATE -fsanitize=fuzzer,address,undefined
+                           -fno-omit-frame-pointer)
+    target_link_options(hull_fuzz PRIVATE -fsanitize=fuzzer,address,undefined)
   else()
     message(STATUS "APEX_BUILD_FUZZ requires Clang; skipping fuzz targets")
   endif()

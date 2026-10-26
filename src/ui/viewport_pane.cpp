@@ -1,13 +1,19 @@
 #include "render/vk.hpp"  // volk before Qt's Vulkan header.
 
 #include "ui/viewport_pane.hpp"
+#include "ui/tool_parameter_strip.hpp"
 
 #include "ui/area_frame.hpp"
 
 #include <QActionGroup>
 #include <QCoreApplication>
+#include <QDragEnterEvent>
+#include <QDragMoveEvent>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QHBoxLayout>
 #include <QKeyEvent>
+#include <QPointer>
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
@@ -17,6 +23,7 @@
 #include <QVBoxLayout>
 #include <QVulkanInstance>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "core/log.hpp"
@@ -31,11 +38,6 @@
 
 namespace apex::ui {
 namespace {
-
-bool sameCamera(const viewport::Camera& a, const viewport::Camera& b) {
-    return a.position == b.position && a.angles == b.angles && a.projection == b.projection &&
-           a.fovYDegrees == b.fovYDegrees && a.orthoHeight == b.orthoHeight;
-}
 
 constexpr double kMaxDt = 0.1;  // Seconds; a hitch must not fling the fly camera.
 
@@ -82,6 +84,8 @@ public:
 
 protected:
     bool eventFilter(QObject*, QEvent* event) override {
+        // ~QWindowContainer deletes the window before ~QWidget clears focus, so it may be gone here.
+        if (!window_) return false;
         if (event->type() == QEvent::FocusOut) window_->releaseCapture();
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease &&
             event->type() != QEvent::ShortcutOverride) return false;
@@ -97,10 +101,21 @@ protected:
     }
 
 private:
-    PaneWindow* window_;
+    QPointer<PaneWindow> window_;
 };
 
 }  // namespace
+
+void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view) {
+    if (!view.overlays.grid) return;
+    // Source's map bounds; the theme's gizmo axis colours.
+    constexpr double kReach = 16384.0;
+    const auto palette = overlayPalette(currentTokens());
+    const std::array<std::pair<DVec3, Vec4>, 3> axes{{{{1, 0, 0}, palette.gizmoX},
+                                                      {{0, 1, 0}, palette.gizmoY},
+                                                      {{0, 0, 1}, palette.gizmoZ}}};
+    for (const auto& [axis, colour] : axes) list.worldSegments.push_back({DVec3(0.0), axis * kReach, colour, 2.0f});
+}
 
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session) {
     render::GridSettings grid;
@@ -172,14 +187,13 @@ void PaneWindow::destroySwapchain() {
 }
 
 void PaneWindow::cancelSelectionGesture() {
-    selectionPending_ = marqueeDragging_ = false;
-    gestureCamera_.reset();
+    transform_.cancelPointer();
     dirty_ = true;
 }
 
 void PaneWindow::releaseCapture() {
     cancelSelectionGesture();
-    clickCamera_.reset();
+    transform_.cancelPointer(true);
     if (grabbed_) setMouseGrabEnabled(false);
     grabbed_ = false;
     pointerLock_.cancel();
@@ -190,6 +204,32 @@ void PaneWindow::releaseCapture() {
 
 bool PaneWindow::event(QEvent* e) {
     switch (e->type()) {
+    case QEvent::DragEnter:
+    case QEvent::DragMove: {
+        auto* drag = static_cast<QDragMoveEvent*>(e);
+        if (session_ && session_->document() && drag->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
+            drag->acceptProposedAction();
+            return true;
+        }
+        break;
+    }
+    case QEvent::Drop: {
+        auto* drop = static_cast<QDropEvent*>(e);
+        if (session_ && session_->document() && drop->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
+            auto name = QString::fromUtf8(drop->mimeData()->data(QStringLiteral("application/x-apex-material"))).toStdString();
+            const auto* vp = accessor_();
+            if (!name.empty() && vp && width() > 0 && height() > 0) {
+                const auto point = drop->position();
+                const auto ray = viewport::pixelRay(vp->camera, static_cast<double>(width()) / height(),
+                    point.x(), point.y(), width(), height());
+                if (session_->applyMaterialAt(ray, name)) {
+                    drop->acceptProposedAction();
+                    return true;
+                }
+            }
+        }
+        break;
+    }
     case QEvent::Expose:
     case QEvent::Resize:
     case QEvent::DevicePixelRatioChange:
@@ -207,7 +247,6 @@ bool PaneWindow::event(QEvent* e) {
         return handleMouse(static_cast<QMouseEvent*>(e));
     case QEvent::Leave:
         pointerInside_ = false;
-        if (session_ && !transform_.owns()) session_->clearHover();
         transform_.leave();
         if (transform_.takeDirty()) dirty_ = true;
         break;
@@ -223,7 +262,7 @@ bool PaneWindow::event(QEvent* e) {
         break;
     case QEvent::Wheel: {
         cancelSelectionGesture();
-        clickCamera_.reset();
+        transform_.cancelPointer(true);
         if (session_) session_->clearHover();
         const auto* w = static_cast<QWheelEvent*>(e);
         scroll_ += w->angleDelta().y() / 120.0;
@@ -291,7 +330,6 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         }
         return true;
     }
-    selectionMouse(e);
     if (press) {
         requestActivate();
         emit pressed();
@@ -320,59 +358,14 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
     return true;
 }
 
-void PaneWindow::selectionMouse(QMouseEvent* e) {
-    auto* vp = accessor_();
-    if (!session_ || !session_->document() || !vp || width() <= 0 || height() <= 0) return;
-    const auto buttons = e->buttons();
-    if (buttons.testFlag(Qt::RightButton) || buttons.testFlag(Qt::MiddleButton)) {
-        cancelSelectionGesture();
-        clickCamera_.reset();
-        session_->clearHover();
-        return;
-    }
-    // Releasing navigation must not become a hover or selection gesture.
-    if (e->type() == QEvent::MouseButtonRelease && e->button() != Qt::LeftButton) return;
-    const double aspect = static_cast<double>(width()) / height();
-    const auto ray = viewport::pixelRay(vp->camera, aspect, cursor_.x(), cursor_.y(), width(), height());
-    if (e->type() == QEvent::MouseButtonPress && e->button() == Qt::LeftButton) {
-        selectionPending_ = true;
-        selectionStart_ = cursor_;
-        selectionModifiers_ = {e->modifiers().testFlag(Qt::ControlModifier), e->modifiers().testFlag(Qt::ShiftModifier)};
-        gestureCamera_ = vp->camera;
-        session_->pointerHover(ray);
-        marqueeAllowed_ = !session_->hoverTarget() || selectionModifiers_.ctrl || selectionModifiers_.shift;
-    } else if (e->type() == QEvent::MouseMove && selectionPending_) {
-        if (!sameCamera(*gestureCamera_, vp->camera)) { cancelSelectionGesture(); return; }
-        const auto delta = cursor_ - selectionStart_;
-        if (marqueeAllowed_ && QPointF::dotProduct(delta, delta) > 9) {
-            marqueeDragging_ = true;
-            session_->clearHover();
-            dirty_ = true;
-        }
-    } else if (e->type() == QEvent::MouseButtonRelease && selectionPending_) {
-        if (sameCamera(*gestureCamera_, vp->camera)) {
-            if (marqueeDragging_) {
-                session_->marquee(viewport::rectFrustum(vp->camera, aspect, selectionStart_.x(), selectionStart_.y(),
-                                                        cursor_.x(), cursor_.y(), width(), height()), selectionModifiers_);
-                clickCamera_.reset();
-            } else {
-                const auto delta = cursor_ - lastClick_;
-                const bool sameSpot = clickCamera_ && sameCamera(*clickCamera_, vp->camera) &&
-                                      lastClickSize_ == size() && QPointF::dotProduct(delta, delta) <= 9;
-                session_->pointerClick(ray, selectionModifiers_, sameSpot);
-                lastClick_ = cursor_;
-                lastClickSize_ = size();
-                clickCamera_ = vp->camera;
-            }
-        }
-        cancelSelectionGesture();
-    } else if (e->type() == QEvent::MouseMove && buttons == Qt::NoButton) session_->pointerHover(ray);
-}
-
 void PaneWindow::drawMarquee(VkCommandBuffer commands, VkExtent2D extent) {
-    if (!marqueeDragging_) return;
+    const auto* vp = accessor_();
+    if (!vp) return;
+    const auto overlay = transform_.overlay(vp->camera, QSizeF(width(), height()));
+    if (!overlay.rectangle) return;
+    const auto& [start, end] = *overlay.rectangle;
     const double scale = devicePixelRatio();
-    const auto rect = QRectF(selectionStart_, cursor_).normalized();
+    const auto rect = QRectF(QPointF(start.x, start.y), QPointF(end.x, end.y)).normalized();
     const int x0 = std::clamp(qRound(rect.left() * scale), 0, static_cast<int>(extent.width) - 1);
     const int x1 = std::clamp(qRound(rect.right() * scale), x0, static_cast<int>(extent.width) - 1);
     const int y0 = std::clamp(qRound(rect.top() * scale), 0, static_cast<int>(extent.height) - 1);
@@ -397,15 +390,6 @@ bool PaneWindow::handleKey(QKeyEvent* e) {
         if (consumed) return true;
     }
     if (!navigating) {
-        if (session_ && down && !e->isAutoRepeat()) {
-            if (const auto chord = keyChord(*e)) {
-                if (const auto action = session_->keymap().lookup(*chord, editor::BindingContext::SelectToolActive)) {
-                    if (session_->perform(*action)) return true;
-                    e->ignore(); // Window-level actions (cut, copy, paste) still get their shortcut.
-                    return false;
-                }
-            }
-        }
         forward_ = back_ = left_ = right_ = up_ = down_ = false;
         e->ignore();
         return false;
@@ -443,7 +427,7 @@ void PaneWindow::applyNavigation(double dt) {
             in.moveUp = up_; in.moveDown = down_;
             if (viewport::navigate(vp->camera, in)) {
                 cancelSelectionGesture();
-                clickCamera_.reset();
+                transform_.cancelPointer(true);
                 if (session_) session_->clearHover();
                 dirty_ = true;
                 emit cameraChanged();
@@ -526,6 +510,7 @@ double PaneWindow::draw() {
     options.edgeColour = Vec4(0.0f, 0.0f, 0.0f, 1.0f);
     options.edgeOverlay = vp->mode == viewport::DisplayMode::Flat;
     options.showEntities = vp->overlays.entityHelpers;
+    options.showNodraw = vp->overlays.nodrawFaces;
     options.grid = makeGridSettings(*vp, session_);
     if (lightBackground) options.grid.colour = Vec4(0.25f, 0.25f, 0.3f, 0.8f);
 
@@ -537,6 +522,8 @@ double PaneWindow::draw() {
         list.view = options.view;
         list.grid = options.grid;
     }
+    list.viewportSize = Vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
+    appendWorldAxes(list, *vp);
     transform_.appendOverlay(list, camera, QSizeF(width(), height()), devicePixelRatio());
 
     QElapsedTimer timer;
@@ -596,26 +583,13 @@ double PaneWindow::draw() {
 // ---- PaneFrame ----
 
 QString modeSummary(const editor::EditorSession& session) {
-    const auto word = [](const char* text) { return QCoreApplication::translate("apex::ui::modes", text); };
+    const auto readout = session.activeToolObject().readout();
     const QString sep = QStringLiteral("  \u00b7  ");
-    if (session.activeTool() == editor::EditorSession::Tool::Entity) {
-        const auto& cls = session.currentEntityClass();
-        return word("Entity") + (cls.empty() ? QString() : sep + QString::fromStdString(cls));
-    }
-    QString selection;
-    switch (session.selection().mode()) {
-    case editor::SelectionMode::Groups: selection = word("Groups"); break;
-    case editor::SelectionMode::Objects: selection = word("Objects"); break;
-    case editor::SelectionMode::Solids: selection = word("Solids"); break;
-    case editor::SelectionMode::Faces: selection = word("Faces"); break;
-    }
-    QString gizmo;
-    switch (session.gizmoMode()) {
-    case editor::GizmoMode::Translate: gizmo = word("Move"); break;
-    case editor::GizmoMode::Rotate: gizmo = word("Rotate"); break;
-    case editor::GizmoMode::Scale: gizmo = word("Scale"); break;
-    }
-    return word("Select") + sep + selection + sep + gizmo;
+    QStringList words;
+    for (const auto& key : readout.badge)
+        words.push_back(QCoreApplication::translate("apex::ui::modes", key.c_str()));
+    if (!readout.detail.empty()) words.push_back(QString::fromStdString(readout.detail));
+    return words.join(sep);
 }
 
 PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindow* window,
@@ -655,6 +629,8 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     connect(menu_, &QMenu::aboutToShow, this, &PaneFrame::buildMenu);
     row->addWidget(menuButton_);
     column->addWidget(header);
+    parameters_ = new ToolParameterStrip(this);
+    column->addWidget(parameters_);
 
     if (window_) {
         container_ = QWidget::createWindowContainer(window_, this);
@@ -662,6 +638,7 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
         container_->setFocusPolicy(Qt::StrongFocus);
         container_->setMinimumSize(80, 60);
         new KeyForwarder(container_, window_);
+        window_->transformInput().setWidget(container_);
         connect(window_, &PaneWindow::pressed, this, [this] {
             container_->setFocus(Qt::MouseFocusReason);
             emit activated(pane_);
@@ -706,6 +683,8 @@ void PaneFrame::refreshTitle() {
     if (maximized_) text += tr("  (maximized)");
     title_->setText(text);
 }
+
+void PaneFrame::setTool(editor::Tool& tool) { parameters_->update(tool); }
 
 void PaneFrame::setModeText(const QString& text, bool entityTool) {
     mode_->setText(text);
@@ -784,7 +763,8 @@ void PaneFrame::buildMenu() {
     const OverlayEntry entries[] = {{"Grid", &viewport::Overlays::grid},
                                     {"Entity helpers", &viewport::Overlays::entityHelpers},
                                     {"Bounds", &viewport::Overlays::bounds},
-                                    {"Normals", &viewport::Overlays::normals}};
+                                    {"Normals", &viewport::Overlays::normals},
+                                    {"Nodraw faces", &viewport::Overlays::nodrawFaces}};
     for (const auto& entry : entries) {
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);

@@ -35,6 +35,8 @@ struct Face : FaceAttributes {
     // subdivisions are allowed. Plane points in Source files use the opposite winding.
     std::vector<std::size_t> vertices;
     Plane plane; // Derived cache; refresh with derivePlane after editing vertices.
+    bool isCap = false;
+    std::optional<std::size_t> carverFace; // Index in the carver that created this cap.
 };
 
 struct PlaneSide : FaceAttributes {
@@ -68,6 +70,8 @@ struct Problem {
     std::string message;
     std::optional<std::size_t> faceIndex = std::nullopt;
 };
+
+using Problems = std::vector<Problem>;
 
 // Source's three plane points are clockwise when viewed from outside. Reverse the cross
 // product here (and only here), so the resulting normal points OUT. Core Plane::fromPoints
@@ -103,9 +107,24 @@ public:
     // Fan triangulation is valid because valid faces are convex. Indices address vertices.
     std::vector<std::array<std::size_t, 3>> triangulate(const Face& face) const;
     double faceArea(const Face& face) const;
+    double volume() const; // Positive for a valid outward-wound solid; local origin.
     AABB bounds() const;
     DVec3 center() const; // Center of the AABB; zero for an empty polyhedron.
 };
+
+std::expected<ConvexPolyhedron, Problems> convexHull(std::span<const DVec3> points);
+
+struct SplitResult {
+    std::optional<ConvexPolyhedron> front, back;
+    std::optional<std::size_t> frontCap, backCap; // The new cap in each piece, if cut.
+};
+
+// Front has positive signed distance. Surviving faces retain attributes and provenance.
+// Invalid inputs or cuts below the kernel's validity tolerances throw invalid_argument.
+SplitResult split(const ConvexPolyhedron& poly, const Plane& plane);
+// Sequential outside fragments, in carver face order. No intersection returns target verbatim.
+std::vector<ConvexPolyhedron> subtract(const ConvexPolyhedron& target,
+                                       const ConvexPolyhedron& carver);
 
 // Hammer's world-aligned dominant-normal projection: horizontal faces use +X/-Y;
 // X-facing walls use +Y/-Z; Y-facing walls use +X/-Z. Ties prefer Z, then X, then Y.

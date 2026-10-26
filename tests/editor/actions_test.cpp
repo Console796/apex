@@ -2,6 +2,7 @@
 
 #include <doctest/doctest.h>
 
+#include <array>
 #include <set>
 #include <stdexcept>
 
@@ -31,7 +32,7 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 57);
+    REQUIRE(registry.entries().size() == 77);
     CHECK(registry.entries().front().id == "edit.undo");
     CHECK(registry.entries().back().id == "workspace.previous");
     std::set<ActionId> ids;
@@ -53,6 +54,32 @@ TEST_CASE("Actions registry has stable ordered unique ids and complete metadata"
         CHECK(description.find("commits") != std::string::npos);
         CHECK(description.find("cancels") != std::string::npos);
     }
+}
+
+TEST_CASE("Pie and selection mode bindings resolve with tool scopes") {
+    for (const auto* preset : {&hammerPreset(), &blenderPreset()}) {
+        CAPTURE(preset->name);
+        Keymap keymap(*preset);
+        const auto pieKey = preset == &hammerPreset() ? "Q" : "Shift+Space";
+        CHECK(keymap.lookup(chord(pieKey)) == "pie.tools");
+        const std::array<std::pair<const char*, const char*>, 4> modes{{
+            {"1", "selection.mode.groups"}, {"2", "selection.mode.objects"},
+            {"3", "selection.mode.solids"}, {"4", "selection.mode.faces"},
+        }};
+        for (const auto& [key, action] : modes) CHECK(keymap.lookup(chord(key)) == action);
+        CHECK(validate(*preset).empty());
+        CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.vertex")) == "vertex.mode.vertex");
+        CHECK(keymap.lookup(chord("2"), BindingContext::forTool("tool.vertex")) == "vertex.mode.edge");
+        CHECK(keymap.lookup(chord("3"), BindingContext::forTool("tool.vertex")) == "vertex.mode.face");
+        CHECK(keymap.lookup(chord("4"), BindingContext::forTool("tool.vertex")) == "selection.mode.faces");
+    }
+    const auto* pieAction = actionRegistry().find("pie.tools");
+    REQUIRE(pieAction);
+    CHECK(pieAction->name == "Tool pie");
+    CHECK(pieAction->category == "Tool");
+    CHECK(pieAction->description == "Open the tool pie at the cursor.");
+    CHECK(std::get<Unbound>(blenderPreset().bindings.at("tool.select").value).reason ==
+          "Use the tool pie (Shift+Space) or the Tools drop-down.");
 }
 
 TEST_CASE("KeyChord parsing is portable canonical and reversible") {
@@ -102,15 +129,18 @@ TEST_CASE("Both presets explicitly cover every registered action without conflic
 
 TEST_CASE("Hammer preset follows D15 with select tool gizmo context") {
     checkBindings(hammerPreset(), {
-        {"Shift+S", "tool.select"}, {"Shift+E", "tool.entity"},
+        {"Shift+S", "tool.select"}, {"Shift+E", "tool.entity"}, {"Shift+B", "tool.block"}, {"Shift+X", "tool.clip"},
+        {"Shift+V", "tool.vertex"}, {"Shift+P", "tool.primitive"},
+        {"Shift+A", "tool.apply"}, {"Shift+M", "tool.measure"},
         {"Ctrl+T", "edit.tie_to_entity"}, {"Ctrl+Shift+W", "edit.move_to_world"},
         {"Ctrl+G", "edit.group"}, {"Ctrl+U", "edit.ungroup"},
         {"Ctrl+C", "edit.copy"}, {"Ctrl+X", "edit.cut"}, {"Ctrl+V", "edit.paste"},
         {"Ctrl+Shift+V", "edit.paste_in_place"}, {"Ctrl+Alt+V", "edit.paste_special"},
         {"Ctrl+W", "selection.ignore_groups"}, {"H", "view.hide"},
+        {"Ctrl+E", "view.center_selection"}, {"Ctrl+Shift+E", "view.center_selection"},
         {"Ctrl+M", "transform.dialog"}, {"[", "grid.smaller"}, {"]", "grid.larger"},
         {"Alt+P", "workplane.pin"},
-        {"Ctrl+Z", "edit.undo"}, {"Ctrl+Y", "edit.redo"}, {"Alt", "snap.suspend"},
+        {"Ctrl+Z", "edit.undo"}, {"Ctrl+Y", "edit.redo"}, {"Alt", "snap.suspend"}, {"Ctrl", "block.pick_plane"},
     });
     checkBindings(hammerPreset(), {
         {"W", "gizmo.mode.translate"}, {"E", "gizmo.mode.rotate"}, {"R", "gizmo.mode.scale"},
@@ -145,7 +175,7 @@ TEST_CASE("Blender preset follows D15 including alternatives and held snap modif
         {"Shift+D", "edit.duplicate"}, {"X", "edit.delete"}, {"Delete", "edit.delete"},
         {"Ctrl+G", "edit.group"}, {"G", "transform.modal.grab"},
         {"R", "transform.modal.rotate"}, {"S", "transform.modal.scale"},
-        {"Ctrl", "snap.suspend"}, {"Ctrl+Z", "edit.undo"}, {"Ctrl+Shift+Z", "edit.redo"},
+        {"Ctrl", "snap.suspend"}, {"Alt", "block.pick_plane"}, {"Ctrl+Z", "edit.undo"}, {"Ctrl+Shift+Z", "edit.redo"},
         {"Alt+Space", "gizmo.space.toggle"}, {"Shift+Tab", "snap.mode.toggle"},
     });
     for (const auto& [id, binding] : blenderPreset().bindings) {
@@ -178,16 +208,30 @@ TEST_CASE("Validation catches registry growth unknown actions and incomplete bin
 }
 
 TEST_CASE("Duplicate chords conflict in all overlapping binding contexts") {
-    for (auto context : {BindingContext::Always, BindingContext::SelectToolActive}) {
-        auto preset = hammerPreset();
-        preset.bindings.at("edit.undo") = Binding{std::vector<KeyChord>{chord("W")}, context};
-        CHECK(hasProblem(validate(preset), "Duplicate chord W"));
-        CHECK_THROWS_AS((void)Keymap(preset), std::invalid_argument);
-    }
     auto preset = hammerPreset();
     preset.bindings.at("edit.redo") = preset.bindings.at("edit.undo");
     CHECK(hasProblem(validate(preset), "Duplicate chord Ctrl+Z"));
+    CHECK_THROWS_AS((void)Keymap(preset), std::invalid_argument);
+    preset = hammerPreset();
+    preset.bindings.at("edit.undo") = Binding{std::vector<KeyChord>{chord("W")}, BindingContext::SelectToolActive};
+    CHECK(hasProblem(validate(preset), "Duplicate chord W"));
+    CHECK_THROWS_AS((void)Keymap(preset), std::invalid_argument);
     preset = hammerPreset();
     preset.bindings.at("edit.undo") = Binding{std::vector<KeyChord>{chord("Ctrl+Z"), chord("Ctrl+Z")}};
     CHECK(hasProblem(validate(preset), "Duplicate chord Ctrl+Z"));
+}
+
+TEST_CASE("Tool scopes shadow global bindings and allow reuse in separate scopes") {
+    auto preset = hammerPreset();
+    preset.bindings.at("selection.mode.groups") = Binding{std::vector<KeyChord>{chord("1")}};
+    preset.bindings.at("vertex.mode.vertex") = Binding{std::vector<KeyChord>{chord("1")},
+        BindingContext::forTool("tool.vertex")};
+    preset.bindings.at("vertex.mode.edge") = Binding{std::vector<KeyChord>{chord("1")},
+        BindingContext::forTool("tool.clip")};
+    CHECK(validate(preset).empty());
+    Keymap keymap(preset);
+    CHECK(keymap.lookup(chord("1")) == "selection.mode.groups");
+    CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.vertex")) == "vertex.mode.vertex");
+    CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.clip")) == "vertex.mode.edge");
+    CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.select")) == "selection.mode.groups");
 }

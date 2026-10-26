@@ -31,3 +31,19 @@ Strata Hammer (build 10773); CRLF. Findings feed D10, D11 and D18 in `../0.2.md`
   contexts), derived from `hammer/cfg/HammerKeyConfig_default.cfg` in the install. Only the table is
   committed. Bindings that are hard-coded in Hammer (camera movement, mouse modifiers) are not in the
   file and are not covered.
+
+0.3.1 P0 probe (2026-10-22). Inputs are `tests/fixtures/probe/g_side_order.vmf` and
+`h_rotation_vs_axes.vmf` (the control map with one change each). Opened and re-saved unmodified by
+Strata Hammer (build 10773) headlessly with `tools/hammer_wine_check.py --keep`. Findings feed D2,
+D10 and D15 in `../0.3.md`.
+
+- `g_side_order_saved.vmf`: the box's six sides in reverse order with ids 1057, 1009, 1031, 1012,
+  1088, 1004. Hammer keeps the order and every id as written.
+- `h_rotation_vs_axes_saved.vmf`: side 1 has `rotation 30` with unrotated axes; side 3 has axes
+  rotated 30° about its normal with `rotation 0`. Hammer writes both sides back verbatim: it neither
+  recomputes the axes from `rotation` nor `rotation` from the axes on load or save. Not checked:
+  which value the Face Edit dialog shows (needs the VM).
+- Key bindings for 0.3's tools, from `hammer_default_keybindings.md`: block Shift+B, clipper
+  Shift+X, vertex (morph) Shift+V, texture application Shift+A, carve (subtract selection)
+  Shift+Ctrl+C, apply current texture Shift+T. Ctrl+H is Quick Hide Unselected. Hollow, merge and a
+  measure tool have no entry in the key config, so Strata binds no key to them.

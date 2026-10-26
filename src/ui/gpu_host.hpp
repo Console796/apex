@@ -53,7 +53,8 @@ public:
     // Binds the render mirror to `document` (null unbinds). The profile selects the material
     // search paths and FGDs; null falls back to an empty file system (checkerboard textures).
     // Without a GPU this only remembers the document.
-    void setDocument(document::Document* document, const assets::GameProfile* profile);
+    void setDocument(document::Document* document, std::shared_ptr<const assets::Vfs> vfs,
+                     const assets::GameProfile* profile);
     document::Document* document() const { return document_; }
 
     render::Renderer* renderer(VkFormat colorFormat);
@@ -74,8 +75,9 @@ private:
     std::unique_ptr<JobPool> jobs_;
     QTemporaryDir emptyGame_;
     std::unique_ptr<render::TextureHeap> heap_;
+    std::shared_ptr<render::GlyphAtlas> glyphAtlas_;
     std::map<VkFormat, std::unique_ptr<render::Renderer>> renderers_;
-    std::unique_ptr<assets::Vfs> vfs_;
+    std::shared_ptr<const assets::Vfs> vfs_;
     std::unique_ptr<assets::MaterialCache> materials_;
     std::unique_ptr<assets::EntityClassTable> classes_;
     std::unique_ptr<render::RenderMirror> mirror_;

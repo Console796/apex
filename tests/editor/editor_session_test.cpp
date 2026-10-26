@@ -126,7 +126,7 @@ TEST_CASE("EditorSession surface hover is independent of selection mode and cach
         REQUIRE(plane);
         CHECK(plane->source == WorkPlaneSource::Hovered);
         checkPoint(plane->plane.normal, {-1, 0, 0});
-        checkPoint(plane->plane.origin, {0, 10, 15});
+        checkPoint(plane->plane.origin, {0, 0, 0}); // The world origin projected onto x = 0 (0.2 D9).
         REQUIRE(plane->plane.bounds);
         const auto before = notifications;
         session.pointerHover({{-100, 6, 6}, {1, 0, 0}});
@@ -160,7 +160,7 @@ TEST_CASE("EditorSession surface hover is independent of selection mode and cach
     CHECK_FALSE(session.resolvedWorkPlane());
     session.pointerHover({{-100, 5, 5}, {1, 0, 0}});
     REQUIRE(session.resolvedWorkPlane());
-    checkPoint(session.resolvedWorkPlane()->plane.origin, {2, 10, 15});
+    checkPoint(session.resolvedWorkPlane()->plane.origin, {2, 0, 0});
 }
 
 TEST_CASE("EditorSession pinned planes survive hover and Esc unpins before clearing selection") {
@@ -492,4 +492,49 @@ TEST_CASE("Outliner visibility splits shared wrappers and toggles empty groups")
     REQUIRE(session.setNodeHidden({group}, false));
     CHECK_FALSE(session.nodeHidden(group));
     CHECK(*doc.write() == original);
+}
+
+TEST_CASE("EditorSession applies materials to sides and to the face under a drop ray") {
+    Document doc(parsed());
+    const auto box = addBox(doc, {0, 0, 0}, {10, 20, 30});
+    EditorSession session;
+    session.attach(doc);
+    std::vector<SideId> sides;
+    for (const auto& child : doc.get(box)->block->children())
+        if (child.kind() == kv1::NodeKind::Block && ciEquals(child.key(), "side"))
+            sides.push_back(static_cast<SideId>(*child.find("id")->asInt()));
+    REQUIRE(sides.size() == 6);
+    const auto material = [&](SideId side) {
+        const auto location = doc.side(side);
+        std::size_t face = 0;
+        for (const auto& child : doc.get(location->solid)->block->children()) {
+            if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+            if (face++ != location->faceIndex) continue;
+            const auto* key = child.find("material");
+            return key ? key->decodedValue().value_or("") : std::string{};
+        }
+        return std::string{};
+    };
+    const auto before = material(sides[0]);
+    const auto undo = doc.undoCount();
+    CHECK(session.applyMaterial(std::span(sides).first(2), "dev/red") == 2);
+    CHECK(doc.undoCount() == undo + 1);
+    CHECK(doc.undoLabels().back() == "Apply Material");
+    CHECK(material(sides[0]) == "dev/red");
+    CHECK(material(sides[1]) == "dev/red");
+    CHECK(material(sides[2]) == before);
+    CHECK(session.applyMaterial(std::span(sides).first(2), "DEV/RED") == 0); // Already set: no undo entry.
+    CHECK(doc.undoCount() == undo + 1);
+    doc.undo();
+    CHECK(material(sides[0]) == before);
+
+    const auto hit = session.picks().first({{-100, 5, 5}, {1, 0, 0}});
+    REQUIRE(hit);
+    REQUIRE(hit->side);
+    CHECK(session.applyMaterialAt({{-100, 5, 5}, {1, 0, 0}}, "dev/blue"));
+    CHECK(material(*hit->side) == "dev/blue");
+    for (const auto side : sides) if (side != *hit->side) CHECK(material(side) != "dev/blue");
+    const auto afterDrop = doc.undoCount();
+    CHECK_FALSE(session.applyMaterialAt({{-100, 500, 5}, {1, 0, 0}}, "dev/blue")); // Misses the box.
+    CHECK(doc.undoCount() == afterDrop);
 }

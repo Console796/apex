@@ -2,7 +2,12 @@
 
 #include "ui/gpu_host.hpp"
 
+#include <algorithm>
+
 #include <QFile>
+#include <QFontMetrics>
+#include <QImage>
+#include <QPainter>
 #include <QGuiApplication>
 #include <QVulkanInstance>
 
@@ -13,6 +18,48 @@
 #include "document/document.hpp"
 
 namespace apex::ui {
+namespace {
+
+render::GlyphAtlasData rasteriseGlyphs() {
+    const QFont font = QGuiApplication::font();
+    const QFontMetrics metrics(font);
+    int cellWidth = 1;
+    for (unsigned code = 32; code < 256; ++code)
+        cellWidth = std::max(cellWidth, metrics.boundingRect(QChar(static_cast<char16_t>(code))).width());
+    cellWidth += 2;
+    const int cellHeight = metrics.height() + 2;
+    QImage image(cellWidth * 16, cellHeight * 16, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.setFont(font);
+    painter.setPen(Qt::white);
+    painter.setRenderHint(QPainter::TextAntialiasing);
+    render::GlyphAtlasData data;
+    data.width = static_cast<std::uint32_t>(image.width());
+    data.height = static_cast<std::uint32_t>(image.height());
+    data.lineHeight = static_cast<float>(metrics.lineSpacing());
+    for (unsigned code = 32; code < 256; ++code) {
+        if (code >= 127 && code < 160) continue;
+        const QChar ch(static_cast<char16_t>(code));
+        const QRect bounds = metrics.boundingRect(ch);
+        const int x = static_cast<int>(code % 16) * cellWidth + 1;
+        const int y = static_cast<int>(code / 16) * cellHeight + 1;
+        painter.drawText(QPoint(x - bounds.left(), y - bounds.top()), QString(ch));
+        auto& glyph = data.glyphs[code];
+        glyph.advance = static_cast<float>(metrics.horizontalAdvance(ch));
+        glyph.bearing = Vec2(bounds.left(), bounds.top());
+        glyph.rect = {static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y),
+                      static_cast<std::uint32_t>(bounds.width()), static_cast<std::uint32_t>(bounds.height())};
+    }
+    painter.end();
+    data.pixels.resize(static_cast<std::size_t>(data.width) * data.height);
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            data.pixels[static_cast<std::size_t>(y) * data.width + x] = std::byte(qAlpha(image.pixel(x, y)));
+    return data;
+}
+
+} // namespace
 
 GpuHost::GpuHost(QObject* parent) : QObject(parent) {}
 
@@ -74,6 +121,9 @@ bool GpuHost::ensure() {
         return false;
     }
 
+    // Labels are optional: without an atlas the renderer skips the label pass.
+    if (auto atlas = render::GlyphAtlas::create(*context, **heap, rasteriseGlyphs())) glyphAtlas_ = std::move(*atlas);
+    else log::warn("viewports: glyph atlas: {}", atlas.error().what());
     jobs_ = std::make_unique<JobPool>(2);
     context_ = std::move(context);
     qtInstance_ = std::move(qt);
@@ -96,6 +146,7 @@ render::Renderer* GpuHost::renderer(VkFormat colorFormat) {
         renderers_[colorFormat] = nullptr;
         return nullptr;
     }
+    (*created)->setGlyphAtlas(glyphAtlas_);
     return (renderers_[colorFormat] = std::move(*created)).get();
 }
 
@@ -110,17 +161,15 @@ void GpuHost::unbind() {
     document_ = nullptr;
 }
 
-void GpuHost::setDocument(document::Document* document, const assets::GameProfile* profile) {
+void GpuHost::setDocument(document::Document* document, std::shared_ptr<const assets::Vfs> vfs,
+                          const assets::GameProfile* profile) {
     unbind();
     document_ = document;
     if (!document || !context_) return;
 
     assets::GameProfile effective;
     if (profile) effective = *profile;
-    auto loadVfs = [&](const assets::GameProfile& p) { return assets::Vfs::load(p, *jobs_); };
-    auto vfs = profile ? loadVfs(effective) : Result<assets::Vfs>(std::unexpected(Error{ErrorCode::NotFound, "no profile"}));
     if (!vfs) {
-        if (profile) log::warn("viewports: game files unavailable ({}); using placeholder textures", vfs.error().what());
         const QString info = emptyGame_.filePath(QStringLiteral("gameinfo.txt"));
         if (!QFile::exists(info)) {
             QFile f(info);
@@ -128,16 +177,16 @@ void GpuHost::setDocument(document::Document* document, const assets::GameProfil
                 f.write("GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
             }
         }
-        assets::GameProfile empty;
-        empty.gameDirectory = emptyGame_.path().toStdString();
-        vfs = loadVfs(empty);
+        effective.gameDirectory = emptyGame_.path().toStdString();
+        auto empty = assets::Vfs::load(effective, *jobs_);
+        if (empty) vfs = std::make_shared<assets::Vfs>(std::move(*empty));
+        else {
+            log::error("viewports: cannot create an empty file system: {}", empty.error().what());
+            document_ = nullptr;
+            return;
+        }
     }
-    if (!vfs) {
-        log::error("viewports: cannot create a file system: {}", vfs.error().what());
-        document_ = nullptr;
-        return;
-    }
-    vfs_ = std::make_unique<assets::Vfs>(std::move(*vfs));
+    vfs_ = std::move(vfs);
     materials_ = std::make_unique<assets::MaterialCache>(*vfs_, *jobs_, 256ull * 1024 * 1024,
                                                          effective.escapeMode);
     if (profile && !profile->fgds.empty()) {

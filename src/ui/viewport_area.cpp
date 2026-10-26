@@ -26,6 +26,10 @@
 #include "ui/input_log.hpp"
 #include "ui/theme.hpp"
 #include "ui/viewport_pane.hpp"
+#include "ui/materials_panel.hpp"
+#include "ui/face_properties_panel.hpp"
+#include "ui/game_content.hpp"
+#include "ui/inspector_panel.hpp"
 
 namespace apex::ui {
 namespace {
@@ -149,7 +153,7 @@ ViewportArea::~ViewportArea() {
 
 void ViewportArea::setDocument(document::Document* document, const assets::GameProfile* profile) {
     document_ = document;
-    host_->setDocument(document, profile);
+    host_->setDocument(document, gameContent_ ? gameContent_->vfs() : nullptr, profile);
     previewRevision_ = kNoPreview;  // The mirror may be new.
     updateHighlight();
     forceDraw_ = true;
@@ -175,6 +179,38 @@ void ViewportArea::setEditorSession(editor::EditorSession* session) {
         if (w) setPanelSession(w->panel(), session_);
     updateHighlight();
     updateModeBadges();
+}
+
+void ViewportArea::setGameContent(GameContent* content) {
+    gameContent_ = content;
+    for (auto& [id, panel] : panels_) setPanelGameContent(panel, content);
+    for (auto& [role, window] : floating_) if (window) setPanelGameContent(window->panel(), content);
+}
+void ViewportArea::setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser) {
+    materialBrowser_ = std::move(browser);
+    for (auto& [id, panel] : panels_) configurePanel(panel);
+    for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
+}
+void ViewportArea::configurePanel(QWidget* panel) {
+    if (auto* materials = qobject_cast<MaterialsPanel*>(panel)) {
+        connect(materials, &MaterialsPanel::activeMaterialRequested, this,
+                &ViewportArea::activeMaterialRequested, Qt::UniqueConnection);
+        connect(materials, &MaterialsPanel::statusMessage, this,
+                &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
+    }
+    if (auto* inspector = qobject_cast<InspectorPanel*>(panel))
+        inspector->setMaterialBrowser(materialBrowser_);
+    if (auto* properties = qobject_cast<FacePropertiesPanel*>(panel)) {
+        properties->setMaterialBrowser(materialBrowser_);
+        properties->setGameContent(gameContent_);
+        connect(properties, &FacePropertiesPanel::statusMessage, this,
+                &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
+    }
+}
+QWidget* ViewportArea::makePanel(viewport::AreaRole role) {
+    auto* panel = createPanel(role, document_, session_, gameContent_);
+    configurePanel(panel);
+    return panel;
 }
 
 void ViewportArea::setRole(viewport::NodeId pane, viewport::AreaRole role) {
@@ -228,7 +264,7 @@ QWidget* ViewportArea::showRole(viewport::AreaRole role, bool window) {
 FloatingPanel* ViewportArea::popOut(viewport::AreaRole role) {
     if (role == viewport::AreaRole::Viewport) return nullptr;  // Native Vulkan windows stay docked (D15).
     auto& slot = floating_[role];
-    if (!slot) slot = new FloatingPanel(role, createPanel(role, document_, session_), window());
+    if (!slot) slot = new FloatingPanel(role, makePanel(role), window());
     slot->show();
     slot->raise();
     slot->activateWindow();
@@ -237,9 +273,12 @@ FloatingPanel* ViewportArea::popOut(viewport::AreaRole role) {
 
 void ViewportArea::updateModeBadges() {
     const QString text = session_ ? modeSummary(*session_) : QString();
-    const bool entity = session_ && session_->activeTool() == editor::EditorSession::Tool::Entity;
+    const bool entity = session_ && session_->activeToolObject().readout().warn;
     for (auto& [id, frame] : frames_)
-        if (frame) frame->setModeText(text, entity);
+        if (frame) {
+            frame->setModeText(text, entity);
+            if (session_) frame->setTool(session_->activeToolObject());
+        }
 }
 
 void ViewportArea::updateHighlight() {
@@ -261,7 +300,7 @@ void ViewportArea::updateHighlight() {
         if (frame && frame->window()) frame->window()->requestRedraw();
 }
 
-// The session owns the transient transform channel; the mirror only draws it. Equal revisions
+// The session owns the transient preview channel; the mirror only draws it. Equal revisions
 // are skipped, and the session clearing it (commit, cancel) clears the mirror in the same call.
 void ViewportArea::syncPreview(render::RenderMirror& mirror) {
     if (!session_) {
@@ -273,7 +312,13 @@ void ViewportArea::syncPreview(render::RenderMirror& mirror) {
     const bool changed = preview.revision() != previewRevision_ || previewEmpty_ != preview.empty();
     if (!changed) return;
     if (preview.empty()) mirror.clearPreview();
-    else mirror.setPreview(preview.transforms());
+    else {
+        render::PreviewGeometry geometry;
+        geometry.replacements = preview.replacements();
+        for (const auto& ghost : preview.ghosts())
+            geometry.ghosts.push_back({ghost.poly, ghost.material, ghost.opacity, ghost.outline});
+        mirror.setPreview(preview.transforms(), geometry, preview.revision());
+    }
     previewRevision_ = preview.revision();
     previewEmpty_ = preview.empty();
 }
@@ -343,9 +388,11 @@ void ViewportArea::rebuild() {
             ++it;
         }
     }
+    // Clear first: destroying panes hides their windows, which cancels tool input and notifies
+    // session observers; updateModeBadges must not reach frames that are mid-destruction.
+    frames_.clear();
     delete body_;
     body_ = nullptr;
-    frames_.clear();
 
     const auto tree = layout_.tree();
     if (const auto max = layout_.maximized(); max && layout_.hasPane(*max)) {
@@ -652,7 +699,7 @@ QWidget* ViewportArea::makeArea(const viewport::LayoutNode& node, bool maximized
 
 QWidget* ViewportArea::panelFor(viewport::NodeId pane, viewport::AreaRole role) {
     auto& slot = panels_[pane];
-    if (!slot) slot = createPanel(role, document_, session_);
+    if (!slot) slot = makePanel(role);
     return slot;
 }
 
@@ -668,7 +715,10 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     }
     auto* frame = new PaneFrame(pane, accessor, window, gpuReason_, maximized, canClose);
     frames_[pane] = frame;
-    if (session_) frame->setModeText(modeSummary(*session_), session_->activeTool() == editor::EditorSession::Tool::Entity);
+    if (session_) {
+        frame->setModeText(modeSummary(*session_), session_->activeToolObject().readout().warn);
+        frame->setTool(session_->activeToolObject());
+    }
     connect(frame, &PaneFrame::activated, this, &ViewportArea::setActive);
     connect(frame, &PaneFrame::edited, this, [this](viewport::NodeId) { emit layoutChanged(); });
     connectArea(frame);
@@ -776,6 +826,22 @@ void ViewportArea::applyMapViews(const viewport::MapViews& views) {
         if (!f) continue;
         f->refreshTitle();
         if (f->window()) f->window()->requestRedraw();
+    }
+    lastValid_ = false;
+    emitCamera();
+}
+
+void ViewportArea::centerOn(const AABB& bounds) {
+    for (const auto pane : layout_.viewportIds()) {
+        auto* view = layout_.viewport(pane);
+        if (!view) continue;
+        double aspect = 1.0;
+        if (const auto* f = frame(pane); f && f->container()->height() > 0)
+            aspect = double(f->container()->width()) / f->container()->height();
+        viewport::frameBounds(view->camera, bounds, aspect);
+    }
+    for (auto& [id, f] : frames_) {
+        if (f && f->window()) f->window()->requestRedraw();
     }
     lastValid_ = false;
     emitCamera();

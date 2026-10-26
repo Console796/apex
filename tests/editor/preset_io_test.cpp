@@ -50,6 +50,21 @@ TEST_CASE("parsing tolerates missing and unknown actions but not duplicate chord
     CHECK_FALSE(parsePreset(R"({"format":1,"name":"X","bindings":{"edit.undo":{"keys":["Bogus"]}}})"));
 }
 
+TEST_CASE("legacy select_tool context loads and new tool scopes serialize") {
+    const auto old = parsePreset(R"({"format":1,"name":"Old","bindings":{
+        "gizmo.mode.translate":{"keys":["W"],"context":"select_tool"}}})");
+    REQUIRE(old);
+    CHECK(old->bindings.at("gizmo.mode.translate").context == BindingContext::SelectToolActive);
+    CHECK(serializePreset(*old).find("tool:tool.select") != std::string::npos);
+
+    auto preset = hammerPreset();
+    preset.bindings.at("vertex.mode.vertex") = Binding{
+        std::vector<KeyChord>{chord("1")}, BindingContext::forTool("tool.vertex")};
+    const auto loaded = parsePreset(serializePreset(preset));
+    REQUIRE(loaded);
+    CHECK(loaded->bindings.at("vertex.mode.vertex").context == BindingContext::forTool("tool.vertex"));
+}
+
 TEST_CASE("preset names") {
     CHECK(checkPresetName("My keys 2"));
     CHECK(*checkPresetName("trail  ") == "trail");
@@ -68,7 +83,7 @@ TEST_CASE("assigning a chord takes it from its previous owner") {
     CHECK(validate(preset).empty());
     CHECK(Keymap(preset).lookup(chord("Ctrl+Z")) == "edit.redo");
 
-    // A previously unbound tool-scoped action regains its tool-scoped context.
+    // Rebinding retains the action's default tool scope.
     Preset blender = blenderPreset();
     assignChords(blender, "gizmo.mode.translate", {chord("W")});
     CHECK(blender.bindings.at("gizmo.mode.translate").context == BindingContext::SelectToolActive);

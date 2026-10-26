@@ -547,6 +547,12 @@ std::optional<int> IdSpace::maximum() const {
         ->id;
 }
 
+VmfFile emptyMap() {
+    return parse("versioninfo\n{\n\t\"editorversion\" \"400\"\n\t\"mapversion\" \"1\"\n}\n"
+                 "world\n{\n\t\"id\" \"1\"\n\t\"classname\" \"worldspawn\"\n}\n")
+        .value();
+}
+
 Result<VmfFile> parse(std::string_view bytes, ParseOptions options) {
     auto document = kv1::parse(std::string(bytes), options.escapeMode);
     if (!document) {

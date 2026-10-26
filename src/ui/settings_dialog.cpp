@@ -1,6 +1,7 @@
 #include "ui/settings_dialog.hpp"
 
 #include <QCheckBox>
+#include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -26,7 +27,9 @@
 #include "editor/preset_io.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
+#include "ui/pie_menu_popup.hpp"
 #include "ui/theme.hpp"
+#include "ui/theme_editor.hpp"
 
 namespace apex::ui {
 namespace {
@@ -123,15 +126,16 @@ SettingsDialog::SettingsDialog(MainWindow& window) : QDialog(&window), window_(w
     auto* pages = new QStackedWidget;
     pages->addWidget(buildGeneralPage());
     pages->addWidget(buildKeysPage());
+    pages->addWidget(buildInputPage());
     auto* nav = new QListWidget;
     nav->setObjectName(QStringLiteral("settingsNav"));
     nav->setFixedWidth(150);
-    nav->addItems({tr("General"), tr("Keybindings")});
+    nav->addItems({tr("General"), tr("Keybindings"), tr("Input")});
     connect(nav, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
     nav->setCurrentRow(0);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Apply | QDialogButtonBox::Cancel);
-    connect(buttons, &QDialogButtonBox::rejected, this, [this] { if (confirmDiscard()) reject(); });
+    connect(buttons, &QDialogButtonBox::rejected, this, [this] { reject(); });
     connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, [this] { applyAll(); });
     connect(buttons->button(QDialogButtonBox::Ok), &QPushButton::clicked, this, [this] { if (applyAll()) accept(); });
 
@@ -145,15 +149,111 @@ SettingsDialog::SettingsDialog(MainWindow& window) : QDialog(&window), window_(w
     loadPreset(window_.editorSession().preset().name);
 }
 
+void SettingsDialog::reject() {
+    if (confirmDiscard()) QDialog::reject();
+}
+
+void SettingsDialog::refreshThemeCombo(const QString& select) {
+    const QSignalBlocker block(theme_);
+    theme_->clear();
+    for (const ThemeEntry& t : themes()) theme_->addItem(t.builtin ? t.name : tr("%1 (custom)").arg(t.name), t.id);
+    const int i = theme_->findData(select);
+    theme_->setCurrentIndex(i < 0 ? 0 : i);
+}
+
+void SettingsDialog::updateThemeButtons() {
+    const ThemeEntry* t = findTheme(theme_->currentData().toString());
+    const bool custom = t && !t->builtin;
+    themeEdit_->setEnabled(custom);
+    themeDelete_->setEnabled(custom);
+}
+
+void SettingsDialog::editTheme(bool fromSelected) {
+    const ThemeEntry* sel = findTheme(theme_->currentData().toString());
+    if (!sel) return;
+    ThemeEntry initial = *sel;
+    if (fromSelected || sel->builtin) {
+        initial.id.clear();
+        initial.builtin = false;
+        initial.name = tr("%1 copy").arg(sel->name);
+    }
+    ThemeEditorDialog dlg(window_, initial, this);
+    const bool accepted = dlg.exec() == QDialog::Accepted;
+    window_.refreshThemeMenu();
+    refreshThemeCombo(accepted ? dlg.savedId() : currentThemeId());
+    updateThemeButtons();
+}
+
+void SettingsDialog::deleteTheme() {
+    const QString id = theme_->currentData().toString();
+    const ThemeEntry* t = findTheme(id);
+    if (!t || t->builtin) return;
+    if (QMessageBox::question(this, tr("Delete theme"), tr("Delete the theme \"%1\"?").arg(t->name)) != QMessageBox::Yes) return;
+    const bool wasCurrent = id == currentThemeId();
+    removeCustomTheme(id);
+    if (wasCurrent) window_.setThemeId(QStringLiteral("dark"));
+    window_.refreshThemeMenu();
+    refreshThemeCombo(currentThemeId());
+    updateThemeButtons();
+}
+
+void SettingsDialog::importTheme() {
+    const QString path = QFileDialog::getOpenFileName(this, tr("Import theme"), {}, tr("Theme files (*.json)"));
+    if (path.isEmpty()) return;
+    QString error;
+    const QString id = importThemeFile(path, themesDir(), &error);
+    if (id.isEmpty()) {
+        QMessageBox::warning(this, tr("Import theme"), tr("Cannot import %1: %2").arg(path, error));
+        return;
+    }
+    window_.refreshThemeMenu();
+    refreshThemeCombo(id);
+    updateThemeButtons();
+}
+
+void SettingsDialog::exportTheme() {
+    const QString id = theme_->currentData().toString();
+    const ThemeEntry* t = findTheme(id);
+    if (!t) return;
+    const QString path = QFileDialog::getSaveFileName(this, tr("Export theme"), t->name + QStringLiteral(".json"), tr("Theme files (*.json)"));
+    if (path.isEmpty()) return;
+    if (!apex::ui::exportTheme(id, path)) QMessageBox::warning(this, tr("Export theme"), tr("Cannot write %1").arg(path));
+}
+
 QWidget* SettingsDialog::buildGeneralPage() {
     auto* page = new QWidget;
     auto* form = new QFormLayout(page);
     theme_ = new QComboBox;
     theme_->setObjectName(QStringLiteral("settingsTheme"));
-    theme_->addItem(tr("Dark"), static_cast<int>(Theme::Dark));
-    theme_->addItem(tr("Light"), static_cast<int>(Theme::Light));
-    theme_->setCurrentIndex(currentTheme() == Theme::Dark ? 0 : 1);
+    refreshThemeCombo(currentThemeId());
     form->addRow(tr("Theme"), theme_);
+
+    auto* themeButtons = new QHBoxLayout;
+    const auto themeButton = [&](const QString& text, const char* name) {
+        auto* b = new QPushButton(text);
+        b->setObjectName(QString::fromLatin1(name));
+        themeButtons->addWidget(b);
+        return b;
+    };
+    auto* newTheme = themeButton(tr("New from selected…"), "themeNew");
+    themeEdit_ = themeButton(tr("Edit…"), "themeEdit");
+    themeDelete_ = themeButton(tr("Delete"), "themeDelete");
+    auto* importTheme = themeButton(tr("Import…"), "themeImport");
+    themeExport_ = themeButton(tr("Export…"), "themeExport");
+    themeButtons->addStretch(1);
+    form->addRow(QString(), themeButtons);
+    connect(theme_, &QComboBox::currentIndexChanged, this, [this] { updateThemeButtons(); });
+    connect(newTheme, &QPushButton::clicked, this, [this] { editTheme(true); });
+    connect(themeEdit_, &QPushButton::clicked, this, [this] { editTheme(false); });
+    connect(themeDelete_, &QPushButton::clicked, this, &SettingsDialog::deleteTheme);
+    connect(importTheme, &QPushButton::clicked, this, &SettingsDialog::importTheme);
+    connect(themeExport_, &QPushButton::clicked, this, &SettingsDialog::exportTheme);
+    updateThemeButtons();
+
+    confirmMerge_ = new QCheckBox(tr("Confirm merges that fill unselected space"));
+    confirmMerge_->setObjectName(QStringLiteral("settingsConfirmNonConvexMerge"));
+    confirmMerge_->setChecked(window_.editorSession().confirmNonConvexMerge);
+    form->addRow(tr("Editing"), confirmMerge_);
 
     autosave_ = new QCheckBox(tr("Enable autosave"));
     autosave_->setObjectName(QStringLiteral("settingsAutosave"));
@@ -186,7 +286,77 @@ QWidget* SettingsDialog::buildGeneralPage() {
     inspectorOpens_->setToolTip(tr("Where Object properties shows the inspector. Without an inspector area in the "
                                    "workspace it always opens a window."));
     form->addRow(tr("Object properties opens in"), inspectorOpens_);
+    facePropertiesOpens_ = new QComboBox;
+    facePropertiesOpens_->setObjectName(QStringLiteral("settingsFacePropertiesOpens"));
+    facePropertiesOpens_->addItem(tr("Workspace area"), false);
+    facePropertiesOpens_->addItem(tr("Floating window"), true);
+    facePropertiesOpens_->setCurrentIndex(MainWindow::facePropertiesInWindow() ? 1 : 0);
+    facePropertiesOpens_->setToolTip(tr("Where Face Properties shows when the Face edit tool is activated. "
+                                        "Without a Face Properties area it opens a floating window."));
+    form->addRow(tr("Face Properties opens in"), facePropertiesOpens_);
+    materialBrowserOpens_ = new QComboBox;
+    materialBrowserOpens_->setObjectName(QStringLiteral("settingsMaterialBrowserOpens"));
+    materialBrowserOpens_->addItem(tr("Materials area"), false);
+    materialBrowserOpens_->addItem(tr("Floating window"), true);
+    materialBrowserOpens_->setCurrentIndex(MainWindow::materialBrowserInWindow() ? 1 : 0);
+    form->addRow(tr("Material browser opens in"), materialBrowserOpens_);
+    uvAlignment_ = new QComboBox;
+    uvAlignment_->setObjectName(QStringLiteral("settingsUvAlignment"));
+    uvAlignment_->addItem(tr("Face"), static_cast<int>(geometry::UvAlignment::Face));
+    uvAlignment_->addItem(tr("World"), static_cast<int>(geometry::UvAlignment::World));
+    uvAlignment_->setCurrentIndex(window_.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World ? 1 : 0);
+    form->addRow(tr("New solid UV alignment"), uvAlignment_);
     return page;
+}
+
+QWidget* SettingsDialog::buildInputPage() {
+    auto* page = new QWidget;
+    auto* form = new QFormLayout(page);
+    originalInput_ = window_.editorSession().pieSettings();
+    const auto pixels = [&](const char* name, double minimum, double maximum, double value) {
+        auto* box = new QDoubleSpinBox;
+        box->setObjectName(QString::fromLatin1(name));
+        box->setRange(minimum, maximum);
+        box->setSuffix(tr(" px"));
+        box->setValue(value);
+        return box;
+    };
+    pieRadius_ = pixels("settingsPieRadius", 20, 500, originalInput_.radius);
+    pieDeadZone_ = pixels("settingsPieDeadZone", 0, 500, originalInput_.deadZone);
+    pieConfirm_ = pixels("settingsPieConfirmOnStopDistance", 0, 2000, originalInput_.confirmOnStopDistance);
+    pieConfirm_->setSpecialValueText(tr("Off"));
+    const auto milliseconds = [&](const char* name, std::chrono::milliseconds value) {
+        auto* box = new QSpinBox;
+        box->setObjectName(QString::fromLatin1(name));
+        box->setRange(0, 5000);
+        box->setSuffix(tr(" ms"));
+        box->setValue(static_cast<int>(value.count()));
+        return box;
+    };
+    pieTap_ = milliseconds("settingsPieTapTimeout", originalInput_.tapTimeout);
+    pieAnimation_ = milliseconds("settingsPieAnimation", originalInput_.animation);
+    form->addRow(tr("Pie radius"), pieRadius_);
+    form->addRow(tr("Dead zone"), pieDeadZone_);
+    form->addRow(tr("Tap timeout"), pieTap_);
+    form->addRow(tr("Open animation (0 = instant)"), pieAnimation_);
+    form->addRow(tr("Confirm-on-stop distance (0 = off)"), pieConfirm_);
+    return page;
+}
+
+editor::PieSettings SettingsDialog::inputSettings() const {
+    auto settings = originalInput_;
+    settings.radius = pieRadius_->value();
+    settings.deadZone = pieDeadZone_->value();
+    settings.tapTimeout = std::chrono::milliseconds(pieTap_->value());
+    settings.animation = std::chrono::milliseconds(pieAnimation_->value());
+    settings.confirmOnStopDistance = pieConfirm_->value();
+    return settings;
+}
+bool SettingsDialog::inputModified() const {
+    const auto settings = inputSettings();
+    return settings.radius != originalInput_.radius || settings.deadZone != originalInput_.deadZone ||
+           settings.tapTimeout != originalInput_.tapTimeout || settings.animation != originalInput_.animation ||
+           settings.confirmOnStopDistance != originalInput_.confirmOnStopDistance;
 }
 
 QWidget* SettingsDialog::buildKeysPage() {
@@ -331,8 +501,8 @@ void SettingsDialog::refreshTree() {
         item->setData(0, kIdRole, fromStd(action.id));
         item->setText(0, fromStd(action.name));
         item->setText(1, keys.isEmpty() ? QStringLiteral("—") : keys);
-        if (binding.context == editor::BindingContext::SelectToolActive)
-            item->setText(2, tr("Select tool active"));
+        if (!binding.context.toolId.empty())
+            item->setText(2, fromStd("Tool active: " + binding.context.toolId));
         const auto* original = original_.bindings.contains(action.id) ? &original_.bindings.at(action.id) : nullptr;
         if (original && !sameBinding(*original, binding)) {
             QFont font = item->font(1);
@@ -392,7 +562,7 @@ void SettingsDialog::captureKey(bool additional) {
             chords = *keys;
     }
     if (std::ranges::find(chords, chord) == chords.end()) chords.push_back(chord);
-    if (const auto owner = editor::chordOwner(working_, chord, id)) {
+    if (const auto owner = editor::chordOwner(working_, chord, id, working_.bindings.at(id).context)) {
         const auto* other = editor::actionRegistry().find(*owner);
         const auto answer = QMessageBox::question(
             this, tr("Key already in use"),
@@ -518,17 +688,26 @@ void SettingsDialog::exportPreset() {
 }
 
 bool SettingsDialog::confirmDiscard() {
-    if (!keysModified()) return true;
-    const auto answer = QMessageBox::question(this, tr("Unsaved keybinding changes"),
-                                              tr("Discard the unapplied changes to \"%1\"?").arg(fromStd(working_.name)));
+    if (!keysModified() && !inputModified()) return true;
+    const auto answer = QMessageBox::question(this, tr("Unapplied preferences"),
+                                              tr("Discard unapplied preferences?"));
     return answer == QMessageBox::Yes;
 }
 
 bool SettingsDialog::applyAll() {
-    const bool darkChosen = theme_->currentData().toInt() == static_cast<int>(Theme::Dark);
-    if ((currentTheme() == Theme::Dark) != darkChosen) window_.setTheme(darkChosen ? Theme::Dark : Theme::Light);
+    const auto settings = inputSettings();
+    window_.editorSession().setPieSettings(settings);
+    savePieSettings(settings);
+    originalInput_ = settings;
+    window_.editorSession().confirmNonConvexMerge = confirmMerge_->isChecked();
+    QSettings().setValue("editing/confirmNonConvexMerge", confirmMerge_->isChecked());
+    window_.setNewSolidStyle(window_.editorSession().newSolidStyle().material,
+                             static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
+    if (theme_->currentData().toString() != currentThemeId()) window_.setThemeId(theme_->currentData().toString());
     window_.setAutosave(autosave_->isChecked(), autosaveMinutes_->value());
     MainWindow::setInspectorInWindow(inspectorOpens_->currentData().toBool());
+    MainWindow::setFacePropertiesInWindow(facePropertiesOpens_->currentData().toBool());
+    MainWindow::setMaterialBrowserInWindow(materialBrowserOpens_->currentData().toBool());
     if (undoMiB_->value() != QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt())
         window_.setUndoCapMiB(undoMiB_->value());
 

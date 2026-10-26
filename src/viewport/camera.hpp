@@ -50,6 +50,10 @@ std::optional<DVec3> axisDirection(ViewAxis axis);
 std::optional<DVec3> axisAngles(ViewAxis axis);
 // Locks the camera to `axis`, snapping its angles. Free just unlocks.
 void setAxis(Camera& camera, ViewAxis axis);
+// Centres the view on `bounds` without turning it. Perspective backs off along the view direction
+// until the bounding sphere fits the narrower field of view, with the orbit pivot at its centre;
+// ortho keeps its depth coordinate and fits orthoHeight. Empty bounds leave the camera alone.
+void frameBounds(Camera& camera, const AABB& bounds, double aspect, double margin = 1.25);
 
 const char* nameOf(ViewAxis axis);
 const char* nameOf(ProjectionKind kind);

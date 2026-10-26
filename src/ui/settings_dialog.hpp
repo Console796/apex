@@ -1,10 +1,12 @@
 #pragma once
 
 #include "editor/actions.hpp"
+#include "editor/pie_menu.hpp"
 
 #include <QDialog>
 #include <optional>
 
+class QDoubleSpinBox;
 class QCheckBox;
 class QComboBox;
 class QLabel;
@@ -44,6 +46,7 @@ class SettingsDialog : public QDialog {
     Q_OBJECT
 public:
     explicit SettingsDialog(MainWindow& window);
+    void reject() override;
 
     // Edits the keybinding working copy (exposed for tests).
     const editor::Preset& workingPreset() const { return working_; }
@@ -52,6 +55,15 @@ public:
 private:
     QWidget* buildGeneralPage();
     QWidget* buildKeysPage();
+    QWidget* buildInputPage();
+    editor::PieSettings inputSettings() const;
+    bool inputModified() const;
+    editor::PieSettings originalInput_;
+    QDoubleSpinBox* pieRadius_ = nullptr;
+    QDoubleSpinBox* pieDeadZone_ = nullptr;
+    QDoubleSpinBox* pieConfirm_ = nullptr;
+    QSpinBox* pieTap_ = nullptr;
+    QSpinBox* pieAnimation_ = nullptr;
     void loadPreset(const std::string& name);
     void refreshPresetCombo();
     void refreshTree();
@@ -73,11 +85,25 @@ private:
     editor::Preset original_;
     bool baseIsBuiltin_ = true;
 
+    void refreshThemeCombo(const QString& select);
+    void updateThemeButtons();
+    void editTheme(bool fromSelected);
+    void deleteTheme();
+    void importTheme();
+    void exportTheme();
+
+    QComboBox* uvAlignment_ = nullptr;
     QComboBox* theme_ = nullptr;
+    QPushButton* themeEdit_ = nullptr;
+    QPushButton* themeDelete_ = nullptr;
+    QPushButton* themeExport_ = nullptr;
+    QCheckBox* confirmMerge_ = nullptr;
     QCheckBox* autosave_ = nullptr;
     QSpinBox* autosaveMinutes_ = nullptr;
     QSpinBox* undoMiB_ = nullptr;
     QComboBox* inspectorOpens_ = nullptr;
+    QComboBox* facePropertiesOpens_ = nullptr;
+    QComboBox* materialBrowserOpens_ = nullptr;
 
     QComboBox* presetCombo_ = nullptr;
     QLabel* modified_ = nullptr;

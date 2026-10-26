@@ -3,6 +3,8 @@
 **Status: reviewed by the project owner, 2026-10-20.** Long-range plan for 0.1 → 0.10. The milestone order was confirmed in review (lighting stays at 0.6/0.7). The spec is
 [research.md](research.md); where they disagree, the spec wins until amended. Each milestone gets
 its own plan in `docs/plans/` before work on it starts. The first is [plans/0.1.md](plans/0.1.md).
+Work that spans milestones has its own design document: Strata content addons, 0.3 to 0.5, are in
+[plans/addons.md](plans/addons.md).
 
 ## Versioning
 
@@ -22,17 +24,24 @@ they land, so versions only ever go up. A milestone's release is **not** a numbe
 and is never given a number in advance: it is the milestone's closing step, planned as
 "0.M release", and when it lands it takes the number of the last sub-milestone that landed before
 it, plus `-release`. If 0.2.11 is the last sub-milestone, the release is **0.2.11-release**; if
-0.2.12 lands first, the release becomes 0.2.12-release. Nothing of 0.M lands after its release;
-the next landed work is 0.(M+1).1.
+0.2.12 lands first, the release becomes 0.2.12-release. Nothing of 0.M lands after its release
+unless the project owner asks for it: such a post-release sub-milestone takes the next number in
+that milestone (`0.2.12`), is tagged like any sub-milestone (`v0.2.12`), and does not create a new
+release (`v0.2.11-release` stays the 0.2 release). Either way, the next milestone's first
+sub-milestone is 0.(M+1).1 (plan 0.3, D18).
 
 `version.txt` holds `MAJOR.MILESTONE.SUB` or `MAJOR.MILESTONE.SUB-release`; the full version
 string puts the suffix last (`0.2.11.42-release`). Git tags mark completed sub-milestones
 (`v0.1.3`) and releases (`v0.2.11-release`) and carry no build number. 0.1 predates this policy:
 its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 
-**Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`
-(`version.txt` reads `0.2.11-release`; see [plans/0.2.md](plans/0.2.md)). The next landed work
-is 0.3.1; 0.3 needs its own plan before work starts.
+**Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`, and the
+post-release sub-milestone 0.2.12 (Preferences, keybinding editor, areas and workspaces) followed
+at the owner's request (see [plans/0.2.md](plans/0.2.md)). 0.3 is complete
+([plans/0.3.md](plans/0.3.md)) and was released as `0.3.10-release`: the tool interface and
+hull/CSG kernel (0.3.1), block, clip, vertex, primitive and carve/hollow/merge tools (0.3.2–0.3.6),
+addon mounting, the material browser and face editing (0.3.7–0.3.9), and the tool pie menu
+(0.3.10). The next landed work is 0.4.1.
 
 ## Principles that hold across every milestone
 
@@ -84,10 +93,15 @@ the result opens in Strata Hammer unchanged except for the edits.
 
 ### 0.3: Brush authoring in 3D
 Block tool (draw on a surface or work plane, then extrude), primitives (wedge, cylinder, arch,
-spike, sphere), clip tool (3 points placed on surfaces), vertex/edge/face tool with
+spike, sphere; generated once and committed as plain solids, with
+parameters editable until the next action, 0.3 D6), clip tool (3 points placed on surfaces), vertex/edge/face tool with
 convex-hull rebuild and invalid-state feedback, carve/hollow/merge, material browser,
 texture application and face editing (shift/scale/rotate, justify/fit, align to world/face,
-measure tool). Texture lock under transforms moved to 0.2 (plan 0.2 D7).
+measure tool), and read-only mounting of Strata content addons that follows Strata Hammer's addon
+list (plans/addons.md, 0.3 D19), so the material browser indexes the same materials Hammer shows.
+Tool switching from a Blender-style pie menu, with the tools contracted into one toolbar drop-down,
+and selection modes as icons bound to number keys (0.3 D20–D22). Texture lock under transforms moved
+to 0.2 (plan 0.2 D7).
 **Exit:** a complete test chamber can be built from nothing without an orthographic view.
 
 ### 0.4: Entities & assets
@@ -95,14 +109,18 @@ MDL rendering (v44–49: skins, bodygroups, non-uniform scale) and model-triangl
 (moved from 0.2; plan 0.2 §4), FGD helpers (iconsprite, studio,
 sphere, line, frustum, cylinder, worldtext, catapult…), I/O connection editor with validation
 and autocompletion, `func_instance` rendering, in-context instance preview and collapse, model,
-sound and particle browsers, prefabs, entity report, find & replace.
+sound and particle browsers, prefabs, entity report, find & replace, and the Addons panel (mount
+toggles written back to Strata Hammer's addon list, and hints that name the unmounted addon that
+provides a missing asset; plans/addons.md D2, D6).
 **Exit:** a chamber can be fully dressed with props and wired logic.
 
 ### 0.5: Compile & play
 Compile profiles (including import of Hammer `.wc` via toolpp), vbsp/vvis/vrad/postcompiler as
 cancellable background jobs using the **native Linux tools** on Linux, log parsing with
 error → object mapping, `.lin` leak and `.prt` portal overlays, cordons, map validation
-("check for problems"), launch the game with `-map`.
+("check for problems"), launch the game with `-map`. Compiles see the editor's addon mount set, and
+an addon can be a compile target: `mapsrc`/`maps` folders, `-campaign` launch, and a hand-off to
+Strata's Workshop Uploader (plans/addons.md D7–D9).
 **Exit:** the edit → compile → play loop works end-to-end on Linux and Windows.
 
 ### 0.6: Lighting I: realtime preview
@@ -124,7 +142,8 @@ density view.
 re-converges interactively after moving a light.
 
 ### 0.8: Advanced geometry & surfaces
-Displacements (create, sculpt, paint alpha/multiblend, sew, subdivide), overlays
+Displacements (create, sculpt, paint alpha/multiblend, sew, subdivide, and what each topology tool
+does to a displaced solid: clip, vertex, carve, hollow and merge refuse them until then, 0.3 D11), overlays
 (`info_overlay`, face sets), hotspot texturing (VTF hotspot resource + rect maps), decals,
 rope and cable preview, detail/structural tooling.
 **Exit:** organic and outdoor geometry workflows reach parity with Hammer++.
@@ -132,11 +151,14 @@ rope and cable preview, detail/structural tooling.
 ### 0.9: Extensibility
 Plugin API (stable C ABI with a header-only C++ wrapper), a scripting host (language decided in
 the 0.9 plan), custom tools/panels/importers, keymap editor for the Hammer and Blender presets (0.2 D15),
-theme editor, addon manager, scriptable primitives.
+theme editor, plugin manager, scriptable and persistent parametric primitives (including Strata
+Hammer's AngelScript ones; 0.3 D6), user-editable pie menus (0.3 D20). (Renamed from "addon manager" to avoid a clash
+with Strata's content addons, which arrive in 0.3 to 0.5; plans/addons.md D10.)
 **Exit:** a third-party tool can be built, loaded and shipped without rebuilding Apex.
 
 ### 0.10: Production hardening → 1.0 RC
-Performance budgets on the largest available maps, an interop test suite against Strata Hammer,
+Performance budgets on the largest available maps, an interop test suite against Strata Hammer
+(including addon-list round trips and matching mount sets),
 user manual, installers (AppImage/Flatpak, Windows installer), localization scaffolding, an
 accessibility pass, and a bug bash.
 **Exit:** the 1.0 release criteria, which are written at the start of 0.10.

@@ -58,7 +58,8 @@ TEST_CASE("geometry P2CE corpus construction point data replanes and face identi
     std::set<std::string> expected, actual;
     std::istringstream list(read(fs::path(APEX_FIXTURE_DIR) / "geometry/expected_invalid.txt"));
     for (std::string line; std::getline(list, line);) {
-        if (!line.empty() && line.front() != '#') REQUIRE(expected.insert(line).second);
+        if (line.empty() || line.front() == '#') continue;
+        REQUIRE(expected.insert(line).second);
     }
     std::size_t solids = 0, built = 0, planeBuiltCount = 0, pointFaces = 0;
     std::map<std::string, std::size_t> invalidReasons;

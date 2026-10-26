@@ -17,6 +17,15 @@ struct VmfWriteOptions {
     bool operator==(const VmfWriteOptions&) const = default;
 };
 
+struct AddonSettings {
+    enum class List { Hammer, Game, Apex };
+    // The game's list holds both local and Workshop addons; Wine Hammer's can't see Workshop items.
+    List list = List::Game;
+    bool enabled = true;
+    std::vector<std::filesystem::path> apexMounted;
+    bool operator==(const AddonSettings&) const = default;
+};
+
 struct GameProfile {
     std::string name;
     // Directory containing gameinfo.txt, rather than the Steam install root.
@@ -25,6 +34,7 @@ struct GameProfile {
     std::map<std::string, std::filesystem::path> toolPaths;
     kv1::EscapeMode escapeMode = kv1::EscapeMode::Strata;
     VmfWriteOptions vmfWrite;
+    AddonSettings addons;
     bool operator==(const GameProfile&) const = default;
 };
 

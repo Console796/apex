@@ -53,20 +53,18 @@ std::optional<SurfacePlane> planeFromFace(const geometry::ConvexPolyhedron& poly
                                          const geometry::Face& face) {
     const auto plane = poly.derivePlane(face);
     if (!plane) return std::nullopt;
-    // Area-weighted polygon centroid, with all arithmetic relative to a face vertex.
-    // Avoid products of large world coordinates for tiny faces near +/-65536.
+    // Area relative to a face vertex: avoid products of large world coordinates near +/-65536.
     const auto anchor = poly.vertices[face.vertices.front()];
-    DVec3 weighted{0.0};
     double area = 0.0;
     for (std::size_t i = 1; i + 1 < face.vertices.size(); ++i) {
         const auto a = poly.vertices[face.vertices[i]] - anchor;
         const auto b = poly.vertices[face.vertices[i + 1]] - anchor;
-        const double weight = glm::dot(glm::cross(a, b), plane->normal);
-        weighted += (a + b) * (weight / 3.0);
-        area += weight;
+        area += glm::dot(glm::cross(a, b), plane->normal);
     }
     if (!std::isfinite(area) || area <= 2.0 * geometry::kMinFaceArea) return std::nullopt;
-    auto result = frame(plane->normal, anchor + weighted / area);
+    // Anchor at the world origin's projection (D9): u/v are world axes on axis-aligned faces, so the
+    // absolute grid lines there are the world grid's.
+    auto result = frame(plane->normal, plane->normal * plane->dist);
     Rect2D bounds{DVec2{std::numeric_limits<double>::infinity()},
                   DVec2{-std::numeric_limits<double>::infinity()}};
     for (const auto index : face.vertices) {
@@ -92,6 +90,7 @@ std::optional<SurfacePlane> planeFromFace(const document::Document& doc, NodeId 
 
 void WorkPlaneState::setHovered(std::optional<SurfacePlane> plane) { hovered_ = std::move(plane); }
 void WorkPlaneState::pinHovered() { if (hovered_) pinned_ = hovered_; }
+void WorkPlaneState::pin(const SurfacePlane& plane) { pinned_ = plane; }
 void WorkPlaneState::pinAxisPlane(Axis axis, DVec3 through) {
     DVec3 normal{0.0};
     normal[axis == Axis::X ? 0 : axis == Axis::Y ? 1 : 2] = 1.0;

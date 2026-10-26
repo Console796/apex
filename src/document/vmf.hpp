@@ -264,4 +264,8 @@ private:
 Result<VmfFile> parse(std::string_view bytes, ParseOptions options = {});
 std::string write(const VmfFile& file);
 
+// An empty map: versioninfo and worldspawn, with quoted keys and values. vbsp skips an
+// unquoted world header and compiles an empty map, so new files must start from this.
+VmfFile emptyMap();
+
 } // namespace apex::vmf

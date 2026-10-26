@@ -4,7 +4,7 @@
     tools/ci.py [--fast] [--windows {auto,always,never}] [--fixtures-only]
                 [--fuzz-seconds N]
 
-Stages: preflight, BUILD counter, Linux presets (build + unit tests), KV1 corpus and fuzz,
+Stages: preflight, BUILD counter, Linux presets (build + unit tests), KV1 corpus and fuzz (plus a fixed-seed hull fuzz),
 srctools crosscheck, GPU render tests on lavapipe (required) and RADV (skipped without a device),
 Windows VM, licence + layer checks. Writes
 build/ci/<build>/report.md and exits non-zero on any failure. Fuzzing defaults to 600 seconds;
@@ -34,12 +34,15 @@ import os
 import re
 import shlex
 import shutil
+import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
+import ci_history
 import winvm_lock
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -49,29 +52,108 @@ FAST_PRESETS = ["linux-gcc-debug"]
 # handling, GPU and Qt code). A change outside these waits for the next trigger or a release run.
 WIN_TRIGGERS = ["CMakeLists.txt", "CMakePresets.json", "cmake/", "tests/CMakeLists.txt", "version.txt",
                 "src/core/", "src/assets/", "src/render/", "src/ui/", "src/app/"]
+# Peak resident memory of one ASan compile or test process, and what the Windows VM takes.
+JOB_GB = 0.75
+VM_GB = 4.5
+
+
+def memory_jobs(run_win):
+    """Concurrent jobs that fit in the memory free now (Linux), less the VM's share; None if unknown."""
+    try:
+        with open("/proc/meminfo") as f:
+            info = dict(line.split(":", 1) for line in f)
+        free_gb = int(info["MemAvailable"].split()[0]) / 1024 / 1024
+    except (OSError, KeyError, ValueError):
+        return None
+    return max(2, int((free_gb - (VM_GB if run_win else 0)) / JOB_GB))
+
+
 DEFAULT_VCVARS = ('call "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools'
                   '\\VC\\Auxiliary\\Build\\vcvars64.bat"')
 
 
 class Report:
-    def __init__(self, build):
+    """Thread-safe stage table. Stages are planned up front (name + dependencies), then move
+    pending -> running -> ok/FAIL/skipped; state.json mirrors that for the terminal monitor."""
+
+    def __init__(self, build, mode=""):
         self.dir = ROOT / "build" / "ci" / str(build)
         self.dir.mkdir(parents=True, exist_ok=True)
-        self.rows = []
+        for stale in ("state.json", "report.md"):  # build "fast" reuses its directory
+            (self.dir / stale).unlink(missing_ok=True)
+        self.lock = threading.RLock()
         self.build = build
+        self.mode = mode
+        self.started = time.time()
+        self.finished = None
+        self.stages = {}  # name -> dict, in plan order
+
+    def plan(self, name, deps=()):
+        with self.lock:
+            self.stages[name] = {"name": name, "deps": list(deps), "state": "pending", "start": None,
+                                 "end": None, "seconds": 0.0, "note": "", "log": f"{name}.log"}
+            self._save()
+
+    def begin(self, name):
+        with self.lock:
+            st = self.stages.setdefault(name, {"name": name, "deps": [], "state": "pending",
+                                               "start": None, "end": None, "seconds": 0.0,
+                                               "note": "", "log": f"{name}.log"})
+            st.update(state="running", start=time.time())
+            self._save()
 
     def add(self, stage, status, seconds=0.0, note=""):
-        self.rows.append((stage, status, seconds, note))
-        print(f"[{status:7}] {stage} ({seconds:.1f}s) {note}", flush=True)
+        with self.lock:
+            st = self.stages.setdefault(stage, {"name": stage, "deps": [], "state": "pending",
+                                                "start": None, "end": None, "seconds": 0.0,
+                                                "note": "", "log": f"{stage}.log"})
+            st.update(state=status, end=time.time(), seconds=seconds, note=note)
+            if st["start"] is None:
+                st["start"] = st["end"] - seconds
+            print(f"[{status:7}] {stage} ({seconds:.1f}s) {note}", flush=True)
+            if status in ("ok", "FAIL"):
+                ci_history.record(self.build, stage, status, seconds)
+            self._save()
+
+    def status(self, name):
+        with self.lock:
+            return self.stages[name]["state"]
+
+    def finished_stage(self, name):
+        return self.status(name) in ("ok", "FAIL", "skipped")
+
+    @property
+    def rows(self):
+        with self.lock:
+            return [(s["name"], s["state"], s["seconds"], s["note"])
+                    for s in self.stages.values() if s["state"] in ("ok", "FAIL", "skipped")]
 
     @property
     def failed(self):
         return any(s == "FAIL" for _, s, _, _ in self.rows)
 
+    def _save(self):
+        doc = {"build": self.build, "mode": self.mode, "pid": os.getpid(), "started": self.started,
+               "finished": self.finished, "updated": time.time(),
+               "failed": any(s["state"] == "FAIL" for s in self.stages.values()),
+               "stages": list(self.stages.values())}
+        tmp = self.dir / "state.json.tmp"
+        tmp.write_text(json.dumps(doc), encoding="utf-8")
+        os.replace(tmp, self.dir / "state.json")
+
+    def finish(self):
+        with self.lock:
+            self.finished = time.time()
+            ci_history.record(self.build, ci_history.TOTAL, "FAIL" if self.failed else "ok",
+                              self.finished - self.started)
+            self._save()
+            self.write()
+
     def write(self):
         lines = [f"# CI build {self.build}", "",
                  f"{datetime.datetime.now().isoformat(timespec='seconds')} - "
                  f"{'FAILED' if self.failed else 'passed'}", "",
+                 f"wall clock {ci_history.fmt_duration(time.time() - self.started)}", "",
                  "| Stage | Status | Time | Note |", "|---|---|---|---|"]
         lines += [f"| {a} | {b} | {c:.1f}s | {d} |" for a, b, c, d in self.rows]
         (self.dir / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -130,12 +212,16 @@ def windows_needed():
     return False, f"no platform-sensitive changes since last green Windows run ({last[:10]})"
 
 
-def linux_stage(preset, build, report):
-    if not run(["cmake", "--preset", preset, f"-DAPEX_BUILD_NUMBER={build}"], report, f"{preset}:configure"):
-        return
-    if not run(["cmake", "--build", "--preset", preset], report, f"{preset}:build"):
-        return
-    run(["ctest", "--preset", preset], report, f"{preset}:test")
+def configure_stage(preset, build, report):
+    return run(["cmake", "--preset", preset, f"-DAPEX_BUILD_NUMBER={build}"], report, f"{preset}:configure")
+
+
+def build_stage(preset, jobs, report):
+    return run(["cmake", "--build", "--preset", preset, "-j", str(jobs)], report, f"{preset}:build")
+
+
+def test_stage(preset, jobs, report):
+    return run(["ctest", "--preset", preset, "-j", str(jobs)], report, f"{preset}:test")
 
 
 def corpus_stage(corpus, fixtures_only, report):
@@ -199,47 +285,42 @@ def fuzzer_unavailable_reason(report):
     return ""
 
 
-def fuzz_stage(build, seconds, report):
-    if seconds == 0:
-        report.add("fuzz", "skipped", 0, "disabled")
-        return
+def fuzz_configure_stage(build, report):
     t = time.time()
     reason = fuzzer_unavailable_reason(report)
     if reason:
-        report.add("fuzz", "skipped", time.time() - t, reason)
+        report.add("fuzz-configure", "skipped", time.time() - t, reason)
         return
+    run(["cmake", "--preset", "linux-fuzz", f"-DAPEX_BUILD_NUMBER={build}"], report, "fuzz-configure")
 
+
+def fuzz_build_stage(jobs, report):
+    return run(["cmake", "--build", "--preset", "linux-fuzz", "--target", "kv1_fuzz", "hull_fuzz", "-j", str(jobs)],
+               report, "fuzz-build")
+
+
+def fuzz_run_stage(seconds, report):
+    t = time.time()
     log = report.dir / "fuzz.log"
-    configure = ["cmake", "--preset", "linux-fuzz", f"-DAPEX_BUILD_NUMBER={build}"]
-    build_cmd = ["cmake", "--build", "--preset", "linux-fuzz", "--target", "kv1_fuzz"]
+    persistent = ROOT / "build" / "fuzz-corpus" / "kv1"
+    persistent.mkdir(parents=True, exist_ok=True)
+    artifact_dir = Path(tempfile.mkdtemp(prefix="fuzz-artifacts-", dir=report.dir))
     try:
-        with open(log, "w", encoding="utf-8") as f:
-            for cmd in (configure, build_cmd):
-                f.write("$ " + shlex.join(cmd) + "\n")
-                f.flush()
-                result = subprocess.run(cmd, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
-                if result.returncode != 0:
-                    report.add("fuzz", "FAIL", time.time() - t,
-                               f"configure/build failed; see {log}")
-                    return
-
-            persistent = ROOT / "build" / "fuzz-corpus" / "kv1"
-            persistent.mkdir(parents=True, exist_ok=True)
-            artifact_dir = Path(tempfile.mkdtemp(prefix="fuzz-artifacts-", dir=report.dir))
-            with tempfile.TemporaryDirectory(prefix="kv1-seeds-", dir=ROOT / "build") as seeds:
-                seed_dir = Path(seeds)
-                fixtures = ROOT / "tests" / "fixtures" / "kv1"
-                for source in fixtures.rglob("*"):
-                    if source.is_file():
-                        destination = seed_dir / source.relative_to(fixtures)
-                        destination.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(source, destination)
-                fuzz = [str(ROOT / "build" / "linux-fuzz" / "kv1_fuzz"), str(persistent),
-                        str(seed_dir), f"-max_total_time={seconds}",
-                        f"-artifact_prefix={artifact_dir}{os.sep}"]
-                f.write("$ " + shlex.join(fuzz) + "\n")
-                f.flush()
-                result = subprocess.run(fuzz, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+        with open(log, "w", encoding="utf-8") as f, \
+                tempfile.TemporaryDirectory(prefix="kv1-seeds-", dir=ROOT / "build") as seeds:
+            seed_dir = Path(seeds)
+            fixtures = ROOT / "tests" / "fixtures" / "kv1"
+            for source in fixtures.rglob("*"):
+                if source.is_file():
+                    destination = seed_dir / source.relative_to(fixtures)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+            fuzz = [str(ROOT / "build" / "linux-fuzz" / "kv1_fuzz"), str(persistent),
+                    str(seed_dir), f"-max_total_time={seconds}",
+                    f"-artifact_prefix={artifact_dir}{os.sep}"]
+            f.write("$ " + shlex.join(fuzz) + "\n")
+            f.flush()
+            result = subprocess.run(fuzz, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
     except OSError as error:
         report.add("fuzz", "FAIL", time.time() - t, f"could not run fuzz stage: {error}")
         return
@@ -252,6 +333,33 @@ def fuzz_stage(build, seconds, report):
         report.add("fuzz", "FAIL", time.time() - t, f"libFuzzer exited {result.returncode}; see {log}")
     else:
         report.add("fuzz", "ok", time.time() - t, f"{seconds}s, warm corpus: {persistent}")
+
+
+def hull_fuzz_stage(report):
+    """Hull/split/subtract fuzz on a fixed seed and run budget, so the stage is reproducible (0.3 D8)."""
+    t = time.time()
+    log = report.dir / "hull-fuzz.log"
+    artifact_dir = Path(tempfile.mkdtemp(prefix="hull-artifacts-", dir=report.dir))
+    try:
+        with open(log, "w", encoding="utf-8") as f, \
+                tempfile.TemporaryDirectory(prefix="hull-corpus-", dir=ROOT / "build") as corpus:
+            fuzz = [str(ROOT / "build" / "linux-fuzz" / "hull_fuzz"), corpus, "-seed=1", "-runs=20000",
+                    f"-artifact_prefix={artifact_dir}{os.sep}"]
+            f.write("$ " + shlex.join(fuzz) + "\n")
+            f.flush()
+            result = subprocess.run(fuzz, cwd=ROOT, stdout=f, stderr=subprocess.STDOUT)
+    except OSError as error:
+        report.add("hull-fuzz", "FAIL", time.time() - t, f"could not run hull fuzz: {error}")
+        return
+
+    artifacts = sorted(path for path in artifact_dir.rglob("*") if path.is_file())
+    if artifacts:
+        paths = ", ".join(str(path) for path in artifacts)
+        report.add("hull-fuzz", "FAIL", time.time() - t, f"artifact: {paths}; see {log}")
+    elif result.returncode != 0:
+        report.add("hull-fuzz", "FAIL", time.time() - t, f"libFuzzer exited {result.returncode}; see {log}")
+    else:
+        report.add("hull-fuzz", "ok", time.time() - t, "seed 1, 20000 runs")
 
 
 def gpu_stage(name, device_filter, report):
@@ -341,6 +449,8 @@ def windows_stage(build, report):
         ] + [f'(if exist "{n.replace("/", chr(92))}" del /q "{n.replace("/", chr(92))}")' for n in stale] + [
             envcmd,
             f'set "CMAKE_PREFIX_PATH={qt}"', f'set "CPM_SOURCE_CACHE={wwin}\\cpm-cache"',
+            # Non-GPU tests only (0.1 D23): a guest's software Vulkan isn't the lavapipe reference.
+            'set "APEX_VK_DEVICE=apex-ci-no-gpu"',
             f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}",
             "cmake --build --preset windows-msvc-release",
             "ctest --preset windows-msvc-release",
@@ -361,19 +471,93 @@ def windows_stage(build, report):
         lock.__exit__(None, None, None)
 
 
+def ensure_tools_venv():
+    """Create .venv-tools and install srctools if missing or broken; returns its python or None."""
+    venv = ROOT / ".venv-tools"
+    py = venv / "bin" / "python"
+    probe = lambda: py.exists() and subprocess.run(
+        [str(py), "-W", "ignore", "-c", "import srctools"], capture_output=True).returncode == 0
+    if probe():
+        return py
+    shutil.rmtree(venv, ignore_errors=True)
+    for cmd in ([sys.executable, "-m", "venv", str(venv)],
+                [str(py), "-m", "pip", "install", "-q", "srctools"]):
+        if subprocess.run(cmd, capture_output=True).returncode != 0:
+            return None
+    return py if probe() else None
+
+
 def crosscheck_stage(corpus, fixtures_only, report):
-    """VMF parse vs srctools (0.1.4 case 3). Needs .venv-tools with srctools installed."""
-    py = ROOT / ".venv-tools" / "bin" / "python"
+    """VMF parse vs srctools (0.1.4 case 3). Auto-creates .venv-tools with srctools installed."""
+    py = ensure_tools_venv()
     dump = ROOT / "build" / "linux-gcc-release" / "apex_vmf_dump"
     if not (corpus and Path(corpus).is_dir()):
         report.add("srctools-crosscheck", "skipped" if fixtures_only else "FAIL", 0,
                    "APEX_P2CE_DIR is unset or invalid")
-    elif not py.exists() or not dump.exists():
+    elif not py or not dump.exists():
         report.add("srctools-crosscheck", "skipped", 0,
-                   "needs .venv-tools (python3 -m venv .venv-tools && .venv-tools/bin/pip install srctools)")
+                   "could not set up .venv-tools (python3 -m venv .venv-tools && .venv-tools/bin/pip install srctools)"
+                   if not py else "apex_vmf_dump not built")
     else:
         run([str(py), "-W", "ignore", str(ROOT / "tools" / "srctools_crosscheck.py"), str(dump), corpus],
             report, "srctools-crosscheck")
+
+
+class Graph:
+    """Stages with dependencies, run on threads. A stage starts when every dependency finished
+    "ok"; otherwise it is recorded as skipped. `slot` names a semaphore the stage holds while it
+    runs (the stage shows as pending until it gets the slot). A stage function reports its own
+    result through report.add(); one that returns without doing so is recorded as FAIL."""
+
+    def __init__(self, report, slots):
+        self.report = report
+        self.slots = {name: threading.Semaphore(n) for name, n in slots.items()}
+        self.tasks = []
+        self.done = {}
+
+    def add(self, name, fn, deps=(), slot=None):
+        self.report.plan(name, deps)
+        self.done[name] = threading.Event()
+        self.tasks.append((name, fn, list(deps), slot))
+
+    def _work(self, name, fn, deps, slot):
+        report = self.report
+        try:
+            for d in deps:
+                self.done[d].wait()
+            bad = [d for d in deps if report.status(d) != "ok"]
+            if bad:
+                why = "failed" if any(report.status(d) == "FAIL" for d in bad) else "was skipped"
+                report.add(name, "skipped", 0, f"{bad[0]} {why}")
+                return
+            sem = self.slots.get(slot)
+            if sem:
+                sem.acquire()
+            try:
+                report.begin(name)
+                try:
+                    fn()
+                except Exception as e:  # a crashing stage must not hang its dependents
+                    report.add(name, "FAIL", 0, f"stage crashed: {e!r}")
+                if not report.finished_stage(name):
+                    report.add(name, "FAIL", 0, "stage ended without a result")
+            finally:
+                if sem:
+                    sem.release()
+        finally:
+            self.done[name].set()
+
+    def run(self, serial=False):
+        if serial:  # tasks were added in a dependency-respecting order
+            for task in self.tasks:
+                self._work(*task)
+            return
+        threads = [threading.Thread(target=self._work, args=t, name=t[0], daemon=True)
+                   for t in self.tasks]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
 
 def main():
@@ -385,39 +569,88 @@ def main():
     ap.add_argument("--fixtures-only", action="store_true", help="do not require the P2CE corpus")
     ap.add_argument("--fuzz-seconds", type=int, default=600,
                     help="libFuzzer run time (default: 600; 0 disables the stage)")
+    ap.add_argument("--build-slots", type=int, default=0,
+                    help="concurrent builds (default: 2, or 1 while the Windows VM runs); each gets -j"
+                         " from the cores and the free memory")
+    ap.add_argument("--test-jobs", type=int, default=0,
+                    help="concurrent ctest tests (default: half the cores)")
+    ap.add_argument("--serial", action="store_true", help="run one stage at a time")
     a = ap.parse_args()
     if a.fuzz_seconds < 0:
         ap.error("--fuzz-seconds must be non-negative")
 
     corpus = os.environ.get("APEX_P2CE_DIR")
     build = 0 if a.fast else next_build_number()
-    rep = Report(build if build else "fast")
+    rep = Report(build if build else "fast", "fast" if a.fast else "full")
 
-    presets = FAST_PRESETS if a.fast else LINUX_PRESETS
-    for p in presets:
-        linux_stage(p, build, rep)
+    run_win, win_why = False, "--fast"
+    if not a.fast:
+        mode = "never" if a.skip_windows else a.windows
+        run_win, win_why = (True, "--windows always") if mode == "always" else (False, "--windows never")
+        if mode == "auto":
+            run_win, win_why = windows_needed()
 
+    cores = os.cpu_count() or 4
+    slots = a.build_slots or (1 if run_win else 2)
+    if a.serial:
+        slots = 1
+    jobs = max(2, cores // slots)
+    test_jobs = 1 if a.serial else (a.test_jobs or max(2, cores // 2))
+    # Cores alone overcommit memory: 24 ASan compiles beside the VM ran a 15 GB host out of memory.
+    # Builds in every slot and one test stage share the budget.
+    budget = memory_jobs(run_win)
+    if budget is not None:
+        share = max(2, budget // (slots + 1))
+        jobs = min(jobs, share)
+        if not a.test_jobs:
+            test_jobs = min(test_jobs, share)
+    print(f"ci: {slots} build slot(s) x -j{jobs}, ctest -j{test_jobs}"
+          + (f" (memory allows {budget} jobs)" if budget is not None else ""), flush=True)
+    g = Graph(rep, {"build": slots, "configure": 1})
+
+    def add_preset(preset):
+        g.add(f"{preset}:configure", lambda: configure_stage(preset, build, rep), slot="configure")
+        g.add(f"{preset}:build", lambda: build_stage(preset, jobs, rep), [f"{preset}:configure"], "build")
+        g.add(f"{preset}:test", lambda: test_stage(preset, test_jobs, rep), [f"{preset}:build"])
+
+    # Longest chains first so they win a contended slot: the VM, then the gcc-release fan-out.
+    if run_win:
+        g.add("windows-msvc", lambda: windows_stage(build, rep))
+    for preset in (FAST_PRESETS if a.fast else LINUX_PRESETS):
+        add_preset(preset)
     if a.fast:
         rep.add("fuzz", "skipped", 0, "--fast")
     else:
-        corpus_stage(corpus, a.fixtures_only, rep)
-        fuzz_stage(build, a.fuzz_seconds, rep)
-        crosscheck_stage(corpus, a.fixtures_only, rep)
-        gpu_stage("gpu-lavapipe", "llvmpipe", rep)
-        gpu_stage("gpu-radv", "radv", rep)
-        mode = "never" if a.skip_windows else a.windows
-        run_win, why = (True, "--windows always") if mode == "always" else (False, "--windows never")
-        if mode == "auto":
-            run_win, why = windows_needed()
-        if run_win:
-            windows_stage(build, rep)
+        gcc_build = "linux-gcc-release:build"
+        g.add("corpus", lambda: corpus_stage(corpus, a.fixtures_only, rep), [gcc_build])
+        g.add("srctools-crosscheck", lambda: crosscheck_stage(corpus, a.fixtures_only, rep), [gcc_build])
+        g.add("gpu-lavapipe", lambda: gpu_stage("gpu-lavapipe", "llvmpipe", rep), [gcc_build])
+        g.add("gpu-radv", lambda: gpu_stage("gpu-radv", "radv", rep), [gcc_build])
+        if a.fuzz_seconds == 0:
+            rep.add("fuzz", "skipped", 0, "disabled")
         else:
-            rep.add("windows-msvc", "skipped", 0, why)
+            g.add("fuzz-configure", lambda: fuzz_configure_stage(build, rep), slot="configure")
+            g.add("fuzz-build", lambda: fuzz_build_stage(jobs, rep), ["fuzz-configure"], "build")
+            g.add("fuzz", lambda: fuzz_run_stage(a.fuzz_seconds, rep), ["fuzz-build"])
+            g.add("hull-fuzz", lambda: hull_fuzz_stage(rep), ["fuzz-build"])
+        if not run_win:
+            rep.add("windows-msvc", "skipped", 0, win_why)
+    g.add("check-licenses", lambda: run([sys.executable, str(ROOT / "tools" / "check_licenses.py")],
+                                        rep, "check-licenses"))
+    g.add("check-layers", lambda: run([sys.executable, str(ROOT / "tools" / "check_layers.py")],
+                                      rep, "check-layers"))
 
-    run([sys.executable, str(ROOT / "tools" / "check_licenses.py")], rep, "check-licenses")
-    run([sys.executable, str(ROOT / "tools" / "check_layers.py")], rep, "check-layers")
+    est = ci_history.estimates()
+    finish, _ends, unknown = ci_history.predict(list(rep.stages.values()), est)
+    if finish and est:
+        note = f" ({unknown} stage(s) without history)" if unknown else ""
+        print(f"estimated {ci_history.fmt_duration(finish - time.time())}{note}; "
+              f"monitor with tools/ci_top.py", flush=True)
+    else:
+        print("no timing history yet; the ETA appears after a run. Monitor with tools/ci_top.py", flush=True)
 
-    rep.write()
+    g.run(a.serial)
+    rep.finish()
     return 1 if rep.failed else 0
 
 
