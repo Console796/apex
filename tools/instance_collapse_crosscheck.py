@@ -105,7 +105,15 @@ def side_signature(side) -> tuple:
     a, b, c = side.planes
     normal = Vec.cross(b - a, c - a).norm()
     distance = Vec.dot(normal, a)
-    return tuple(round(v, 4) + 0.0 for v in normal), round(distance, 3) + 0.0, side.mat
+    # Texture mapping rides along with the plane: a transformed instance has to rotate the UV axes
+    # and carry the shifts, scales, rotation, lightmap scale and smoothing groups unchanged.
+    # Axis directions are compared loosely (the shift absorbs the transform's translation).
+    mapping = tuple((tuple(round(float(v), 3) + 0.0 for v in (axis.x, axis.y, axis.z)),
+                     round(float(axis.offset), 2) + 0.0, round(float(axis.scale), 5) + 0.0)
+                    for axis in (side.uaxis, side.vaxis))
+    display = (side.disp_power, side.disp_flags) if side.is_disp else None
+    return (tuple(round(v, 4) + 0.0 for v in normal), round(distance, 3) + 0.0, side.mat, mapping,
+            round(float(side.ham_rot), 3) + 0.0, side.lightmap, side.smooth, display)
 
 
 def solid(solid) -> tuple:
