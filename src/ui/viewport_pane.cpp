@@ -618,6 +618,21 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     mode_->setToolTip(tr("Current editing mode"));
     mode_->hide();
     row->addWidget(mode_);
+    instanceVisibilityButton_ = new QToolButton(header);
+    instanceVisibilityButton_->setObjectName(QStringLiteral("instanceVisibilityToggle"));
+    instanceVisibilityButton_->setAutoRaise(true);
+    instanceVisibilityButton_->setToolTip(tr("Instance contents: Hidden, Tinted, Normal"));
+    row->addWidget(instanceVisibilityButton_);
+    connect(instanceVisibilityButton_, &QToolButton::clicked, this, [this] {
+        if (!session_) return;
+        const auto current = session_->instanceVisibility();
+        session_->setInstanceVisibility(current == document::InstanceVisibility::Hidden ? document::InstanceVisibility::Tinted
+            : current == document::InstanceVisibility::Tinted ? document::InstanceVisibility::Normal
+            : document::InstanceVisibility::Hidden);
+        refreshInstanceVisibility();
+        if (window_) window_->requestRedraw();
+        emit edited(pane_);
+    });
     row->addWidget(makeCollapseButton([this] { emit collapseRequested(pane_); }, header));
     menuButton_ = new QToolButton;
     menuButton_->setObjectName(QStringLiteral("PaneMenuButton"));
@@ -694,6 +709,20 @@ void PaneFrame::setModeText(const QString& text, bool entityTool) {
     mode_->style()->unpolish(mode_);
     mode_->style()->polish(mode_);
     mode_->setVisible(!text.isEmpty());
+}
+
+void PaneFrame::setEditorSession(editor::EditorSession* session) {
+    session_ = session;
+    refreshInstanceVisibility();
+}
+
+void PaneFrame::refreshInstanceVisibility() {
+    if (!instanceVisibilityButton_) return;
+    const auto visibility = session_ ? session_->instanceVisibility() : document::InstanceVisibility::Normal;
+    const QString name = visibility == document::InstanceVisibility::Hidden ? tr("Hidden")
+        : visibility == document::InstanceVisibility::Tinted ? tr("Tinted") : tr("Normal");
+    instanceVisibilityButton_->setText(tr("Instances: %1").arg(name));
+    instanceVisibilityButton_->setEnabled(session_ && session_->document());
 }
 
 void PaneFrame::buildMenu() {

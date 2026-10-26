@@ -167,9 +167,10 @@ if(APEX_BUILD_APP)
   add_executable(apex src/app/main.cpp)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
   if(APEX_BUILD_TESTS)
+    find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
-    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/materials_test.cpp tests/ui/face_properties_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp tests/ui/tool_controls_test.cpp tests/ui/pie_popup_test.cpp)
-    target_link_libraries(apex_ui_tests PRIVATE apex_ui sourcepp::vtfpp apex_warnings doctest::doctest)
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/shell_test.cpp tests/ui/materials_test.cpp tests/ui/face_properties_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp tests/ui/tool_controls_test.cpp tests/ui/pie_popup_test.cpp tests/ui/instance_test.cpp)
+    target_link_libraries(apex_ui_tests PRIVATE apex_ui sourcepp::vtfpp Qt6::Test apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME apex_ui_tests COMMAND apex_ui_tests)

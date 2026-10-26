@@ -63,6 +63,8 @@ public:
     void setEditorSession(editor::EditorSession* session);
     void setGameContent(GameContent* content);
     void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
+    void setOpenInstanceHandler(std::function<bool(document::NodeId)> resolved,
+                                std::function<void(document::NodeId)> open);
     void updateHighlight();
     void updateModeBadges();
 
@@ -174,6 +176,8 @@ private:
     editor::EditorSession* session_ = nullptr;
     GameContent* gameContent_ = nullptr;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
+    std::function<bool(document::NodeId)> instanceResolved_;
+    std::function<void(document::NodeId)> openInstance_;
     static constexpr std::uint64_t kNoPreview = ~std::uint64_t{0};
     std::uint64_t previewRevision_ = kNoPreview;
     bool previewEmpty_ = true;

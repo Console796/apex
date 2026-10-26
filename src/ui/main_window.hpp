@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <functional>
 #include <QMetaObject>
 #include <QPointer>
 #include <QString>
@@ -21,6 +22,7 @@ class QLabel;
 class QMenu;
 class QToolButton;
 class QTimer;
+class QFileSystemWatcher;
 class QWidgetAction;
 
 namespace apex::document {
@@ -109,6 +111,9 @@ public:
     void openPreferences();
     // A Materials panel click: sets the active material, and with the face edit tool applies it to the selected faces.
     void activateMaterial(const QString& name);
+    void setInstanceLauncher(std::function<bool(const QString&, const QStringList&)> launcher) {
+        instanceLauncher_ = std::move(launcher);
+    }
 
 private slots:
     void openDialog();
@@ -147,6 +152,11 @@ private:
     void addRecent(const QString& path);
     void rebuildRecentMenu();
     void updateTitle();
+    void syncInstanceWatches();
+    void reloadChangedInstances();
+    void openSelectedInstance(document::NodeId instance = 0);
+    void collapseSelectedInstances();
+    void reportCollapse(const editor::InstanceCollapseReport& report);
     void restoreLayout();
     void closeEvent(QCloseEvent* event) override;
 
@@ -158,6 +168,11 @@ private:
     editor::EditorSession session_;
     std::unique_ptr<editor::Autosave> autosave_;
     QTimer* autosaveTimer_ = nullptr;
+    QFileSystemWatcher* instanceWatcher_ = nullptr;
+    QTimer* instanceReloadTimer_ = nullptr;
+    std::set<std::filesystem::path> pendingInstanceReloads_;
+    std::map<std::filesystem::path, std::string> reportedInstanceProblems_;
+    std::function<bool(const QString&, const QStringList&)> instanceLauncher_;
     std::uint64_t savedState_ = 0;
     bool unsaved_ = false;
     QPointer<PieMenuPopup> piePopup_;

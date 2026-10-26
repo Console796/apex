@@ -202,6 +202,13 @@ void ViewportArea::setMaterialBrowser(std::function<void(QString, QString, std::
     for (auto& [id, panel] : panels_) configurePanel(panel);
     for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
 }
+void ViewportArea::setOpenInstanceHandler(std::function<bool(document::NodeId)> resolved,
+                                          std::function<void(document::NodeId)> open) {
+    instanceResolved_ = std::move(resolved);
+    openInstance_ = std::move(open);
+    for (auto& [id, panel] : panels_) configurePanel(panel);
+    for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
+}
 void ViewportArea::configurePanel(QWidget* panel) {
     if (auto* materials = qobject_cast<MaterialsPanel*>(panel)) {
         connect(materials, &MaterialsPanel::activeMaterialRequested, this,
@@ -209,8 +216,10 @@ void ViewportArea::configurePanel(QWidget* panel) {
         connect(materials, &MaterialsPanel::statusMessage, this,
                 &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
     }
-    if (auto* inspector = qobject_cast<InspectorPanel*>(panel))
+    if (auto* inspector = qobject_cast<InspectorPanel*>(panel)) {
         inspector->setMaterialBrowser(materialBrowser_);
+        inspector->setOpenInstanceHandler(instanceResolved_, openInstance_);
+    }
     if (auto* properties = qobject_cast<FacePropertiesPanel*>(panel)) {
         properties->setMaterialBrowser(materialBrowser_);
         properties->setGameContent(gameContent_);
@@ -288,6 +297,7 @@ void ViewportArea::updateModeBadges() {
     for (auto& [id, frame] : frames_)
         if (frame) {
             frame->setModeText(text, entity);
+            frame->setEditorSession(session_);
             if (session_) frame->setTool(session_->activeToolObject());
         }
 }
@@ -726,6 +736,7 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
         window->setClearColour(clear);
     }
     auto* frame = new PaneFrame(pane, accessor, window, gpuReason_, maximized, canClose);
+    frame->setEditorSession(session_);
     frames_[pane] = frame;
     if (session_) {
         frame->setModeText(modeSummary(*session_), session_->activeToolObject().readout().warn);

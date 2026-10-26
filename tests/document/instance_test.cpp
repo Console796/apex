@@ -32,7 +32,7 @@ NodeId instanceId(const Document& doc) {
     return 0;
 }
 std::string fixture() {
-    std::ifstream in(std::string(APEX_FIXTURE_DIR) + "/vmf/instance_rules.vmf");
+    std::ifstream in(std::string(APEX_FIXTURE_DIR) + "/vmf/instances/instance_rules.vmf");
     std::ostringstream out;
     out << in.rdbuf();
     return out.str();

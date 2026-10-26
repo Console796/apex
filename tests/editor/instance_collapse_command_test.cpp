@@ -34,7 +34,7 @@ TEST_CASE("[editor][instance] collapse is one undoable paste transaction") {
     Document doc = instanceMap();
     EditorSession session;
     session.attach(doc);
-    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "map.vmf");
+    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "instances" / "map.vmf");
     const auto before = doc.write().value();
     NodeId instance = 0;
     for (const auto h : nodes(doc)) {
@@ -99,7 +99,7 @@ entity { "id" "3" "classname" "func_instance" "targetname" "second" "file" "inst
 )vmf"));
     EditorSession session;
     session.attach(doc);
-    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "map.vmf");
+    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "instances" / "map.vmf");
     auto result = session.collapseAllInstances();
     REQUIRE(result);
     CHECK(result->size() == 2);
@@ -139,7 +139,7 @@ entity { "id" "4" "classname" "func_instance" "targetname" "cycle" "file" "insta
 )vmf"));
     EditorSession session;
     session.attach(doc);
-    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "map.vmf");
+    session.setConnectionContext(std::filesystem::path(APEX_FIXTURE_DIR) / "vmf" / "instances" / "map.vmf");
     const auto result = session.collapseAllInstances();
     REQUIRE(result);
     REQUIRE(result->size() == 3);

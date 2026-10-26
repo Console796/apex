@@ -15,6 +15,7 @@
 #include <QCompleter>
 #include <QDir>
 #include <QFile>
+#include <QFileSystemWatcher>
 #include <QFileDialog>
 #include <QKeySequence>
 #include <QInputDialog>
@@ -30,6 +31,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QProcess>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTimer>
@@ -40,6 +42,7 @@
 #include <QSpinBox>
 #include <QDialogButtonBox>
 #include <QDialog>
+#include <QCoreApplication>
 #include <QFormLayout>
 #include "ui/recovery_dialog.hpp"
 #include "ui/settings_dialog.hpp"
@@ -167,6 +170,9 @@ MainWindow::MainWindow(QWidget* parent)
     buildEntityUi();
     buildAreas();
     viewport_->setEditorSession(&session_);
+    viewport_->setOpenInstanceHandler([this](document::NodeId id) {
+        return std::ranges::any_of(session_.instances().contents(), [id](const auto& item) { return item.instance == id && item.depth == 1; });
+    }, [this](document::NodeId id) { openSelectedInstance(id); });
     viewport_->setGameContent(gameContent_.get());
     viewport_->setMaterialBrowser([this](QString current, QString what, std::function<void(QString)> choose) {
         openMaterialPicker(std::move(current), std::move(what), std::move(choose));
@@ -235,7 +241,25 @@ MainWindow::MainWindow(QWidget* parent)
         updateTitle();
         refreshEntityUi();
         modeLabel_->setText(modeSummary(session_));
+        viewport_->updateModeBadges();
+        syncInstanceWatches();
     });
+    instanceWatcher_ = new QFileSystemWatcher(this);
+    instanceWatcher_->setObjectName(QStringLiteral("instanceWatcher"));
+    instanceReloadTimer_ = new QTimer(this);
+    instanceReloadTimer_->setSingleShot(true);
+    instanceReloadTimer_->setInterval(150);
+    connect(instanceWatcher_, &QFileSystemWatcher::fileChanged, this, [this](const QString& path) {
+        pendingInstanceReloads_.insert(std::filesystem::path(path.toStdU16String()));
+        instanceReloadTimer_->start();
+    });
+    connect(instanceWatcher_, &QFileSystemWatcher::directoryChanged, this, [this](const QString& changed) {
+        const auto directory = std::filesystem::path(changed.toStdU16String());
+        for (const auto& [path, users] : session_.instances().dependencies())
+            if (!users.empty() && path.parent_path() == directory) pendingInstanceReloads_.insert(path);
+        if (!pendingInstanceReloads_.empty()) instanceReloadTimer_->start();
+    });
+    connect(instanceReloadTimer_, &QTimer::timeout, this, &MainWindow::reloadChangedInstances);
     lastActiveTool_ = session_.activeTool();
     lastFaceExtrapolation_ = session_.faceExtrapolation();
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
@@ -682,6 +706,26 @@ void MainWindow::openPreferences() {
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
+        if (id == "instance.collapse_all")
+            action->setEnabled(session_.document() && (!session_.instances().contents().empty() || !session_.instances().problems().empty()));
+        if (id == "instance.open" || id == "instance.collapse") {
+            bool selectedInstance = false;
+            for (const auto node : editor::selectedNodes(session_.selection())) {
+                const auto* found = session_.document() ? session_.document()->get(*session_.document()->handle(node)) : nullptr;
+                const auto* classname = found ? found->block->find("classname") : nullptr;
+                if (classname && classname->decodedValue().value_or("") == "func_instance") selectedInstance = true;
+            }
+            if (id == "instance.collapse") action->setEnabled(selectedInstance);
+            else {
+                const auto selected = editor::selectedNodes(session_.selection());
+                const bool resolved = selected.size() == 1 && std::ranges::any_of(session_.instances().contents(), [&](const auto& item) {
+                    return item.instance == selected.front() && item.depth == 1;
+                });
+                action->setEnabled(resolved);
+                action->setToolTip(resolved ? tr("Open this instance in another Apex window.")
+                    : tr("The selected instance file could not be resolved."));
+            }
+        }
         if (id == "assets.reload" || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
         if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
             action->setEnabled(session_.isToolEnabled(id));
@@ -750,6 +794,89 @@ void MainWindow::updateEditorActions() {
     }
     for (const auto& [tool, options] : toolOptions_)
         for (auto* option : options) option->setVisible(session_.activeTool() == tool);
+}
+
+void MainWindow::reportCollapse(const editor::InstanceCollapseReport& report) {
+    std::size_t failed = 0;
+    for (const auto& item : report) if (!item.collapsed) {
+        ++failed;
+        const auto message = "instance collapse failed for " + std::to_string(item.instance) + ": " + item.reason;
+        log::warn("{}", message);
+        statusBar()->showMessage(fromStd(message), 6000);
+    }
+    if (!failed) statusBar()->showMessage(tr("Collapsed %1 instance(s)").arg(report.size()), 3000);
+}
+
+void MainWindow::collapseSelectedInstances() {
+    const auto selected = editor::selectedNodes(session_.selection());
+    std::vector<document::NodeId> instances;
+    for (const auto id : selected) {
+        const auto handle = session_.document()->handle(id);
+        const auto* entity = handle ? session_.document()->get(*handle) : nullptr;
+        const auto* classname = entity ? entity->block->find("classname") : nullptr;
+        if (classname && classname->decodedValue().value_or("") == "func_instance") instances.push_back(id);
+    }
+    if (auto result = session_.collapseInstances(instances)) reportCollapse(*result);
+    else { log::warn("collapse instances: {}", result.error().what()); statusBar()->showMessage(fromStd(result.error().what()), 5000); }
+}
+
+void MainWindow::openSelectedInstance(document::NodeId instance) {
+    if (!instance) {
+        const auto selected = editor::selectedNodes(session_.selection());
+        if (selected.size() != 1) return;
+        instance = selected.front();
+    }
+    const auto found = std::ranges::find_if(session_.instances().contents(), [&](const auto& item) {
+        return item.instance == instance && item.depth == 1;
+    });
+    if (found == session_.instances().contents().end()) return;
+    const auto executable = QCoreApplication::applicationFilePath();
+    const QStringList arguments{QString::fromStdU16String(found->path.u16string())};
+    const bool started = instanceLauncher_ ? instanceLauncher_(executable, arguments)
+        : QProcess::startDetached(executable, arguments);
+    if (!started) statusBar()->showMessage(tr("Could not open instance: %1").arg(arguments.front()), 5000);
+}
+
+void MainWindow::syncInstanceWatches() {
+    if (!instanceWatcher_) return;
+    std::set<QString> files, directories;
+    for (const auto& [path, users] : session_.instances().dependencies()) if (!users.empty()) {
+        const auto file = QString::fromStdU16String(path.u16string());
+        files.insert(file);
+        directories.insert(QFileInfo(file).absolutePath());
+    }
+    for (const auto& path : instanceWatcher_->files()) if (!files.contains(path)) instanceWatcher_->removePath(path);
+    for (const auto& path : instanceWatcher_->directories()) if (!directories.contains(path)) instanceWatcher_->removePath(path);
+    for (const auto& path : files) if (QFileInfo::exists(path) && !instanceWatcher_->files().contains(path)) instanceWatcher_->addPath(path);
+    for (const auto& path : directories) if (QFileInfo(path).isDir() && !instanceWatcher_->directories().contains(path)) instanceWatcher_->addPath(path);
+    for (const auto& problem : session_.instances().problems()) {
+        const auto key = problem.path.empty() ? std::filesystem::path(problem.file) : problem.path;
+        const std::string signature = problem.message;
+        if (reportedInstanceProblems_[key] != signature) {
+            reportedInstanceProblems_[key] = signature;
+            log::warn("{}", problem.message);
+        }
+    }
+}
+
+void MainWindow::reloadChangedInstances() {
+    const auto changed = std::exchange(pendingInstanceReloads_, {});
+    for (const auto& path : changed) {
+        const auto result = session_.invalidateInstance(path);
+        if (result.problem) {
+            const auto signature = result.problem->message;
+            if (reportedInstanceProblems_[path] != signature) {
+                reportedInstanceProblems_[path] = signature;
+                log::warn("instance reload failed for {}: {}", path.string(), signature);
+                statusBar()->showMessage(fromStd(signature), 6000);
+            }
+        } else {
+            reportedInstanceProblems_.erase(path);
+            log::info("reloaded instance template {}", path.string());
+        }
+    }
+    syncInstanceWatches();
+    if (viewport_) viewport_->update();
 }
 
 void MainWindow::buildAreas() {
@@ -881,7 +1008,14 @@ void MainWindow::buildTransformUi() {
         action->setCheckable(checkable);
         editorActions_.emplace(entry->id, action);
         connect(action, &QAction::triggered, this, [this, id = entry->id] {
-            if (id == "transform.dialog") openTransformDialog();
+            if (id == "view.instances") {
+                const auto current = session_.instanceVisibility();
+                const auto next = current == document::InstanceVisibility::Hidden ? document::InstanceVisibility::Tinted
+                    : current == document::InstanceVisibility::Tinted ? document::InstanceVisibility::Normal
+                    : document::InstanceVisibility::Hidden;
+                session_.setInstanceVisibility(next);
+                viewport_->updateModeBadges();
+            } else if (id == "transform.dialog") openTransformDialog();
             else if (id == "view.center_selection") centerViewsOnSelection();
             else session_.perform(id);
             // The toolbar toggles are the preferences; keep them across sessions.
@@ -901,9 +1035,28 @@ void MainWindow::buildTransformUi() {
     make("view.center_selection", viewMenu_, false);
     viewMenu_->addSeparator();
     auto* modelOverlay = make("view.model_overlay.toggle", viewMenu_, true);
+    make("view.instances", viewMenu_, false);
     viewMenu_->addSeparator();
 
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
+    auto* instancing = menuBar()->addMenu(tr("&Instancing"));
+    instancing->setObjectName(QStringLiteral("menuInstancing"));
+    for (const char* id : {"instance.open", "instance.collapse", "instance.collapse_all"}) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = instancing->addAction(fromStd(entry->name));
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        editorActions_.emplace(entry->id, action);
+        connect(action, &QAction::triggered, this, [this, id = std::string_view(id)] {
+            if (id == "instance.open") openSelectedInstance();
+            else if (id == "instance.collapse") collapseSelectedInstances();
+            else if (id == "instance.collapse_all") {
+                if (auto result = session_.collapseAllInstances()) reportCollapse(*result);
+                else { log::warn("collapse all instances: {}", result.error().what()); statusBar()->showMessage(fromStd(result.error().what()), 5000); }
+            }
+            updateEditorActions();
+        });
+    }
     auto* transform = edit->addMenu(tr("Transform"));
     transform->setObjectName(QStringLiteral("menuTransform"));
     make("transform.dialog", transform, false);

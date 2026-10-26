@@ -525,6 +525,19 @@ void InspectorPanel::refresh() {
                         });
                     });
             }
+            if (row.key == "file" && entities.size() == 1 && openInstance_) {
+                auto* open = new QPushButton(tr("Open Instance"), field);
+                open->setObjectName(QStringLiteral("openInstance"));
+                const auto instance = entities.front();
+                const bool resolved = instanceResolved_ && instanceResolved_(instance);
+                open->setEnabled(resolved);
+                open->setToolTip(resolved ? tr("Open this instance in another Apex window.")
+                                          : tr("The instance file could not be resolved."));
+                horizontal->addWidget(open);
+                connect(open, &QPushButton::clicked, this, [this, instance] {
+                    if (openInstance_ && instanceResolved_ && instanceResolved_(instance)) openInstance_(instance);
+                });
+            }
         }
         const QString label = row.property && !row.property->displayName.empty() ? text(row.property->displayName) : text(row.key);
         if (isSpacerLabel(label) || (row.readOnly && isSpacerLabel(text(row.value)))) {

@@ -134,6 +134,8 @@ public:
     void refreshTitle();
     void setTool(editor::Tool& tool);
     void setModeText(const QString& text, bool entityTool);
+    void setEditorSession(editor::EditorSession* session);
+    void refreshInstanceVisibility();
     void restyle();
     QMenu* menu() const { return menu_; }
 
@@ -157,6 +159,8 @@ private:
     QLabel* mode_ = nullptr;
     ToolParameterStrip* parameters_ = nullptr;
     QToolButton* menuButton_ = nullptr;
+    QToolButton* instanceVisibilityButton_ = nullptr;
+    editor::EditorSession* session_ = nullptr;
     QMenu* menu_ = nullptr;
     bool active_ = false;
     bool maximized_;
