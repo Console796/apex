@@ -1306,7 +1306,24 @@ TEST_CASE("Instance mirror shares placements fixes materials and reloads only te
     CHECK(stats.drawnSolids == 12);
     CHECK(stats.uniqueSolids == 8);
     CHECK(stats.meshBytes > 0);
+    // Only the unresolved instance is labelled until a resolved one is selected or hovered.
+    CHECK(list.labels.size() == 1);
     CHECK(std::ranges::any_of(list.labels, [](const auto& label) { return label.text == "absent.vmf"; }));
+    {
+        Highlight h;
+        h.selected = {expansion.contents()[2].instance};
+        mirror.setHighlight(h);
+        auto selected = mirror.buildDrawList({});
+        CHECK(std::ranges::any_of(selected.labels, [](const auto& label) { return label.text == "instance-b.vmf"; }));
+        CHECK(selected.labels.size() == 2);
+        h.selected.clear();
+        h.hover = expansion.contents()[0].instance;
+        mirror.setHighlight(h);
+        auto hovered = mirror.buildDrawList({});
+        CHECK(std::ranges::any_of(hovered.labels, [](const auto& label) { return label.text == "instance-a.vmf"; }));
+        CHECK(hovered.labels.size() == 2);
+        mirror.setHighlight({});
+    }
     const auto* stableBuffer = list.meshes.back().vertices;
     // A material replacement reaches the real textured draw, not just an expansion key.
     const auto normal = drawFrame(*g, mirror, DisplayMode::Textured);

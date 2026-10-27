@@ -1215,6 +1215,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         const auto picked = [&](NodeId id, const EntityState& entity) {
             return m.selected.contains(id) || std::ranges::any_of(entity.brushSolids, [&](NodeId solid) { return m.selected.contains(solid); });
         };
+        std::set<NodeId> resolvedInstances;
+        for (const auto& content : m.instances) resolvedInstances.insert(content.instance);
         for (const auto& [id, entity] : m.entities) {
             const bool self = picked(id, entity);
             for (const HelperSegment& segment : entity.helpers.segments) {
@@ -1235,7 +1237,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 list.labels.push_back({moved(id, label.position), label.text, Vec2(0.0f), label.colour});
             if (options.showEntityNames && !entity.targetname.empty())
                 list.labels.push_back({moved(id, entity.position), entity.targetname, Vec2(8.0f, -8.0f), options.wireColour});
-            if (!entity.instanceFile.empty())
+            // The path is noise on every placed instance; show it for the one being inspected, and
+            // always for an instance whose file did not resolve (it has no contents to speak for it).
+            if (!entity.instanceFile.empty() && (self || m.highlight.hover == id || !resolvedInstances.contains(id)))
                 list.labels.push_back({moved(id, entity.position), entity.instanceFile, Vec2(8.0f, 8.0f), options.wireColour});
         }
     }
