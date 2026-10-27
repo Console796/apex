@@ -769,7 +769,12 @@ void MainWindow::updateActiveMaterialIndicator() {
                     thumb->width, thumb->height, thumb->width * 4, QImage::Format_RGBA8888).copy());
     }
     activeMaterialLabel_->setIcon(QIcon(swatch));
-    activeMaterialLabel_->setToolTip(shader.isEmpty() ? fromStd(name) : fromStd(name) + QStringLiteral("\n") + shader);
+    auto tip = shader.isEmpty() ? fromStd(name) : fromStd(name) + QStringLiteral("\n") + shader;
+    if (gameContent_) {
+        const auto missing = gameContent_->missingAssetTooltip("materials/" + name + ".vmt");
+        if (!missing.isEmpty()) tip += '\n' + missing;
+    }
+    activeMaterialLabel_->setToolTip(tip);
 }
 
 void MainWindow::openPreferences() {

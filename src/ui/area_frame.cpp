@@ -20,6 +20,7 @@
 #include "ui/game_content.hpp"
 #include "ui/face_properties_panel.hpp"
 #include "ui/find_panel.hpp"
+#include "ui/addons_panel.hpp"
 #include "ui/outliner_panel.hpp"
 #include "ui/theme.hpp"
 #include "ui/visgroup_panel.hpp"
@@ -42,6 +43,7 @@ QString roleTitle(AreaRole role) {
     case AreaRole::Sounds: return tr("Sounds");
     case AreaRole::Particles: return tr("Particles");
     case AreaRole::Find: return tr("Find");
+    case AreaRole::Addons: return tr("Addons");
     case AreaRole::FaceProperties: return tr("Face Properties");
     }
     return {};
@@ -71,6 +73,7 @@ void setPanelDocument(QWidget* panel, document::Document* document) {
 
 void setPanelGameContent(QWidget* panel, GameContent* content) {
     if (auto* p = qobject_cast<FindPanel*>(panel)) p->setGameContent(content);
+    if (auto* p = qobject_cast<AddonsPanel*>(panel)) p->setGameContent(content);
     if (auto* p = qobject_cast<MaterialsPanel*>(panel)) p->setGameContent(content);
     if (auto* p = qobject_cast<AssetBrowserPanel*>(panel)) p->setGameContent(content);
 }
@@ -95,6 +98,7 @@ QWidget* createPanel(AreaRole role, document::Document* document, editor::Editor
     case AreaRole::Sounds: panel = new SoundsPanel; break;
     case AreaRole::Particles: panel = new ParticlesPanel; break;
     case AreaRole::Find: panel = new FindPanel; break;
+    case AreaRole::Addons: panel = new AddonsPanel; break;
     case AreaRole::FaceProperties: panel = new FacePropertiesPanel; break;
     }
     panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));

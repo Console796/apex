@@ -23,6 +23,7 @@
 #include <map>
 
 #include "assets/material_index.hpp"
+#include "assets/vmt.hpp"
 #include "assets/thumbnail_cache.hpp"
 #include "core/strings.hpp"
 #include "document/document.hpp"
@@ -90,6 +91,10 @@ public:
                 tip += QStringLiteral("\n") + (addon.isEmpty() ? QObject::tr("Addon %1").arg(*entry.mount) : addon);
             }
             if (!entry.error.empty()) tip += QStringLiteral("\n") + q(entry.error);
+            if (!entry.previewTexture.empty()) {
+                const auto missing = panel_.content_->missingAssetTooltip(assets::texturePath(entry.previewTexture));
+                if (!missing.isEmpty()) tip += '\n' + missing;
+            }
             return tip;
         }
         if (role == Qt::FontRole && panel_.session_ && ciEquals(entry.name, panel_.session_->newSolidStyle().material)) {

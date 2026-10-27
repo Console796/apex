@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "assets/game_profile.hpp"
+#include <QByteArray>
 #include "assets/material_index.hpp"
 #include "assets/model_index.hpp"
 #include "assets/sound_index.hpp"
@@ -18,6 +19,9 @@
 #include "assets/thumbnail_cache.hpp"
 
 class QTimer;
+class QFileSystemWatcher;
+
+namespace apex::assets { class UnmountedAddonIndex; }
 
 namespace apex::ui {
 
@@ -50,6 +54,10 @@ public:
     // UI bridge for lightweight reports; assets types remain behind this QObject.
     bool assetExists(std::string_view path) const;
     std::optional<std::string> assetProviderName(std::string_view path) const;
+    std::optional<std::size_t> unmountedAddon(std::string_view path) const;
+    QString missingAssetTooltip(std::string_view path) const;
+    Result<void> setAddonMounted(std::size_t index, bool mounted);
+    bool loading() const { return loading_; }
     QString error() const { return error_; }
     std::pair<int, int> faceTextureSize(std::string_view material) const;
 
@@ -72,7 +80,15 @@ private slots:
     void pump();
 
 private:
+    void watchAddonList();
     std::unique_ptr<JobPool> jobs_;
+    JobHandle reloadJob_;
+    bool loading_ = false;
+    std::unique_ptr<assets::UnmountedAddonIndex> unmounted_;
+    QFileSystemWatcher* watcher_ = nullptr;
+    QTimer* watchTimer_ = nullptr;
+    QString watchedFile_;
+    QByteArray watchedBytes_;
     std::shared_ptr<const assets::Vfs> vfs_;
     std::shared_ptr<const assets::MaterialIndexSnapshot> snapshot_;
     std::unique_ptr<assets::MaterialIndex> index_;

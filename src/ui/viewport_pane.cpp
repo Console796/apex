@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QHelpEvent>
 #include <QPlatformSurfaceEvent>
 #include <QStyle>
 #include <QToolButton>
@@ -176,6 +177,12 @@ PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor ac
     setVulkanInstance(host.vulkanInstance());
     sinceTick_.start();
     traceClock_.start();
+    tooltipTimer_.setSingleShot(true);
+    tooltipTimer_.setInterval(700);
+    connect(&tooltipTimer_, &QTimer::timeout, this, [this] {
+        QHelpEvent help(QEvent::ToolTip, cursor_.toPoint(), mapToGlobal(cursor_.toPoint()));
+        QCoreApplication::sendEvent(this, &help);
+    });
 }
 
 PaneWindow::~PaneWindow() {
@@ -284,8 +291,11 @@ bool PaneWindow::event(QEvent* e) {
     case QEvent::MouseButtonPress:
     case QEvent::MouseButtonRelease:
     case QEvent::MouseMove:
+        if (e->type() == QEvent::MouseMove && !static_cast<QMouseEvent*>(e)->buttons()) tooltipTimer_.start();
+        else tooltipTimer_.stop();
         return handleMouse(static_cast<QMouseEvent*>(e));
     case QEvent::Leave:
+        tooltipTimer_.stop();
         pointerInside_ = false;
         transform_.leave();
         if (transform_.takeDirty()) dirty_ = true;

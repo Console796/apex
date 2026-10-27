@@ -53,6 +53,12 @@ ASAN_OPTIONS=detect_leaks=0 build/linux-asan/tests/apex_tests -tc='*face*'   # o
   writes `build/ci/tests/`, so `tools/ci_top.py` (live stage table, ctest N/M progress, ETA from the
   gate's timings, log tail) and `tools/ci_status.py` follow it exactly as they follow the full gate.
 
+- **Watch a direct run:** running a doctest binary by hand (`apex_tests`, `apex_ui_tests`) writes
+  `build/test-progress/<binary>/` (`progress.json`, `tests.log`, `failures.log`; override the root with
+  `APEX_TEST_PROGRESS_DIR`, disable with `APEX_TEST_PROGRESS=0`). `python3 tools/test_top.py` follows the
+  latest run: bar, ETA, the running case, slowest cases, failures. `ctest` runs and query flags
+  (`-ltc`, `-r=`) don't write it.
+
 - **Pick the tests your change touches.** The full ASan suite takes about 15 minutes, so leave it
   to CI.
 - **UI tests** (`apex_ui_tests`) run offscreen. Run them by hand isolated from the desktop

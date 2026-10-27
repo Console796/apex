@@ -1,10 +1,16 @@
 #include "ui/game_content.hpp"
 
 #include <QTimer>
+#include <QFile>
+#include <QFileInfo>
+#include <QFileSystemWatcher>
+#include <QSignalBlocker>
 
 #include <algorithm>
+#include <exception>
 
 #include "assets/vfs.hpp"
+#include "assets/unmounted_addons.hpp"
 #include "assets/fgd.hpp"
 #include "assets/vmt.hpp"
 #include "core/strings.hpp"
@@ -16,11 +22,30 @@ namespace apex::ui {
 GameContent::GameContent(QObject* parent) : QObject(parent), jobs_(std::make_unique<JobPool>(2)) {
     timer_ = new QTimer(this);
     timer_->setInterval(8);
+    watcher_ = new QFileSystemWatcher(this);
+    watchTimer_ = new QTimer(this);
+    watchTimer_->setSingleShot(true);
+    watchTimer_->setInterval(150);
+    connect(watcher_, &QFileSystemWatcher::fileChanged, this, [this] { watchTimer_->start(); });
+    connect(watcher_, &QFileSystemWatcher::directoryChanged, this, [this] { watchTimer_->start(); });
+    connect(watchTimer_, &QTimer::timeout, this, [this] {
+        if (watchedFile_.isEmpty()) return;
+        if (QFile::exists(watchedFile_) && !watcher_->files().contains(watchedFile_)) watcher_->addPath(watchedFile_);
+        QFile file(watchedFile_);
+        if (!file.open(QIODevice::ReadOnly)) { watchTimer_->start(); return; }
+        const auto bytes = file.readAll();
+        if (bytes == watchedBytes_) return;
+        watchedBytes_ = bytes;
+        if (profile_) { auto profile = *profile_; reload(&profile); }
+    });
     connect(timer_, &QTimer::timeout, this, &GameContent::pump);
 }
-GameContent::~GameContent() { clear(); }
+GameContent::~GameContent() { const QSignalBlocker blocker(this); clear(); }
 void GameContent::clear() {
     if (timer_) timer_->stop();
+    reloadJob_.cancel();
+    loading_ = false;
+    unmounted_.reset();
     emit contentAboutToChange();
     classesJob_.cancel();
     classes_.reset();
@@ -31,6 +56,10 @@ void GameContent::clear() {
     vfs_.reset();
     snapshot_.reset();
     profile_.reset();
+    watchTimer_->stop();
+    if (!watcher_->files().empty()) watcher_->removePaths(watcher_->files());
+    if (!watcher_->directories().empty()) watcher_->removePaths(watcher_->directories());
+    watchedFile_.clear(); watchedBytes_.clear();
     error_.clear();
     textureSizes_.clear();
     emit contentChanged();
@@ -45,7 +74,18 @@ void GameContent::setPrefabUserFolder(std::filesystem::path folder) {
     emit prefabsChanged();
 }
 void GameContent::reload(const assets::GameProfile* profile) {
+    const auto next = profile ? std::optional(*profile) : std::nullopt;
+    if (!next || !profile_ || next->gameDirectory != profile_->gameDirectory ||
+        next->addons.list != profile_->addons.list || next->addons.enabled != profile_->addons.enabled) {
+        watchTimer_->stop();
+        if (!watcher_->files().empty()) watcher_->removePaths(watcher_->files());
+        if (!watcher_->directories().empty()) watcher_->removePaths(watcher_->directories());
+        watchedFile_.clear(); watchedBytes_.clear();
+    }
     if (timer_) timer_->stop();
+    reloadJob_.cancel();
+    loading_ = false;
+    unmounted_.reset();
     emit contentAboutToChange();
     classesJob_.cancel();
     classes_.reset();
@@ -55,22 +95,37 @@ void GameContent::reload(const assets::GameProfile* profile) {
     index_.reset();
     vfs_.reset();
     snapshot_.reset();
-    profile_ = profile ? std::optional(*profile) : std::nullopt;
+    profile_ = next;
     error_.clear();
     textureSizes_.clear();
     lastDone_ = lastTotal_ = static_cast<std::size_t>(-1);
-    if (profile_) {
-        auto loaded = assets::Vfs::load(*profile_, *jobs_);
+    if (!profile_) { clear(); return; }
+    loading_ = true;
+    timer_->start();
+    reloadJob_ = jobs_->submit(Priority::Normal, [profile = *profile_](CancelToken token) {
+        // Vfs::load waits on its loose-file indexing job, so give that work its own pool.
+        using Loaded = std::pair<std::shared_ptr<const assets::Vfs>, std::unique_ptr<assets::UnmountedAddonIndex>>;
+        try {
+            JobPool workers(1);
+            auto loaded = assets::Vfs::load(profile, workers);
+            if (!loaded) return Result<Loaded>(std::unexpected(loaded.error()));
+            if (token.cancelled()) return Result<Loaded>(std::unexpected(Error{ErrorCode::Internal, "Content reload cancelled"}));
+            auto vfs = std::make_shared<assets::Vfs>(std::move(*loaded));
+            auto unmounted = std::make_unique<assets::UnmountedAddonIndex>(vfs->addons(), token);
+            return Result<Loaded>(Loaded{std::move(vfs), std::move(unmounted)});
+        } catch (const std::exception& error) {
+            return Result<Loaded>(std::unexpected(Error{ErrorCode::IoError, error.what()}));
+        }
+    }, [this](auto loaded) {
+        loading_ = false;
         if (!loaded) {
             error_ = QString::fromStdString(loaded.error().what());
             log::warn("game content: {}", loaded.error().what());
         } else {
-            vfs_ = std::make_shared<assets::Vfs>(std::move(*loaded));
-            const auto mounted = std::ranges::count_if(vfs_->addons().entries, [](const auto& entry) {
-                return entry.mounted && !entry.resolved.empty();
-            });
-            log::info("game content: mounted {} addons", mounted);
+            vfs_ = std::move(loaded->first);
+            unmounted_ = std::move(loaded->second);
             for (const auto& problem : vfs_->addons().problems) log::warn("game content: {}", problem);
+            for (const auto& problem : unmounted_->problems()) log::warn("game content: {}", problem);
             index_ = std::make_unique<assets::MaterialIndex>(*vfs_, *jobs_, profile_->escapeMode);
             modelIndex_ = std::make_unique<assets::ModelIndex>(*vfs_, *jobs_, profile_->escapeMode);
             soundIndex_ = std::make_unique<assets::SoundIndex>(*vfs_, *jobs_, profile_->escapeMode);
@@ -81,17 +136,43 @@ void GameContent::reload(const assets::GameProfile* profile) {
                 if (table) classes_ = std::make_unique<assets::EntityClassTable>(std::move(*table));
                 emit classesReady();
             });
-            timer_->start();
+            watchAddonList();
         }
-    }
+        emit contentChanged();
+    });
     emit contentChanged();
-    if (!index_) {
-        emit indexProgress(0, 0);
-        emit modelIndexProgress(0, 0);
-        emit soundIndexProgress(0, 0);
-        emit particleIndexProgress(0, 0);
-    }
 }
+void GameContent::watchAddonList() {
+    auto file = vfs_ ? QString::fromStdString(vfs_->addons().file.string()) : QString{};
+    // Keep watching through a temporarily invalid or absent list, so a later save can repair it.
+    if (file.isEmpty()) file = watchedFile_;
+    if (!watcher_->files().empty()) watcher_->removePaths(watcher_->files());
+    if (!watcher_->directories().empty()) watcher_->removePaths(watcher_->directories());
+    watchedFile_ = file;
+    if (file.isEmpty()) return;
+    if (vfs_ && !vfs_->addons().file.empty()) watchedBytes_ = QByteArray::fromStdString(vfs_->addons().sourceBytes);
+    watcher_->addPath(QFileInfo(file).absolutePath());
+    if (QFile::exists(file)) watcher_->addPath(file);
+    watchTimer_->start(); // An edit during the worker's load must not be swallowed by re-arming.
+}
+Result<void> GameContent::setAddonMounted(std::size_t index, bool mounted) {
+    if (!vfs_) return std::unexpected(Error{ErrorCode::InvalidArgument, "No addon list loaded"});
+    auto result = assets::setAddonMounted(vfs_->addons(), index, mounted);
+    if (!result) { error_ = QString::fromStdString(result.error().what()); return result; }
+    auto profile = profile_;
+    reload(profile ? &*profile : nullptr);
+    return {};
+}
+std::optional<std::size_t> GameContent::unmountedAddon(std::string_view path) const {
+    return unmounted_ ? unmounted_->provider(path) : std::nullopt;
+}
+QString GameContent::missingAssetTooltip(std::string_view path) const {
+    if (assetExists(path)) return {};
+    auto tip = tr("Missing asset: %1").arg(QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size())));
+    if (auto addon = unmountedAddon(path)) tip += tr("\nProvided by unmounted addon: %1").arg(addonName(*addon));
+    return tip;
+}
+
 void GameContent::pump() {
     if (index_) {
         index_->step();
@@ -131,7 +212,7 @@ void GameContent::pump() {
     }
     if (thumbnails_ && thumbnails_->takeChanged()) emit thumbnailsReady();
     if (jobs_) jobs_->drainCompletions();
-    if (!index_ && !modelIndex_ && !soundIndex_ && !particleIndex_ && !thumbnails_ && timer_) timer_->stop();
+    if (!loading_ && !index_ && !modelIndex_ && !soundIndex_ && !particleIndex_ && !thumbnails_ && timer_) timer_->stop();
 }
 std::shared_ptr<const assets::MaterialIndexSnapshot> GameContent::snapshot() const {
     return snapshot_;
