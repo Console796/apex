@@ -12,6 +12,7 @@
 #include "editor/connection_model.hpp"
 #include "editor/rename_propagation.hpp"
 #include "editor/placement.hpp"
+#include "editor/placement_item.hpp"
 #include "editor/modal_transform.hpp"
 #include "editor/overlay_palette.hpp"
 #include "editor/preview.hpp"
@@ -83,6 +84,18 @@ public:
     void setPlacementModel(std::string model);
     const std::string& modelPlacementClass() const { return modelPlacementClass_; }
     void setModelPlacementClass(std::string classname);
+    // The placement item (0.4 D13) is one of these three: a prefab if one is set, else the model
+    // if one is armed, else the current entity class. Setting one clears the others; the
+    // model placement class is a separate setting. The item survives tool changes.
+    const std::optional<PrefabItem>& placementPrefab() const { return placementPrefab_; }
+    void setPlacementPrefab(std::optional<PrefabItem> prefab);
+    PlacementItem placementItem() const;
+    void setPlacementItem(PlacementItem item);
+    // Where the item would land for this ray, with the box a ghost draws. Class items have no
+    // plan. This is the same placement placeItem() uses, so a ghost equals what is placed.
+    Result<PlacementPlan> planPlacement(const PlacementItem& item, DVec3 hit, std::optional<DVec3> normal, bool align) const;
+    Result<PlacementPlan> planPlacement(const PlacementItem& item, Ray ray, bool align) const;
+    Result<void> placeItem(const PlacementItem& item, Ray ray, bool align);
     bool alignToSurface() const { return alignToSurface_; }
     void setAlignToSurface(bool align);
 
@@ -321,6 +334,7 @@ private:
     friend class PrimitiveTool;
     friend class ClipTool;
     friend class MeasureTool;
+    friend class EntityTool;
     friend class VertexTool;
     SelectTool& selectTool();
     const SelectTool& selectTool() const;
@@ -347,6 +361,8 @@ private:
                                             const AABB& bounds, bool align) const;
     Result<void> placePointEntity(std::string classname, std::optional<std::string> model,
                                  DVec3 hit, std::optional<DVec3> normal, bool align);
+    AABB pointBounds(const assets::EntityClass& cls, const std::optional<std::string>& model) const;
+    std::optional<PrefabItem> placementPrefab_;
     bool alignToSurface_ = false;
     geometry::NewSolidStyle newSolidStyle_{"dev/dev_measuregeneric01"};
     FaceExtrapolation faceExtrapolation_ = FaceExtrapolation::Wrap;

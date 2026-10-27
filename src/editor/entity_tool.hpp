@@ -17,6 +17,7 @@ public:
     void pointerHover(Ray ray) override;
     void pointerClick(Ray ray, Modifiers modifiers, bool sameSpot) override;
 private:
+    void clearGhost();
     EditorSession& session_;
     SelectionGesture selectionGesture_;
     Preview preview_;

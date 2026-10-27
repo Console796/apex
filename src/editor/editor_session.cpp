@@ -116,6 +116,7 @@ void EditorSession::detach() {
     hoverFace_.reset();
     workPlane_ = {};
     placementModel_.clear();
+    placementPrefab_.reset();
     selection_.clear();
     notify();
 }
@@ -234,15 +235,36 @@ void EditorSession::setActiveTool(ToolId tool) {
     notify();
 }
 void EditorSession::setCurrentEntityClass(std::string classname) {
-    if (currentEntityClass_ == classname && placementModel_.empty()) return;
+    if (currentEntityClass_ == classname && placementModel_.empty() && !placementPrefab_) return;
     placementModel_.clear();
+    placementPrefab_.reset();
     currentEntityClass_ = std::move(classname);
     notify();
 }
 void EditorSession::setPlacementModel(std::string model) {
-    if (placementModel_ == model) return;
+    if (placementModel_ == model && !(placementPrefab_ && !model.empty())) return;
+    if (!model.empty()) placementPrefab_.reset();
     placementModel_ = std::move(model);
     notify();
+}
+void EditorSession::setPlacementPrefab(std::optional<PrefabItem> prefab) {
+    if (!prefab && !placementPrefab_) return;
+    if (prefab) placementModel_.clear();
+    placementPrefab_ = std::move(prefab);
+    notify();
+}
+PlacementItem EditorSession::placementItem() const {
+    if (placementPrefab_) return *placementPrefab_;
+    if (!placementModel_.empty()) return ModelItem{placementModel_};
+    return ClassItem{currentEntityClass_};
+}
+void EditorSession::setPlacementItem(PlacementItem item) {
+    std::visit([this](auto&& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, ClassItem>) setCurrentEntityClass(std::move(value.classname));
+        else if constexpr (std::is_same_v<T, ModelItem>) setPlacementModel(std::move(value.model));
+        else setPlacementPrefab(std::move(value));
+    }, std::move(item));
 }
 void EditorSession::setModelPlacementClass(std::string classname) {
     if (modelPlacementClass_ == classname) return;
@@ -763,27 +785,32 @@ Result<EntityPlacement> EditorSession::surfacePlacement(DVec3 hit, std::optional
     }
     return placeOnSurface(hit, *normal, bounds, align);
 }
+AABB EditorSession::pointBounds(const assets::EntityClass& cls, const std::optional<std::string>& model) const {
+    AABB bounds{{-4, -4, -4}, {4, 4, 4}};
+    if (cls.mins && cls.maxs) {
+        bounds.min = {(*cls.mins)[0], (*cls.mins)[1], (*cls.mins)[2]};
+        bounds.max = {(*cls.maxs)[0], (*cls.maxs)[1], (*cls.maxs)[2]};
+    }
+    if (model && entityBoundsProvider_) {
+        auto block = kv1::Node::block("entity");
+        block.append(kv1::Node::value("classname", cls.name)).value();
+        block.append(kv1::Node::value("model", *model)).value();
+        if (const auto shape = entityBoundsProvider_(block))
+            bounds = shape->model ? shape->model->bounds(shape->body)
+                                  : AABB{shape->fallback.mins, shape->fallback.maxs};
+    }
+    return bounds;
+}
 Result<void> EditorSession::placePointEntity(std::string classname, std::optional<std::string> model,
                                            DVec3 hit, std::optional<DVec3> normal, bool align) {
     return runEdit(model ? "Place model" : "Place entity", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
         const auto* cls = entityClasses_.find(classname);
         if (!cls || !ciEquals(cls->type, "PointClass"))
             return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
-        AABB bounds{{-4, -4, -4}, {4, 4, 4}};
-        if (cls->mins && cls->maxs) {
-            bounds.min = {(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]};
-            bounds.max = {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]};
-        }
+        const AABB bounds = pointBounds(*cls, model);
         auto block = kv1::Node::block("entity");
         block.append(kv1::Node::value("classname", cls->name)).value();
-        if (model) {
-            block.append(kv1::Node::value("model", *model)).value();
-            if (entityBoundsProvider_) {
-                if (const auto shape = entityBoundsProvider_(block))
-                    bounds = shape->model ? shape->model->bounds(shape->body)
-                                          : AABB{shape->fallback.mins, shape->fallback.maxs};
-            }
-        }
+        if (model) block.append(kv1::Node::value("model", *model)).value();
         auto placement = surfacePlacement(hit, normal, bounds, align);
         if (!placement) return std::unexpected(placement.error());
         const auto text = [](DVec3 v) {
@@ -830,6 +857,38 @@ Result<void> EditorSession::placeModel(std::string model, Ray ray, bool align) {
     const auto target = placementTarget(ray);
     if (!target) return std::unexpected(target.error());
     return placeModel(std::move(model), target->point, target->normal, align);
+}
+Result<PlacementPlan> EditorSession::planPlacement(const PlacementItem& item, DVec3 hit,
+                                                  std::optional<DVec3> normal, bool align) const {
+    AABB bounds{{-4, -4, -4}, {4, 4, 4}};
+    if (const auto* model = std::get_if<ModelItem>(&item)) {
+        const auto* cls = entityClasses_.find(modelPlacementClass_);
+        if (!cls || !ciEquals(cls->type, "PointClass"))
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
+        bounds = pointBounds(*cls, model->model);
+    } else if (const auto* prefab = std::get_if<PrefabItem>(&item)) {
+        if (prefab->bounds) bounds = *prefab->bounds;
+    } else {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "an entity class has no placement ghost"});
+    }
+    auto placement = surfacePlacement(hit, normal, bounds, align);
+    if (!placement) return std::unexpected(placement.error());
+    return PlacementPlan{*placement, bounds};
+}
+Result<PlacementPlan> EditorSession::planPlacement(const PlacementItem& item, Ray ray, bool align) const {
+    const auto target = placementTarget(ray);
+    if (!target) return std::unexpected(target.error());
+    return planPlacement(item, target->point, target->normal, align);
+}
+Result<void> EditorSession::placeItem(const PlacementItem& item, Ray ray, bool align) {
+    if (const auto* model = std::get_if<ModelItem>(&item)) return placeModel(model->model, ray, align);
+    if (const auto* prefab = std::get_if<PrefabItem>(&item)) {
+        if (!prefab->place) return std::unexpected(Error{ErrorCode::InvalidArgument, "prefab has no placer"});
+        const auto plan = planPlacement(item, ray, align);
+        if (!plan) return std::unexpected(plan.error());
+        return prefab->place(*this, plan->placement);
+    }
+    return placeEntity(std::get<ClassItem>(item).classname, ray, align);
 }
 Result<std::string> EditorSession::copyText() const {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
