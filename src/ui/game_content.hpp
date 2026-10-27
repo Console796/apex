@@ -47,6 +47,9 @@ public:
     void setPrefabUserFolder(std::filesystem::path folder);
     void notifyPrefabsChanged() { emit prefabsChanged(); }
     QString addonName(std::size_t index) const;
+    // UI bridge for lightweight reports; assets types remain behind this QObject.
+    bool assetExists(std::string_view path) const;
+    std::optional<std::string> assetProviderName(std::string_view path) const;
     QString error() const { return error_; }
     std::pair<int, int> faceTextureSize(std::string_view material) const;
 

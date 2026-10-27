@@ -830,6 +830,25 @@ void Transaction::setKeyValueOccurrence(NodeHandle h, std::string key, std::size
     }
     throw std::invalid_argument("missing key occurrence");
 }
+void Transaction::setEntityKeyValueEntry(NodeHandle entity, std::size_t index, std::string key, std::string text) {
+    const auto id = checked(entity);
+    const auto& original = *doc_->node(id)->block;
+    if (!std::holds_alternative<Handle<Entity>>(entity) || index >= original.children().size())
+        throw std::invalid_argument("missing entity scalar entry");
+    const auto& entry = original.children()[index];
+    if (entry.kind() != kv1::NodeKind::Value || identity(entry.key(), original) || identity(key, original) || key.empty())
+        throw std::invalid_argument("cannot edit structural or identity entry");
+    if (entry.key() == key && entry.decodedValue() == text) return;
+    auto block = original;
+    auto& changed = block.children()[index];
+    changed.setKey(std::move(key));
+    const auto result = changed.setValue(std::move(text));
+    if (!result) throw std::invalid_argument(result.error().what());
+    touch(id, Dirty::KeyValues);
+    doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
+    key_.reset();
+    ++operations_;
+}
 void Transaction::setConnections(NodeHandle entity, kv1::Node block) {
     const auto id = checked(entity);
     if (!std::holds_alternative<Handle<Entity>>(entity) ||

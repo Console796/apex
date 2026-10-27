@@ -31,6 +31,7 @@
 #include "ui/face_properties_panel.hpp"
 #include "ui/game_content.hpp"
 #include "ui/inspector_panel.hpp"
+#include "ui/find_panel.hpp"
 
 namespace apex::ui {
 namespace {
@@ -223,6 +224,12 @@ void ViewportArea::setOpenInstanceHandler(std::function<bool(document::NodeId)> 
     for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
 }
 void ViewportArea::configurePanel(QWidget* panel) {
+    if (auto* find = qobject_cast<FindPanel*>(panel); find && !find->property("frameConnected").toBool()) {
+        find->setProperty("frameConnected", true);
+        connect(find, &FindPanel::frameRequested, this, [this] {
+            if (session_) if (const auto bounds = session_->selectionBounds()) centerOn(*bounds);
+        });
+    }
     if (auto* models = qobject_cast<ModelsPanel*>(panel)) {
         connect(models, &ModelsPanel::modelActivated, this,
                 &ViewportArea::modelPlacementRequested, Qt::UniqueConnection);
