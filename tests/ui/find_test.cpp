@@ -10,6 +10,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QTreeWidget>
 #include <QApplication>
 #include <QTest>
@@ -18,7 +19,7 @@ using namespace apex;
 
 TEST_CASE("Find panel reports filtered entities and synchronizes row selection") {
     ui_test::app();
-    Document doc(editor_test::parsed(R"(
+    document::Document doc(editor_test::parsed(R"(
 world { classname worldspawn }
 entity { classname prop_dynamic targetname "Door_A" }
 entity { classname prop_static targetname "Door_B" }
@@ -65,12 +66,12 @@ entity { classname logic_relay targetname "Relay" }
 
 TEST_CASE("Find Problems lists missing material references and double-click selects its solid") {
     ui_test::app();
-    Document doc(editor_test::parsed("world { classname worldspawn }"));
+    document::Document doc(editor_test::parsed("world { classname worldspawn }"));
     const auto handle = editor_test::addBox(doc, {-16,-16,-16}, {16,16,16});
     const auto solid = doc.get(handle)->id;
     const auto* node = doc.get(handle);
     REQUIRE(node);
-    const auto* side = std::ranges::find_if(node->block->children(), [](const kv1::Node& entry) {
+    const auto side = std::ranges::find_if(node->block->children(), [](const kv1::Node& entry) {
         return entry.key() == "side";
     });
     REQUIRE(side != node->block->children().end());
@@ -98,7 +99,7 @@ TEST_CASE("Find Problems lists missing material references and double-click sele
 
 TEST_CASE("Find material replace previews and applies selected faces as one undo step") {
     ui_test::app();
-    Document doc(editor_test::parsed("world { classname worldspawn }"));
+    document::Document doc(editor_test::parsed("world { classname worldspawn }"));
     const auto first = editor_test::addBox(doc, {-16,-16,-16}, {16,16,16});
     const auto second = editor_test::addBox(doc, {64,-16,-16}, {96,16,16});
     const auto sidesOf = [&](document::NodeHandle solid) {
@@ -141,13 +142,13 @@ TEST_CASE("Find material replace previews and applies selected faces as one undo
     const auto expected = panel.materialPreviewTable()->item(0, 2)->text();
     apply->click();
     CHECK(doc.undoCount() == history + 1);
-    const auto* changed = doc.get(*doc.handle(first))->block.get();
-    const auto* side = std::ranges::find_if(changed->children(), [&](const kv1::Node& entry) {
+    const auto* changed = doc.get(first)->block.get();
+    const auto side = std::ranges::find_if(changed->children(), [&](const kv1::Node& entry) {
         return entry.key() == "side" && entry.find("id")->asInt() == firstSides[0];
     });
     REQUIRE(side != changed->children().end());
     CHECK(QString::fromUtf8(side->find("material")->decodedValue().value().c_str()) == expected);
-    const auto* untouched = std::ranges::find_if(doc.get(second)->block->children(), [&](const kv1::Node& entry) {
+    const auto untouched = std::ranges::find_if(doc.get(second)->block->children(), [&](const kv1::Node& entry) {
         return entry.key() == "side" && entry.find("id")->asInt() == secondSides[0];
     });
     REQUIRE(untouched != doc.get(second)->block->children().end());

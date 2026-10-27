@@ -11,10 +11,16 @@ struct AddonEntry {
     std::string type;
     std::vector<std::string> vpks;
     std::string name;
+    std::string addonType;
+    std::string workshopId;
+    std::vector<std::string> authors, tags;
+    std::filesystem::path thumbnail;
+    std::vector<std::string> problems;
 };
 struct AddonList {
     AddonSettings::List source = AddonSettings::List::Hammer;
     std::filesystem::path file;
+    std::string sourceBytes; // The parsed list snapshot, for change detection during asynchronous loads.
     std::vector<AddonEntry> entries;
     std::vector<std::string> problems;
 };

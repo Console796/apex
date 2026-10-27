@@ -42,6 +42,14 @@
 using namespace apex;
 namespace {
 QApplication& app() { return apex::ui_test::app(); }
+void waitForVfs(ui::GameContent& content) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!content.vfs() && std::chrono::steady_clock::now() < deadline) {
+        app().processEvents();
+        QThread::msleep(1);
+    }
+    REQUIRE(content.vfs());
+}
 void waitForIndex(ui::GameContent& content) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     while (!content.snapshot() && std::chrono::steady_clock::now() < deadline) {
@@ -126,9 +134,13 @@ TEST_CASE("GameContent reloads safely during indexing and MaterialsPanel filters
     const auto profile = makeProfile(tree);
     ui::MainWindow window;
     window.setProfiles({profile});
+    CHECK(window.gameContent().loading());
+    waitForVfs(window.gameContent());
     const auto firstVfs = window.gameContent().vfs();
     REQUIRE(firstVfs);
     window.gameContent().reload(&profile); // Replaces the Vfs while the first walk can still be running.
+    CHECK(window.gameContent().loading());
+    waitForVfs(window.gameContent());
     REQUIRE(window.gameContent().vfs());
     CHECK(window.gameContent().vfs() != firstVfs);
     waitForIndex(window.gameContent());

@@ -4,6 +4,8 @@
 
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QKeyEvent>
 #include <QJsonArray>
 #include <QMouseEvent>
@@ -32,6 +34,7 @@
 #include "ui/game_content.hpp"
 #include "ui/inspector_panel.hpp"
 #include "ui/find_panel.hpp"
+#include "viewport/pick_math.hpp"
 
 namespace apex::ui {
 namespace {
@@ -199,6 +202,10 @@ void ViewportArea::setGameContent(GameContent* content) {
     host_->clearModelThumbnails();
     gameContent_ = content;
     if (content) connect(content, &GameContent::contentAboutToChange, this, [this] { host_->clearModelThumbnails(); });
+    if (content) connect(content, &GameContent::contentChanged, this, [this] {
+        const auto& profile = gameContent_->profile();
+        setDocument(document_, profile ? &*profile : nullptr);
+    });
     for (auto& [id, panel] : panels_) setPanelGameContent(panel, content);
     for (auto& [role, window] : floating_) if (window) setPanelGameContent(window->panel(), content);
 }
@@ -390,6 +397,31 @@ void ViewportArea::setLayout(viewport::ViewportLayout layout) {
 PaneFrame* ViewportArea::frame(viewport::NodeId pane) const {
     const auto it = frames_.find(pane);
     return it == frames_.end() ? nullptr : it->second.data();
+}
+
+QString ViewportArea::missingAssetTooltip(Ray ray) const {
+    if (!session_ || !document_ || !gameContent_ || session_->document() != document_) return {};
+    const auto hit = session_->picks().first(ray);
+    if (!hit) return {};
+    const auto handle = document_->handle(hit->node);
+    if (!handle) return {};
+    const auto& block = *document_->get(*handle)->block;
+    if (hit->side) {
+        for (const auto& side : block.children()) if (side.key() == "side") {
+            const auto* id = side.find("id");
+            const auto* material = side.find("material");
+            if (id && id->asInt() == *hit->side && material)
+                return gameContent_->missingAssetTooltip("materials/" + material->decodedValue().value_or("") + ".vmt");
+        }
+    } else {
+        for (const auto& key : block.children()) {
+            if (editor::entityAssetKind(block, key.key(), gameContent_->classes()) == editor::AssetKind::Model) {
+                auto tip = gameContent_->missingAssetTooltip(key.decodedValue().value_or(""));
+                if (!tip.isEmpty()) return tip;
+            }
+        }
+    }
+    return {};
 }
 
 std::optional<Ray> ViewportArea::pointerRay() const {
@@ -676,6 +708,24 @@ void ViewportArea::endHandleDrag(const char* reason) {
 }
 
 bool ViewportArea::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::ToolTip) {
+        const auto* help = static_cast<QHelpEvent*>(event);
+        for (const auto& [id, frame] : frames_) {
+            if (!frame || !frame->window()) continue;
+            auto* container = frame->findChild<QWidget*>("PaneContainer");
+            if (watched != frame->window() && watched != container) continue;
+            const auto* view = layout_.viewport(id);
+            auto* window = frame->window();
+            if (!view || window->width() <= 0 || window->height() <= 0) break;
+            const auto point = window->mapFromGlobal(help->globalPos());
+            const auto ray = viewport::pixelRay(view->camera, double(window->width()) / window->height(),
+                point.x(), point.y(), window->width(), window->height());
+            const auto tip = missingAssetTooltip(ray);
+            if (!tip.isEmpty()) QToolTip::showText(help->globalPos(), tip, container);
+            else QToolTip::hideText();
+            return true;
+        }
+    }
     if (!drag_) return QWidget::eventFilter(watched, event);
     switch (event->type()) {
     case QEvent::MouseMove: {

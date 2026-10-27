@@ -105,6 +105,7 @@ public:
     // The world ray under the mouse pointer when it is over a pane (Paste places at its work-plane
     // hit). The override stands in for a real pointer in tests and scripted input.
     std::optional<Ray> pointerRay() const;
+    QString missingAssetTooltip(Ray ray) const;
     void setPointerRayOverride(std::optional<Ray> ray) { pointerOverride_ = ray; }
 
     // Runs queued rebuilds and one timer tick now (tests, screenshots).

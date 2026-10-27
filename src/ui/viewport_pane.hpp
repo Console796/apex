@@ -4,6 +4,7 @@
 #include <QFrame>
 #include <QPointF>
 #include <QWindow>
+#include <QTimer>
 #include <functional>
 #include <memory>
 
@@ -79,6 +80,7 @@ protected:
     bool event(QEvent* event) override;
 
 private:
+    QTimer tooltipTimer_;
     bool handleMouse(QMouseEvent* event);
     void cancelSelectionGesture();
     void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);

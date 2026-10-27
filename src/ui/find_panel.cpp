@@ -84,7 +84,7 @@ FindPanel::FindPanel(QWidget* parent) : QWidget(parent) {
     entities_->setSelectionBehavior(QAbstractItemView::SelectRows);
     entities_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     problems_ = new QTreeWidget(views); problems_->setObjectName(QStringLiteral("findProblems"));
-    problems_->setHeaderLabels({tr("Problem"), tr("Details")});
+    problems_->setHeaderLabels({tr("Problem"), tr("Details"), tr("Action")});
     addons_ = new QTreeWidget(views); addons_->setObjectName(QStringLiteral("findAddons"));
     addons_->setHeaderLabels({tr("Addon"), tr("Referenced assets")});
     views->addTab(entities_, tr("Entities")); views->addTab(problems_, tr("Problems")); views->addTab(addons_, tr("Addons this map uses"));
@@ -238,6 +238,8 @@ void FindPanel::setGameContent(GameContent* content) {
         connect(content_, &GameContent::classesReady, this, [this] {
             invalidateMaterialPreview(); refreshProblems();
         });
+        connect(content_, &GameContent::soundIndexReady, this, &FindPanel::refreshProblems);
+        connect(content_, &GameContent::particleIndexReady, this, &FindPanel::refreshProblems);
     }
     refreshProblems();
 }
@@ -288,6 +290,10 @@ void FindPanel::refreshProblems() {
     const auto vfsPath = [](editor::AssetKind kind, std::string_view name) -> std::optional<std::string> {
         if (kind == editor::AssetKind::Material) return "materials/" + std::string(name) + ".vmt";
         if (kind == editor::AssetKind::Model) return std::string(name);
+        if (kind == editor::AssetKind::Sound) {
+            const auto key = assets::SoundKind::key(name);
+            if (key.ends_with(".wav") || key.ends_with(".mp3")) return key;
+        }
         return std::nullopt;
     };
     const auto exists = [this, vfsPath](editor::AssetKind kind, std::string_view name) {
@@ -308,8 +314,12 @@ void FindPanel::refreshProblems() {
         const auto path = vfsPath(kind, name);
         return content_ && path ? content_->assetProviderName(*path) : std::nullopt;
     };
-    // D15's unmounted-addon index arrives in 0.4.9; keep the callback seam here.
-    const editor::AssetProvider unmountedAddon = [](editor::AssetKind, std::string_view) { return std::optional<std::string>{}; };
+    const editor::AssetProvider unmountedAddon = [this, vfsPath](editor::AssetKind kind, std::string_view name) -> std::optional<std::string> {
+        auto path = vfsPath(kind, name);
+        if (!content_ || !path) return {};
+        auto addon = content_->unmountedAddon(*path);
+        return addon ? std::optional(content_->addonName(*addon).toStdString()) : std::nullopt;
+    };
     const auto* classes = content_ ? content_->classes() : nullptr;
     editor::AssetReport report(*document_, exists, unmountedAddon, provider, classes);
     const auto known = [classes](std::string_view classname) { return !classes || classes->find(classname) != nullptr; };
@@ -320,6 +330,22 @@ void FindPanel::refreshProblems() {
     auto* missing = new QTreeWidgetItem(problems_, {tr("Missing assets (%1)").arg(issues.missingAssets.size()), {}});
     for (const auto& asset : issues.missingAssets) {
         auto* group = new QTreeWidgetItem(missing, {text(asset.path) + QStringLiteral(" · ") + assetKind(asset.kind), asset.addon ? tr("Would be provided by %1").arg(text(*asset.addon)) : QString()});
+        if (const auto path = vfsPath(asset.kind, asset.path); content_ && path) {
+            if (const auto addon = content_->unmountedAddon(*path)) {
+                auto* mount = new QPushButton(tr("Mount"), problems_);
+                mount->setObjectName("mountMissingAddon");
+                problems_->setItemWidget(group, 2, mount);
+                connect(mount, &QPushButton::clicked, this, [this, index = *addon] {
+                    // The completion refreshes this tree, including the button that was clicked.
+                    QMetaObject::invokeMethod(this, [this, index] {
+                        if (content_) {
+                            if (auto result = content_->setAddonMounted(index, true); !result)
+                                problems_->setToolTip(text(result.error().what()));
+                        }
+                    }, Qt::QueuedConnection);
+                });
+            }
+        }
         for (const auto& ref : asset.references) {
             const auto label = ref.side ? tr("solid %1 side %2").arg(ref.solid).arg(*ref.side) : tr("entity %1 · %2").arg(ref.entity).arg(text(ref.key));
             auto* item = new QTreeWidgetItem(group, {label, {}});
