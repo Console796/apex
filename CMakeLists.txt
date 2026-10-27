@@ -111,7 +111,7 @@ target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
 apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp src/render/vk.cpp
                          src/render/context.cpp src/render/resources.cpp src/render/helper_shapes.cpp
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
-                         src/render/render_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/swapchain.cpp
+                         src/render/render_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/model_inspector.cpp src/render/swapchain.cpp
                          src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
            DEPS apex_document apex_assets volk::volk GPUOpen::VulkanMemoryAllocator
                 Vulkan::Headers)
@@ -125,7 +125,7 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
 
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Svg Multimedia)
-  apex_layer(ui SOURCES src/ui/rename_confirmation.cpp src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/game_content.cpp src/ui/materials_panel.cpp src/ui/asset_browser_panel.cpp src/ui/models_panel.cpp src/ui/sounds_panel.cpp src/ui/particles_panel.cpp src/ui/face_properties_panel.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/tool_parameter_strip.cpp src/ui/gpu_host.cpp src/ui/model_pick.cpp
+  apex_layer(ui SOURCES src/ui/rename_confirmation.cpp src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/game_content.cpp src/ui/materials_panel.cpp src/ui/asset_browser_panel.cpp src/ui/models_panel.cpp src/ui/model_inspect_view.cpp src/ui/sounds_panel.cpp src/ui/particles_panel.cpp src/ui/face_properties_panel.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/tool_parameter_strip.cpp src/ui/gpu_host.cpp src/ui/model_pick.cpp
                         src/ui/sound_preview.cpp src/ui/uv_view.cpp src/ui/pointer_lock.cpp src/ui/input_log.cpp
                         src/ui/pie_menu_popup.cpp src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets Qt6::Svg Qt6::Multimedia)

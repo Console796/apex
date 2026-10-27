@@ -51,9 +51,23 @@ struct RangeTexture {
 
 Result<assets::Thumbnail> ModelThumbnailRenderer::render(const assets::ModelData& model,
                                                          const ModelMaterials& materials) {
+    return draw(target_, model, materials, {}, true, kMaxTextureSize);
+}
+Result<assets::Thumbnail> ModelThumbnailRenderer::renderView(const assets::ModelData& model,
+                                                             const ModelMaterials& materials, const ModelView& view) {
+    if (!inspectTarget_.color()) {
+        auto target = RenderTarget::create(context_, kInspectSize, kInspectSize);
+        if (!target) return std::unexpected(target.error());
+        inspectTarget_ = std::move(*target);
+    }
+    return draw(inspectTarget_, model, materials, view, false, kMaxInspectTextureSize);
+}
+Result<assets::Thumbnail> ModelThumbnailRenderer::draw(RenderTarget& target, const assets::ModelData& model,
+                                                       const ModelMaterials& materials, const ModelView& view,
+                                                       bool tight, std::uint32_t maxTexture) {
     const auto start = std::chrono::steady_clock::now();
     lastDuration_ = {};
-    const auto ranges = assets::modelDrawRanges(model, 0, 0);
+    const auto ranges = assets::modelDrawRanges(model, view.body, view.skin);
     AABB bounds;
     for (const auto& range : ranges) {
         if (range.indexCount % 3 != 0 || std::uint64_t(range.firstIndex) + range.indexCount > model.indices.size())
@@ -84,11 +98,12 @@ Result<assets::Thumbnail> ModelThumbnailRenderer::render(const assets::ModelData
         (void)heap_.flush(); // Complete any vertex upload before its buffer is destroyed.
         return std::unexpected(ib.error());
     }
-    const auto basis = angleVectors({25.0, 135.0, 0.0});
-    const auto centre = (bounds.min + bounds.max) * 0.5;
+    const auto basis = angleVectors({std::clamp(view.pitch, -89.0, 89.0), view.yaw, 0.0});
     const double radius = std::max(glm::length(bounds.max - bounds.min) * 0.5, 0.01);
+    const auto centre = (bounds.min + bounds.max) * 0.5 + (basis.right * view.pan.x + basis.up * view.pan.y) * radius;
     double halfSize = 0.01;
-    for (int corner = 0; corner < 8; ++corner) {
+    if (!tight) halfSize = radius / std::clamp(view.zoom, 0.05, 64.0);
+    for (int corner = 0; tight && corner < 8; ++corner) {
         const DVec3 p = DVec3{corner & 1 ? bounds.max.x : bounds.min.x,
                              corner & 2 ? bounds.max.y : bounds.min.y,
                              corner & 4 ? bounds.max.z : bounds.min.z} - centre;
@@ -104,8 +119,8 @@ Result<assets::Thumbnail> ModelThumbnailRenderer::render(const assets::ModelData
         const assets::Texture& source = found->second.material->texture;
         const auto format = vulkanFormat(source.format);
         if (!format) continue;
-        const auto mip = std::ranges::find_if(source.mips, [](const assets::TextureMip& m) {
-            return std::max(m.width, m.height) <= kMaxTextureSize;
+        const auto mip = std::ranges::find_if(source.mips, [maxTexture](const assets::TextureMip& m) {
+            return std::max(m.width, m.height) <= maxTexture;
         });
         if (mip == source.mips.end() || !mip->width || !mip->height) continue;
         const auto need = mipByteSize(*format, mip->width, mip->height);
@@ -154,12 +169,12 @@ Result<assets::Thumbnail> ModelThumbnailRenderer::render(const assets::ModelData
     }
     const float clear[] = {0.1f, 0.1f, 0.1f, 0.0f};
     auto submitted = context_.oneShot([&](VkCommandBuffer commands) {
-        target_.begin(commands, clear);
+        target.begin(commands, clear);
         renderer_->record(commands, list);
-        target_.end(commands);
+        target.end(commands);
     });
     if (!submitted) return std::unexpected(submitted.error());
-    auto image = target_.readback();
+    auto image = target.readback();
     lastDuration_ = std::chrono::steady_clock::now() - start;
     if (!image) return std::unexpected(image.error());
     return assets::Thumbnail{static_cast<int>(image->width), static_cast<int>(image->height), std::move(image->pixels)};

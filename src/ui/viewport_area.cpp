@@ -229,6 +229,10 @@ void ViewportArea::configurePanel(QWidget* panel) {
         models->setThumbnailSink([host = QPointer<GpuHost>(host_), models](const QString& path, bool visible) {
             if (host) host->requestModelThumbnail(models, path, visible);
         });
+        models->setInspectSink([host = QPointer<GpuHost>(host_), models](const QString& path, const render::ModelView& view,
+                                                                         bool interacting) -> const render::ModelInspection* {
+            return host ? host->inspectModel(models, path, view, interacting) : nullptr;
+        });
     }
     if (auto* materials = qobject_cast<MaterialsPanel*>(panel)) {
         connect(materials, &MaterialsPanel::activeMaterialRequested, this,

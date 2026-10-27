@@ -21,6 +21,7 @@
 #include <QStatusBar>
 #include <QSignalSpy>
 #include <QSlider>
+#include <QSpinBox>
 #include <QTest>
 #include <QTreeWidget>
 
@@ -30,6 +31,8 @@
 #include "ui/game_content.hpp"
 #include "ui/main_window.hpp"
 #include "ui/inspector_panel.hpp"
+#include "render/model_inspector.hpp"
+#include "ui/model_inspect_view.hpp"
 #include "ui/models_panel.hpp"
 #include "ui/sounds_panel.hpp"
 #include "ui/particles_panel.hpp"
@@ -240,6 +243,114 @@ TEST_CASE("Models browser requests only visible thumbnails yields to interaction
     CHECK(QSettings().value("models/recent").toStringList().contains(index.data().toString()));
     panel.hide(); panel.setThumbnailSink({});
     MESSAGE("Models browser: fixture entries=153; visible requests before scroll=", first.size(), "; hidden/interaction requests=0");
+}
+TEST_CASE("Models browser inspect area follows selection, view and choices, and releases on hide and toggle") {
+    app(); GameTree tree; const auto profile = fixture(tree);
+    ui::GameContent content; content.reload(&profile); finish(content);
+    QSettings().remove("models/inspect");
+    ui::ModelsPanel panel; panel.setGameContent(&content);
+    render::ModelInspection inspection;
+    inspection.state = render::ModelInspection::State::Ready;
+    inspection.image = assets::Thumbnail{2, 2, std::vector<std::uint8_t>(16, 255)};
+    inspection.stats.triangles = 12; inspection.stats.vertices = 24; inspection.stats.skinFamilies = 3;
+    inspection.stats.bodyParts.push_back({"head", 1, {"one", "two", "three"}});
+    inspection.stats.bodyParts.push_back({"arm", 3, {"left", "right"}});
+    inspection.stats.materials.push_back({"props/crate", true, assets::MaterialState::Ready, 12});
+    inspection.revision = 1;
+    std::vector<std::tuple<QString, render::ModelView, bool>> calls;
+    panel.setInspectSink([&](const QString& path, const render::ModelView& view, bool interacting) -> const render::ModelInspection* {
+        calls.emplace_back(path, view, interacting);
+        return path.isEmpty() ? nullptr : &inspection;
+    });
+    panel.resize(550, 600); panel.show(); app().processEvents();
+    auto* inspect = child<ui::ModelInspectView>(panel, "modelInspector");
+    auto* toggle = child<QCheckBox>(panel, "modelsInspectToggle");
+    CHECK(toggle->isChecked()); CHECK(inspect->isVisible()); CHECK_FALSE(inspect->hasModel());
+    // Nothing selected: the sink is not asked.
+    panel.syncThumbnails(false); CHECK(calls.empty());
+    auto* grid = child<QListView>(panel, "modelsGrid");
+    const auto select = [&](const QString& name) {
+        const auto matches = grid->model()->match(grid->model()->index(0, 0), Qt::DisplayRole, name, 1, Qt::MatchExactly);
+        REQUIRE(matches.size() == 1); grid->setCurrentIndex(matches.front());
+    };
+    select("models/box.mdl");
+    CHECK(inspect->hasModel()); CHECK(panel.inspectedModel() == "models/box.mdl");
+    panel.syncThumbnails(false);
+    REQUIRE(calls.size() == 1);
+    CHECK(std::get<0>(calls.back()) == "models/box.mdl"); CHECK_FALSE(std::get<2>(calls.back()));
+    CHECK(std::get<1>(calls.back()) == render::ModelView{});
+    CHECK(inspect->shownRevision() == 1);
+    // Interaction is passed through so the host can hold renders.
+    panel.syncThumbnails(true); CHECK(std::get<2>(calls.back()));
+    // Skin and body choices feed the next request: body = sum(choice * base).
+    auto* skin = child<QSpinBox>(*inspect, "modelInspectSkin");
+    REQUIRE(skin->isVisible()); CHECK(skin->maximum() == 2);
+    skin->setValue(2);
+    auto* head = child<QComboBox>(*inspect, "modelInspectBody0");
+    auto* arm = child<QComboBox>(*inspect, "modelInspectBody1");
+    CHECK(head->count() == 3); CHECK(arm->count() == 2);
+    head->setCurrentIndex(2); arm->setCurrentIndex(1);
+    CHECK(inspect->view().skin == 2); CHECK(inspect->view().body == 2 + 1 * 3);
+    CHECK(child<QListWidget>(*inspect, "modelInspectMaterials")->count() == 1);
+    panel.syncThumbnails(false);
+    CHECK(std::get<1>(calls.back()).skin == 2); CHECK(std::get<1>(calls.back()).body == 5);
+    // Another model resets the choices but the sink keeps one owner.
+    select("models/dynamic.mdl");
+    CHECK(inspect->view().skin == 0); CHECK(inspect->view().body == 0);
+    panel.syncThumbnails(false);
+    CHECK(std::get<0>(calls.back()) == "models/dynamic.mdl");
+    // Hiding the toggle or the panel releases the host's inspector with an empty path.
+    calls.clear();
+    toggle->setChecked(false); app().processEvents();
+    REQUIRE(calls.size() == 1); CHECK(std::get<0>(calls.back()).isEmpty());
+    CHECK_FALSE(inspect->isVisible()); CHECK_FALSE(QSettings().value("models/inspect").toBool());
+    panel.syncThumbnails(false); CHECK(calls.size() == 1);
+    toggle->setChecked(true); app().processEvents(); panel.syncThumbnails(false);
+    CHECK(std::get<0>(calls.back()) == "models/dynamic.mdl");
+    calls.clear(); panel.hide();
+    REQUIRE(calls.size() == 1); CHECK(std::get<0>(calls.back()).isEmpty());
+    panel.show(); app().processEvents(); calls.clear();
+    // Without a sink (no GPU) the area says so and still lists the index details.
+    panel.setInspectSink({}); panel.syncThumbnails(false);
+    CHECK(child<QLabel>(*inspect, "modelInspectInfo")->text().contains("models/dynamic.mdl"));
+    QSettings().remove("models/inspect");
+}
+TEST_CASE("Models inspect canvas drag orbits, pans and zooms without disturbing choices") {
+    app();
+    ui::ModelInspectView inspect; inspect.resize(500, 300); inspect.show(); app().processEvents();
+    ui::ModelInspectView::Summary summary; summary.name = "models/box.mdl"; inspect.setModel(summary);
+    render::ModelInspection inspection;
+    inspection.state = render::ModelInspection::State::Ready;
+    inspection.image = assets::Thumbnail{2, 2, std::vector<std::uint8_t>(16, 255)};
+    inspection.stats.skinFamilies = 2;
+    inspection.stats.bodyParts.push_back({"fixed", 1, {"only"}}); // Nothing to choose: no combo, but it must not crash a refresh.
+    inspection.stats.bodyParts.push_back({"head", 1, {"one", "two"}});
+    inspection.revision = 1;
+    inspect.setInspection(&inspection);
+    CHECK(inspect.findChild<QComboBox*>("modelInspectBody0") == nullptr);
+    CHECK(inspect.findChild<QComboBox*>("modelInspectBody1") != nullptr);
+    QSignalSpy changed(&inspect, &ui::ModelInspectView::viewChanged);
+    auto* canvas = child<QWidget>(inspect, "modelInspectCanvas");
+    const auto before = inspect.view();
+    QTest::mousePress(canvas, Qt::LeftButton, {}, {100, 100});
+    for (int i = 1; i <= 40; ++i) {
+        QTest::mouseMove(canvas, {100 + i * 7, 100 - i * 3});
+        if (i % 8 == 0) { ++inspection.revision; inspect.setInspection(&inspection); } // A render lands mid-drag.
+    }
+    QTest::mouseRelease(canvas, Qt::LeftButton, {}, {380, -20});
+    CHECK(changed.count() > 0);
+    CHECK(inspect.view().yaw != before.yaw); CHECK(inspect.view().pitch >= -89.0); CHECK(inspect.view().pitch <= 89.0);
+    CHECK(inspect.view().yaw >= 0.0); CHECK(inspect.view().yaw < 360.0);
+    // Far drags and the other buttons.
+    QTest::mousePress(canvas, Qt::RightButton, {}, {10, 10});
+    QTest::mouseMove(canvas, {400, 290}); QTest::mouseMove(canvas, {-600, -600});
+    QTest::mouseRelease(canvas, Qt::RightButton, {}, {-600, -600});
+    CHECK(std::isfinite(inspect.view().pan.x)); CHECK(inspect.view().pan != before.pan);
+    QWheelEvent wheel({50, 50}, canvas->mapToGlobal(QPoint(50, 50)), {}, {0, 120}, Qt::NoButton, {}, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(canvas, &wheel);
+    CHECK(inspect.view().zoom > 1.0);
+    QTest::mouseDClick(canvas, Qt::LeftButton);
+    CHECK(inspect.view().zoom == 1.0); CHECK(inspect.view().yaw == before.yaw); CHECK(inspect.view().pan == before.pan);
 }
 TEST_CASE("Sounds browser Play cycles script waves Next wraps and hide stops playback") {
     app(); GameTree tree; const auto profile = fixture(tree);

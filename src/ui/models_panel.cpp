@@ -11,11 +11,15 @@
 #include <QMimeData>
 #include <QPainter>
 #include <QSettings>
+#include <QItemSelectionModel>
 #include <QSlider>
+#include <QSplitter>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 
+#include "render/model_inspector.hpp"
 #include "ui/game_content.hpp"
+#include "ui/model_inspect_view.hpp"
 
 namespace apex::ui {
 class ModelsPanel::GridModel final : public QAbstractListModel {
@@ -83,7 +87,16 @@ ModelsPanel::ModelsPanel(QWidget* parent) : AssetBrowserPanel(Kind::Model, QStri
     grid_->setDragEnabled(true);
     model_ = new GridModel(*this);
     grid_->setModel(model_);
-    layout_->addWidget(grid_, 1);
+    split_ = new QSplitter(Qt::Vertical, this);
+    split_->setObjectName(QStringLiteral("modelsSplit"));
+    split_->setChildrenCollapsible(false);
+    inspect_ = new ModelInspectView(this);
+    inspect_->setMinimumHeight(140);
+    inspect_->clearModel();
+    split_->addWidget(grid_);
+    split_->addWidget(inspect_);
+    split_->setStretchFactor(0, 1);
+    layout_->addWidget(split_, 1);
     setPickView(grid_);
     connect(this, &AssetBrowserPanel::assetChosen, this, &ModelsPanel::modelChosen);
     auto* row = new QHBoxLayout;
@@ -96,7 +109,25 @@ ModelsPanel::ModelsPanel(QWidget* parent) : AssetBrowserPanel(Kind::Model, QStri
     size_->setToolTip(tr("Thumbnail size"));
     size_->setRange(32, 256);
     size_->setValue(std::clamp(QSettings().value("models/thumbnailSize", 64).toInt(), 32, 256));
-    row->addWidget(mode_); row->addWidget(size_, 1); layout_->addLayout(row);
+    inspectToggle_ = new QCheckBox(tr("Inspect"), this);
+    inspectToggle_->setObjectName(QStringLiteral("modelsInspectToggle"));
+    inspectToggle_->setToolTip(tr("Show a larger, turnable view of the selected model"));
+    inspectToggle_->setChecked(QSettings().value("models/inspect", true).toBool());
+    inspect_->setVisible(inspectToggle_->isChecked());
+    const auto saved = QSettings().value("models/inspectSplit").toList();
+    split_->setSizes(saved.size() == 2 ? QList<int>{saved[0].toInt(), saved[1].toInt()} : QList<int>{300, 220});
+    row->addWidget(mode_); row->addWidget(size_, 1); row->addWidget(inspectToggle_); layout_->addLayout(row);
+    connect(inspectToggle_, &QCheckBox::toggled, this, [this](bool on) {
+        QSettings().setValue("models/inspect", on);
+        inspect_->setVisible(on);
+        if (!on) releaseInspector();
+    });
+    connect(split_, &QSplitter::splitterMoved, this, [this] {
+        if (inspect_->isVisible()) QSettings().setValue("models/inspectSplit", QVariantList{split_->sizes()[0], split_->sizes()[1]});
+    });
+    connect(grid_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& index) {
+        if (index.isValid()) inspect(index.data().toString());
+    });
     connect(mode_, &QComboBox::currentIndexChanged, this, [this] {
         QSettings().setValue("models/listMode", mode_->currentIndex() == 1); updateGridSize();
     });
@@ -107,10 +138,37 @@ ModelsPanel::ModelsPanel(QWidget* parent) : AssetBrowserPanel(Kind::Model, QStri
     connect(grid_, &QListView::clicked, this, [this](const QModelIndex& index) { recentActivated(index.data().toString()); });
     updateGridSize();
 }
-ModelsPanel::~ModelsPanel() { releaseThumbnails(); }
+ModelsPanel::~ModelsPanel() { releaseThumbnails(); releaseInspector(); }
+void ModelsPanel::setInspectSink(InspectSink sink) { releaseInspector(); inspectSink_ = std::move(sink); }
+void ModelsPanel::inspect(const QString& name) {
+    const auto* snapshot = content_ ? content_->modelSnapshot().get() : nullptr;
+    const auto* entry = snapshot ? snapshot->find(name.toStdString()) : nullptr;
+    if (!entry) return;
+    inspected_ = QString::fromStdString(entry->name);
+    ModelInspectView::Summary summary;
+    summary.name = inspected_;
+    summary.source = sourceName(entry->mount);
+    summary.staticProp = entry->staticProp;
+    summary.bodyParts = static_cast<int>(entry->bodyPartCount);
+    summary.skinFamilies = static_cast<int>(entry->skinFamilyCount);
+    summary.skinsPerFamily = static_cast<int>(entry->skinsPerFamily);
+    for (int axis = 0; axis < 3; ++axis) summary.hullSize[axis] = entry->hullMax[axis] - entry->hullMin[axis];
+    inspect_->setModel(summary);
+}
+void ModelsPanel::releaseInspector() {
+    if (inspecting_ && inspectSink_) inspectSink_({}, {}, false);
+    inspecting_ = false;
+}
+void ModelsPanel::syncInspector(bool interacting) {
+    if (!inspect_->isVisible() || inspected_.isEmpty()) { releaseInspector(); return; }
+    if (!inspectSink_) { inspect_->setInspection(nullptr); return; }
+    inspecting_ = true;
+    inspect_->setInspection(inspectSink_(inspected_, inspect_->view(), interacting));
+}
 void ModelsPanel::recentActivated(const QString& name) {
     if (!content_ || !content_->modelSnapshot() || !content_->modelSnapshot()->find(name.toStdString())) return;
     remember(name);
+    inspect(name);
     if (pickMode()) selectName(name);
     else emit modelActivated(name);
 }
@@ -143,6 +201,9 @@ void ModelsPanel::rebuild() {
 }
 void ModelsPanel::contentReset() {
     releaseThumbnails();
+    releaseInspector();
+    inspected_.clear();
+    inspect_->clearModel();
     disconnect(thumbnailsConnection_);
     if (content_) thumbnailsConnection_ = connect(content_, &GameContent::thumbnailsReady, this, [this] {
         if (isVisible()) model_->touch();
@@ -153,9 +214,10 @@ void ModelsPanel::releaseThumbnails() {
     if (request_) for (const auto& path : requested_) request_(path, false);
     requested_.clear();
 }
-void ModelsPanel::hideEvent(QHideEvent* event) { releaseThumbnails(); AssetBrowserPanel::hideEvent(event); }
+void ModelsPanel::hideEvent(QHideEvent* event) { releaseThumbnails(); releaseInspector(); AssetBrowserPanel::hideEvent(event); }
 void ModelsPanel::syncThumbnails(bool interacting) {
-    if (!isVisible()) { releaseThumbnails(); return; }
+    if (!isVisible()) { releaseThumbnails(); releaseInspector(); return; }
+    syncInspector(interacting);
     if (interacting || !request_) return;
     refresh();
     const auto viewport = grid_->viewport()->rect();

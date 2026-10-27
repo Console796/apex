@@ -3,12 +3,14 @@
 #include "shared_context.hpp"
 #include "thumbnail_fixture.hpp"
 #include "assets/model_index.hpp"
+#include "render/model_inspector.hpp"
 #include "render/model_thumbnail_scheduler.hpp"
 
 #include <doctest/doctest.h>
 
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <numeric>
 #include <set>
 #include <thread>
@@ -491,4 +493,158 @@ TEST_CASE("model thumbnail corpus throughput") {
     print("parallel textured", textured);
     CHECK(textured.ok > 0);
     CHECK(textured.ticks < serial.ticks);
+}
+
+TEST_CASE("model inspector renders the orbit view at inspect size with skin, body and camera choices") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    auto renderer = ModelThumbnailRenderer::create(*context, **heap); REQUIRE(renderer);
+    const auto model = testing::thumbnailModel();
+    constexpr int inspect = ModelThumbnailRenderer::kInspectSize;
+    ModelView view;
+    auto base = (*renderer)->renderView(model, {}, view); REQUIRE(base);
+    CHECK(base->width == inspect);
+    CHECK(base->height == inspect);
+    CHECK(base->rgba.size() == std::size_t(inspect) * inspect * 4);
+    CHECK(std::ranges::any_of(base->rgba, [](auto v) { return v == 255; }));
+    const auto differs = [&](const ModelView& other) {
+        auto image = (*renderer)->renderView(model, {}, other); REQUIRE(image);
+        return image->rgba != base->rgba;
+    };
+    auto turned = view; turned.yaw += 90.0; CHECK(differs(turned));
+    auto pitched = view; pitched.pitch = 60.0; CHECK(differs(pitched));
+    auto zoomed = view; zoomed.zoom = 2.0; CHECK(differs(zoomed));
+    auto panned = view; panned.pan = {0.4, -0.2}; CHECK(differs(panned));
+    auto hidden = view; hidden.body = 1; CHECK(differs(hidden)); // The "hidden" choice draws nothing.
+    auto again = (*renderer)->renderView(model, {}, view); REQUIRE(again);
+    CHECK(again->rgba == base->rgba);
+    // The thumbnail path is untouched by inspect renders.
+    auto thumbnail = (*renderer)->render(model); REQUIRE(thumbnail);
+    CHECK(thumbnail->width == size);
+}
+
+namespace {
+struct InspectorRig {
+    std::map<std::string, assets::ModelState> states;
+    std::map<std::string, assets::MaterialState> materialStates;
+    std::shared_ptr<assets::ModelData> model = [] {
+        auto m = std::make_shared<assets::ModelData>(testing::thumbnailModel());
+        m->materialDirectories = {"missing/", "rig/"}; // Only the second holds the materials.
+        return m;
+    }();
+    std::vector<ModelView> renders;
+    std::vector<std::size_t> materialCounts;
+    int modelRequests = 0, materialRequests = 0;
+    bool failRender = false;
+    ModelInspector make() {
+        return ModelInspector(
+            {[this](std::string_view p) { return states[std::string(p)]; },
+             [this](std::string_view p) -> std::shared_ptr<const assets::ModelData> {
+                 if (states[std::string(p)] == assets::ModelState::Unloaded) { states[std::string(p)] = assets::ModelState::Loading; ++modelRequests; return {}; }
+                 return model;
+             },
+             [](std::string_view) { return std::optional<Error>{Error{ErrorCode::ParseError, "synthetic failure"}}; }},
+            {[this](std::string_view n) { return materialStates[std::string(n)]; },
+             [this](std::string_view n) -> std::shared_ptr<const assets::CachedMaterial> {
+                 auto& state = materialStates[std::string(n)];
+                 if (state == assets::MaterialState::Unloaded) { state = assets::MaterialState::Loading; ++materialRequests; return {}; }
+                 return testing::thumbnailMaterial();
+             },
+             [](const std::string& vmt) { return vmt.starts_with("materials/rig/"); }},
+            [this](const assets::ModelData&, const ModelMaterials& loaded, const ModelView& view) -> Result<assets::Thumbnail> {
+                renders.push_back(view);
+                materialCounts.push_back(loaded.size());
+                if (failRender) return std::unexpected(Error{ErrorCode::InvalidArgument, "synthetic render failure"});
+                return assets::Thumbnail{2, 2, std::vector<std::uint8_t>(16, 255)};
+            });
+    }
+};
+}
+
+TEST_CASE("ModelInspector loads, renders on change only and stays idle while interacting") {
+    InspectorRig rig;
+    auto inspector = rig.make();
+    ModelView view;
+    CHECK(inspector.update("", view, false).state == ModelInspection::State::Idle);
+    CHECK(inspector.update("box", view, false).state == ModelInspection::State::Loading);
+    CHECK(rig.modelRequests == 1);
+    CHECK(inspector.update("box", view, false).state == ModelInspection::State::Loading);
+    CHECK(rig.modelRequests == 1);
+    rig.states["box.mdl"] = assets::ModelState::Ready;
+    // Nothing renders mid-interaction, so the viewport keeps its last image.
+    CHECK(inspector.update("box", view, true).state == ModelInspection::State::Loading);
+    CHECK(rig.renders.empty());
+    // Materials start loading and the geometry renders before they arrive.
+    const auto& first = inspector.update("box", view, false);
+    REQUIRE(first.state == ModelInspection::State::Ready);
+    REQUIRE(first.image);
+    CHECK(rig.renders.size() == 1);
+    CHECK(rig.materialRequests == 1);
+    CHECK(rig.materialCounts.back() == 0);
+    CHECK(first.stats.triangles == 12);
+    CHECK(first.stats.vertices == 27);
+    CHECK(first.stats.submeshes == 2);
+    CHECK(first.stats.skinFamilies == 2);
+    REQUIRE(first.stats.bodyParts.size() == 1);
+    CHECK(first.stats.bodyParts[0].choices == std::vector<std::string>{"wedge", "hidden"});
+    REQUIRE(first.stats.materials.size() == 1);
+    CHECK(first.stats.materials[0].triangles == 12);
+    CHECK(first.stats.materials[0].resolved);
+    const auto revision = first.revision;
+    // Unchanged: no work.
+    CHECK(inspector.update("box", view, false).revision == revision);
+    CHECK(rig.renders.size() == 1);
+    // The material settling re-renders once, now with its texture.
+    rig.materialStates["rig/apex/thumbnail"] = assets::MaterialState::Ready;
+    CHECK(inspector.update("box", view, false).revision != revision);
+    CHECK(rig.renders.size() == 2);
+    CHECK(rig.materialCounts.back() == 1);
+    inspector.update("box", view, false);
+    CHECK(rig.renders.size() == 2);
+    // A changed view re-renders, but only once interaction ends.
+    auto turned = view; turned.yaw = 10.0;
+    inspector.update("box", turned, true);
+    CHECK(rig.renders.size() == 2);
+    inspector.update("box", turned, false);
+    REQUIRE(rig.renders.size() == 3);
+    CHECK(rig.renders.back() == turned);
+    // The hidden body choice draws nothing, and the other skin draws the other material.
+    auto skinned = turned; skinned.skin = 1;
+    const auto& second = inspector.update("box", skinned, false);
+    CHECK(second.stats.materials.size() == 1);
+    CHECK(second.stats.materials[0].name == "rig/apex/alternate");
+    // Switching model resets, and an empty path releases.
+    rig.states["other.mdl"] = assets::ModelState::Failed;
+    const auto& failed = inspector.update("other", view, false);
+    CHECK(failed.state == ModelInspection::State::Failed);
+    REQUIRE(failed.error);
+    CHECK_FALSE(failed.image);
+    CHECK(inspector.update("", view, false).state == ModelInspection::State::Idle);
+    CHECK_FALSE(inspector.current().image);
+}
+
+TEST_CASE("ModelInspector reports render failures and waits for nothing when materials are missing") {
+    InspectorRig rig;
+    rig.states["box.mdl"] = assets::ModelState::Ready;
+    auto inspector = rig.make();
+    rig.failRender = true;
+    const auto& failed = inspector.update("box", {}, false);
+    CHECK(failed.state == ModelInspection::State::Failed);
+    REQUIRE(failed.error);
+    CHECK(rig.renders.size() == 1);
+    inspector.update("box", {}, false);
+    CHECK(rig.renders.size() == 1); // A failed render is not retried every poll.
+    rig.failRender = false;
+    ModelView changed; changed.zoom = 3.0;
+    CHECK(inspector.update("box", changed, false).state == ModelInspection::State::Ready);
+    // A failed material counts as settled, so it never blocks a render.
+    InspectorRig missing;
+    missing.states["box.mdl"] = assets::ModelState::Ready;
+    missing.materialStates["rig/apex/thumbnail"] = assets::MaterialState::Failed;
+    auto flat = missing.make();
+    const auto& done = flat.update("box", {}, false);
+    CHECK(done.state == ModelInspection::State::Ready);
+    CHECK(missing.materialCounts.back() == 0);
+    CHECK(missing.materialRequests == 0);
 }

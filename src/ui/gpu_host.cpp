@@ -220,6 +220,7 @@ bool GpuHost::pump() {
 }
 
 void GpuHost::clearModelThumbnails() {
+    inspectors_.clear();
     thumbnailScheduler_.reset();
     thumbnailCache_ = nullptr;
     thumbnailRequests_.clear();
@@ -237,16 +238,28 @@ void GpuHost::requestModelThumbnail(const QObject* owner, const QString& path, b
         })) thumbnailScheduler_->drop(name);
     }
 }
-void GpuHost::tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting) {
-    if (thumbnailCache_ != cache) { thumbnailScheduler_.reset(); thumbnailCache_ = cache; }
-    if (interacting || !context_ || !models_ || !cache || thumbnailRequests_.empty()) return;
+bool GpuHost::ensureThumbnailRenderer() {
     if (!thumbnailTried_) {
         thumbnailTried_ = true;
         auto renderer = render::ModelThumbnailRenderer::create(*context_, *heap_);
         if (renderer) thumbnailRenderer_ = std::move(*renderer);
         else log::warn("model thumbnails: {}", renderer.error().what());
     }
-    if (!thumbnailRenderer_) return;
+    return thumbnailRenderer_ != nullptr;
+}
+const render::ModelInspection* GpuHost::inspectModel(const QObject* owner, const QString& path,
+                                                    const render::ModelView& view, bool interacting) {
+    if (path.isEmpty()) { inspectors_.erase(owner); return nullptr; }
+    if (!context_ || !models_ || !materials_ || !vfs_ || !ensureThumbnailRenderer()) return nullptr;
+    auto& inspector = inspectors_[owner];
+    if (!inspector) inspector = std::make_unique<render::ModelInspector>(
+        *models_, *materials_, [vfs = vfs_](const std::string& name) { return vfs->exists(name); }, *thumbnailRenderer_);
+    return &inspector->update(path.toStdString(), view, interacting);
+}
+void GpuHost::tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting) {
+    if (thumbnailCache_ != cache) { thumbnailScheduler_.reset(); thumbnailCache_ = cache; }
+    if (interacting || !context_ || !models_ || !cache || thumbnailRequests_.empty()) return;
+    if (!ensureThumbnailRenderer()) return;
     if (!thumbnailScheduler_) {
         if (materials_ && vfs_) thumbnailScheduler_ = std::make_unique<render::ModelThumbnailScheduler>(
             *models_, *materials_, [vfs = vfs_](const std::string& path) { return vfs->exists(path); },

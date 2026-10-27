@@ -16,6 +16,7 @@
 #include "render/render_mirror.hpp"
 #include "render/renderer.hpp"
 #include "render/texture_heap.hpp"
+#include "render/model_inspector.hpp"
 #include "render/model_thumbnail_scheduler.hpp"
 
 class QVulkanInstance;
@@ -70,6 +71,11 @@ public:
     void requestModelThumbnail(const QObject* owner, const QString& path, bool visible);
     void clearModelThumbnails();
     void tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting);
+    // The owner's inspected model, loaded and rendered from `view` on demand. Null when there is no
+    // GPU, document or model cache; an empty path releases the owner's model. Not rendered while
+    // `interacting`. The result is valid until the next call.
+    const render::ModelInspection* inspectModel(const QObject* owner, const QString& path,
+                                                const render::ModelView& view, bool interacting);
 
 signals:
     void gpuNameChanged(const QString& name);
@@ -90,9 +96,11 @@ private:
     std::unique_ptr<assets::ModelCache> models_;
     std::unique_ptr<render::ModelThumbnailRenderer> thumbnailRenderer_;
     std::unique_ptr<render::ModelThumbnailScheduler> thumbnailScheduler_;
+    std::map<const QObject*, std::unique_ptr<render::ModelInspector>> inspectors_;
     assets::ThumbnailCache* thumbnailCache_ = nullptr;
     std::map<const QObject*, std::set<std::string>> thumbnailRequests_;
     bool thumbnailTried_ = false;
+    bool ensureThumbnailRenderer();
     std::unique_ptr<ModelPickCache> modelPicks_;
     std::uint64_t modelPickRevision_ = 0;
     std::unique_ptr<assets::EntityClassTable> classes_;
