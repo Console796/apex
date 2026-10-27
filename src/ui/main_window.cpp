@@ -445,7 +445,7 @@ void MainWindow::buildMenus() {
         loadEntityClasses();
         const auto* profile = currentProfile();
         session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
-            profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
+            profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
         log::info("game profile: {}", profiles_[static_cast<std::size_t>(i)].name);
         reloadGameContent();
     });
@@ -801,13 +801,19 @@ void MainWindow::updateEditorActions() {
 
 void MainWindow::reportCollapse(const editor::InstanceCollapseReport& report) {
     std::size_t failed = 0;
+    std::string firstReason;
     for (const auto& item : report) if (!item.collapsed) {
+        if (!failed) firstReason = item.reason;
         ++failed;
-        const auto message = "instance collapse failed for " + std::to_string(item.instance) + ": " + item.reason;
-        log::warn("{}", message);
-        statusBar()->showMessage(fromStd(message), 6000);
+        log::warn("instance collapse failed for {}: {}", item.instance, item.reason);
     }
-    if (!failed) statusBar()->showMessage(tr("Collapsed %1 instance(s)").arg(report.size()), 3000);
+    if (!failed) {
+        statusBar()->showMessage(tr("Collapsed %1 instance(s)").arg(report.size()), 3000);
+        return;
+    }
+    const auto collapsed = report.size() - failed;
+    statusBar()->showMessage(tr("Collapsed %1, could not collapse %2: %3")
+        .arg(collapsed).arg(failed).arg(fromStd(firstReason)), 15000);
 }
 
 void MainWindow::collapseSelectedInstances() {
@@ -1437,7 +1443,7 @@ void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {
     loadEntityClasses();
     const auto* profile = currentProfile();
     session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
-        profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
+        profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
     reloadGameContent();
 }
 
@@ -1506,7 +1512,7 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     path_ = path;
     const auto* profile = currentProfile();
     session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
-        profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
+        profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
     unsaved_ = unsaved;
     savedState_ = document_->historyState();
     viewport_->setDocument(document_.get(), currentProfile());
@@ -1621,7 +1627,7 @@ bool MainWindow::saveFile(const QString& path) {
         path_ = path;
         const auto* profile = currentProfile();
         session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
-            profile ? std::optional(profile->gameDirectory / "maps") : std::nullopt);
+            profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
         startAutosave();
     }
     unsaved_ = false;

@@ -7,6 +7,7 @@
 #include "editor/group_ops.hpp"
 
 #include <QAction>
+#include "assets/game_profile.hpp"
 #include <QFile>
 #include <QFileInfo>
 #include <QFileSystemWatcher>
@@ -239,4 +240,39 @@ TEST_CASE("instance visibility header control cycles and persists in viewsetting
     ui::MainWindow reopened;
     REQUIRE(reopened.openFile(map));
     CHECK(reopened.editorSession().instanceVisibility() == document::InstanceVisibility::Hidden);
+}
+
+TEST_CASE("instances resolve from the profile's SDK source maps when the map lives elsewhere") {
+    ui_test::app();
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    const auto install = std::filesystem::path(dir.path().toStdString()) / "install";
+    const auto sdkMaps = install / "sdk_content" / "maps" / "instances";
+    const auto mapDir = std::filesystem::path(dir.path().toStdString()) / "elsewhere";
+    std::filesystem::create_directories(sdkMaps);
+    std::filesystem::create_directories(install / "p2ce" / "maps");
+    std::filesystem::create_directories(mapDir);
+    REQUIRE(writeFile(QString::fromStdString((sdkMaps / "leaf.vmf").string()), relay("leaf").toUtf8()));
+    const auto map = QString::fromStdString((mapDir / "parent.vmf").string());
+    REQUIRE(writeFile(map, parentMap("instances/leaf.vmf").toUtf8()));
+    assets::GameProfile profile;
+    profile.name = "Instances";
+    profile.gameDirectory = install / "p2ce";
+
+    ui::MainWindow window;
+    window.setProfiles({profile});
+    REQUIRE(window.openFile(map));
+    auto& instances = window.editorSession().instances();
+    CHECK(instances.contents().size() == 1);
+    CHECK(instances.problems().empty());
+
+    // The profile arriving after the document is open refreshes the instances too.
+    ui::MainWindow late;
+    late.setProfiles({});
+    REQUIRE(late.openFile(map));
+    CHECK(late.editorSession().instances().contents().empty());
+    CHECK_FALSE(late.editorSession().instances().missing().empty());
+    late.setProfiles({profile});
+    CHECK(late.editorSession().instances().contents().size() == 1);
+    CHECK(late.editorSession().instances().missing().empty());
 }

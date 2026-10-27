@@ -35,6 +35,9 @@ struct GameProfile {
     kv1::EscapeMode escapeMode = kv1::EscapeMode::Strata;
     VmfWriteOptions vmfWrite;
     AddonSettings addons;
+    // Last place instance files are looked up (D7 root 3): the SDK's source maps beside the install when
+    // present, since the game's own maps folder holds compiled maps rather than VMFs.
+    std::filesystem::path instanceSearchRoot() const;
     bool operator==(const GameProfile&) const = default;
 };
 

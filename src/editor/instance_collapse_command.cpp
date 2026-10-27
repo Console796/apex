@@ -51,7 +51,7 @@ Result<InstanceCollapseReport> stageInstanceCollapse(EditorSession& session, doc
                 continue;
             }
             const auto resolved = resolveInstanceFile(session.connectionMapPath_, value(block, "file"), session.connectionExtraRoot_);
-            if (!resolved) { report.push_back({id, false, "instance file could not be resolved"}); continue; }
+            if (!resolved) { report.push_back({id, false, "instance file could not be resolved: " + value(block, "file")}); continue; }
             auto loaded = session.instanceTemplates_->load(*resolved);
             if (!loaded) { report.push_back({id, false, loaded.error().message}); continue; }
             paths[loaded->get()] = *resolved;

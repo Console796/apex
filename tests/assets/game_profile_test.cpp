@@ -62,3 +62,12 @@ TEST_CASE("P2CE profile is discovered through Steam") {
     CHECK_FALSE(profile->fgds.empty());
     CHECK(profile->toolPaths.contains("vbsp"));
 }
+
+TEST_CASE("GameProfile instance search root prefers the SDK source maps beside the install") {
+    GameTree tree;
+    GameProfile profile;
+    profile.gameDirectory = tree.root / "install" / "p2ce";
+    CHECK(profile.instanceSearchRoot() == profile.gameDirectory / "maps");
+    std::filesystem::create_directories(tree.root / "install" / "sdk_content" / "maps");
+    CHECK(profile.instanceSearchRoot() == tree.root / "install" / "sdk_content" / "maps");
+}
