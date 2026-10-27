@@ -81,6 +81,7 @@ const char* nameOf(AreaRole role) {
     case AreaRole::Models: return "models";
     case AreaRole::Sounds: return "sounds";
     case AreaRole::Particles: return "particles";
+    case AreaRole::Find: return "find";
     }
     return "viewport";
 }

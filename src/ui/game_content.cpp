@@ -166,4 +166,14 @@ QString GameContent::addonName(std::size_t index) const {
     const auto& addon = vfs_->addons().entries[index];
     return QString::fromStdString(addon.name.empty() ? addon.dir : addon.name);
 }
+bool GameContent::assetExists(std::string_view path) const {
+    return vfs_ && vfs_->exists(path);
+}
+std::optional<std::string> GameContent::assetProviderName(std::string_view path) const {
+    if (!vfs_) return {};
+    const auto index = vfs_->provider(path);
+    if (!index) return {};
+    const auto name = addonName(*index).toStdString();
+    return name.empty() ? std::nullopt : std::optional(name);
+}
 } // namespace apex::ui

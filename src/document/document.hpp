@@ -221,6 +221,9 @@ public:
     void setKeyValue(NodeHandle handle, std::string key, std::optional<std::string> value);
     // Edit one scalar occurrence without replacing or dropping duplicate keys.
     void setKeyValueOccurrence(NodeHandle handle, std::string key, std::size_t occurrence, std::string value);
+    // Edit/rename one entity scalar by block-local index, preserving duplicate keys and
+    // source provenance. Identity keys remain protected; structural entries cannot change.
+    void setEntityKeyValueEntry(NodeHandle entity, std::size_t index, std::string key, std::string value);
     // Replace the scalar entries of an entity connections block, retaining KV1 provenance.
     // An empty block removes it; no existing block creates one.
     void setConnections(NodeHandle entity, kv1::Node block);
