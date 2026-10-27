@@ -1273,6 +1273,40 @@ TEST_CASE("mirror helpers: golden images per helper kind") {
     }
 }
 
+TEST_CASE("Nested instance path labels follow the owner's selection and hover") {
+    REQUIRE_GPU();
+    g->tree.put("outer.vmf", R"(entity { classname func_instance file inner.vmf origin "64 0 0" })");
+    g->tree.put("inner.vmf", readFixture("render_map.vmf"));
+    auto file = vmf::parse(R"(entity { classname func_instance file outer.vmf })"); REQUIRE(file);
+    document::Document parent(*file);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 2);
+    REQUIRE(expansion.contents()[1].depth == 2);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    const auto texts = [&] {
+        std::vector<std::string> out;
+        for (const auto& label : mirror.buildDrawList({}).labels) out.push_back(label.text);
+        std::ranges::sort(out);
+        return out;
+    };
+    CHECK(texts().empty()); // Everything resolved: neither the placed instance nor the nested one is labelled.
+    Highlight h;
+    h.selected = {expansion.contents()[0].instance};
+    mirror.setHighlight(h);
+    CHECK(texts() == std::vector<std::string>{"inner.vmf", "outer.vmf"});
+    h.selected.clear();
+    h.hover = expansion.contents()[0].instance;
+    mirror.setHighlight(h);
+    CHECK(texts() == std::vector<std::string>{"inner.vmf", "outer.vmf"});
+    mirror.setHighlight({});
+    CHECK(texts().empty());
+}
+
 TEST_CASE("Instance mirror shares placements fixes materials and reloads only template users") {
     REQUIRE_GPU();
     auto templateBytes = readFixture("render_map.vmf");

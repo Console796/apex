@@ -143,6 +143,10 @@ struct RenderMirror::Impl {
     std::map<std::shared_ptr<const Document>, std::unique_ptr<RenderMirror>> instanceMirrors;
     document::InstanceVisibility instanceVisibility = document::InstanceVisibility::Normal;
     std::size_t drawnInstanceSolids = 0;
+    // Set by the parent on a mirror that draws an instance's contents: the instances inside it
+    // have no resolution state of their own, so their path labels follow the owner's inspection.
+    bool drawsInstanceContents = false;
+    bool ownerInspected = false;
 
     std::map<NodeId, SolidState> solids;
     std::map<Handle<document::Solid>, NodeId> solidIds;
@@ -1239,7 +1243,10 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 list.labels.push_back({moved(id, entity.position), entity.targetname, Vec2(8.0f, -8.0f), options.wireColour});
             // The path is noise on every placed instance; show it for the one being inspected, and
             // always for an instance whose file did not resolve (it has no contents to speak for it).
-            if (!entity.instanceFile.empty() && (self || m.highlight.hover == id || !resolvedInstances.contains(id)))
+            // Nested ones (a template's own func_instances) show it only while their owner is inspected.
+            const bool showPath = m.drawsInstanceContents ? m.ownerInspected
+                                                          : self || m.highlight.hover == id || !resolvedInstances.contains(id);
+            if (!entity.instanceFile.empty() && showPath)
                 list.labels.push_back({moved(id, entity.position), entity.instanceFile, Vec2(8.0f, 8.0f), options.wireColour});
         }
     }
@@ -1318,6 +1325,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             // Selecting the owner reveals its contents' selection-dependent helpers too.
             if (selected) for (const auto& [id, hierarchy] : mirror.impl_->hierarchy) highlight.selected.push_back(id);
             mirror.setHighlight(highlight);
+            mirror.impl_->drawsInstanceContents = true;
+            mirror.impl_->ownerInspected = selected || hovered;
             auto child = mirror.buildDrawList(options);
             m.drawnInstanceSolids += mirror.meshedSolidCount();
             DMat4 transform = content.transform;
