@@ -44,6 +44,7 @@ TEST_CASE("the empty map quotes every key and value, so vbsp sees worldspawn") {
 
 TEST_CASE("VMF fixtures and probe CRLF input write byte-identically") {
     for (const auto& entry : std::filesystem::directory_iterator(fixtures())) {
+        if (!entry.is_regular_file()) continue; // vmf/instances holds the instance fixtures.
         CAPTURE(entry.path().string());
         const auto source = read(entry.path());
         auto file = parsed(source);
