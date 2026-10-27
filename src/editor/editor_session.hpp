@@ -126,6 +126,8 @@ public:
     ConnectionValidator connectionValidator() const;
     void setConnectionContext(std::filesystem::path map,
                               std::optional<std::filesystem::path> extraRoot = {});
+    const std::filesystem::path& connectionMapPath() const { return connectionMapPath_; }
+    const std::optional<std::filesystem::path>& connectionExtraRoot() const { return connectionExtraRoot_; }
     const InstanceExpansion& instances() const { return *instanceExpansion_; }
     InstanceReload invalidateInstance(const std::filesystem::path& path);
     document::InstanceVisibility instanceVisibility() const;

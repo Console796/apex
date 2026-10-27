@@ -1,5 +1,6 @@
 #include "ui/find_panel.hpp"
 
+#include "editor/instance_templates.hpp"
 #include "ui/game_content.hpp"
 
 #include <QCheckBox>
@@ -281,11 +282,31 @@ void FindPanel::refreshEntities() {
 void FindPanel::refreshProblems() {
     if (!problems_ || !document_) return;
     problems_->clear(); addons_->clear();
-    const auto exists = [this](editor::AssetKind, std::string_view path) {
-        return content_ && content_->assetExists(path);
+    // The report's names are as written in the map; each kind resolves differently (0.4 D11).
+    // Sounds and particles come from the browsers' indexes, and an index still building counts as present
+    // rather than flooding the report with false misses.
+    const auto vfsPath = [](editor::AssetKind kind, std::string_view name) -> std::optional<std::string> {
+        if (kind == editor::AssetKind::Material) return "materials/" + std::string(name) + ".vmt";
+        if (kind == editor::AssetKind::Model) return std::string(name);
+        return std::nullopt;
     };
-    const auto provider = [this](editor::AssetKind, std::string_view path) -> std::optional<std::string> {
-        return content_ ? content_->assetProviderName(path) : std::nullopt;
+    const auto exists = [this, vfsPath](editor::AssetKind kind, std::string_view name) {
+        if (!content_) return false;
+        if (const auto path = vfsPath(kind, name)) return content_->assetExists(*path);
+        if (kind == editor::AssetKind::Sound) {
+            const auto snapshot = content_->soundSnapshot();
+            return !snapshot || snapshot->find(name) != nullptr;
+        }
+        if (kind == editor::AssetKind::Particle) {
+            const auto snapshot = content_->particleSnapshot();
+            return !snapshot || snapshot->find(name) != nullptr;
+        }
+        const auto* session = session_;
+        return !session || editor::resolveInstanceFile(session->connectionMapPath(), name, session->connectionExtraRoot());
+    };
+    const auto provider = [this, vfsPath](editor::AssetKind kind, std::string_view name) -> std::optional<std::string> {
+        const auto path = vfsPath(kind, name);
+        return content_ && path ? content_->assetProviderName(*path) : std::nullopt;
     };
     // D15's unmounted-addon index arrives in 0.4.9; keep the callback seam here.
     const editor::AssetProvider unmountedAddon = [](editor::AssetKind, std::string_view) { return std::optional<std::string>{}; };
