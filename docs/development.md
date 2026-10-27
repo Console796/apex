@@ -48,6 +48,11 @@ ctest --preset linux-asan                       # everything registered
 ASAN_OPTIONS=detect_leaks=0 build/linux-asan/tests/apex_tests -tc='*face*'   # one area
 ```
 
+- **Watch the tests like CI:** `python3 tools/ci.py --tests [PRESET]` builds and runs `ctest` for one
+  preset (default `linux-asan`) and the layer check, with no BUILD number and no other stages. It
+  writes `build/ci/tests/`, so `tools/ci_top.py` (live stage table, ctest N/M progress, ETA from the
+  gate's timings, log tail) and `tools/ci_status.py` follow it exactly as they follow the full gate.
+
 - **Pick the tests your change touches.** The full ASan suite takes about 15 minutes, so leave it
   to CI.
 - **UI tests** (`apex_ui_tests`) run offscreen. Run them by hand isolated from the desktop

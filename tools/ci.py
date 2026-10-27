@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Apex local CI gate (plan 0.1, D22/D23).
 
-    tools/ci.py [--fast] [--windows {auto,always,never}] [--fixtures-only]
+    tools/ci.py [--fast | --tests [PRESET]] [--windows {auto,always,never}] [--fixtures-only]
                 [--fuzz-seconds N]
 
 Stages: preflight, BUILD counter, Linux presets (build + unit tests), KV1 corpus and fuzz (plus a fixed-seed hull fuzz),
@@ -563,6 +563,9 @@ class Graph:
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--fast", action="store_true", help="debug build + tests + checks only (pre-push)")
+    ap.add_argument("--tests", nargs="?", const="linux-asan", metavar="PRESET",
+                    help="configure, build and ctest one preset (default linux-asan) plus the layer check; watch it"
+                         " with tools/ci_top.py. Uses build/ci/tests, takes no BUILD number and runs nothing else")
     ap.add_argument("--windows", choices=["auto", "always", "never"], default="auto",
                     help="Windows VM stage: auto (only after platform-sensitive changes), always, never")
     ap.add_argument("--skip-windows", action="store_true", help="same as --windows never")
@@ -580,11 +583,12 @@ def main():
         ap.error("--fuzz-seconds must be non-negative")
 
     corpus = os.environ.get("APEX_P2CE_DIR")
-    build = 0 if a.fast else next_build_number()
-    rep = Report(build if build else "fast", "fast" if a.fast else "full")
+    quick = a.fast or bool(a.tests)
+    build = 0 if quick else next_build_number()
+    rep = Report("tests" if a.tests else build if build else "fast", "tests" if a.tests else "fast" if a.fast else "full")
 
-    run_win, win_why = False, "--fast"
-    if not a.fast:
+    run_win, win_why = False, "--tests" if a.tests else "--fast"
+    if not quick:
         mode = "never" if a.skip_windows else a.windows
         run_win, win_why = (True, "--windows always") if mode == "always" else (False, "--windows never")
         if mode == "auto":
@@ -616,11 +620,11 @@ def main():
     # Longest chains first so they win a contended slot: the VM, then the gcc-release fan-out.
     if run_win:
         g.add("windows-msvc", lambda: windows_stage(build, rep))
-    for preset in (FAST_PRESETS if a.fast else LINUX_PRESETS):
+    for preset in ([a.tests] if a.tests else FAST_PRESETS if a.fast else LINUX_PRESETS):
         add_preset(preset)
     if a.fast:
         rep.add("fuzz", "skipped", 0, "--fast")
-    else:
+    elif not a.tests:
         gcc_build = "linux-gcc-release:build"
         g.add("corpus", lambda: corpus_stage(corpus, a.fixtures_only, rep), [gcc_build])
         g.add("srctools-crosscheck", lambda: crosscheck_stage(corpus, a.fixtures_only, rep), [gcc_build])
@@ -635,8 +639,9 @@ def main():
             g.add("hull-fuzz", lambda: hull_fuzz_stage(rep), ["fuzz-build"])
         if not run_win:
             rep.add("windows-msvc", "skipped", 0, win_why)
-    g.add("check-licenses", lambda: run([sys.executable, str(ROOT / "tools" / "check_licenses.py")],
-                                        rep, "check-licenses"))
+    if not a.tests:
+        g.add("check-licenses", lambda: run([sys.executable, str(ROOT / "tools" / "check_licenses.py")],
+                                            rep, "check-licenses"))
     g.add("check-layers", lambda: run([sys.executable, str(ROOT / "tools" / "check_layers.py")],
                                       rep, "check-layers"))
 
