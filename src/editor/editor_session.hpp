@@ -79,6 +79,10 @@ public:
     void forgetInputSource(InputSource source);
     const std::string& currentEntityClass() const { return currentEntityClass_; }
     void setCurrentEntityClass(std::string classname);
+    const std::string& placementModel() const { return placementModel_; }
+    void setPlacementModel(std::string model);
+    const std::string& modelPlacementClass() const { return modelPlacementClass_; }
+    void setModelPlacementClass(std::string classname);
     bool alignToSurface() const { return alignToSurface_; }
     void setAlignToSurface(bool align);
 
@@ -217,6 +221,8 @@ public:
     // With no normal, hit is projected onto the resolved work plane and snapped in-plane.
     Result<void> placeEntity(std::string classname, DVec3 hit, std::optional<DVec3> normal, bool align = false);
     Result<void> placeEntity(std::string classname, Ray ray, bool align = false);
+    Result<void> placeModel(std::string model, DVec3 hit, std::optional<DVec3> normal, bool align = false);
+    Result<void> placeModel(std::string model, Ray ray, bool align = false);
 
     // Clipboard, duplicate, delete and groups (0.2.6). Each mutating call is one undoable
     // transaction that also records the selection before and after. On failure (empty
@@ -333,6 +339,14 @@ private:
     std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
     ToolId activeTool_ = Tool::Select;
     std::string currentEntityClass_;
+    std::string placementModel_;
+    std::string modelPlacementClass_ = "prop_static";
+    struct PlacementTarget { DVec3 point; std::optional<DVec3> normal; };
+    Result<PlacementTarget> placementTarget(Ray ray) const;
+    Result<EntityPlacement> surfacePlacement(DVec3 hit, std::optional<DVec3> normal,
+                                            const AABB& bounds, bool align) const;
+    Result<void> placePointEntity(std::string classname, std::optional<std::string> model,
+                                 DVec3 hit, std::optional<DVec3> normal, bool align);
     bool alignToSurface_ = false;
     geometry::NewSolidStyle newSolidStyle_{"dev/dev_measuregeneric01"};
     FaceExtrapolation faceExtrapolation_ = FaceExtrapolation::Wrap;

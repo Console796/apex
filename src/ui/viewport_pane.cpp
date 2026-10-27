@@ -145,6 +145,27 @@ render::GridSettings makeGridSettings(const viewport::Viewport& view, const edit
     return grid;
 }
 
+bool handleModelDrop(editor::EditorSession* session, const viewport::Viewport* view, QSizeF size,
+                     QDropEvent& event, const std::function<void(const QString&)>& reportFailure) {
+    event.ignore();
+    const auto mime = QStringLiteral("application/x-apex-model");
+    if (!session || !session->document() || !view || size.width() <= 0 || size.height() <= 0 ||
+        !event.mimeData()->hasFormat(mime)) return false;
+    const auto model = QString::fromUtf8(event.mimeData()->data(mime)).toStdString();
+    if (model.empty()) return false;
+    const auto point = event.position();
+    const auto ray = viewport::pixelRay(view->camera, size.width() / size.height(),
+                                       point.x(), point.y(), size.width(), size.height());
+    const auto placed = session->placeModel(model, ray, session->alignToSurface());
+    if (!placed) {
+        reportFailure(QString::fromStdString(placed.error().what()));
+        return false;
+    }
+    event.setDropAction(Qt::CopyAction);
+    event.accept();
+    return true;
+}
+
 // ---- PaneWindow ----
 
 PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor accessor)
@@ -198,15 +219,28 @@ void PaneWindow::releaseCapture() {
     grabbed_ = false;
     pointerLock_.cancel();
     buttons_ = Qt::NoButton;
+    modelDragOver_ = false;
     delta_ = {};
     forward_ = back_ = left_ = right_ = up_ = down_ = false;
 }
 
 bool PaneWindow::event(QEvent* e) {
     switch (e->type()) {
+    case QEvent::DragLeave:
+        modelDragOver_ = false;
+        break;
     case QEvent::DragEnter:
     case QEvent::DragMove: {
         auto* drag = static_cast<QDragMoveEvent*>(e);
+        if (drag->mimeData()->hasFormat(QStringLiteral("application/x-apex-model"))) {
+            drag->ignore();
+            modelDragOver_ = true;
+            if (session_ && session_->document()) {
+                drag->setDropAction(Qt::CopyAction);
+                drag->accept();
+            }
+            return true;
+        }
         if (session_ && session_->document() && drag->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
             drag->acceptProposedAction();
             return true;
@@ -215,6 +249,12 @@ bool PaneWindow::event(QEvent* e) {
     }
     case QEvent::Drop: {
         auto* drop = static_cast<QDropEvent*>(e);
+        if (drop->mimeData()->hasFormat(QStringLiteral("application/x-apex-model"))) {
+            modelDragOver_ = false;
+            handleModelDrop(session_, accessor_(), QSizeF(width(), height()), *drop,
+                            [this](const QString& message) { emit modelPlacementFailed(message); });
+            return true;
+        }
         if (session_ && session_->document() && drop->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
             auto name = QString::fromUtf8(drop->mimeData()->data(QStringLiteral("application/x-apex-material"))).toStdString();
             const auto* vp = accessor_();
@@ -286,6 +326,11 @@ bool PaneWindow::event(QEvent* e) {
         break;
     }
     return QWindow::event(e);
+}
+
+bool PaneWindow::interacting() const {
+    return resizeDragging_ || grabbed_ || modelDragOver_ || buttons_ != Qt::NoButton || transform_.owns() ||
+        forward_ || back_ || left_ || right_ || up_ || down_ || scroll_ != 0.0 || !delta_.isNull();
 }
 
 std::optional<Ray> PaneWindow::pointerRay() const {

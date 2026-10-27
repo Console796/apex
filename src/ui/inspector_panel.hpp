@@ -23,6 +23,7 @@ public:
     ~InspectorPanel() override;
     void setDocument(document::Document* document);
     void setEditorSession(editor::EditorSession* session);
+    void setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser);
     void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
     void setOpenInstanceHandler(std::function<bool(document::NodeId)> resolved,
                                 std::function<void(document::NodeId)> open) {
@@ -65,6 +66,7 @@ private:
     std::uint64_t selectionRevision_ = 0, classesRevision_ = 0;
     bool queued_ = false, rebuilding_ = false;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
+    std::function<void(QString, QString, QString, std::function<void(QString)>)> assetBrowser_;
     std::function<bool(document::NodeId)> instanceResolved_;
     std::function<void(document::NodeId)> openInstance_;
     RenameDialogPresenter renamePresenter_;

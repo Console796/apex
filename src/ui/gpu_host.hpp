@@ -3,6 +3,7 @@
 #include <memory>
 #include <map>
 #include <string>
+#include <set>
 
 #include <QObject>
 #include <QString>
@@ -15,6 +16,7 @@
 #include "render/render_mirror.hpp"
 #include "render/renderer.hpp"
 #include "render/texture_heap.hpp"
+#include "render/model_thumbnail_scheduler.hpp"
 
 class QVulkanInstance;
 
@@ -65,6 +67,9 @@ public:
 
     // Delivers finished mesh/texture jobs; returns true when the scene needs redrawing.
     bool pump();
+    void requestModelThumbnail(const QObject* owner, const QString& path, bool visible);
+    void clearModelThumbnails();
+    void tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting);
 
 signals:
     void gpuNameChanged(const QString& name);
@@ -83,6 +88,11 @@ private:
     std::shared_ptr<const assets::Vfs> vfs_;
     std::unique_ptr<assets::MaterialCache> materials_;
     std::unique_ptr<assets::ModelCache> models_;
+    std::unique_ptr<render::ModelThumbnailRenderer> thumbnailRenderer_;
+    std::unique_ptr<render::ModelThumbnailScheduler> thumbnailScheduler_;
+    assets::ThumbnailCache* thumbnailCache_ = nullptr;
+    std::map<const QObject*, std::set<std::string>> thumbnailRequests_;
+    bool thumbnailTried_ = false;
     std::unique_ptr<ModelPickCache> modelPicks_;
     std::uint64_t modelPickRevision_ = 0;
     std::unique_ptr<assets::EntityClassTable> classes_;

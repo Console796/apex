@@ -75,6 +75,8 @@
 #include "ui/viewport_area.hpp"
 #include "ui/game_content.hpp"
 #include "ui/materials_panel.hpp"
+#include "ui/asset_browser_panel.hpp"
+#include "ui/models_panel.hpp"
 #include "ui/workspace_bar.hpp"
 #include "ui/area_frame.hpp"
 #include "ui/viewport_pane.hpp"
@@ -177,7 +179,18 @@ MainWindow::MainWindow(QWidget* parent)
     viewport_->setMaterialBrowser([this](QString current, QString what, std::function<void(QString)> choose) {
         openMaterialPicker(std::move(current), std::move(what), std::move(choose));
     });
+    viewport_->setAssetBrowser([this](QString kind, QString current, QString what, std::function<void(QString)> choose) {
+        openAssetPicker(std::move(kind), std::move(current), std::move(what), std::move(choose));
+    });
     connect(viewport_, &ViewportArea::activeMaterialRequested, this, &MainWindow::activateMaterial);
+    connect(viewport_, &ViewportArea::modelPlacementRequested, this, [this](const QString& path) {
+        session_.setPlacementModel(path.toStdString());
+        session_.perform(editor::EditorSession::Tool::Entity);
+        statusBar()->showMessage(tr("Placing %1").arg(path), 3000);
+    });
+    connect(viewport_, &ViewportArea::modelPlacementFailed, this, [this](const QString& message) {
+        statusBar()->showMessage(message, 4000);
+    });
     connect(viewport_, &ViewportArea::materialStatusMessage, this, [this](const QString& message) {
         statusBar()->showMessage(message, 4000);
     });
@@ -628,6 +641,8 @@ void MainWindow::closeMaterialPicker() {
     QObject::disconnect(areaPickCancelled_);
     if (areaMaterialPicker_) areaMaterialPicker_->setPickMode(false);
     areaMaterialPicker_.clear();
+    if (areaAssetPicker_) areaAssetPicker_->setPickMode(false);
+    areaAssetPicker_.clear();
     delete materialPicker_.data();
 }
 void MainWindow::openMaterialPicker(QString current, QString what, std::function<void(QString)> choose) {
@@ -668,6 +683,49 @@ void MainWindow::openMaterialPicker(QString current, QString what, std::function
     // The panel takes Esc in pick mode, so the dialog never sees it.
     connect(panel, &MaterialsPanel::pickCancelled, dialog, &QDialog::close);
     layout->addWidget(panel);
+    dialog->resize(720, 480);
+    dialog->show();
+}
+void MainWindow::openAssetPicker(QString kind, QString current, QString what, std::function<void(QString)> choose) {
+    using viewport::AreaRole;
+    AreaRole role;
+    QString title;
+    if (kind == "model") { role = AreaRole::Models; title = tr("Choose Model"); }
+    else if (kind == "sound") { role = AreaRole::Sounds; title = tr("Choose Sound"); }
+    else if (kind == "particle") { role = AreaRole::Particles; title = tr("Choose Particle System"); }
+    else return;
+    closeMaterialPicker();
+    if (!materialBrowserInWindow() && !viewport_->viewportLayout().paneIds(role).empty()) {
+        auto* panel = qobject_cast<AssetBrowserPanel*>(viewport_->showRole(role, false));
+        if (panel) {
+            areaAssetPicker_ = panel;
+            panel->setPickMode(true, current, what);
+            areaPickChosen_ = connect(panel, &AssetBrowserPanel::assetChosen, this,
+                [this, choose = std::move(choose)](const QString& value) {
+                    closeMaterialPicker();
+                    choose(value);
+                });
+            areaPickCancelled_ = connect(panel, &AssetBrowserPanel::pickCancelled, this, &MainWindow::closeMaterialPicker);
+            return;
+        }
+    }
+    auto* dialog = new QDialog(this, Qt::Tool);
+    materialPicker_ = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("assetPicker"));
+    dialog->setWindowTitle(title);
+    auto* layout = new QVBoxLayout(dialog);
+    auto* panel = qobject_cast<AssetBrowserPanel*>(createPanel(role, document_.get(), &session_, gameContent_.get()));
+    layout->addWidget(panel);
+    viewport_->setModelPicker(qobject_cast<ModelsPanel*>(panel));
+    panel->setPickMode(true, current, what);
+    connect(panel, &AssetBrowserPanel::assetChosen, dialog, [dialog, panel, choose = std::move(choose)](const QString& value) {
+        // Disconnect before the callback: a second activation cannot apply the same pick twice.
+        QObject::disconnect(panel, nullptr, dialog, nullptr);
+        dialog->close();
+        choose(value);
+    });
+    connect(panel, &AssetBrowserPanel::pickCancelled, dialog, &QDialog::close);
     dialog->resize(720, 480);
     dialog->show();
 }
@@ -1207,10 +1265,14 @@ void MainWindow::refreshEntityUi() {
         entityClass_->addItems(names);
         entityClass_->setCurrentIndex(static_cast<int>(names.indexOf(name)));
         entityClass_->setEditText(name);
-        session_.setCurrentEntityClass(name.toStdString());
+        if (session_.placementModel().empty()) session_.setCurrentEntityClass(name.toStdString());
     }
-    if (entityClass_->currentText() != fromStd(session_.currentEntityClass()))
-        entityClass_->setEditText(fromStd(session_.currentEntityClass()));
+    const auto item = session_.placementModel().empty() ? fromStd(session_.currentEntityClass())
+        : tr("Model: %1").arg(fromStd(session_.placementModel()));
+    if (entityClass_->currentText() != item) {
+        entityClass_->setCurrentIndex(-1);
+        entityClass_->setEditText(item);
+    }
     entityClass_->setEnabled(entityClass_->count() != 0);
     const QSignalBlocker alignBlock(alignToSurface_);
     alignToSurface_->setChecked(session_.alignToSurface());

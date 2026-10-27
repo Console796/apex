@@ -28,23 +28,6 @@ std::string lower(std::string_view text) {
     return result;
 }
 
-std::optional<VkFormat> vulkanFormat(assets::TextureFormat format) {
-    using F = assets::TextureFormat;
-    switch (format) {
-    case F::Rgba8: return VK_FORMAT_R8G8B8A8_UNORM;
-    case F::Bc1: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
-    case F::Bc2: return VK_FORMAT_BC2_UNORM_BLOCK;
-    case F::Bc3: return VK_FORMAT_BC3_UNORM_BLOCK;
-    case F::Bc4: return VK_FORMAT_BC4_UNORM_BLOCK;
-    case F::Bc5: return VK_FORMAT_BC5_UNORM_BLOCK;
-    case F::Bc6Signed: return VK_FORMAT_BC6H_SFLOAT_BLOCK;
-    case F::Bc6Unsigned: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
-    case F::Bc7: return VK_FORMAT_BC7_UNORM_BLOCK;
-    case F::Rgba32Float: return std::nullopt;
-    }
-    return std::nullopt;
-}
-
 // Stable pastel colour per material for Flat mode.
 Vec4 flatColour(const std::string& material) {
     const std::size_t h = std::hash<std::string>{}(material);

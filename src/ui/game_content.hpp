@@ -10,6 +10,10 @@
 
 #include "assets/game_profile.hpp"
 #include "assets/material_index.hpp"
+#include "assets/model_index.hpp"
+#include "assets/sound_index.hpp"
+#include "assets/particle_index.hpp"
+#include "core/entity_class.hpp"
 #include "assets/thumbnail_cache.hpp"
 
 class QTimer;
@@ -27,6 +31,10 @@ public:
     void clear();
     std::shared_ptr<const assets::Vfs> vfs() const { return vfs_; }
     std::shared_ptr<const assets::MaterialIndexSnapshot> snapshot() const;
+    std::shared_ptr<const assets::ModelIndexSnapshot> modelSnapshot() const { return modelSnapshot_; }
+    std::shared_ptr<const assets::SoundIndexSnapshot> soundSnapshot() const { return soundSnapshot_; }
+    std::shared_ptr<const assets::ParticleIndexSnapshot> particleSnapshot() const { return particleSnapshot_; }
+    const assets::EntityClassTable* classes() const { return classes_.get(); }
     assets::ThumbnailCache* thumbnails() const { return thumbnails_.get(); }
     bool hasProfile() const { return profile_.has_value(); }
     const std::optional<assets::GameProfile>& profile() const { return profile_; }
@@ -35,7 +43,15 @@ public:
     std::pair<int, int> faceTextureSize(std::string_view material) const;
 
 signals:
+    void contentAboutToChange(); // Release consumers borrowing the thumbnail store before reset.
     void contentChanged();
+    void modelIndexProgress(std::size_t done, std::size_t total);
+    void soundIndexProgress(std::size_t done, std::size_t total);
+    void particleIndexProgress(std::size_t done, std::size_t total);
+    void modelIndexReady();
+    void soundIndexReady();
+    void particleIndexReady();
+    void classesReady();
     void indexProgress(std::size_t done, std::size_t total);
     void indexReady();
     void thumbnailsReady();
@@ -48,6 +64,14 @@ private:
     std::shared_ptr<const assets::Vfs> vfs_;
     std::shared_ptr<const assets::MaterialIndexSnapshot> snapshot_;
     std::unique_ptr<assets::MaterialIndex> index_;
+    std::unique_ptr<assets::ModelIndex> modelIndex_;
+    std::unique_ptr<assets::SoundIndex> soundIndex_;
+    std::unique_ptr<assets::ParticleIndex> particleIndex_;
+    std::shared_ptr<const assets::ModelIndexSnapshot> modelSnapshot_;
+    std::shared_ptr<const assets::SoundIndexSnapshot> soundSnapshot_;
+    std::shared_ptr<const assets::ParticleIndexSnapshot> particleSnapshot_;
+    std::unique_ptr<assets::EntityClassTable> classes_;
+    JobHandle classesJob_;
     std::unique_ptr<assets::ThumbnailCache> thumbnails_;
     std::optional<assets::GameProfile> profile_;
     QTimer* timer_ = nullptr;

@@ -22,9 +22,13 @@
 #include <QTableWidget>
 #include <QCheckBox>
 #include <QTemporaryDir>
+#include <QThread>
+#include <QPointer>
+#include <QAbstractItemView>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <set>
+#include <tuple>
 
 #include "core/log.hpp"
 #include "../editor/fixtures.hpp"
@@ -1906,6 +1910,49 @@ TEST_CASE("inspector choice combos ignore the mouse wheel") {
     CHECK(doc.get(*doc.handle(doc.roots()[0]))->block->find("mode")->decodedValue().value_or("") == "0");
 }
 
+TEST_CASE("inspector choice combo keeps its popup open instead of rebuilding the rows") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("popup.fgd");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write("@PointClass = popped\n[\n"
+                   "\tmode(choices) : \"Mode\" : \"0\" = [ \"0\" : \"Zero\" \"1\" : \"One\" \"2\" : \"Two\" ]\n]\n");
+    }
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    document::Document doc(editor_test::parsed(R"(entity { id 1 classname popped mode 0 })"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 400);
+    panel.show();
+    session.selectNode(doc.roots()[0]);
+    app().processEvents();
+    QPointer<QComboBox> combo = panel.findChild<QComboBox*>("choice.mode");
+    REQUIRE(combo);
+    combo->setFocus(Qt::MouseFocusReason);
+    app().processEvents();
+    combo->showPopup();
+    for (int i = 0; i < 5; ++i) {
+        app().processEvents();
+        QThread::msleep(10);
+    }
+    REQUIRE(combo);
+    CHECK(combo == panel.findChild<QComboBox*>("choice.mode"));
+    CHECK(combo->view()->isVisible());
+    combo->hidePopup();
+    app().processEvents();
+    // Choosing an entry still writes the value after the popup closed.
+    emit combo->activated(2);
+    app().processEvents();
+    CHECK(doc.get(*doc.handle(doc.roots()[0]))->block->find("mode")->decodedValue().value_or("") == "2");
+}
+
 TEST_CASE("inspector builds FGD controls and coalesces one field focus") {
     app();
     QTemporaryDir dir;
@@ -3235,4 +3282,108 @@ TEST_CASE("addons menu reflects list order toggles and stale file errors") {
     std::filesystem::remove(tree.root / "Game/addons/addonlist.kv3");
     show();
     CHECK(menu->actions()[0]->text() == QStringLiteral("No addon list found"));
+}
+
+TEST_CASE("inspector asset Browse hooks edit typed keys once and reject stale picks") {
+    app();
+    assets::EntityClassTable classes;
+    auto& cls = classes.classes["picker_fixture"];
+    cls.name = "picker_fixture"; cls.type = "PointClass";
+    for (auto [name, type] : {std::pair{"mesh", "studio"}, {"noise", "sound"}, {"effect", "particlesystem"}}) {
+        assets::EntityProperty property; property.name = name; property.type = type;
+        cls.properties.push_back(std::move(property));
+    }
+    document::Document doc(editor_test::parsed(R"(
+        entity { id 1 classname picker_fixture mesh old.mdl noise Old.Sound effect OldParticle }
+        entity { id 2 classname picker_fixture mesh other.mdl })"));
+    editor::EditorSession session; session.attach(doc); session.setEntityClasses(classes);
+    ui::InspectorPanel panel; panel.setDocument(&doc); panel.setEditorSession(&session);
+    panel.resize(500, 600); panel.show(); session.selectNode(1); app().processEvents();
+    for (const auto* key : {"mesh", "noise", "effect"}) {
+        auto* browse = panel.findChild<QPushButton*>(QString("inspectorBrowse.") + key); REQUIRE(browse);
+        CHECK_FALSE(browse->isEnabled());
+    }
+    std::function<void(QString)> pending;
+    QString requestedKind, requestedCurrent, requestedWhat;
+    panel.setAssetBrowser([&](QString kind, QString current, QString what, std::function<void(QString)> choose) {
+        requestedKind = kind; requestedCurrent = current; requestedWhat = what; pending = std::move(choose);
+    });
+    app().processEvents();
+    for (auto [key, kind, value] : {std::tuple{"mesh", "model", "models/props/apex.mdl"},
+            {"noise", "sound", "Apex.Sound"}, {"effect", "particle", "ApexSmoke"}}) {
+        CAPTURE(key);
+        auto* browse = panel.findChild<QPushButton*>(QString("inspectorBrowse.") + key); REQUIRE(browse);
+        CHECK(browse->isEnabled());
+        const auto original = inspectorValues(doc, 1)[key]; const auto before = doc.undoCount();
+        pending = {}; browse->click(); REQUIRE(pending);
+        CHECK(requestedKind == kind); CHECK(requestedCurrent == QString::fromStdString(original)); CHECK(requestedWhat == key);
+        pending(value); app().processEvents();
+        CHECK(inspectorValues(doc, 1)[key] == value); CHECK(doc.undoCount() == before + 1);
+        REQUIRE(doc.undo()); CHECK(inspectorValues(doc, 1)[key] == original);
+        REQUIRE(doc.redo()); CHECK(inspectorValues(doc, 1)[key] == value); app().processEvents();
+    }
+    auto* browse = panel.findChild<QPushButton*>("inspectorBrowse.mesh"); REQUIRE(browse); browse->click(); REQUIRE(pending);
+    const auto before = doc.undoCount();
+    session.selectNode(2); app().processEvents(); pending("models/stale.mdl");
+    CHECK(doc.undoCount() == before); CHECK(inspectorValues(doc, 1)["mesh"] == "models/props/apex.mdl");
+    CHECK(inspectorValues(doc, 2)["mesh"] == "other.mdl");
+    panel.setAssetBrowser({}); app().processEvents();
+    browse = panel.findChild<QPushButton*>("inspectorBrowse.mesh"); REQUIRE(browse); CHECK_FALSE(browse->isEnabled());
+}
+
+TEST_CASE("viewport model drop places on a wall without changing the armed tool or model") {
+    app();
+    using namespace editor_test;
+    ui::MainWindow window;
+    window.newFile();
+    auto& session = window.editorSession();
+    auto& doc = *window.document();
+    addBox(doc, {-16, -64, -64}, {0, 64, 64});
+    assets::EntityClassTable table;
+    assets::EntityClass cls;
+    cls.name = "prop_static"; cls.type = "PointClass";
+    cls.mins = {-4, -8, -12}; cls.maxs = {4, 8, 12};
+    table.classes[cls.name] = cls;
+    session.setEntityClasses(std::move(table));
+    session.setPlacementModel("models/armed.mdl");
+    session.setAlignToSurface(true);
+    REQUIRE(session.perform("tool.block"));
+    viewport::Viewport view;
+    view.camera = cameraLooking({100, 0, 0}, {0, 0, 0});
+    QMimeData mime;
+    mime.setData("application/x-apex-model", "models/dropped.mdl");
+    const auto drop = [&] { return QDropEvent({400, 300}, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier); };
+    QString error;
+    const auto report = [&](const QString& message) { error = message; };
+    auto event = drop();
+    const auto before = doc.undoCount();
+    REQUIRE(ui::handleModelDrop(&session, &view, kPane, event, report));
+    CHECK(event.isAccepted());
+    CHECK(event.dropAction() == Qt::CopyAction);
+    CHECK(error.isEmpty());
+    CHECK(doc.undoCount() == before + 1);
+    const auto id = std::get<NodeId>(*session.selection().active());
+    const auto& entity = *doc.get(*doc.handle(id))->block;
+    CHECK(entity.find("classname")->decodedValue() == "prop_static");
+    CHECK(entity.find("model")->decodedValue() == "models/dropped.mdl");
+    const auto origin = entity.find("origin")->asVec3().value();
+    checkPoint({origin[0], origin[1], origin[2]}, {12, 0, 0});
+    const auto angles = entity.find("angles")->asVec3().value();
+    checkPoint(angleVectors({angles[0], angles[1], angles[2]}).up, {1, 0, 0});
+    CHECK(session.activeTool() == "tool.block");
+    CHECK(session.placementModel() == "models/armed.mdl");
+    session.setModelPlacementClass("absent");
+    auto invalid = drop();
+    CHECK_FALSE(ui::handleModelDrop(&session, &view, kPane, invalid, report));
+    CHECK_FALSE(invalid.isAccepted());
+    CHECK(error == "choose a point entity class");
+    CHECK(doc.undoCount() == before + 1);
+    editor::EditorSession detached;
+    auto noDocument = drop();
+    CHECK_FALSE(ui::handleModelDrop(&detached, &view, kPane, noDocument, report));
+    CHECK_FALSE(noDocument.isAccepted());
+    mime.clear(); mime.setText("models/plain-text.mdl");
+    auto plain = drop();
+    CHECK_FALSE(ui::handleModelDrop(&session, &view, kPane, plain, report));
+    CHECK_FALSE(plain.isAccepted());
 }

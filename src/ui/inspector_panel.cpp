@@ -92,6 +92,14 @@ protected:
     void wheelEvent(QWheelEvent* event) override { event->ignore(); }
 };
 
+// Whether the open popup (a combo's drop-down list is a top-level child of the combo) belongs to
+// `root`; isAncestorOf stops at window boundaries, so walk the parents by hand.
+bool ownsPopup(const QWidget* root) {
+    for (const QWidget* w = QApplication::activePopupWidget(); w; w = w->parentWidget())
+        if (w == root) return true;
+    return false;
+}
+
 // A form label that shrinks to the space it is given, eliding the middle of long keys. The full text
 // stays in the tooltip, so a long key never pushes the value column out of the inspector.
 class ElidedLabel : public QLabel {
@@ -292,6 +300,10 @@ void InspectorPanel::setEditorSession(editor::EditorSession* session) {
     }
     refresh();
 }
+void InspectorPanel::setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser) {
+    assetBrowser_ = std::move(browser);
+    requestRefresh();
+}
 void InspectorPanel::setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser) {
     materialBrowser_ = std::move(browser);
     requestRefresh();
@@ -323,13 +335,17 @@ bool InspectorPanel::eventFilter(QObject* object, QEvent* event) {
         }
     }
     if (event->type() == QEvent::FocusIn) object->setProperty("inspectorFocus", token());
-    if (event->type() == QEvent::FocusOut) requestRefresh();
+    // A combo's popup takes focus; rebuilding the rows then would delete the combo and its popup.
+    if (event->type() == QEvent::FocusOut &&
+        static_cast<QFocusEvent*>(event)->reason() != Qt::PopupFocusReason) requestRefresh();
     return QWidget::eventFilter(object, event);
 }
 void InspectorPanel::refresh() {
     if (rebuilding_) return;
     const bool attached = session_ && document_ && session_->document() == document_;
     auto* focus = QApplication::focusWidget();
+    // An open combo popup (a child of the combo) owns the focus: keep its row until it closes.
+    if (rows_ && ownsPopup(rows_)) return;
     if (attached && current(entities_) && focus && rows_ && rows_->isAncestorOf(focus) &&
         rows_->property("raw").toBool() == raw_->isChecked()) return;
     if (attached && focus && ((outputs_->isAncestorOf(focus) && focus != outputs_) ||
@@ -511,16 +527,26 @@ void InspectorPanel::refresh() {
                     });
                 }
             }
-            if (type == "studio" || type == "material" || type == "sound") {
+            if (type == "studio" || type == "material" || type == "sound" || type == "particlesystem") {
                 auto* browse = new QPushButton(tr("Browse…"), field);
                 browse->setObjectName(QStringLiteral("inspectorBrowse.%1").arg(text(row.key)));
-                browse->setEnabled(type == "material" && static_cast<bool>(materialBrowser_));
+                browse->setEnabled(type == "material" ? static_cast<bool>(materialBrowser_) : static_cast<bool>(assetBrowser_));
                 horizontal->addWidget(browse);
                 if (type == "material") connect(browse, &QPushButton::clicked, this,
                     [this, valid, write, currentValue = text(row.value), what = text(row.key)] {
                         if (!materialBrowser_ || !valid()) return;
                         QPointer<InspectorPanel> self(this);
                         materialBrowser_(currentValue, what, [self, write](QString value) {
+                            if (self) write(value, token());
+                        });
+                    });
+                else connect(browse, &QPushButton::clicked, this,
+                    [this, valid, write, kind = type == "studio" ? QStringLiteral("model") :
+                        type == "sound" ? QStringLiteral("sound") : QStringLiteral("particle"),
+                        currentValue = text(row.value), what = text(row.key)] {
+                        if (!assetBrowser_ || !valid()) return;
+                        QPointer<InspectorPanel> self(this);
+                        assetBrowser_(kind, currentValue, what, [self, write](QString value) {
                             if (self) write(value, token());
                         });
                     });

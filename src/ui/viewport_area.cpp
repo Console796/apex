@@ -27,6 +27,7 @@
 #include "ui/theme.hpp"
 #include "ui/viewport_pane.hpp"
 #include "ui/materials_panel.hpp"
+#include "ui/models_panel.hpp"
 #include "ui/face_properties_panel.hpp"
 #include "ui/game_content.hpp"
 #include "ui/inspector_panel.hpp"
@@ -193,9 +194,21 @@ void ViewportArea::setEditorSession(editor::EditorSession* session) {
 }
 
 void ViewportArea::setGameContent(GameContent* content) {
+    if (gameContent_) disconnect(gameContent_, nullptr, this, nullptr);
+    host_->clearModelThumbnails();
     gameContent_ = content;
+    if (content) connect(content, &GameContent::contentAboutToChange, this, [this] { host_->clearModelThumbnails(); });
     for (auto& [id, panel] : panels_) setPanelGameContent(panel, content);
     for (auto& [role, window] : floating_) if (window) setPanelGameContent(window->panel(), content);
+}
+void ViewportArea::setModelPicker(ModelsPanel* panel) {
+    modelPicker_ = panel;
+    if (panel) configurePanel(panel);
+}
+void ViewportArea::setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser) {
+    assetBrowser_ = std::move(browser);
+    for (auto& [id, panel] : panels_) configurePanel(panel);
+    for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
 }
 void ViewportArea::setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser) {
     materialBrowser_ = std::move(browser);
@@ -210,6 +223,13 @@ void ViewportArea::setOpenInstanceHandler(std::function<bool(document::NodeId)> 
     for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
 }
 void ViewportArea::configurePanel(QWidget* panel) {
+    if (auto* models = qobject_cast<ModelsPanel*>(panel)) {
+        connect(models, &ModelsPanel::modelActivated, this,
+                &ViewportArea::modelPlacementRequested, Qt::UniqueConnection);
+        models->setThumbnailSink([host = QPointer<GpuHost>(host_), models](const QString& path, bool visible) {
+            if (host) host->requestModelThumbnail(models, path, visible);
+        });
+    }
     if (auto* materials = qobject_cast<MaterialsPanel*>(panel)) {
         connect(materials, &MaterialsPanel::activeMaterialRequested, this,
                 &ViewportArea::activeMaterialRequested, Qt::UniqueConnection);
@@ -218,6 +238,7 @@ void ViewportArea::configurePanel(QWidget* panel) {
     }
     if (auto* inspector = qobject_cast<InspectorPanel*>(panel)) {
         inspector->setMaterialBrowser(materialBrowser_);
+        inspector->setAssetBrowser(assetBrowser_);
         inspector->setOpenInstanceHandler(instanceResolved_, openInstance_);
     }
     if (auto* properties = qobject_cast<FacePropertiesPanel*>(panel)) {
@@ -745,7 +766,10 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     connect(frame, &PaneFrame::activated, this, &ViewportArea::setActive);
     connect(frame, &PaneFrame::edited, this, [this](viewport::NodeId) { emit layoutChanged(); });
     connectArea(frame);
-    if (window) connect(window, &PaneWindow::cameraChanged, this, &ViewportArea::emitCamera);
+    if (window) {
+        connect(window, &PaneWindow::cameraChanged, this, &ViewportArea::emitCamera);
+        connect(window, &PaneWindow::modelPlacementFailed, this, &ViewportArea::modelPlacementFailed);
+    }
     return frame;
 }
 
@@ -779,6 +803,15 @@ void ViewportArea::tick() {
         gpuAnnounced_ = true;
         emit gpuNameChanged(host_->gpuName());
     }
+    bool interacting = drag_.has_value();
+    for (const auto& [id, frame] : frames_)
+        if (frame && frame->window()) interacting |= frame->window()->interacting();
+    for (const auto& [id, panel] : panels_)
+        if (auto* models = qobject_cast<ModelsPanel*>(panel.data())) models->syncThumbnails(interacting);
+    for (const auto& [role, window] : floating_)
+        if (window) if (auto* models = qobject_cast<ModelsPanel*>(window->panel())) models->syncThumbnails(interacting);
+    if (modelPicker_) modelPicker_->syncThumbnails(interacting);
+    host_->tickModelThumbnails(gameContent_ ? gameContent_->thumbnails() : nullptr, interacting);
     const auto pickRevision = host_->modelPickRevision();
     if (gpuReady_ && host_->pump()) forceDraw_ = true;
     if (session_ && pickRevision != host_->modelPickRevision()) session_->refreshEntityBounds();

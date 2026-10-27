@@ -82,6 +82,7 @@ target_include_directories(VulkanMemoryAllocator SYSTEM INTERFACE
                            "${VulkanMemoryAllocator_SOURCE_DIR}/include")
 
 if(APEX_BUILD_APP)
+  # Qt Multimedia (qt6-multimedia-dev) is required by apex_ui (root CMakeLists.txt).
   # Qt GuiPrivate (qt6-base-private-dev) for Wayland pointer lock. Qt-ADS was dropped in 0.2.12:
   # panels are area roles in the central split tree. Done in a function so Qt's directory-scope flag changes (it drops /EHsc on MSVC) don't leak.
   function(apex_find_qt_private)

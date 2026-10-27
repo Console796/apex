@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "assets/vfs.hpp"
+#include "assets/fgd.hpp"
 #include "assets/vmt.hpp"
 #include "core/strings.hpp"
 #include "core/job_pool.hpp"
@@ -19,6 +20,11 @@ GameContent::GameContent(QObject* parent) : QObject(parent), jobs_(std::make_uni
 GameContent::~GameContent() { clear(); }
 void GameContent::clear() {
     if (timer_) timer_->stop();
+    emit contentAboutToChange();
+    classesJob_.cancel();
+    classes_.reset();
+    modelIndex_.reset(); soundIndex_.reset(); particleIndex_.reset();
+    modelSnapshot_.reset(); soundSnapshot_.reset(); particleSnapshot_.reset();
     thumbnails_.reset();
     index_.reset();
     vfs_.reset();
@@ -26,9 +32,15 @@ void GameContent::clear() {
     profile_.reset();
     error_.clear();
     textureSizes_.clear();
+    emit contentChanged();
 }
 void GameContent::reload(const assets::GameProfile* profile) {
     if (timer_) timer_->stop();
+    emit contentAboutToChange();
+    classesJob_.cancel();
+    classes_.reset();
+    modelIndex_.reset(); soundIndex_.reset(); particleIndex_.reset();
+    modelSnapshot_.reset(); soundSnapshot_.reset(); particleSnapshot_.reset();
     thumbnails_.reset();
     index_.reset();
     vfs_.reset();
@@ -50,11 +62,25 @@ void GameContent::reload(const assets::GameProfile* profile) {
             log::info("game content: mounted {} addons", mounted);
             for (const auto& problem : vfs_->addons().problems) log::warn("game content: {}", problem);
             index_ = std::make_unique<assets::MaterialIndex>(*vfs_, *jobs_, profile_->escapeMode);
+            modelIndex_ = std::make_unique<assets::ModelIndex>(*vfs_, *jobs_, profile_->escapeMode);
+            soundIndex_ = std::make_unique<assets::SoundIndex>(*vfs_, *jobs_, profile_->escapeMode);
+            particleIndex_ = std::make_unique<assets::ParticleIndex>(*vfs_, *jobs_, profile_->escapeMode);
+            classesJob_ = jobs_->submit(Priority::Normal, [files = profile_->fgds](CancelToken) {
+                return assets::loadEntityClasses(files);
+            }, [this](Result<assets::EntityClassTable> table) {
+                if (table) classes_ = std::make_unique<assets::EntityClassTable>(std::move(*table));
+                emit classesReady();
+            });
             timer_->start();
         }
     }
     emit contentChanged();
-    if (!index_) emit indexProgress(0, 0);
+    if (!index_) {
+        emit indexProgress(0, 0);
+        emit modelIndexProgress(0, 0);
+        emit soundIndexProgress(0, 0);
+        emit particleIndexProgress(0, 0);
+    }
 }
 void GameContent::pump() {
     if (index_) {
@@ -71,10 +97,31 @@ void GameContent::pump() {
             index_.reset();
             emit indexReady();
         }
+    } else if (modelIndex_) {
+        modelIndex_->step();
+        const auto progress = modelIndex_->progress();
+        emit modelIndexProgress(progress.done, progress.total);
+        if (progress.finished) {
+            modelSnapshot_ = modelIndex_->snapshot(); modelIndex_.reset(); emit modelIndexReady();
+        }
+    } else if (soundIndex_) {
+        soundIndex_->step();
+        const auto progress = soundIndex_->progress();
+        emit soundIndexProgress(progress.done, progress.total);
+        if (progress.finished) {
+            soundSnapshot_ = soundIndex_->snapshot(); soundIndex_.reset(); emit soundIndexReady();
+        }
+    } else if (particleIndex_) {
+        particleIndex_->step();
+        const auto progress = particleIndex_->progress();
+        emit particleIndexProgress(progress.done, progress.total);
+        if (progress.finished) {
+            particleSnapshot_ = particleIndex_->snapshot(); particleIndex_.reset(); emit particleIndexReady();
+        }
     }
     if (thumbnails_ && thumbnails_->takeChanged()) emit thumbnailsReady();
     if (jobs_) jobs_->drainCompletions();
-    if (!index_ && !thumbnails_ && timer_) timer_->stop();
+    if (!index_ && !modelIndex_ && !soundIndex_ && !particleIndex_ && !thumbnails_ && timer_) timer_->stop();
 }
 std::shared_ptr<const assets::MaterialIndexSnapshot> GameContent::snapshot() const {
     return snapshot_;

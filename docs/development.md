@@ -10,7 +10,7 @@ Ubuntu 26.04 is the reference host. Install:
 
 ```bash
 sudo apt install build-essential g++-15 clang-21 libclang-rt-21-dev cmake ninja-build git python3 python3-venv \
-  qt6-base-dev qt6-base-private-dev libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers glslc \
+  qt6-base-dev qt6-base-private-dev qt6-multimedia-dev libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers glslc \
   dbus-user-session socat qemu-system-x86 ovmf
 ```
 
@@ -136,6 +136,8 @@ let you reserve the VM so CI refuses to start it.
    - CMake, Ninja, Python 3.12, Git;
    - Qt 6.10.2 `msvc2022_64` (aqtinstall) at `C:\Qt\6.10.2\msvc2022_64`;
    - the Vulkan SDK (for `glslc`).
+
+   Include Multimedia when installing Qt: `aqt install-qt windows desktop 6.10.2 win64_msvc2022_64 -m qtmultimedia`.
 3. Enable the OpenSSH Server, set it to start automatically, and allow port 22 in the firewall.
 4. Generate the host key and authorise it in the guest:
 

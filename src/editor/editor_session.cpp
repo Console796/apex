@@ -115,6 +115,7 @@ void EditorSession::detach() {
     hoverDrawable_.reset();
     hoverFace_.reset();
     workPlane_ = {};
+    placementModel_.clear();
     selection_.clear();
     notify();
 }
@@ -233,8 +234,19 @@ void EditorSession::setActiveTool(ToolId tool) {
     notify();
 }
 void EditorSession::setCurrentEntityClass(std::string classname) {
-    if (currentEntityClass_ == classname) return;
+    if (currentEntityClass_ == classname && placementModel_.empty()) return;
+    placementModel_.clear();
     currentEntityClass_ = std::move(classname);
+    notify();
+}
+void EditorSession::setPlacementModel(std::string model) {
+    if (placementModel_ == model) return;
+    placementModel_ = std::move(model);
+    notify();
+}
+void EditorSession::setModelPlacementClass(std::string classname) {
+    if (modelPlacementClass_ == classname) return;
+    modelPlacementClass_ = std::move(classname);
     notify();
 }
 void EditorSession::setAlignToSurface(bool align) {
@@ -737,9 +749,23 @@ Result<void> EditorSession::setClass(std::string classname) {
         return EditedObjects{};
     });
 }
-Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
-                                       std::optional<DVec3> normal, bool align) {
-    return runEdit("Place entity", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
+Result<EntityPlacement> EditorSession::surfacePlacement(DVec3 hit, std::optional<DVec3> normal,
+                                                       const AABB& bounds, bool align) const {
+    if (!normal) {
+        const auto resolved = workPlane_.resolve();
+        const auto& plane = resolved ? resolved->plane : fallbackPlane_;
+        hit -= plane.normal * glm::dot(hit - plane.origin, plane.normal);
+        for (const auto axis : {plane.uAxis, plane.vAxis}) {
+            const double distance = glm::dot(hit - plane.origin, axis);
+            hit += axis * (std::round(distance / gridSize_) * gridSize_ - distance);
+        }
+        normal = plane.normal;
+    }
+    return placeOnSurface(hit, *normal, bounds, align);
+}
+Result<void> EditorSession::placePointEntity(std::string classname, std::optional<std::string> model,
+                                           DVec3 hit, std::optional<DVec3> normal, bool align) {
+    return runEdit(model ? "Place model" : "Place entity", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
         const auto* cls = entityClasses_.find(classname);
         if (!cls || !ciEquals(cls->type, "PointClass"))
             return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
@@ -748,25 +774,23 @@ Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
             bounds.min = {(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]};
             bounds.max = {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]};
         }
-        if (!normal) {
-            const auto resolved = workPlane_.resolve();
-            const auto& plane = resolved ? resolved->plane : fallbackPlane_;
-            hit -= plane.normal * glm::dot(hit - plane.origin, plane.normal);
-            for (const auto axis : {plane.uAxis, plane.vAxis}) {
-                const double distance = glm::dot(hit - plane.origin, axis);
-                hit += axis * (std::round(distance / gridSize_) * gridSize_ - distance);
+        auto block = kv1::Node::block("entity");
+        block.append(kv1::Node::value("classname", cls->name)).value();
+        if (model) {
+            block.append(kv1::Node::value("model", *model)).value();
+            if (entityBoundsProvider_) {
+                if (const auto shape = entityBoundsProvider_(block))
+                    bounds = shape->model ? shape->model->bounds(shape->body)
+                                          : AABB{shape->fallback.mins, shape->fallback.maxs};
             }
-            normal = plane.normal;
         }
-        auto placement = placeOnSurface(hit, *normal, bounds, align);
+        auto placement = surfacePlacement(hit, normal, bounds, align);
         if (!placement) return std::unexpected(placement.error());
         const auto text = [](DVec3 v) {
             std::ostringstream stream;
             stream << std::setprecision(17) << v.x << ' ' << v.y << ' ' << v.z;
             return stream.str();
         };
-        auto block = kv1::Node::block("entity");
-        block.append(kv1::Node::value("classname", cls->name)).value();
         block.append(kv1::Node::value("origin", text(placement->origin))).value();
         if (placement->angles) block.append(kv1::Node::value("angles", text(*placement->angles))).value();
         const auto handle = tx.create(std::move(block));
@@ -775,10 +799,10 @@ Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
         return result;
     });
 }
-Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool align) {
+Result<EditorSession::PlacementTarget> EditorSession::placementTarget(Ray ray) const {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
     for (const auto& hit : picks_->pick(ray)) {
-        if (hit.side || hit.modelTriangle) return placeEntity(std::move(classname), hit.point, hit.normal, align);
+        if (hit.side || hit.modelTriangle) return PlacementTarget{hit.point, hit.normal};
     }
     const auto resolved = workPlane_.resolve();
     const auto& plane = resolved ? resolved->plane : fallbackPlane_;
@@ -787,7 +811,25 @@ Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool ali
         return std::unexpected(Error{ErrorCode::InvalidArgument, "ray is parallel to work plane"});
     const double t = glm::dot(plane.origin - ray.origin, plane.normal) / denominator;
     if (t < 0) return std::unexpected(Error{ErrorCode::InvalidArgument, "work plane is behind ray"});
-    return placeEntity(std::move(classname), ray.origin + ray.dir * t, std::nullopt, align);
+    return PlacementTarget{ray.origin + ray.dir * t, std::nullopt};
+}
+Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
+                                      std::optional<DVec3> normal, bool align) {
+    return placePointEntity(std::move(classname), std::nullopt, hit, normal, align);
+}
+Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool align) {
+    const auto target = placementTarget(ray);
+    if (!target) return std::unexpected(target.error());
+    return placeEntity(std::move(classname), target->point, target->normal, align);
+}
+Result<void> EditorSession::placeModel(std::string model, DVec3 hit,
+                                     std::optional<DVec3> normal, bool align) {
+    return placePointEntity(modelPlacementClass_, std::move(model), hit, normal, align);
+}
+Result<void> EditorSession::placeModel(std::string model, Ray ray, bool align) {
+    const auto target = placementTarget(ray);
+    if (!target) return std::unexpected(target.error());
+    return placeModel(std::move(model), target->point, target->normal, align);
 }
 Result<std::string> EditorSession::copyText() const {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});

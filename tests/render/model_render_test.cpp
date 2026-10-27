@@ -4,6 +4,9 @@
 #include "shared_context.hpp"
 #include "render/render_mirror.hpp"
 #include "render/view_math.hpp"
+#include "render/model_thumbnail_scheduler.hpp"
+
+#include <thread>
 #include "ui/model_pick.hpp"
 #include "editor/editor_session.hpp"
 
@@ -454,4 +457,34 @@ TEST_CASE("Instance model fixups reach drawn skin body and model without changin
     CHECK(parent.write().value() == before);
     CHECK(expansion.contents()[1].templ->write().value() == templateBefore);
     CHECK(context->validation().errorCount() == 0);
+}
+
+TEST_CASE("model thumbnail scheduler uses the asynchronous ModelCache without drawing its error model") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    Fixture fixture;
+    assets::ThumbnailCache thumbnails(*fixture.vfs, fixture.jobs, nullptr);
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    auto renderer = ModelThumbnailRenderer::create(*context, **heap); REQUIRE(renderer);
+    ModelThumbnailScheduler scheduler(*fixture.models, thumbnails, **renderer);
+    scheduler.request("models/fixture.mdl");
+    CHECK_FALSE(scheduler.tick(true));
+    CHECK(fixture.models->state("models/fixture.mdl") == assets::ModelState::Unloaded);
+    CHECK_FALSE(scheduler.tick(false));
+    CHECK(fixture.models->state("models/fixture.mdl") == assets::ModelState::Loading);
+    CHECK(scheduler.pending() == 1);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (fixture.models->state("models/fixture.mdl") == assets::ModelState::Loading &&
+           std::chrono::steady_clock::now() < deadline) {
+        fixture.jobs.drainCompletions();
+        std::this_thread::yield();
+    }
+    REQUIRE(fixture.models->state("models/fixture.mdl") == assets::ModelState::Ready);
+    CHECK(scheduler.tick(false));
+    CHECK(thumbnails.state(assets::ThumbnailKind::Model, "models/fixture.mdl", 128) == assets::ThumbnailState::Ready);
+    scheduler.request("models/missing.mdl");
+    CHECK_FALSE(scheduler.tick(false));
+    CHECK_FALSE(scheduler.tick(false));
+    CHECK(thumbnails.state(assets::ThumbnailKind::Model, "models/missing.mdl", 128) == assets::ThumbnailState::Failed);
+    CHECK(scheduler.pending() == 0);
 }

@@ -10,6 +10,7 @@
 //
 // Slot 0 is a magenta/black checkerboard; every unused or released slot also shows it.
 
+#include "assets/vtf.hpp"
 #include "core/result.hpp"
 #include "render/resources.hpp"
 #include "render/upload_ring.hpp"
@@ -17,13 +18,18 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
 namespace apex::render {
 
+// The Vulkan format a decoded texture uploads as; none for formats the heap cannot hold (float RGBA).
+std::optional<VkFormat> vulkanFormat(assets::TextureFormat format);
+
 using TextureSlot = std::uint32_t;
 inline constexpr TextureSlot kCheckerboardSlot = 0;
+inline constexpr std::uint32_t kThumbnailTextureSlots = 64;
 
 struct TextureHeapDesc {
     std::uint32_t capacity = 4096;      // Slots, clamped to the device update-after-bind limit.
@@ -48,6 +54,16 @@ class TextureHeap {
     std::uint32_t capacity() const { return capacity_; }
     UploadRing& uploadRing() { return ring_; } // Shared with mesh uploads.
 
+    // Reserves one contiguous range for the heap's lifetime. Repeated calls return the same
+    // range; normal upload/release never borrow these slots. Fails if no free range remains.
+    Result<TextureSlot> reserveThumbnailSlots();
+    // Only after prior thumbnail draws using this slot have completed. Replaces in place;
+    // the caller owns the range's LRU policy. Single mip, for a future textured thumbnail mode.
+    Result<void> uploadThumbnail(TextureSlot slot, const TextureDesc& desc, std::span<const std::byte> pixels);
+    void releaseThumbnail(TextureSlot slot);
+    std::uint32_t thumbnailSlotsLive() const;
+    std::uint32_t maxThumbnailSlotsLive() const { return maxThumbnailSlotsLive_; }
+
     // Uploads a full mip chain (mips[0] is width x height, each following level halves, rounding
     // down to a minimum of 1). Each level is tightly packed in the texture's format; compressed
     // data is uploaded as-is. The image is sampleable only after flush() (also called implicitly
@@ -67,6 +83,11 @@ class TextureHeap {
 
   private:
     TextureHeap() = default;
+    Result<TextureSlot> uploadAt(TextureSlot slot, const TextureDesc& desc,
+                                 std::span<const std::span<const std::byte>> mips);
+    bool thumbnailSlot(TextureSlot slot) const;
+    TextureSlot thumbnailFirst_ = 0;
+    std::uint32_t maxThumbnailSlotsLive_ = 0;
     void writeDescriptor(TextureSlot slot, VkImageView view);
 
     Context* context_ = nullptr;

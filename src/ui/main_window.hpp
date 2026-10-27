@@ -39,6 +39,7 @@ class OutlinerPanel;
 class ViewportArea;
 class WorkspaceBar;
 class MaterialsPanel;
+class AssetBrowserPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -52,10 +53,11 @@ public:
     void reloadProfiles();
     const assets::GameProfile* currentProfile() const;
     GameContent& gameContent() const { return *gameContent_; }
-    // The inspector's material Browse: a non-modal Materials panel in pick mode. One at a time; it is
+    // The inspector's Browse: a non-modal browser panel in pick mode. One at a time; it is
     // closed when the document is replaced and at shutdown.
     void closeMaterialPicker();
     void openMaterialPicker(QString current, QString what, std::function<void(QString)> choose);
+    void openAssetPicker(QString kind, QString current, QString what, std::function<void(QString)> choose);
 
     bool openFile(const QString& path);
     void newFile();
@@ -166,6 +168,7 @@ private:
     std::unique_ptr<GameContent> gameContent_;
     QPointer<QDialog> materialPicker_; // Bound to the document and session; closed before either changes.
     QPointer<MaterialsPanel> areaMaterialPicker_;
+    QPointer<AssetBrowserPanel> areaAssetPicker_;
     QMetaObject::Connection areaPickChosen_, areaPickCancelled_;
     editor::EditorSession session_;
     std::unique_ptr<editor::Autosave> autosave_;

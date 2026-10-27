@@ -8,7 +8,7 @@ add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core
                assets/vfs_test.cpp assets/addons_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
-               assets/material_corpus_test.cpp assets/material_index_test.cpp assets/thumbnail_test.cpp core/json_test.cpp
+               assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
@@ -20,7 +20,7 @@ editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/inspec
                editor/transform_test.cpp editor/vector_key_test.cpp editor/preview_test.cpp editor/preview_geometry_test.cpp
                editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp
                render/view_math_test.cpp render/helper_shapes_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
-               ../src/ui/model_pick.cpp render/model_render_test.cpp render/p0_point_data_test.cpp render/preview_overlay_test.cpp
+               ../src/ui/model_pick.cpp render/model_render_test.cpp render/model_thumbnail_test.cpp render/p0_point_data_test.cpp render/preview_overlay_test.cpp
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
 target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
                                          sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp
