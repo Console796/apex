@@ -263,3 +263,30 @@ TEST_CASE("placement uses the bounds' bottom centre, not the origin") {
     CHECK(placePrefab(t.session, dir.path / "missing.vmf", where).error().code == ErrorCode::NotFound);
     CHECK_FALSE(placePrefabText(t.session, "not a vmf {", where));
 }
+
+TEST_CASE("a prefab's shape and item: local bounds rest the bottom centre on the origin") {
+    Source s;
+    TempDir dir;
+    s.selectPrefab();
+    const auto file = createPrefab(s.m.session, "pair", "", dir.path);
+    REQUIRE(file);
+    const auto shape = prefabShape(*file);
+    REQUIRE(shape);
+    CHECK(shape->polygons.size() == 6); // The group's box; the entity is a point.
+    CHECK(shape->bounds.min == DVec3{0, 0, 0});
+    CHECK(shape->bounds.max == DVec3{128, 64, 64}); // Includes the relay's origin.
+    const auto item = prefabItem(*file);
+    REQUIRE(item.bounds);
+    CHECK(item.bounds->min == DVec3{-64, -32, 0});
+    CHECK(item.bounds->max == DVec3{64, 32, 64});
+    CHECK_FALSE(prefabItem(dir.path / "missing.vmf").bounds);
+
+    Map t;
+    REQUIRE(item.place);
+    const auto undo = t.doc.undoCount();
+    REQUIRE(item.place(t.session, EntityPlacement{{512, 256, 0}, std::nullopt}));
+    CHECK(t.doc.undoCount() == undo + 1);
+    const auto placed = solidBounds(t.doc);
+    CHECK(placed.min.z == doctest::Approx(0.0));
+    CHECK(placed.max.x - placed.min.x == doctest::Approx(64.0));
+}

@@ -137,6 +137,8 @@ signals:
     void layoutChanged();  // Structure or viewport settings changed (a persistence hint).
     void activeMaterialRequested(const QString& name);
     void modelPlacementRequested(const QString& path);
+    void prefabPlacementRequested(const QString& file);
+    void prefabCreateRequested();
     void modelPlacementFailed(const QString& message);
     void materialStatusMessage(const QString& message);
 

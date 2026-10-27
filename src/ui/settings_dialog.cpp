@@ -25,6 +25,7 @@
 
 #include "core/log.hpp"
 #include "editor/preset_io.hpp"
+#include "ui/game_content.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
 #include "ui/pie_menu_popup.hpp"
@@ -289,6 +290,22 @@ QWidget* SettingsDialog::buildGeneralPage() {
     const auto cap = QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt(&valid);
     undoMiB_->setValue(valid ? std::clamp(cap, 16, 8192) : 512);
     form->addRow(tr("Undo memory limit"), undoMiB_);
+
+    prefabFolder_ = new QLineEdit(QSettings().value(QStringLiteral("prefabs/folder")).toString());
+    prefabFolder_->setObjectName(QStringLiteral("settingsPrefabFolder"));
+    prefabFolder_->setPlaceholderText(tr("Default: the game's prefabs folder"));
+    prefabFolder_->setToolTip(tr("Where Create Prefab saves and the Prefabs tab lists. Empty uses the active game "
+                                 "profile's own prefabs folder."));
+    auto* prefabBrowse = new QPushButton(tr("Browse…"));
+    prefabBrowse->setObjectName(QStringLiteral("settingsPrefabFolderBrowse"));
+    connect(prefabBrowse, &QPushButton::clicked, this, [this] {
+        const auto dir = QFileDialog::getExistingDirectory(this, tr("Prefab folder"), prefabFolder_->text());
+        if (!dir.isEmpty()) prefabFolder_->setText(dir);
+    });
+    auto* prefabRow = new QHBoxLayout;
+    prefabRow->addWidget(prefabFolder_, 1);
+    prefabRow->addWidget(prefabBrowse);
+    form->addRow(tr("Prefab folder"), prefabRow);
 
     inspectorOpens_ = new QComboBox;
     inspectorOpens_->setObjectName(QStringLiteral("settingsInspectorOpens"));
@@ -721,6 +738,8 @@ bool SettingsDialog::applyAll() {
                              static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
     if (theme_->currentData().toString() != currentThemeId()) window_.setThemeId(theme_->currentData().toString());
     window_.setAutosave(autosave_->isChecked(), autosaveMinutes_->value());
+    QSettings().setValue(QStringLiteral("prefabs/folder"), prefabFolder_->text().trimmed());
+    window_.gameContent().setPrefabUserFolder(std::filesystem::path(prefabFolder_->text().trimmed().toStdString()));
     MainWindow::setInspectorInWindow(inspectorOpens_->currentData().toBool());
     MainWindow::setFacePropertiesInWindow(facePropertiesOpens_->currentData().toBool());
     MainWindow::setMaterialBrowserInWindow(materialBrowserOpens_->currentData().toBool());

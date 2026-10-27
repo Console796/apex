@@ -102,6 +102,7 @@ private:
     QCheckBox* modelEdgeOverlay_ = nullptr;
     QCheckBox* autosave_ = nullptr;
     QSpinBox* autosaveMinutes_ = nullptr;
+    QLineEdit* prefabFolder_ = nullptr;
     QSpinBox* undoMiB_ = nullptr;
     QComboBox* inspectorOpens_ = nullptr;
     QComboBox* facePropertiesOpens_ = nullptr;

@@ -404,6 +404,32 @@ static void recordSideIds(const Kv& source, const Kv& created, std::map<int, int
     for (std::size_t i = 0; i < from.size() && i < to.size(); ++i) out[from[i]] = to[i];
 }
 
+Result<FragmentShape> fragmentShape(std::string_view text) {
+    auto parsed = parseFragment(text);
+    if (!parsed) return std::unexpected(parsed.error());
+    FragmentShape shape;
+    const auto add = [&](const Kv& solid) {
+        const auto geometry = geometry::solidGeometry(solid);
+        if (!geometry) return;
+        for (const auto vertex : geometry->poly.vertices) shape.bounds.expand(vertex);
+        for (const auto& face : geometry->poly.faces) {
+            std::vector<DVec3> polygon;
+            for (const auto index : face.vertices)
+                if (index < geometry->poly.vertices.size()) polygon.push_back(geometry->poly.vertices[index]);
+            if (polygon.size() >= 3) shape.polygons.push_back(std::move(polygon));
+        }
+    };
+    for (const auto& solid : parsed->solids) add(solid);
+    for (const auto& entity : parsed->entities) {
+        bool solids = false;
+        forEachSolid(entity, [&](const Kv& solid) { solids = true; add(solid); });
+        if (solids) continue;
+        if (const auto* origin = entity.find("origin"))
+            if (const auto v = origin->asVec3()) shape.bounds.expand(DVec3{(*v)[0], (*v)[1], (*v)[2]});
+    }
+    return shape;
+}
+
 Result<EditedObjects> stagePaste(const document::Document& doc, document::Transaction& tx,
                                  std::string_view text, const PasteOptions& options) {
     using Kind = EditedObjects::Item::Kind;

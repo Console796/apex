@@ -226,6 +226,10 @@ void ViewportArea::configurePanel(QWidget* panel) {
     if (auto* models = qobject_cast<ModelsPanel*>(panel)) {
         connect(models, &ModelsPanel::modelActivated, this,
                 &ViewportArea::modelPlacementRequested, Qt::UniqueConnection);
+        connect(models, &ModelsPanel::prefabActivated, this,
+                &ViewportArea::prefabPlacementRequested, Qt::UniqueConnection);
+        connect(models, &ModelsPanel::prefabCreateRequested, this,
+                &ViewportArea::prefabCreateRequested, Qt::UniqueConnection);
         models->setThumbnailSink([host = QPointer<GpuHost>(host_), models](const QString& path, bool visible) {
             if (host) host->requestModelThumbnail(models, path, visible);
         });

@@ -1,9 +1,20 @@
 #pragma once
 
 #include "ui/asset_browser_panel.hpp"
+#include <QIcon>
+#include <filesystem>
 #include <functional>
+#include <map>
 
+class QFileSystemWatcher;
+class QLabel;
+class QLineEdit;
 class QListView;
+class QPushButton;
+class QTabBar;
+class QTimer;
+class QTreeWidget;
+class QTreeWidgetItem;
 class QSplitter;
 class QSlider;
 class QComboBox;
@@ -28,7 +39,18 @@ public:
     void setInspectSink(InspectSink sink);
     QString inspectedModel() const { return inspected_; }
 
+    // The Prefabs tab (0.4.7): the prefab folder's files grouped by subfolder. Clicking one arms it as the
+    // Entity tool's placement item (the owner handles prefabActivated). Icons are CPU renders of the
+    // prefab's solids, a few per syncThumbnails tick.
+    bool prefabsShown() const;
+    void showPrefabs(bool shown);
+    void refreshPrefabs();
+    std::size_t prefabCount() const { return prefabCount_; }
+    std::size_t pendingPrefabIcons() const { return prefabQueue_.size(); }
+
 signals:
+    void prefabActivated(QString file);
+    void prefabCreateRequested();
     void modelActivated(QString path);
     void modelChosen(QString path);
 
@@ -45,6 +67,23 @@ private:
     void inspect(const QString& name);
     void syncInspector(bool interacting);
     void releaseInspector();
+    void renderPrefabIcons(int budget);
+    void watchPrefabs(const std::filesystem::path& folder, const std::vector<std::filesystem::path>& directories);
+    QTabBar* tabs_ = nullptr;
+    QWidget* prefabsPage_ = nullptr;
+    QLineEdit* prefabFilter_ = nullptr;
+    QLabel* prefabStatus_ = nullptr;
+    QPushButton* prefabCreate_ = nullptr;
+    QTreeWidget* prefabTree_ = nullptr;
+    QFileSystemWatcher* prefabWatcher_ = nullptr;
+    QTimer* prefabRefresh_ = nullptr;
+    struct PrefabIcon { QString stamp; QIcon icon; };
+    std::map<QString, PrefabIcon> prefabIcons_;
+    std::vector<QString> prefabQueue_;
+    std::map<QString, QTreeWidgetItem*> prefabItems_;
+    std::size_t prefabCount_ = 0;
+    std::vector<QWidget*> modelWidgets_;
+    QMetaObject::Connection prefabsConnection_;
     QListView* grid_ = nullptr;
     QSlider* size_ = nullptr;
     QComboBox* mode_ = nullptr;

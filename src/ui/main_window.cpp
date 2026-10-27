@@ -71,6 +71,8 @@
 #include "ui/inspector_panel.hpp"
 #include "ui/paste_special_dialog.hpp"
 #include "ui/tie_dialog.hpp"
+#include "ui/prefab_dialog.hpp"
+#include "editor/prefab.hpp"
 #include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
 #include "ui/game_content.hpp"
@@ -144,6 +146,7 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1280, 800);
     LogPanel::startCapture();
     gameContent_ = std::make_unique<GameContent>();
+    gameContent_->setPrefabUserFolder(std::filesystem::path(QSettings().value(QStringLiteral("prefabs/folder")).toString().toStdString()));
     const auto material = QSettings().value(QStringLiteral("editor/newSolidMaterial"),
                                            QStringLiteral("dev/dev_measuregeneric01")).toString();
     const bool worldUv = QSettings().value(QStringLiteral("editor/newSolidWorldUv"), false).toBool();
@@ -188,6 +191,17 @@ MainWindow::MainWindow(QWidget* parent)
         session_.perform(editor::EditorSession::Tool::Entity);
         statusBar()->showMessage(tr("Placing %1").arg(path), 3000);
     });
+    connect(viewport_, &ViewportArea::prefabPlacementRequested, this, [this](const QString& file) {
+        auto item = editor::prefabItem(std::filesystem::path(file.toStdString()));
+        if (!item.bounds) {
+            statusBar()->showMessage(tr("Cannot read the prefab %1").arg(file), 4000);
+            return;
+        }
+        session_.setPlacementItem(std::move(item));
+        session_.perform(editor::EditorSession::Tool::Entity);
+        statusBar()->showMessage(tr("Placing prefab %1").arg(QFileInfo(file).completeBaseName()), 3000);
+    });
+    connect(viewport_, &ViewportArea::prefabCreateRequested, this, [this] { performEditAction("edit.create_prefab"); });
     connect(viewport_, &ViewportArea::modelPlacementFailed, this, [this](const QString& message) {
         statusBar()->showMessage(message, 4000);
     });
@@ -798,7 +812,7 @@ void MainWindow::updateEditorActions() {
             const bool objects = have && !editor::selectedNodes(session_.selection()).empty();
             if (id == "edit.copy" || id == "edit.cut" || id == "edit.delete" || id == "edit.duplicate" ||
                 id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world" ||
-                id == "edit.carve" || id == "edit.hollow" || id == "edit.merge")
+                id == "edit.carve" || id == "edit.hollow" || id == "edit.merge" || id == "edit.create_prefab")
                 action->setEnabled(objects);
             if (id == "edit.paste" || id == "edit.paste_in_place" || id == "edit.paste_special")
                 action->setEnabled(have && clipboardHasFragment_);
@@ -1348,6 +1362,8 @@ bool MainWindow::performEditAction(const editor::ActionId& id) {
         openPasteSpecial();
     } else if (id == "edit.tie_to_entity") {
         openTieDialog();
+    } else if (id == "edit.create_prefab") {
+        openPrefabDialog();
     } else {
         ok = session_.perform(id);
         if (!ok) say((id != "edit.carve" && id != "edit.hollow" && id != "edit.merge") || session_.topologyMessage().empty() ?
@@ -1394,12 +1410,39 @@ void MainWindow::openTieDialog() {
     dialog->show();
 }
 
+void MainWindow::openPrefabDialog() {
+    if (!document_) return;
+    if (auto* open = findChild<PrefabDialog*>(QStringLiteral("prefabDialog"))) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+    const auto folder = gameContent_->prefabFolder();
+    if (folder.empty()) {
+        statusBar()->showMessage(tr("No prefab folder: pick a game profile or set one in Preferences."), 5000);
+        return;
+    }
+    if (editor::selectedNodes(session_.selection()).empty()) {
+        statusBar()->showMessage(tr("Create Prefab: nothing is selected."), 5000);
+        return;
+    }
+    QStringList categories;
+    for (const auto& entry : editor::listPrefabs(folder)) categories << QString::fromStdString(entry.category);
+    auto* dialog = new PrefabDialog(session_, folder, categories, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &PrefabDialog::created, this, [this](const QString& file) {
+        statusBar()->showMessage(tr("Created prefab %1").arg(file), 5000);
+        gameContent_->notifyPrefabsChanged();
+    });
+    dialog->show();
+}
+
 void MainWindow::buildClipboardUi() {
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
     edit->addSeparator();
     for (const char* id : {"edit.cut", "edit.copy", "edit.paste", "edit.paste_in_place", "edit.paste_special",
                            "edit.duplicate", "edit.delete", "edit.group", "edit.ungroup", "edit.tie_to_entity",
-                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge"}) {
+                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge", "edit.create_prefab"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = edit->addAction(fromStd(entry->name));
         action->setObjectName(fromStd(entry->id));

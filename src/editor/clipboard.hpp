@@ -4,6 +4,7 @@
 #include "editor/transform.hpp"
 
 #include <string_view>
+#include <vector>
 
 namespace apex::editor {
 
@@ -55,6 +56,14 @@ struct PasteOptions {
 // otherwise they copy as loose world solids. Faces mode is an error.
 Result<std::string> serializeSelection(const document::Document& doc, const GroupIndex& groups,
                                        const Selection& selection);
+
+// What a fragment looks like, for previews: the bounds that paste rests on its plane (solids and
+// entity origins), and the face polygons of every solid (counter-clockwise from outside).
+struct FragmentShape {
+    AABB bounds;
+    std::vector<std::vector<DVec3>> polygons;
+};
+Result<FragmentShape> fragmentShape(std::string_view text);
 
 // Paste into the caller's open transaction: fresh object, side, group and visgroup IDs,
 // `groupid`s remapped, visgroups matched by name (missing ones created), `connections`

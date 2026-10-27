@@ -4,7 +4,20 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QEvent>
+#include <QDateTime>
+#include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QFontMetrics>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QSlider>
+#include <QSplitter>
+#include <QListWidget>
+#include <QTabBar>
+#include <QTimer>
+#include <QTreeWidget>
 #include <QHideEvent>
 #include <QImage>
 #include <QListView>
@@ -12,14 +25,14 @@
 #include <QPainter>
 #include <QSettings>
 #include <QItemSelectionModel>
-#include <QSlider>
-#include <QSplitter>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 
+#include "editor/prefab.hpp"
 #include "render/model_inspector.hpp"
 #include "ui/game_content.hpp"
 #include "ui/model_inspect_view.hpp"
+#include "ui/prefab_thumbnail.hpp"
 
 namespace apex::ui {
 class ModelsPanel::GridModel final : public QAbstractListModel {
@@ -137,6 +150,134 @@ ModelsPanel::ModelsPanel(QWidget* parent) : AssetBrowserPanel(Kind::Model, QStri
     connect(staticOnly_, &QCheckBox::toggled, this, [this] { invalidate(); });
     connect(grid_, &QListView::clicked, this, [this](const QModelIndex& index) { recentActivated(index.data().toString()); });
     updateGridSize();
+
+    tabs_ = new QTabBar(this);
+    tabs_->setObjectName(QStringLiteral("modelsTabs"));
+    tabs_->setExpanding(false);
+    tabs_->addTab(tr("Models"));
+    tabs_->addTab(tr("Prefabs"));
+    layout_->insertWidget(2, tabs_);
+    prefabsPage_ = new QWidget(this);
+    prefabsPage_->setObjectName(QStringLiteral("prefabsPage"));
+    auto* page = new QVBoxLayout(prefabsPage_);
+    page->setContentsMargins(0, 0, 0, 0);
+    auto* top = new QHBoxLayout;
+    prefabFilter_ = new QLineEdit(prefabsPage_);
+    prefabFilter_->setObjectName(QStringLiteral("prefabsFilter"));
+    prefabFilter_->setPlaceholderText(tr("Filter prefabs…"));
+    auto* refresh = new QPushButton(tr("Refresh"), prefabsPage_);
+    refresh->setObjectName(QStringLiteral("prefabsRefresh"));
+    prefabCreate_ = new QPushButton(tr("Create from selection…"), prefabsPage_);
+    prefabCreate_->setObjectName(QStringLiteral("prefabsCreate"));
+    top->addWidget(prefabFilter_, 1); top->addWidget(refresh); top->addWidget(prefabCreate_);
+    page->addLayout(top);
+    prefabStatus_ = new QLabel(prefabsPage_);
+    prefabStatus_->setObjectName(QStringLiteral("prefabsStatus"));
+    page->addWidget(prefabStatus_);
+    prefabTree_ = new QTreeWidget(prefabsPage_);
+    prefabTree_->setObjectName(QStringLiteral("prefabsTree"));
+    prefabTree_->setHeaderHidden(true);
+    prefabTree_->setIconSize(QSize(64, 64));
+    prefabTree_->setUniformRowHeights(true);
+    prefabTree_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    page->addWidget(prefabTree_, 1);
+    layout_->addWidget(prefabsPage_, 1);
+    prefabsPage_->hide();
+    modelWidgets_ = std::vector<QWidget*>{nameFilter_, sourceFilter_, usedFilter_, staticOnly_, progress_, recent_, split_, mode_, size_, inspectToggle_};
+    prefabWatcher_ = new QFileSystemWatcher(this);
+    prefabRefresh_ = new QTimer(this);
+    prefabRefresh_->setSingleShot(true);
+    prefabRefresh_->setInterval(250);
+    connect(prefabRefresh_, &QTimer::timeout, this, [this] { refreshPrefabs(); });
+    connect(prefabWatcher_, &QFileSystemWatcher::directoryChanged, this, [this] { prefabRefresh_->start(); });
+    connect(tabs_, &QTabBar::currentChanged, this, [this](int index) { showPrefabs(index == 1); });
+    connect(prefabFilter_, &QLineEdit::textChanged, this, [this] { refreshPrefabs(); });
+    connect(refresh, &QPushButton::clicked, this, [this] { refreshPrefabs(); });
+    connect(prefabCreate_, &QPushButton::clicked, this, &ModelsPanel::prefabCreateRequested);
+    connect(prefabTree_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item) {
+        const auto file = item->data(0, Qt::UserRole).toString();
+        if (!file.isEmpty()) emit prefabActivated(file);
+    });
+    if (QSettings().value("models/tab", 0).toInt() == 1) tabs_->setCurrentIndex(1);
+}
+bool ModelsPanel::prefabsShown() const { return tabs_ && tabs_->currentIndex() == 1; }
+void ModelsPanel::showPrefabs(bool shown) {
+    if (tabs_->currentIndex() != (shown ? 1 : 0)) { tabs_->setCurrentIndex(shown ? 1 : 0); return; }
+    QSettings().setValue("models/tab", shown ? 1 : 0);
+    for (auto* widget : modelWidgets_) widget->setVisible(!shown);
+    prefabsPage_->setVisible(shown);
+    if (shown) { releaseThumbnails(); releaseInspector(); refreshPrefabs(); }
+}
+void ModelsPanel::watchPrefabs(const std::filesystem::path& folder, const std::vector<std::filesystem::path>& directories) {
+    if (!prefabWatcher_->directories().isEmpty()) prefabWatcher_->removePaths(prefabWatcher_->directories());
+    std::error_code ec;
+    if (folder.empty() || !std::filesystem::is_directory(folder, ec)) return;
+    prefabWatcher_->addPath(QString::fromStdString(folder.string()));
+    for (const auto& directory : directories) prefabWatcher_->addPath(QString::fromStdString(directory.string()));
+}
+void ModelsPanel::refreshPrefabs() {
+    prefabQueue_.clear();
+    prefabItems_.clear();
+    prefabTree_->clear();
+    prefabCount_ = 0;
+    const auto folder = content_ ? content_->prefabFolder() : std::filesystem::path{};
+    const auto entries = editor::listPrefabs(folder);
+    std::vector<std::filesystem::path> directories;
+    const auto needle = prefabFilter_->text().trimmed();
+    std::map<QString, QTreeWidgetItem*> groups;
+    for (const auto& entry : entries) {
+        if (directories.empty() || directories.back() != entry.file.parent_path()) directories.push_back(entry.file.parent_path());
+        const auto name = QString::fromStdString(entry.name);
+        const auto category = QString::fromStdString(entry.category);
+        if (!needle.isEmpty() && !name.contains(needle, Qt::CaseInsensitive) && !category.contains(needle, Qt::CaseInsensitive)) continue;
+        auto*& group = groups[category];
+        if (!group) {
+            group = new QTreeWidgetItem(prefabTree_, QStringList(category.isEmpty() ? tr("(no category)") : category));
+            group->setFlags(Qt::ItemIsEnabled);
+            group->setExpanded(true);
+        }
+        auto* item = new QTreeWidgetItem(group, QStringList(name));
+        const auto file = QString::fromStdString(entry.file.string());
+        item->setData(0, Qt::UserRole, file);
+        item->setToolTip(0, file);
+        item->setSizeHint(0, QSize(0, 68));
+        const auto stamp = QFileInfo(file).lastModified().toString(Qt::ISODateWithMs);
+        if (auto cached = prefabIcons_.find(file); cached != prefabIcons_.end() && cached->second.stamp == stamp)
+            item->setIcon(0, cached->second.icon);
+        else {
+            QPixmap placeholder(64, 64);
+            placeholder.fill(QColor(96, 99, 104));
+            item->setIcon(0, QIcon(placeholder));
+            prefabQueue_.push_back(file);
+        }
+        prefabItems_[file] = item;
+        ++prefabCount_;
+    }
+    watchPrefabs(folder, directories);
+    std::error_code ec;
+    if (folder.empty()) prefabStatus_->setText(tr("No game profile and no prefab folder set (Preferences)."));
+    else if (!std::filesystem::is_directory(folder, ec))
+        prefabStatus_->setText(tr("No prefabs yet. Create one from a selection; the folder is %1.").arg(QString::fromStdString(folder.string())));
+    else prefabStatus_->setText(tr("%1 prefabs in %2").arg(prefabCount_).arg(QString::fromStdString(folder.string())));
+    prefabStatus_->setToolTip(prefabStatus_->text());
+}
+void ModelsPanel::renderPrefabIcons(int budget) {
+    while (budget-- > 0 && !prefabQueue_.empty()) {
+        const auto file = prefabQueue_.front();
+        prefabQueue_.erase(prefabQueue_.begin());
+        const auto found = prefabItems_.find(file);
+        if (found == prefabItems_.end()) continue;
+        const auto shape = editor::prefabShape(std::filesystem::path(file.toStdString()));
+        QPixmap pixmap(64, 64);
+        pixmap.fill(QColor(96, 99, 104));
+        if (shape) {
+            const auto image = renderPrefabThumbnail(*shape, 128);
+            if (!image.isNull()) pixmap = QPixmap::fromImage(image).scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        } else found->second->setToolTip(0, file + "\n" + QString::fromStdString(shape.error().what()));
+        const QIcon icon(pixmap);
+        prefabIcons_[file] = {QFileInfo(file).lastModified().toString(Qt::ISODateWithMs), icon};
+        found->second->setIcon(0, icon);
+    }
 }
 ModelsPanel::~ModelsPanel() { releaseThumbnails(); releaseInspector(); }
 void ModelsPanel::setInspectSink(InspectSink sink) { releaseInspector(); inspectSink_ = std::move(sink); }
@@ -208,6 +349,9 @@ void ModelsPanel::contentReset() {
     if (content_) thumbnailsConnection_ = connect(content_, &GameContent::thumbnailsReady, this, [this] {
         if (isVisible()) model_->touch();
     });
+    disconnect(prefabsConnection_);
+    if (content_) prefabsConnection_ = connect(content_, &GameContent::prefabsChanged, this, [this] { refreshPrefabs(); });
+    if (prefabTree_ && prefabsShown()) refreshPrefabs();
 }
 void ModelsPanel::setThumbnailSink(ThumbnailRequest request) { releaseThumbnails(); request_ = std::move(request); }
 void ModelsPanel::releaseThumbnails() {
@@ -217,6 +361,9 @@ void ModelsPanel::releaseThumbnails() {
 void ModelsPanel::hideEvent(QHideEvent* event) { releaseThumbnails(); releaseInspector(); AssetBrowserPanel::hideEvent(event); }
 void ModelsPanel::syncThumbnails(bool interacting) {
     if (!isVisible()) { releaseThumbnails(); releaseInspector(); return; }
+    if (tabs_->isVisible() == pickMode()) tabs_->setVisible(!pickMode()); // Picking chooses a model, never a prefab.
+    if (pickMode() && prefabsShown()) showPrefabs(false);
+    if (prefabsShown()) { if (!interacting) renderPrefabIcons(2); return; }
     syncInspector(interacting);
     if (interacting || !request_) return;
     refresh();

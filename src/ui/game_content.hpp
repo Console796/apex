@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -38,6 +39,13 @@ public:
     assets::ThumbnailCache* thumbnails() const { return thumbnails_.get(); }
     bool hasProfile() const { return profile_.has_value(); }
     const std::optional<assets::GameProfile>& profile() const { return profile_; }
+    // The prefab folder (0.4 D12): the user's folder when set, else `<game>/../hammer/prefabs` of the
+    // current profile; empty with neither. Changing the user folder, or a prefab written by Apex,
+    // emits prefabsChanged (a folder watcher in the browser covers outside edits).
+    std::filesystem::path prefabFolder() const;
+    const std::filesystem::path& prefabUserFolder() const { return prefabUserFolder_; }
+    void setPrefabUserFolder(std::filesystem::path folder);
+    void notifyPrefabsChanged() { emit prefabsChanged(); }
     QString addonName(std::size_t index) const;
     QString error() const { return error_; }
     std::pair<int, int> faceTextureSize(std::string_view material) const;
@@ -55,6 +63,7 @@ signals:
     void indexProgress(std::size_t done, std::size_t total);
     void indexReady();
     void thumbnailsReady();
+    void prefabsChanged();
 
 private slots:
     void pump();
@@ -74,6 +83,7 @@ private:
     JobHandle classesJob_;
     std::unique_ptr<assets::ThumbnailCache> thumbnails_;
     std::optional<assets::GameProfile> profile_;
+    std::filesystem::path prefabUserFolder_;
     QTimer* timer_ = nullptr;
     QString error_;
     mutable std::unordered_map<std::string, std::pair<int, int>> textureSizes_;

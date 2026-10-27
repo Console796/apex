@@ -169,4 +169,29 @@ Result<void> placePrefab(EditorSession& session, const std::filesystem::path& fi
     return placePrefabText(session, text.str(), where);
 }
 
+Result<FragmentShape> prefabShape(const std::filesystem::path& file) {
+    std::ifstream stream(file, std::ios::binary);
+    if (!stream) return std::unexpected(Error{ErrorCode::NotFound, "cannot open " + file.string()});
+    std::ostringstream text;
+    text << stream.rdbuf();
+    auto fragment = prefabFragment(text.str());
+    if (!fragment) return std::unexpected(fragment.error());
+    return fragmentShape(*fragment);
+}
+
+AABB prefabLocalBounds(const AABB& bounds) {
+    const DVec3 half = (bounds.max - bounds.min) * 0.5;
+    return AABB{{-half.x, -half.y, 0.0}, {half.x, half.y, half.z * 2.0}};
+}
+
+PrefabItem prefabItem(const std::filesystem::path& file) {
+    PrefabItem item;
+    item.path = file.string();
+    if (const auto shape = prefabShape(file); shape && !shape->bounds.empty()) item.bounds = prefabLocalBounds(shape->bounds);
+    item.place = [file](EditorSession& session, const EntityPlacement& placement) {
+        return placePrefab(session, file, PrefabPlacement{placement.origin, std::nullopt, std::nullopt});
+    };
+    return item;
+}
+
 } // namespace apex::editor

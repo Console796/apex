@@ -137,9 +137,9 @@ Qt. The largest directory after `editor`, and the only one that includes Qt head
 | Shell | `main_window.hpp/.cpp` (the window), `area_frame.cpp`, `workspace_bar.cpp`, `theme.hpp/.cpp`, `theme_editor.cpp`, `settings_dialog.cpp` |
 | Viewports | `viewport_area.hpp/.cpp`, `viewport_pane.hpp/.cpp`, `gpu_host.hpp/.cpp` (puts Vulkan into a Qt window), `uv_view.cpp` |
 | Panels | `outliner_panel.cpp`, `inspector_panel.cpp`, `history_panel.cpp`, `log_panel.cpp`, `visgroup_panel.cpp`, `face_properties_panel.cpp`, `tool_parameter_strip.cpp` |
-| Asset browsers | `asset_browser_panel.cpp`, `materials_panel.cpp`, `models_panel.cpp`, `model_inspect_view.hpp/.cpp`, `model_pick.hpp/.cpp`, `sounds_panel.cpp`, `sound_preview.cpp`, `particles_panel.cpp`, `game_content.hpp/.cpp` |
+| Asset browsers | `asset_browser_panel.cpp`, `materials_panel.cpp`, `models_panel.cpp`, `prefab_thumbnail.cpp`, `model_inspect_view.hpp/.cpp`, `model_pick.hpp/.cpp`, `sounds_panel.cpp`, `sound_preview.cpp`, `particles_panel.cpp`, `game_content.hpp/.cpp` |
 | Input | `key_chord.hpp/.cpp`, `pie_menu_popup.cpp`, `pointer_lock.hpp/.cpp`, `pointer_lock_wayland.cpp` (Wayland-only), `input_log.hpp/.cpp`, `transform_input.cpp` |
-| Dialogs | `paste_special_dialog.cpp`, `transform_dialog.cpp`, `tie_dialog.cpp`, `recovery_dialog.cpp`, `rename_confirmation.cpp` |
+| Dialogs | `paste_special_dialog.cpp`, `transform_dialog.cpp`, `tie_dialog.cpp`, `prefab_dialog.cpp`, `recovery_dialog.cpp`, `rename_confirmation.cpp` |
 | Icons | `icons/` and `icons.qrc`, compiled into the executable |
 
 ## `src/app/` (layer `app`)

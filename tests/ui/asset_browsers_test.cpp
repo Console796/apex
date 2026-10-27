@@ -1,6 +1,7 @@
 // Apex-authored browser fixtures, generated only under a temporary directory.
 #include "test_app.hpp"
 #include "../assets/fixture.hpp"
+#include "../editor/fixtures.hpp"
 #include <doctest/doctest.h>
 #include <QAction>
 #include <QCheckBox>
@@ -34,6 +35,8 @@
 #include "render/model_inspector.hpp"
 #include "ui/model_inspect_view.hpp"
 #include "ui/models_panel.hpp"
+#include "ui/prefab_dialog.hpp"
+#include "editor/prefab.hpp"
 #include "ui/sounds_panel.hpp"
 #include "ui/particles_panel.hpp"
 #include "ui/viewport_area.hpp"
@@ -587,4 +590,97 @@ TEST_CASE("Models area click arms session placement and activates the Entity too
     picker->setCurrentIndex(picker->findText("apex_fixture"));
     CHECK(session.placementModel().empty());
     CHECK(session.currentEntityClass() == "apex_fixture");
+}
+
+TEST_CASE("Prefabs tab lists the prefab folder by category, renders thumbnails, and arms a placement item") {
+    app(); GameTree tree; const auto profile = fixture(tree);
+    ui::MainWindow window; window.setProfiles({profile}); finish(window.gameContent()); window.newFile();
+    QTemporaryDir folder; REQUIRE(folder.isValid());
+    window.gameContent().setPrefabUserFolder(std::filesystem::path(folder.path().toStdString()));
+    auto* doc = window.document(); REQUIRE(doc);
+    const auto box = editor_test::addBox(*doc, {0, 0, 0}, {128, 64, 64});
+    auto& session = window.editorSession();
+    session.perform("selection.mode.solids");
+    session.selectNode(editor_test::id(*doc, box));
+    REQUIRE(editor::createPrefab(session, "crate", "props", std::filesystem::path(folder.path().toStdString())));
+    REQUIRE(editor::createPrefab(session, "loose", "", std::filesystem::path(folder.path().toStdString())));
+
+    auto* area = window.viewportArea(); area->setLayout(viewport::ViewportLayout::quad());
+    const auto pane = area->viewportLayout().paneIds().front();
+    area->setRole(pane, viewport::AreaRole::Models); area->flush(); window.show(); app().processEvents();
+    auto* panel = qobject_cast<ui::ModelsPanel*>(area->panel(pane)); REQUIRE(panel);
+    CHECK_FALSE(panel->prefabsShown());
+    panel->showPrefabs(true); app().processEvents();
+    CHECK(panel->prefabsShown());
+    CHECK(panel->prefabCount() == 2);
+    auto* tree_ = child<QTreeWidget>(*panel, "prefabsTree");
+    REQUIRE(tree_->topLevelItemCount() == 2);
+    QStringList categories;
+    for (int i = 0; i < tree_->topLevelItemCount(); ++i) categories << tree_->topLevelItem(i)->text(0);
+    CHECK(categories.contains("props"));
+    panel->syncThumbnails(false); app().processEvents();
+    CHECK(panel->pendingPrefabIcons() == 0);
+    QTreeWidgetItem* crate = nullptr;
+    for (int i = 0; i < tree_->topLevelItemCount(); ++i)
+        if (tree_->topLevelItem(i)->text(0) == "props") crate = tree_->topLevelItem(i)->child(0);
+    REQUIRE(crate);
+    CHECK(crate->text(0) == "crate");
+    CHECK_FALSE(crate->icon(0).isNull());
+
+    session.perform(editor::EditorSession::Tool::Select);
+    tree_->scrollToItem(crate);
+    QTest::mouseClick(tree_->viewport(), Qt::LeftButton, Qt::NoModifier, tree_->visualItemRect(crate).center());
+    CHECK(session.activeTool() == editor::EditorSession::Tool::Entity);
+    const auto item = session.placementItem();
+    const auto* prefab = std::get_if<editor::PrefabItem>(&item);
+    REQUIRE(prefab);
+    CHECK(std::filesystem::path(prefab->path).filename() == "crate.vmf");
+    REQUIRE(prefab->bounds);
+    CHECK(prefab->bounds->min.z == doctest::Approx(0.0));
+    CHECK(prefab->bounds->max.x == doctest::Approx(64.0));
+
+    // A prefab written later shows up after a refresh.
+    REQUIRE(editor::createPrefab(session, "later", "props", std::filesystem::path(folder.path().toStdString())));
+    panel->refreshPrefabs();
+    CHECK(panel->prefabCount() == 3);
+}
+
+TEST_CASE("Create Prefab from Selection opens its dialog, writes the file and refreshes the list") {
+    app(); GameTree tree; const auto profile = fixture(tree);
+    ui::MainWindow window; window.setProfiles({profile}); finish(window.gameContent()); window.newFile();
+    QTemporaryDir folder; REQUIRE(folder.isValid());
+    const auto root = std::filesystem::path(folder.path().toStdString());
+    window.gameContent().setPrefabUserFolder(root);
+    auto* action = window.findChild<QAction*>("edit.create_prefab"); REQUIRE(action);
+    CHECK_FALSE(action->isEnabled());
+    auto* doc = window.document(); REQUIRE(doc);
+    const auto box = editor_test::addBox(*doc, {0, 0, 0}, {64, 64, 64});
+    auto& session = window.editorSession();
+    session.perform("selection.mode.solids");
+    session.selectNode(editor_test::id(*doc, box));
+    app().processEvents();
+    CHECK(action->isEnabled());
+    int changed = 0;
+    QObject::connect(&window.gameContent(), &ui::GameContent::prefabsChanged, [&] { ++changed; });
+    action->trigger();
+    auto* dialog = window.findChild<ui::PrefabDialog*>("prefabDialog"); REQUIRE(dialog);
+    dialog->setPrefabName("");
+    CHECK_FALSE(dialog->create());
+    CHECK_FALSE(dialog->error().isEmpty());
+    dialog->setPrefabName("a/b");
+    CHECK_FALSE(dialog->create());
+    dialog->setPrefabName("wall"); dialog->setCategory("walls");
+    dialog->accept();
+    CHECK(std::filesystem::exists(root / "walls" / "wall.vmf"));
+    CHECK(changed == 1);
+    app().sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(window.findChild<ui::PrefabDialog*>("prefabDialog") == nullptr);
+    // The same name again is refused unless replacing is ticked.
+    action->trigger();
+    dialog = window.findChild<ui::PrefabDialog*>("prefabDialog"); REQUIRE(dialog);
+    dialog->setPrefabName("wall"); dialog->setCategory("walls");
+    CHECK_FALSE(dialog->create());
+    dialog->setOverwrite(true);
+    CHECK(dialog->create());
+    dialog->reject();
 }

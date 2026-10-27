@@ -145,6 +145,7 @@ private:
     void buildClipboardUi();
     void openPasteSpecial();
     void openTieDialog();
+    void openPrefabDialog();
     QStringList solidClasses();
     void refreshClipboardState();
     void updateEditorActions();

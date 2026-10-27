@@ -1,5 +1,7 @@
 #pragma once
 
+#include "editor/clipboard.hpp"
+#include "editor/placement_item.hpp"
 #include "editor/transform.hpp"
 
 #include <filesystem>
@@ -58,5 +60,17 @@ struct PrefabPlacement {
 // One undo step; the placed objects become the selection. A failure leaves the document alone.
 Result<void> placePrefabText(EditorSession& session, std::string_view fileText, const PrefabPlacement& where);
 Result<void> placePrefab(EditorSession& session, const std::filesystem::path& file, const PrefabPlacement& where);
+
+// The solids and bounds of a prefab file, for thumbnails and the placement ghost.
+Result<FragmentShape> prefabShape(const std::filesystem::path& file);
+
+// The ghost box of a prefab whose contents span `bounds`: the same size, with the bottom centre at
+// the origin, which is where `placePrefab` puts it (the bounds rest on the plane through `at`).
+AABB prefabLocalBounds(const AABB& bounds);
+
+// The placement item for a prefab file: its local bounds (absent when the file cannot be read) and a
+// placer that runs `placePrefab` at the surface placement's origin. Surface alignment angles are not
+// applied: a prefab lands upright, as a paste does.
+PrefabItem prefabItem(const std::filesystem::path& file);
 
 } // namespace apex::editor

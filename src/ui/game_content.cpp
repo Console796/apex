@@ -10,6 +10,7 @@
 #include "core/strings.hpp"
 #include "core/job_pool.hpp"
 #include "core/log.hpp"
+#include "editor/prefab.hpp"
 
 namespace apex::ui {
 GameContent::GameContent(QObject* parent) : QObject(parent), jobs_(std::make_unique<JobPool>(2)) {
@@ -33,6 +34,15 @@ void GameContent::clear() {
     error_.clear();
     textureSizes_.clear();
     emit contentChanged();
+}
+std::filesystem::path GameContent::prefabFolder() const {
+    if (prefabUserFolder_.empty() && !profile_) return {};
+    return editor::prefabFolder(profile_ ? profile_->gameDirectory : std::filesystem::path{}, prefabUserFolder_);
+}
+void GameContent::setPrefabUserFolder(std::filesystem::path folder) {
+    if (folder == prefabUserFolder_) return;
+    prefabUserFolder_ = std::move(folder);
+    emit prefabsChanged();
 }
 void GameContent::reload(const assets::GameProfile* profile) {
     if (timer_) timer_->stop();
