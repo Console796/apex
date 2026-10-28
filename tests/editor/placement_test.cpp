@@ -266,3 +266,43 @@ TEST_CASE("session model placement falls back to the snapped work plane and defa
         CHECK(doc.undoCount() == 1);
     }
 }
+
+TEST_CASE("placing lights serializes effective FGD defaults and keeps placement overrides") {
+    Document doc(parsed());
+    EditorSession session;
+    session.attach(doc);
+    assets::EntityClass light;
+    light.name = "light_rt";
+    light.type = "PointClass";
+    light.properties = {
+        {"_light", "color255", "Brightness", "255 255 255 200"},
+        {"_lightscaleHDR", "float", "HDR scale", "1"},
+        {"_quadratic_attn", "string", "Quadratic", "1"},
+        {"_directmode", "choices", "Direct light mode", "2"},
+        {"spawnflags", "flags", "Flags", "0"},
+        {"origin", "origin", "Origin", "0 0 0"},
+        {"angles", "angle", "Angles", "0 0 0"},
+        {"targetname", "string", "Name", ""},
+        {"readonly", "string", "Read only", "hidden", "", true},
+    };
+    assets::EntityClassTable classes;
+    classes.classes[light.name] = light;
+    session.setEntityClasses(std::move(classes));
+    const auto before = doc.write().value();
+    REQUIRE(session.placeEntity("light_rt", DVec3{20, 30, 40}, DVec3{0, 1, 0}, true));
+    const auto id = std::get<NodeId>(session.selection().ordered().front());
+    const auto* block = doc.get(*doc.handle(id))->block.get();
+    CHECK(block->find("_light")->decodedValue() == "255 255 255 200");
+    CHECK(block->find("_lightscaleHDR")->decodedValue() == "1");
+    CHECK(block->find("_quadratic_attn")->decodedValue() == "1");
+    CHECK(block->find("_directmode")->decodedValue() == "2");
+    CHECK(block->find("spawnflags")->decodedValue() == "0");
+    CHECK(block->find("origin")->decodedValue() != "0 0 0");
+    CHECK(block->find("angles")->decodedValue() != "0 0 0");
+    CHECK_FALSE(block->find("targetname"));
+    CHECK_FALSE(block->find("readonly"));
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == before);
+    REQUIRE(doc.redo());
+    CHECK(doc.get(*doc.handle(id))->block->find("_light")->decodedValue() == "255 255 255 200");
+}

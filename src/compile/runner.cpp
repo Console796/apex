@@ -74,6 +74,15 @@ Result<void> CompileJob::start() {
             }
             add("-game", game->second);
         }
+        if (const auto game = paths_.variables.find("gamedir"); command.executable != "$game_exe" &&
+            !paths_.contentGameDirectory.empty() && game != paths_.variables.end()) {
+            for (std::size_t arg = 0; arg + 1 < step.args.size(); ++arg) {
+                if ((step.args[arg] == "-game" || step.args[arg] == "-vproject") &&
+                    std::filesystem::path(step.args[arg + 1]).lexically_normal() ==
+                        std::filesystem::path(game->second).lexically_normal())
+                    step.args[arg + 1] = paths_.contentGameDirectory.string();
+            }
+        }
         if (command.executable == "$game_exe") step.args = withConsoleLog(std::move(step.args));
         const auto bsp = paths_.variables.find("bsp_exe");
         if (command.executable == "$bsp_exe" || (bsp != paths_.variables.end() && step.program == bsp->second))

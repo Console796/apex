@@ -37,6 +37,9 @@ public:
     Result<Blob> openPrefix(std::string_view path, std::size_t maxBytes) const;
     bool exists(std::string_view path) const;
     const AddonList& addons() const;
+    // A compile-only gameinfo with this VFS's ordered mounts and original engine metadata.
+    // Its write path stays beside the generated gameinfo, never in the installed game.
+    Result<std::string> compileGameInfo() const;
     std::optional<std::size_t> provider(std::string_view path) const;
     // Immediate files only, sorted canonical virtual paths, duplicates removed. '*' and '?'
     // match filenames case-insensitively; directories themselves are not returned.

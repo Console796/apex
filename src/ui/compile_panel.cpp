@@ -334,10 +334,17 @@ void CompilePanel::startCompile(bool withGame) {
     diagnosticLines_ = 0;
     refreshDiagnostics();
     const auto& game = *content_->profile();
-    editor::CompileGamePaths paths{game.gameDirectory, game.toolDirectory(), game.instanceSearchRoot(), {}};
+    editor::CompileGamePaths paths{game.gameDirectory, game.toolDirectory(), game.instanceSearchRoot(), {},
+                                   content_->classes(), game.escapeMode};
     for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"},
              {"light_exe", "vrad"}, {"postcompiler_exe", "postcompiler"}, {"game_exe", "game"}})
         paths.tools[variable] = game.toolPath(tool).string();
+    if (const auto vfs = content_->vfs(); vfs && std::ranges::any_of(vfs->addons().entries,
+            [](const auto& addon) { return addon.mounted; })) {
+        auto info = vfs->compileGameInfo();
+        if (!info) { error_ = QString::fromStdString(info.error().what()); refresh(); return; }
+        paths.contentGameInfo = std::move(*info);
+    }
     auto snapshot = editor::writeCompileSnapshot(*document_, source_, cache_, paths,
         profile.cordonOnly ? std::optional(editor::CompileCordon{profile.cordonMaterial}) : std::nullopt);
     if (!snapshot) { error_ = QString::fromStdString(snapshot.error().what()); refresh(); return; }

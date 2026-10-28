@@ -84,6 +84,8 @@ struct Vfs::Impl {
         fs::path path;
     };
     AddonList addons;
+    fs::path gameDirectory;
+    kv1::Document gameInfo;
     std::vector<Mount> mounts;
     std::map<std::string, LooseFile> loose;
 
@@ -168,6 +170,8 @@ Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver app
     }
     const auto gameDir = fs::absolute(gameinfos.front().parent_path());
     const auto engineDir = gameDir.parent_path();
+    result.impl_->gameDirectory = gameDir;
+    result.impl_->gameInfo = *parsed;
     for (const auto& node : search->children()) {
         bool game = false;
         for (auto id : split(node.key(), '+')) {
@@ -497,6 +501,44 @@ std::string Vfs::displayPath(std::string_view path) const {
         if (auto entry = mount.entries.find(key); entry != mount.entries.end()) return entry->second;
     }
     return key;
+}
+
+Result<std::string> Vfs::compileGameInfo() const {
+    auto info = impl_->gameInfo;
+    auto* root = info.root().find("GameInfo");
+    auto* filesystem = root ? root->find("FileSystem") : nullptr;
+    auto* search = filesystem ? filesystem->find("SearchPaths") : nullptr;
+    if (!search) return std::unexpected(Error{ErrorCode::ParseError, "Missing compile FileSystem/SearchPaths"});
+    const auto absolute = [&](std::string path) {
+        for (const auto& [token, replacement] : {
+                 std::pair{"|gameinfo_path|", impl_->gameDirectory.generic_string() + '/'},
+                 std::pair{"|all_source_engine_paths|", impl_->gameDirectory.parent_path().generic_string() + '/'}}) {
+            if (toLowerAscii(path).starts_with(token)) {
+                path.replace(0, std::char_traits<char>::length(token), replacement);
+                break;
+            }
+        }
+        return (impl_->gameDirectory.parent_path() / fs::path(path)).lexically_normal().generic_string();
+    };
+    auto paths = kv1::Node::block("SearchPaths");
+    paths.append(kv1::Node::value("game+mod+default_write_path", "|gameinfo_path|.")).value();
+    for (const auto& mount : impl_->mounts) {
+        const auto path = mount.archive ? fs::path(mount.archive->getFilepath()) : mount.directory;
+        paths.append(kv1::Node::value("game", fs::absolute(path).lexically_normal().generic_string())).value();
+    }
+    for (const auto& entry : search->children()) {
+        bool game = false;
+        for (const auto id : split(entry.key(), '+')) game |= ciEquals(id, "game");
+        if (!game && active(entry) && entry.kind() == kv1::NodeKind::Value)
+            paths.append(kv1::Node::value(std::string(entry.key()), absolute(text(entry)))).value();
+    }
+    *search = std::move(paths);
+    if (auto* fgd = root->find("GameData")) {
+        auto path = fs::path(text(*fgd));
+        if (path.is_relative()) path = impl_->gameDirectory / path;
+        *fgd = kv1::Node::value("GameData", path.lexically_normal().generic_string());
+    }
+    return kv1::write(info);
 }
 
 } // namespace apex::assets

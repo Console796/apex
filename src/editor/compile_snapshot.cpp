@@ -1,6 +1,9 @@
 #include "editor/compile_snapshot.hpp"
 
 #include "document/cordon.hpp"
+#include "editor/entity_defaults.hpp"
+
+#include <algorithm>
 
 #include <fstream>
 #include <regex>
@@ -12,10 +15,41 @@
 namespace apex::editor {
 namespace {
 
+Result<std::string> lightDefaults(std::string text, const CompileGamePaths& game) {
+    if (!game.classes) return text;
+    auto parsed = kv1::parse(text, game.escapeMode);
+    if (!parsed) return std::unexpected(parsed.error());
+    bool changed = false;
+    const auto visit = [&](const auto& self, kv1::Node& block) -> Result<void> {
+        if (ciEquals(block.key(), "entity")) {
+            const auto* name = block.find("classname");
+            const auto* cls = name ? game.classes->find(name->decodedValue().value_or("")) : nullptr;
+            // Existing non-light entities retain their original omission semantics. For lights,
+            // compile exactly the effective values shown by the inspector, preserving explicit zeros.
+            if (cls && std::ranges::any_of(cls->properties, [](const auto& p) { return ciEquals(p.name, "_light"); })) {
+                for (const auto& [key, value] : missingEntityDefaults(block, *cls)) {
+                    auto appended = block.append(kv1::Node::value(key, value));
+                    if (!appended) return std::unexpected(appended.error());
+                    changed = true;
+                }
+            }
+        }
+        for (auto& child : block.children()) {
+            if (child.kind() != kv1::NodeKind::Block) continue;
+            auto result = self(self, child);
+            if (!result) return result;
+        }
+        return {};
+    };
+    auto result = visit(visit, parsed->root());
+    if (!result) return std::unexpected(result.error());
+    return changed ? kv1::write(*parsed) : Result<std::string>{std::move(text)};
+}
+
 // vbsp resolves an instance `file` from the VMF's folder, then from the one -instancepath. The snapshot sits in
 // a cache folder, so instances that exist only beside the source map are copied in, keeping their relative path.
-void copySourceInstances(const std::string& text, const std::filesystem::path& sourceDirectory,
-    const std::filesystem::path& work) {
+Result<void> copySourceInstances(const std::string& text, const std::filesystem::path& sourceDirectory,
+    const std::filesystem::path& work, const CompileGamePaths& game) {
     static const std::regex fileKey(R"vmf("file"\s+"([^"]+\.vmf)")vmf", std::regex::icase);
     namespace fs = std::filesystem;
     std::set<fs::path> copied;
@@ -34,14 +68,20 @@ void copySourceInstances(const std::string& text, const std::filesystem::path& s
                 if (copied.insert(candidate).second) {
                     const auto to = work / candidate;
                     fs::create_directories(to.parent_path());
-                    fs::copy_file(from, to, fs::copy_options::overwrite_existing);
                     std::ifstream in(from, std::ios::binary);
-                    pending.emplace_back(std::string(std::istreambuf_iterator<char>(in), {}), candidate.parent_path());
+                    in.exceptions(std::ios::failbit | std::ios::badbit);
+                    auto instance = lightDefaults(std::string(std::istreambuf_iterator<char>(in), {}), game);
+                    if (!instance) return std::unexpected(instance.error().withContext(from.string()));
+                    std::ofstream out(to, std::ios::binary);
+                    out.exceptions(std::ios::failbit | std::ios::badbit);
+                    out << *instance;
+                    pending.emplace_back(std::move(*instance), candidate.parent_path());
                 }
                 break;
             }
         }
     }
+    return {};
 }
 
 } // namespace
@@ -50,6 +90,8 @@ Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
     const std::filesystem::path& source, const std::filesystem::path& cache,
     const CompileGamePaths& game, const std::optional<CompileCordon>& cordon) {
     auto text = document.write();
+    if (!text) return std::unexpected(text.error());
+    text = lightDefaults(std::move(*text), game);
     if (!text) return std::unexpected(text.error());
     if (cordon) {
         const auto boxes = document::readCordons(document).compileBoxes();
@@ -83,7 +125,17 @@ Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
         out.exceptions(std::ios::failbit | std::ios::badbit);
         out.write(text->data(), static_cast<std::streamsize>(text->size()));
         out.close();
-        if (!source.empty()) copySourceInstances(*text, source.parent_path(), paths.workDirectory);
+        if (!source.empty()) {
+            auto copied = copySourceInstances(*text, source.parent_path(), paths.workDirectory, game);
+            if (!copied) return std::unexpected(copied.error());
+        }
+        if (game.contentGameInfo) {
+            paths.contentGameDirectory = paths.workDirectory / "content";
+            std::filesystem::create_directories(paths.contentGameDirectory);
+            std::ofstream info(paths.contentGameDirectory / "gameinfo.txt", std::ios::binary);
+            info.exceptions(std::ios::failbit | std::ios::badbit);
+            info << *game.contentGameInfo;
+        }
         paths.bspDirectory = game.gameDirectory / "maps";
         paths.toolDirectory = game.toolDirectory;
         paths.instanceRoot = game.instanceRoot;

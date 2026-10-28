@@ -2,6 +2,7 @@
 
 #include "compile/runner.hpp"
 #include "document/document.hpp"
+#include "core/entity_class.hpp"
 
 namespace apex::editor {
 
@@ -11,6 +12,10 @@ struct CompileGamePaths {
     std::filesystem::path toolDirectory;
     std::filesystem::path instanceRoot;
     compile::Variables tools;
+    // Supply effective light defaults for maps authored before placement serialized FGD defaults.
+    const assets::EntityClassTable* classes = nullptr;
+    kv1::EscapeMode escapeMode = kv1::EscapeMode::Strata;
+    std::optional<std::string> contentGameInfo;
 };
 
 struct CompileSnapshot {

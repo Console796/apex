@@ -7,6 +7,7 @@
 #include "core/strings.hpp"
 #include "editor/select_tool.hpp"
 #include "editor/entity_tool.hpp"
+#include "editor/entity_defaults.hpp"
 #include "editor/block_tool.hpp"
 #include "editor/primitive_tool.hpp"
 #include "editor/clip_tool.hpp"
@@ -772,8 +773,20 @@ Result<void> EditorSession::setChoice(std::size_t row, std::string value, std::s
 }
 Result<void> EditorSession::setClass(std::string classname) {
     return runEdit("Change class", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
-        auto result = inspectorModel().setClass(tx, std::move(classname));
+        const auto model = inspectorModel();
+        const auto* cls = entityClasses_.find(classname);
+        std::vector<NodeId> changed;
+        for (const auto id : model.entities()) {
+            const auto* old = document_->get(*document_->handle(id))->block->find("classname");
+            if (!old || !ciEquals(old->decodedValue().value_or(""), classname)) changed.push_back(id);
+        }
+        auto result = model.setClass(tx, std::move(classname));
         if (!result) return std::unexpected(result.error());
+        if (cls) for (const auto id : changed) {
+            const auto handle = *document_->handle(id);
+            for (const auto& [key, value] : missingEntityDefaults(*document_->get(handle)->block, *cls))
+                tx.setKeyValue(handle, key, value);
+        }
         return EditedObjects{};
     });
 }
@@ -826,6 +839,8 @@ Result<void> EditorSession::placePointEntity(std::string classname, std::optiona
         };
         block.append(kv1::Node::value("origin", text(placement->origin))).value();
         if (placement->angles) block.append(kv1::Node::value("angles", text(*placement->angles))).value();
+        for (const auto& [key, value] : missingEntityDefaults(block, *cls))
+            block.append(kv1::Node::value(key, value)).value();
         const auto handle = tx.create(std::move(block));
         EditedObjects result;
         result.items.push_back({document_->get(handle)->id, EditedObjects::Item::Kind::Entity, {}, {}});

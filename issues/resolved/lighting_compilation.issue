@@ -1,0 +1,29 @@
+Severity:
+7/10
+Problem:
+Cant seem to get custom lighting working.
+Instances' lighting also dont seem to contribute.
+Compiler exits with no issues.
+Projected texture lights dont have this problem.
+Reproduce:
+Open ~/maps/apex/test1.vmf
+Compile
+No lighting.
+
+Resolution:
+New point entities and actual class changes now serialize missing writable FGD defaults.
+Compile snapshots also supply missing defaults for existing light entities and copied local
+instances, preserving explicit values (including zero) and leaving source maps unchanged.
+The reproduction light_rt omitted _light despite the inspector displaying its FGD default.
+Native VRAD confirmed its intensity changed from zero to nonzero after this fix.
+
+Instance elevator lights were already contributing, confirmed by native worldlights and the
+reporter's follow-up. Mounted PBR addon materials were independently missing from VBSP's
+search paths, causing SURF_NOLIGHT/fullbright surfaces. Compilation now uses a temporary
+gameinfo with Apex's ordered VFS mounts, without changing the installed game configuration.
+
+Validation:
+32 targeted tests (23,540 assertions) and 158 UI tests (4,277 assertions) passed.
+Native VBSP, VVIS and VRAD passed on the generated reproduction snapshot, with nonzero custom
+light intensity, PBR texinfo flags 0x820 (no SURF_NOLIGHT), and nonzero HDR lightmap samples.
+See docs/plans/probe-results/lighting_compilation.md for details.

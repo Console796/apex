@@ -516,3 +516,24 @@ TEST_CASE("compile game step failing to start fails the job") {
     CHECK(job.status() == Status::Failed);
     CHECK(job.steps()[0].status == Status::Failed);
 }
+
+TEST_CASE("compile content override applies to tools while game launches keep the real game directory") {
+    JobFixture f;
+    f.tree.put("bin/game", "fake");
+    f.paths.variables["game_exe"] = (f.tree.root / "bin/game").string();
+    f.paths.contentGameDirectory = f.paths.workDirectory / "content";
+    f.profile.commands = {{"$bsp_exe", "-game $gamedir map"}, {"$game_exe", "-game $gamedir +map test", true, false}};
+    f.profile.runGameAfter = true;
+    f.runner.scripts = {{{"compiled"}, 0, false}};
+    CompileJob job(f.profile, f.paths, f.runner, f.files);
+    REQUIRE(job.start());
+    CHECK(job.status() == Status::Ok);
+    REQUIRE(f.runner.calls.size() == 1);
+    REQUIRE(f.runner.detached.size() == 1);
+    const auto gameArgument = [](const std::vector<std::string>& arguments) {
+        const auto flag = std::ranges::find(arguments, "-game");
+        return flag == arguments.end() || flag + 1 == arguments.end() ? std::string{} : *(flag + 1);
+    };
+    CHECK(gameArgument(f.runner.calls.front().args) == f.paths.contentGameDirectory.string());
+    CHECK(gameArgument(f.runner.detached.front().args) == f.paths.variables.at("gamedir"));
+}

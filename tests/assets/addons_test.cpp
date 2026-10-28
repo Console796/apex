@@ -6,6 +6,8 @@
 #include "fixture.hpp"
 
 #include <algorithm>
+#include <fstream>
+#include <iterator>
 #include <doctest/doctest.h>
 #include <vpkpp/format/VPK.h>
 
@@ -325,4 +327,43 @@ TEST_CASE("addons unmounted index reads loose names and VPK trees once with list
     CHECK(rebuilt.provider("materials/probe.vmt") == 1); // Archive-only file.
     addons->entries[1].mounted = true;
     CHECK_FALSE(UnmountedAddonIndex(*addons).provider("materials/probe.vmt"));
+}
+
+TEST_CASE("compile content gameinfo preserves addon precedence and anchors engine metadata") {
+    GameTree tree;
+    auto profile = setup(tree);
+    const std::string original = R"(GameInfo { GameData "entities.fgd" FileSystem {
+        SteamAppId 440000 SearchPaths { game "Game/custom/*" game+mod+default_write_path "|gameinfo_path|."
+        gamebin "|gameinfo_path|bin" } } })";
+    tree.put("Game/gameinfo.txt", original);
+    tree.put("Game/entities.fgd", "fixture");
+    pak(tree, "FirstAddon/pack_dir.vpk", "archive");
+    list(tree, false, entry(tree.root / "FirstAddon", true, "[\"pack_dir.vpk\"]"));
+    JobPool jobs(2);
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    CHECK(read(*vfs) == "archive");
+    auto info = vfs->compileGameInfo();
+    REQUIRE(info);
+    auto parsed = kv1::parse(*info);
+    REQUIRE(parsed);
+    auto* root = parsed->root().find("GameInfo");
+    REQUIRE(root);
+    CHECK(root->find("GameData")->decodedValue() == (tree.root / "Game/entities.fgd").generic_string());
+    auto* fs = root->find("FileSystem");
+    REQUIRE(fs);
+    CHECK(fs->find("SteamAppId")->decodedValue() == "440000");
+    auto* search = fs->find("SearchPaths");
+    REQUIRE(search);
+    CHECK(search->find("game+mod+default_write_path")->decodedValue() == "|gameinfo_path|.");
+    CHECK(search->find("gamebin")->decodedValue() == (tree.root / "Game/bin").generic_string());
+    tree.put("Compile content/gameinfo.txt", *info);
+    profile.gameDirectory = tree.root / "Compile content";
+    profile.addons.enabled = false;
+    auto compiler = Vfs::load(profile, jobs);
+    REQUIRE(compiler);
+    CHECK(read(*compiler) == "archive");
+    CHECK(read(*compiler, "materials/base.vmt") == "base");
+    std::ifstream source(tree.root / "Game/gameinfo.txt");
+    CHECK(std::string(std::istreambuf_iterator<char>(source), {}) == original);
 }

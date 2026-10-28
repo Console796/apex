@@ -55,6 +55,7 @@ struct CompilePaths {
     std::filesystem::path addonDirectory;
     std::filesystem::path toolDirectory;
     std::filesystem::path instanceRoot;
+    std::filesystem::path contentGameDirectory; // Compile tools only; game launches keep $gamedir.
 };
 
 class CompileJob {

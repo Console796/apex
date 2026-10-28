@@ -102,8 +102,10 @@ Campaign IDs are scoped by bucket: `base/x`, `addon:<folder>/x`, `workshop:<id>/
 
 `vbsp`, `vvis`, `vrad`, `vtex`, `bspzip` and `height2ssbump` all embed `addons/addonlist.kv3` and
 honour `mounted` *(strings)*. Each one resolves it against its `-game` directory, so a compile
-sees **the game's** mount set, not the one Hammer showed. The tools also accept `-mountmod <absolute
-path>`. Both points are unverified (P1).
+sees **the game's** mount set, not necessarily the one Apex showed. Native verification on
+2026-10-28 found that VBSP could not see mounted EverythingPBR content and rejected `-mountmod`.
+A temporary compile-only gameinfo with explicit VFS search paths resolved the missing material
+and removed its erroneous `SURF_NOLIGHT` flag; see `probe-results/lighting_compilation.md`.
 
 ### 1.5 What Apex does today
 
@@ -203,10 +205,10 @@ the Vfs provenance (D1). It appears in the entity report (0.4) and the compile s
 
 ### D8: Compiles see what the editor sees
 
-At compile time Apex compares the mount set it's editing with against the one the tools will read
-(P1). If they differ, it either passes the difference with `-mountmod`, if P1 shows that works, or
-warns before running with the exact list of addons that differ. It never edits the game's list
-silently.
+When addons are mounted, Apex writes a temporary compile-only gameinfo containing the ordered
+VFS mounts and anchored engine metadata. Compile tools use that directory; BSP installation and
+game launches keep the original game directory. The installed gameinfo and addon list remain
+untouched. Native verification is recorded in `probe-results/lighting_compilation.md`.
 
 ### D9: Authoring stops at scaffolding and handoff; uploading stays with Strata's uploader
 

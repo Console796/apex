@@ -176,3 +176,25 @@ TEST_CASE("inspector constructs for every P2CE class") {
         for (std::size_t i = 0; i < cls.properties.size(); ++i) CHECK(model.rows()[i].key == cls.properties[i].name);
     }
 }
+
+TEST_CASE("changing entity class fills only missing defaults in the same undo step") {
+    Document doc(parsed(R"(entity { id 1 classname info_target origin "1 2 3" _light "0 0 0 0" custom retained })"));
+    auto table = classes();
+    EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(std::move(table));
+    const auto id = doc.roots().front();
+    session.selectNode(id);
+    const auto before = doc.write().value();
+    const auto undo = doc.undoCount();
+    REQUIRE(session.setClass("test"));
+    CHECK(text(doc, id, "text") == "hello");
+    CHECK(text(doc, id, "spawnflags") == "1");
+    CHECK(text(doc, id, "origin") == "1 2 3");
+    CHECK(text(doc, id, "_light") == "0 0 0 0");
+    CHECK(text(doc, id, "custom") == "retained");
+    CHECK_FALSE(doc.get(*doc.handle(id))->block->find("locked"));
+    CHECK(doc.undoCount() == undo + 1);
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == before);
+}
