@@ -69,6 +69,15 @@ ASAN_OPTIONS=detect_leaks=0 build/linux-asan/tests/apex_tests -tc='*face*'   # o
   ```
 
   Don't start a bare nested `kwin_wayland`.
+
+  The manual 0.5.1 real-tool gate is `python3 tools/chamber_runner_check.py` with
+  `APEX_P2CE_DIR` set and both linux-asan test binaries built. It generates D17's
+  Apex-authored chamber and runs `compile_chamber` through the real Fast profile
+  (vbsp, vvis, vrad and BSP copy), without launching the game. VMFs, snapshots and
+  copied BSPs stay under `/tmp`; the install is read-only. The driver uses the
+  offscreen environment above, falling back to `DBUS_SESSION_BUS_ADDRESS=disabled:`
+  if `dbus-run-session` cannot create a bus. The doctest skips unless both
+  `APEX_P2CE_DIR` and `APEX_CHAMBER_VMF` are set.
 - **Corpus tests:** tests that read the P2CE corpus skip without `APEX_P2CE_DIR` (see §4).
 - **Fixtures:** files in `tests/fixtures/` must be Apex-authored. Valve, P2CE and Strata content
   is never committed.

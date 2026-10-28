@@ -4,6 +4,8 @@
 #include "../compile/scripted_runner.hpp"
 #include "ui/compile_panel.hpp"
 #include "ui/game_content.hpp"
+#include "../editor/corpus.hpp"
+#include "editor/compile_snapshot.hpp"
 
 #include <QElapsedTimer>
 #include <QLabel>
@@ -12,6 +14,7 @@
 #include <QTableWidget>
 #include <QTest>
 #include <fstream>
+#include <cstdlib>
 #ifdef __linux__
 #include <csignal>
 #include <unistd.h>
@@ -26,6 +29,74 @@ bool until(const std::function<bool()>& condition, int timeout = 5000) {
     return condition();
 }
 }
+
+#ifdef __linux__
+TEST_CASE("compile_chamber Fast profile through real QProcessRunner" *
+          doctest::skip([] {
+              const auto* install = std::getenv("APEX_P2CE_DIR");
+              const auto* chamber = std::getenv("APEX_CHAMBER_VMF");
+              return !install || !*install || !chamber || !*chamber;
+          }())) {
+    ui_test::app();
+    const auto install = std::filesystem::canonical(std::getenv("APEX_P2CE_DIR"));
+    const auto source = std::filesystem::canonical(std::getenv("APEX_CHAMBER_VMF"));
+    assets::GameProfile game;
+    game.gameDirectory = install / "p2ce";
+    REQUIRE(std::filesystem::is_regular_file(game.gameDirectory / "gameinfo.txt"));
+    editor::CompileGamePaths paths{game.gameDirectory, game.toolDirectory(), game.instanceSearchRoot(), {}};
+    for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"},
+             {"light_exe", "vrad"}, {"postcompiler_exe", "postcompiler"}, {"game_exe", "game"}})
+        paths.tools[variable] = game.toolPath(tool).string();
+    QTemporaryDir directory(QStringLiteral("/tmp/apex-compile-chamber-XXXXXX"));
+    REQUIRE(directory.isValid());
+    const auto root = std::filesystem::canonical(directory.path().toStdString());
+    const auto outsideInstall = [&](const std::filesystem::path& path) {
+        const auto relative = std::filesystem::weakly_canonical(path).lexically_relative(install);
+        return !relative.empty() && *relative.begin() == "..";
+    };
+    REQUIRE(outsideInstall(root));
+    document::Document document(editor_test::readCorpus(source));
+    auto snapshot = editor::writeCompileSnapshot(document, source, root, paths);
+    REQUIRE_MESSAGE(snapshot, (snapshot ? "" : snapshot.error().what()));
+    REQUIRE(outsideInstall(snapshot->paths.workDirectory));
+    snapshot->paths.bspDirectory = root / "maps";
+    REQUIRE(outsideInstall(snapshot->paths.bspDirectory));
+    std::filesystem::create_directory(snapshot->paths.bspDirectory);
+    snapshot->paths.variables["bspdir"] = snapshot->paths.bspDirectory.string();
+    auto profiles = compile::builtinProfiles();
+    auto profile = profiles.front();
+    REQUIRE(profile.name == "Fast");
+    profile.runGameAfter = false;
+    ui::QProcessRunner runner;
+    compile::FilesystemFileOps files;
+    compile::CompileJob job(profile, snapshot->paths, runner, files);
+    auto started = job.start();
+    REQUIRE_MESSAGE(started, (started ? "" : started.error().what()));
+    REQUIRE(until([&] { return job.status() != compile::Status::Running; }, 600000));
+    for (std::size_t i = 0; i < job.steps().size(); ++i) {
+        const auto& step = job.steps()[i];
+        CAPTURE(i);
+        CAPTURE(step.message);
+        for (const auto& line : step.lines) {
+            INFO(line);
+            CHECK(line.find("LEAKED") == std::string::npos);
+        }
+        if (profile.commands[i].executable == "$postcompiler_exe" ||
+            profile.commands[i].executable == "$game_exe")
+            CHECK(step.status == compile::Status::Skipped);
+        else
+            CHECK(step.status == compile::Status::Ok);
+    }
+    CHECK(job.status() == compile::Status::Ok);
+    const auto bsp = source.stem().string() + ".bsp";
+    REQUIRE(std::filesystem::is_regular_file(snapshot->paths.workDirectory / bsp));
+    REQUIRE(std::filesystem::is_regular_file(snapshot->paths.bspDirectory / bsp));
+    CHECK(std::filesystem::file_size(snapshot->paths.workDirectory / bsp) ==
+          std::filesystem::file_size(snapshot->paths.bspDirectory / bsp));
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root))
+        CHECK(entry.path().extension() != ".lin");
+}
+#endif
 
 #ifdef __linux__
 TEST_CASE("compile QProcess runner merges output, inherits environment and replays completion") {
