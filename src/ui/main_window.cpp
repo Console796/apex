@@ -1,4 +1,5 @@
 #include "ui/main_window.hpp"
+#include "ui/compile_panel.hpp"
 #include "ui/game_content.hpp"
 
 
@@ -14,6 +15,7 @@
 #include <QCheckBox>
 #include <QCompleter>
 #include <QDir>
+#include <QDockWidget>
 #include <QFile>
 #include <QFileSystemWatcher>
 #include <QFileDialog>
@@ -312,6 +314,8 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+    compilePanel_->setDocument(nullptr);
+    compilePanel_->setGameContent(nullptr);
     delete piePopup_.data();
     closeMaterialPicker();
     session_.unobserve(sessionObserver_);
@@ -436,6 +440,23 @@ void MainWindow::buildMenus() {
         editorActions_.emplace(entry.id, action);
         connect(action, &QAction::triggered, this, [this, id = entry.id] { session_.perform(id); });
     }
+
+    auto* compileMenu = new QMenu(tr("&Compile"), this);
+    menuBar()->insertMenu(viewMenu_->menuAction(), compileMenu);
+    compileMenu->setObjectName(QStringLiteral("menuCompile"));
+    auto* compileDock = new QDockWidget(tr("Compile"), this);
+    compileDock->setObjectName(QStringLiteral("compileDock"));
+    compilePanel_ = new CompilePanel(compileDock);
+    compilePanel_->setGameContent(gameContent_.get());
+    compileDock->setWidget(compilePanel_);
+    addDockWidget(Qt::BottomDockWidgetArea, compileDock);
+    compileDock->hide();
+    compileMenu->addAction(compileDock->toggleViewAction());
+    compileMenu->addAction(tr("Run"), this, [this, compileDock] {
+        compileDock->show();
+        compilePanel_->run();
+    });
+    compileMenu->addAction(tr("Cancel"), compilePanel_, &CompilePanel::cancel);
 
     addonsMenu_ = menuBar()->addMenu(tr("&Addons"));
     addonsMenu_->setObjectName(QStringLiteral("menuAddons"));
@@ -1617,10 +1638,13 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     closeMaterialPicker();
     viewport_->setDocument(nullptr);
     session_.detach();
+    compilePanel_->setDocument(nullptr);
     document_ = std::move(doc);
     document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
     session_.attach(*document_);
     path_ = path;
+    compilePanel_->setDocument(document_.get());
+    compilePanel_->setSourcePath(std::filesystem::path(path_.toStdU16String()));
     const auto* profile = currentProfile();
     session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
         profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
@@ -1736,6 +1760,7 @@ bool MainWindow::saveFile(const QString& path) {
     if (path_ != path) {
         autosave_.reset();
         path_ = path;
+        compilePanel_->setSourcePath(std::filesystem::path(path_.toStdU16String()));
         const auto* profile = currentProfile();
         session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
             profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);

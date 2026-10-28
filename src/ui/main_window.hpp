@@ -32,6 +32,7 @@ class Document;
 
 namespace apex::ui {
 
+class CompilePanel;
 class PieMenuPopup;
 class GameContent;
 class LogPanel;
@@ -167,6 +168,7 @@ private:
 
     std::unique_ptr<document::Document> document_;
     std::unique_ptr<GameContent> gameContent_;
+    CompilePanel* compilePanel_ = nullptr;
     QPointer<QDialog> materialPicker_; // Bound to the document and session; closed before either changes.
     QPointer<MaterialsPanel> areaMaterialPicker_;
     QPointer<AssetBrowserPanel> areaAssetPicker_;
