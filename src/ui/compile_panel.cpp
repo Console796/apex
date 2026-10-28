@@ -1,4 +1,5 @@
 #include "ui/compile_panel.hpp"
+#include "ui/asset_report_builder.hpp"
 
 #include "compile/wc_import.hpp"
 #include "ui/cordon_editor.hpp"
@@ -114,6 +115,28 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
         if (session_ && session_->compileOverlay())
             if (const auto start = session_->compileOverlay()->leakStart()) emit focusRequested(*start);
     });
+    auto* problemRow = new QHBoxLayout;
+    auto* check = new QPushButton(tr("Check for problems"), this);
+    check->setObjectName(QStringLiteral("problemsCheck"));
+    problemFilter_ = new QComboBox(this);
+    problemFilter_->setObjectName(QStringLiteral("problemsFilter"));
+    problemFilter_->addItems({tr("All"), tr("Errors and warnings"), tr("Errors")});
+    problemSummary_ = new QLabel(this);
+    problemSummary_->setObjectName(QStringLiteral("problemsSummary"));
+    problemRow->addWidget(check);
+    problemRow->addWidget(problemFilter_);
+    problemRow->addWidget(problemSummary_, 1);
+    layout->addLayout(problemRow);
+    problemsTable_ = new QTableWidget(0, 2, this);
+    problemsTable_->setObjectName(QStringLiteral("problemsTable"));
+    problemsTable_->setHorizontalHeaderLabels({tr("Severity"), tr("Problem")});
+    problemsTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    problemsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    problemsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    layout->addWidget(problemsTable_);
+    connect(check, &QPushButton::clicked, this, [this] { checkProblems(); });
+    connect(problemFilter_, &QComboBox::currentIndexChanged, this, [this] { refreshProblemList(); });
+    connect(problemsTable_, &QTableWidget::cellClicked, this, [this](int row) { activateProblem(row); });
     auto* filterRow = new QHBoxLayout;
     severity_ = new QComboBox(this);
     severity_->setObjectName(QStringLiteral("compileSeverity"));
@@ -157,6 +180,9 @@ void CompilePanel::setDocument(document::Document* document) {
     revision_.reset();
     document_ = document;
     cordons_->setDocument(document);
+    problems_.clear();
+    problemsBefore_.reset();
+    refreshProblemList();
     error_.clear();
     log_->clear();
     steps_->setRowCount(0);
@@ -203,6 +229,18 @@ void CompilePanel::run() {
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
         confirmed_.insert(index);
     }
+    checkProblems();
+    const int errors = editor::countProblems(problems_, editor::ProblemSeverity::Error);
+    const int warnings = editor::countProblems(problems_, editor::ProblemSeverity::Warning);
+    if (errors > 0) {
+        const bool proceed = gate_ ? gate_(errors, warnings)
+            : QMessageBox::question(this, tr("Problems in the map"),
+                  tr("The map has %1 error(s) and %2 warning(s). The compile will probably fail.\n\nCompile anyway?")
+                      .arg(errors).arg(warnings),
+                  QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        if (!proceed) return;
+    }
+    problemsBefore_ = std::pair{errors, warnings};
     job_.reset();
     revision_.reset();
     steps_->setRowCount(0);
@@ -320,10 +358,49 @@ void CompilePanel::refreshDiagnostics() {
     if (!job_) { summary_->clear(); return; }
     const auto summary = compile::summarize(diagnostics_, job_->steps());
     QStringList parts;
+    if (problemsBefore_)
+        parts << tr("Problems before: %1 errors, %2 warnings").arg(problemsBefore_->first).arg(problemsBefore_->second);
     for (const auto& [tool, counts] : summary.tools)
         parts << tr("%1: %2 errors, %3 warnings").arg(QString::fromStdString(tool)).arg(counts.errors).arg(counts.warnings);
     if (summary.seconds) parts << tr("%1 s in tools").arg(summary.seconds);
     summary_->setText(parts.isEmpty() ? tr("No problems reported") : parts.join(QStringLiteral(" · ")));
+}
+
+const std::vector<editor::Problem>& CompilePanel::checkProblems() {
+    problems_.clear();
+    if (document_) problems_ = collectMapProblems(*document_, content_, session_);
+    refreshProblemList();
+    return problems_;
+}
+void CompilePanel::refreshProblemList() {
+    shownProblems_.clear();
+    problemsTable_->setRowCount(0);
+    const int level = problemFilter_->currentIndex();
+    for (std::size_t i = 0; i < problems_.size(); ++i) {
+        const auto& p = problems_[i];
+        if (level == 1 && p.severity == editor::ProblemSeverity::Note) continue;
+        if (level == 2 && p.severity != editor::ProblemSeverity::Error) continue;
+        const int row = problemsTable_->rowCount();
+        problemsTable_->insertRow(row);
+        shownProblems_.push_back(static_cast<int>(i));
+        problemsTable_->setItem(row, 0, new QTableWidgetItem(tr(editor::severityName(p.severity))));
+        problemsTable_->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(p.text)));
+    }
+    problemSummary_->setText(problems_.empty() ? tr("No problems found") :
+        tr("%1 errors, %2 warnings, %3 notes")
+            .arg(editor::countProblems(problems_, editor::ProblemSeverity::Error))
+            .arg(editor::countProblems(problems_, editor::ProblemSeverity::Warning))
+            .arg(editor::countProblems(problems_, editor::ProblemSeverity::Note)));
+}
+void CompilePanel::activateProblem(int row) {
+    if (row < 0 || row >= static_cast<int>(shownProblems_.size()) || !document_ || !session_) return;
+    const auto& problem = problems_[static_cast<std::size_t>(shownProblems_[static_cast<std::size_t>(row)])];
+    std::vector<editor::Target> targets;
+    for (const auto id : problem.objects) if (document_->handle(id)) targets.emplace_back(id);
+    if (targets.empty()) return;
+    session_->selection().setMode(editor::SelectionMode::Objects);
+    session_->selection().replace(targets);
+    emit frameRequested();
 }
 
 void CompilePanel::activateDiagnostic(int row) {

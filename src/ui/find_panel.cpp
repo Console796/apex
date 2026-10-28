@@ -1,4 +1,5 @@
 #include "ui/find_panel.hpp"
+#include "ui/asset_report_builder.hpp"
 
 #include "editor/instance_templates.hpp"
 #include "ui/game_content.hpp"
@@ -284,44 +285,10 @@ void FindPanel::refreshEntities() {
 void FindPanel::refreshProblems() {
     if (!problems_ || !document_) return;
     problems_->clear(); addons_->clear();
-    // The report's names are as written in the map; each kind resolves differently (0.4 D11).
-    // Sounds and particles come from the browsers' indexes, and an index still building counts as present
-    // rather than flooding the report with false misses.
-    const auto vfsPath = [](editor::AssetKind kind, std::string_view name) -> std::optional<std::string> {
-        if (kind == editor::AssetKind::Material) return "materials/" + std::string(name) + ".vmt";
-        if (kind == editor::AssetKind::Model) return std::string(name);
-        if (kind == editor::AssetKind::Sound) {
-            const auto key = assets::SoundKind::key(name);
-            if (key.ends_with(".wav") || key.ends_with(".mp3")) return key;
-        }
-        return std::nullopt;
-    };
-    const auto exists = [this, vfsPath](editor::AssetKind kind, std::string_view name) {
-        if (!content_) return false;
-        if (const auto path = vfsPath(kind, name)) return content_->assetExists(*path);
-        if (kind == editor::AssetKind::Sound) {
-            const auto snapshot = content_->soundSnapshot();
-            return !snapshot || snapshot->find(name) != nullptr;
-        }
-        if (kind == editor::AssetKind::Particle) {
-            const auto snapshot = content_->particleSnapshot();
-            return !snapshot || snapshot->find(name) != nullptr;
-        }
-        const auto* session = session_;
-        return !session || editor::resolveInstanceFile(session->connectionMapPath(), name, session->connectionExtraRoot());
-    };
-    const auto provider = [this, vfsPath](editor::AssetKind kind, std::string_view name) -> std::optional<std::string> {
-        const auto path = vfsPath(kind, name);
-        return content_ && path ? content_->assetProviderName(*path) : std::nullopt;
-    };
-    const editor::AssetProvider unmountedAddon = [this, vfsPath](editor::AssetKind kind, std::string_view name) -> std::optional<std::string> {
-        auto path = vfsPath(kind, name);
-        if (!content_ || !path) return {};
-        auto addon = content_->unmountedAddon(*path);
-        return addon ? std::optional(content_->addonName(*addon).toStdString()) : std::nullopt;
-    };
+    const auto vfsPath = assetVfsPath;
+    const auto reportPtr = buildAssetReport(*document_, content_, session_);
+    const auto& report = *reportPtr;
     const auto* classes = content_ ? content_->classes() : nullptr;
-    editor::AssetReport report(*document_, exists, unmountedAddon, provider, classes);
     const auto known = [classes](std::string_view classname) { return !classes || classes->find(classname) != nullptr; };
     editor::Problems issues;
     if (session_ && session_->document() == document_)

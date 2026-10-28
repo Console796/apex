@@ -523,3 +523,62 @@ TEST_CASE("cordon editor adds, edits, deactivates and removes cordons as undoabl
     CHECK(doc.undo());
     CHECK(list->count() == 1);
 }
+
+TEST_CASE("compile panel lists problems, gates a compile on errors and reports problems before") {
+    ui_test::app();
+    QTemporaryDir dir;
+    const auto root = std::filesystem::path(dir.path().toStdU16String());
+    assets::GameProfile game;
+    game.gameDirectory = root / "game";
+    for (const auto* tool : {"vbsp", "vvis", "vrad"}) {
+        std::ofstream(root / tool) << "fake";
+        game.toolPaths[tool] = root / tool;
+    }
+    ui::GameContent content;
+    content.reload(&game);
+    document::Document doc(editor_test::parsed(
+        "world { id 1 classname worldspawn }\n"
+        "entity { id 20 classname func_detail }\n"));
+    compile::test::ScriptedRunner runner;
+    runner.scripts.push_back({{}, 0, true});
+    ui::CompilePanel panel;
+    panel.setDocument(&doc);
+    panel.setGameContent(&content);
+    panel.setCacheDirectory(root / "cache");
+    panel.setProcessRunner(&runner);
+    auto* table = panel.findChild<QTableWidget*>("problemsTable");
+    auto* filter = panel.findChild<QComboBox*>("problemsFilter");
+    auto* summary = panel.findChild<QLabel*>("problemsSummary");
+    REQUIRE(table); REQUIRE(filter); REQUIRE(summary);
+
+    panel.findChild<QPushButton*>("problemsCheck")->click();
+    CHECK(summary->text().contains("1 errors, 1 warnings"));
+    CHECK(table->rowCount() == 2); // the empty brush entity, then the missing info_player_start
+    filter->setCurrentIndex(2);
+    CHECK(table->rowCount() == 1);
+    CHECK(table->item(0, 1)->text().contains("no brushes"));
+    filter->setCurrentIndex(0);
+
+    int asked = 0;
+    bool allow = false;
+    panel.setProblemGate([&](int errors, int warnings) { ++asked; CHECK(errors == 1); CHECK(warnings == 1); return allow; });
+    panel.run();
+    CHECK(asked == 1);
+    CHECK(runner.handles.empty()); // the gate declined, so nothing started
+
+    allow = true;
+    panel.run();
+    CHECK(asked == 2);
+    REQUIRE(runner.handles.size() == 1);
+    panel.refresh();
+    CHECK(panel.findChild<QLabel*>("compileSummary")->text().contains("Problems before: 1 errors, 1 warnings"));
+
+    // Fixing the planted problems clears the list and the gate no longer asks.
+    panel.cancel();
+    document::Document clean(editor_test::parsed(
+        "world { id 1 classname worldspawn }\nentity { id 2 classname info_player_start origin \"0 0 0\" }\n"));
+    panel.setDocument(&clean);
+    CHECK(panel.checkProblems().empty());
+    CHECK(summary->text().contains("No problems"));
+    panel.setDocument(nullptr);
+}

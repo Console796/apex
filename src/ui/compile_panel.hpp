@@ -3,8 +3,10 @@
 #include "compile/diagnostics.hpp"
 #include "editor/compile_snapshot.hpp"
 #include "editor/editor_session.hpp"
+#include "editor/map_problems.hpp"
 #include "ui/qprocess_runner.hpp"
 #include <QWidget>
+#include <functional>
 #include <optional>
 #include <set>
 
@@ -38,12 +40,21 @@ public:
     // Selects the diagnostic row's objects in the document and asks for them to be framed.
     void activateDiagnostic(int row);
     int profileCount() const { return static_cast<int>(profiles_.size()); }
+    // Runs the map checks (D8) and fills the Problems list; returns what was found.
+    const std::vector<editor::Problem>& checkProblems();
+    // Selects a problem row's objects and asks for them to be framed.
+    void activateProblem(int row);
+    // Asked before a compile when the checks found errors; false cancels the compile. Warnings and notes
+    // never ask. The default shows a question box.
+    using ProblemGate = std::function<bool(int errors, int warnings)>;
+    void setProblemGate(ProblemGate gate) { gate_ = std::move(gate); }
 signals:
     void frameRequested();
     // Asks to bring a world point into view (the leak start, a diagnostic that names a position).
     void focusRequested(DVec3 point);
 private:
     void refreshDiagnostics();
+    void refreshProblemList();
     void loadOverlay();
     void overlayControlsChanged();
     void importProfiles();
@@ -76,6 +87,13 @@ private:
     QComboBox* cluster_;
     QPushButton* goToLeak_;
     CordonEditor* cordons_;
+    QComboBox* problemFilter_;
+    QLabel* problemSummary_;
+    QTableWidget* problemsTable_;
+    std::vector<editor::Problem> problems_;
+    std::vector<int> shownProblems_; // problems_ index per table row
+    std::optional<std::pair<int, int>> problemsBefore_; // errors, warnings at the last compile start
+    ProblemGate gate_;
     std::filesystem::path overlayDirectory_;
     std::string overlayName_;
     bool overlayLoaded_ = true;
