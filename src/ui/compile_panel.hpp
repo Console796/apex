@@ -1,6 +1,8 @@
 #pragma once
 
+#include "compile/diagnostics.hpp"
 #include "editor/compile_snapshot.hpp"
+#include "editor/editor_session.hpp"
 #include "ui/qprocess_runner.hpp"
 #include <QWidget>
 #include <optional>
@@ -24,14 +26,20 @@ public:
     void setDocument(document::Document* document);
     void setSourcePath(std::filesystem::path path) { source_ = std::move(path); }
     void setGameContent(GameContent* content) { content_ = content; }
+    void setEditorSession(editor::EditorSession* session) { session_ = session; }
     // The injected runner must outlive the panel's job. Changing it cancels the current job.
     void setProcessRunner(compile::ProcessRunner* runner);
     void setCacheDirectory(std::filesystem::path path) { cache_ = std::move(path); }
     void run();
     void cancel();
     void refresh();
+    // Selects the diagnostic row's objects in the document and asks for them to be framed.
+    void activateDiagnostic(int row);
     int profileCount() const { return static_cast<int>(profiles_.size()); }
+signals:
+    void frameRequested();
 private:
+    void refreshDiagnostics();
     void importProfiles();
     void editProfile();
     void deleteProfile();
@@ -39,6 +47,7 @@ private:
     void stopJob();
     document::Document* document_ = nullptr;
     GameContent* content_ = nullptr;
+    editor::EditorSession* session_ = nullptr;
     std::filesystem::path source_, cache_;
     QProcessRunner realRunner_;
     compile::ProcessRunner* runner_ = &realRunner_;
@@ -55,6 +64,12 @@ private:
     QPushButton* cancel_;
     QTableWidget* steps_;
     QPlainTextEdit* log_;
+    QComboBox* severity_;
+    QLabel* summary_;
+    QTableWidget* diagnosticsTable_;
+    std::vector<compile::Diagnostic> diagnostics_;
+    std::vector<int> shown_; // diagnostics_ index per table row
+    std::size_t diagnosticLines_ = 0;
     QTimer* timer_;
     QString error_;
     bool cancelling_ = false;

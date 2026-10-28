@@ -1,0 +1,10 @@
+Valve Software - vbsp (Apr 23 2026)
+Command line: "<install>/bin/linux64/vbsp" "-game" "<install>/p2ce" "<work>/missing_instance.vmf" 
+
+24 threads
+MSG_FILEWRITE - Filesystem was asked to write to '<work>/missing_instance.log', but we don't own that location. Allowing...
+Loading <work>/missing_instance.vmf
+Material not found!: tile/black_wall_metal_002a
+Could not open instance file apex_nowhere.vmf
+
+[exit 1]

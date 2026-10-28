@@ -1,0 +1,11 @@
+Valve Software - vbsp (Apr 23 2026)
+Command line: "<install>/bin/linux64/vbsp" "-game" "<install>/p2ce" "<work>/invalid_brush.vmf" 
+
+24 threads
+MSG_FILEWRITE - Filesystem was asked to write to '<work>/invalid_brush.log', but we don't own that location. Allowing...
+Loading <work>/invalid_brush.vmf
+Brush 1: FloatPlane: bad normal
+Side 0
+Texture: tile/white_wall_tile003a
+
+[exit 1]

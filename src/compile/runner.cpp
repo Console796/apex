@@ -111,6 +111,7 @@ void CompileJob::advance() {
         const auto& command = profile_.commands[i];
         auto& result = steps_[i];
         const auto& step = prepared_[i];
+        if (!command.special) result.program = step.program;
         if (step.skip) {
             result.status = Status::Skipped;
             continue;

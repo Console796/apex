@@ -1,3 +1,4 @@
+#include "compile/diagnostics.hpp"
 #include "compile/runner.hpp"
 #include "compile/wc_import.hpp"
 #include "scripted_runner.hpp"
@@ -8,6 +9,8 @@
 #include <algorithm>
 #include <array>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 
 using namespace apex;
 using namespace apex::compile;
@@ -299,4 +302,99 @@ TEST_CASE("compile explicit game flag needs no default game directory") {
     CHECK(job.status() == Status::Ok);
     REQUIRE(f.runner.calls.size() == 1);
     CHECK(f.runner.calls[0].args == std::vector<std::string>{"-game", "explicit", "-instancepath", "explicit", "map"});
+}
+
+namespace {
+// Logs the real P2CE Linux tools wrote for broken variants of the D17 chamber (tools/capture_compile_logs.py).
+std::vector<std::string> logLines(const std::string& name) {
+    std::ifstream in(std::filesystem::path(APEX_COMPILE_LOG_DIR) / name);
+    REQUIRE_MESSAGE(in, name);
+    std::vector<std::string> lines;
+    for (std::string line; std::getline(in, line);) lines.push_back(line);
+    return lines;
+}
+}
+
+TEST_CASE("compile diagnostics: one golden test per rule over captured logs") {
+    const auto only = [](const std::string& tool, const std::string& log) {
+        auto found = parseLog(tool, logLines(log));
+        REQUIRE(found.size() == 1);
+        return found.front();
+    };
+    SUBCASE("vbsp.brush maps to the brush id and keeps side and texture") {
+        const auto d = only("vbsp", "invalid_brush.vbsp.log");
+        CHECK(d.rule == "vbsp.brush");
+        CHECK(d.severity == Severity::Error);
+        CHECK(d.objects == std::vector{ObjectRef{ObjectKind::Brush, 1}});
+        CHECK(d.text == "Brush 1: FloatPlane: bad normal, side 0, texture tile/white_wall_tile003a");
+    }
+    SUBCASE("vbsp.material") {
+        // The chamber's baseline already lacks tile/black_wall_metal_002a; the variant adds one more.
+        auto found = parseLog("vbsp", logLines("unknown_material.vbsp.log"));
+        REQUIRE(found.size() == 2);
+        CHECK(found[0].rule == "vbsp.material");
+        CHECK(found[0].severity == Severity::Warning);
+        CHECK(found[0].text == "Material not found: apex/not_a_material");
+        CHECK(found[0].objects.empty());
+        CHECK(found[1].text == "Material not found: tile/black_wall_metal_002a");
+    }
+    SUBCASE("vbsp.model") {
+        auto found = parseLog("vbsp", logLines("missing_model.vbsp.log"));
+        REQUIRE(found.size() == 2);
+        CHECK(found[1].rule == "vbsp.model");
+        CHECK(found[1].text == "Model failed to load: models/apex/does_not_exist.mdl");
+    }
+    SUBCASE("vbsp.leak carries the entity position and no object") {
+        auto found = parseLog("vbsp", logLines("leak.vbsp.log"));
+        REQUIRE(found.size() == 2);
+        CHECK(found[1].rule == "vbsp.leak");
+        CHECK(found[1].severity == Severity::Error);
+        CHECK(found[1].text == "The map leaks from light at (256.00 192.00 8.00)");
+        CHECK(found[1].position == std::array{256.0, 192.0, 8.0});
+        CHECK(found[1].objects.empty());
+    }
+    SUBCASE("vbsp.instance") {
+        auto found = parseLog("vbsp", logLines("missing_instance.vbsp.log"));
+        REQUIRE(found.size() == 2);
+        CHECK(found[1].rule == "vbsp.instance");
+        CHECK(found[1].text == "Could not open instance file apex_nowhere.vmf");
+    }
+    SUBCASE("vvis.portals") {
+        const auto d = only("vvis", "leak.vvis.log");
+        CHECK(d.rule == "vvis.portals");
+        CHECK(d.severity == Severity::Error);
+    }
+    SUBCASE("a clean compile and tool-silent problems produce nothing beyond the known missing material") {
+        for (const auto* name : {"baseline", "missing_target", "duplicate_targetname"}) {
+            const auto found = parseLog("vbsp", logLines(std::string(name) + ".vbsp.log"));
+            REQUIRE(found.size() == 1);
+            CHECK(found[0].rule == "vbsp.material");
+            CHECK(parseLog("vvis", logLines(std::string(name) + ".vvis.log")).empty());
+            CHECK(parseLog("vrad", logLines(std::string(name) + ".vrad.log")).empty());
+        }
+    }
+    SUBCASE("rules apply only to their own tool") {
+        CHECK(parseLog("vrad", logLines("invalid_brush.vbsp.log")).empty());
+    }
+}
+
+TEST_CASE("compile diagnostics: steps, tool names and summary") {
+    CHECK(toolName("/x/bin/linux64/vbsp") == "vbsp");
+    std::vector<StepResult> steps(3);
+    steps[0].program = "/b/vbsp";
+    steps[0].lines = logLines("leak.vbsp.log");
+    steps[1].program = "/b/vvis";
+    steps[1].lines = logLines("leak.vvis.log");
+    steps[2].lines = {"Brush 5: not a tool"}; // a special command has no program: never parsed
+    const auto all = collectDiagnostics(steps);
+    REQUIRE(all.size() == 3);
+    CHECK(all[0].step == 0);
+    CHECK(all[2].step == 1);
+    const auto summary = summarize(all, steps);
+    CHECK(summary.tools.at("vbsp").errors == 1);
+    CHECK(summary.tools.at("vbsp").warnings == 1);
+    CHECK(summary.tools.at("vvis").errors == 1);
+    CHECK(summary.seconds == 0);
+    steps[1].lines.push_back("12 seconds elapsed");
+    CHECK(summarize(all, steps).seconds == 12);
 }

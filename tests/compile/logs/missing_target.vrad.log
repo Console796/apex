@@ -1,0 +1,94 @@
+Valve Software - vrad AVX2 (Apr 23 2026)
+
+      Valve Radiosity Simulator     
+Command line: "<install>/bin/linux64/vrad" "-fast" "-game" "<install>/p2ce" "<work>/missing_target" 
+
+24 threads
+MSG_FILEWRITE - Filesystem was asked to write to '<work>/missing_target.log', but we don't own that location. Allowing...
+[Reading texlights from 'lights.rad']
+[59 texlights parsed from 'lights.rad']
+
+Loading <work>/missing_target.bsp
+Setting up ray-trace acceleration structure... Done (0.00 seconds)
+94 faces
+9517 square feet [1370537.62 square inches]
+0 Displacements
+0 Square Feet [0.00 Square Inches]
+94 patches before subdivision
+94 patches after subdivision
+1 direct lights
+BuildFacelights : 0...1...2...3...4...5...6...7...8...9...10 (0)
+BuildVisLeafs : 0...1...2...3...4...5...6...7...8...9...10 (0)
+transfers 1861, max 53
+transfer lists:   0.0 megs
+GatherLight : 0...1...2...3...4...5...6...7...8...9...10 (0)
+	Bounce #1 added RGB(0, 0, 0)
+Build Patch/Sample Hash Table(s).....Done<0.0002 sec>
+FinalLightFace : 0...1...2...3...4...5...6...7...8...9...10 (0)
+FinalLightFace Done
+0 of 0 (0% of) surface lights went in leaf ambient cubes.
+ThreadComputeLeafAmbient : 0...1...2...3...4...5...6...7...8...9...10 (0)
+Writing leaf ambient...done
+Ready to Finish
+
+Object names       Objects/Maxobjs    Memory / Maxmem  Fullness 
+------------       ---------------    ---------------  -------- 
+models                   1/65536          48/3145728    ( 0.0%) 
+brushes                 21/131072        252/1572864    ( 0.0%) 
+brushsides             166/1310720      2656/20971520   ( 0.0%) 
+planes                 186/1048576      3720/20971520   ( 0.0%) 
+vertexes               145/1048576      1740/12582912   ( 0.0%) 
+nodes                   55/1048576      2640/50331648   ( 0.0%) 
+texinfos                29/0            2088/0          ( 0.0%) 
+texdata                  3/16384          96/524288     ( 0.0%) 
+dispinfos                0/262144          0/60817408   ( 0.0%) 
+disp_verts               0/0               0/0          ( 0.0%) 
+disp_tris                0/0               0/0          ( 0.0%) 
+disp_multiblend          0/0               0/0          ( 0.0%) 
+disp_lmsamples           0/0               0/0          ( 0.0%) 
+faces                   94/1048576      6768/75497472   ( 0.0%) 
+hdr faces               94/1048576      6768/75497472   ( 0.0%) 
+origfaces               68/1048576      4896/75497472   ( 0.0%) 
+facebrushes             14/0              56/0          ( 0.0%) 
+facebrushlists          94/0             752/0          ( 0.0%) 
+leaves                  57/1048576      3192/58720256   ( 0.0%) 
+leaffaces              121/1048576       484/4194304    ( 0.0%) 
+leafbrushes             41/1048576       164/4194304    ( 0.0%) 
+areas                    2/65536          16/524288     ( 0.0%) 
+surfedges              716/8192000      2864/32768000   ( 0.0%) 
+edges                  399/4096000      3192/32768000   ( 0.0%) 
+LDR worldlights          0/0               0/0          ( 0.0%) 
+HDR worldlights          1/0             100/0          ( 0.0%) 
+leafwaterdata            0/32768           0/393216     ( 0.0%) 
+waterstrips              8/1048576       160/20971520   ( 0.0%) 
+waterverts               0/1048576         0/12582912   ( 0.0%) 
+waterindices           126/1048576       504/4194304    ( 0.0%) 
+cubemapsamples           0/16384           0/262144     ( 0.0%) 
+overlays              [variable]           0/0          ( 0.0%) 
+overlaytrans             0/16384           0/268435456  ( 0.0%) 
+colorvars                0/16777214        0/1073741696 ( 0.0%) 
+LDR lightdata         [variable]           0/0          ( 0.0%) 
+HDR lightdata         [variable]      120544/0          ( 0.0%) 
+visdata               [variable]         468/268435456  ( 0.0%) 
+entdata               [variable]         368/393216     ( 0.1%) 
+LDR ambient table       57/1048576       456/8388608    ( 0.0%) 
+HDR ambient table       57/1048576       456/8388608    ( 0.0%) 
+LDR leaf ambient        57/1048576      1596/29360128   ( 0.0%) 
+HDR leaf ambient        29/1048576       812/29360128   ( 0.0%) 
+occluders                0/0               0/0          ( 0.0%) 
+occluder polygons        0/0               0/0          ( 0.0%) 
+occluder vert ind        0/0               0/0          ( 0.0%) 
+detail props          [variable]           1/12         ( 8.3%) 
+static props          [variable]           1/12         ( 8.3%) 
+pakfile               [variable]       74454/0          ( 0.0%) 
+physics               [variable]       22193/4194304    ( 0.5%) 
+physics terrain       [variable]           4/1048576    ( 0.0%) 
+
+Level flags = 4000007c
+
+Total triangle count: 258
+Writing <work>/missing_target.bsp
+MSG_FILEWRITE - Filesystem was asked to write to '<work>/missing_target.bsp', but we don't own that location. Allowing...
+0 seconds elapsed
+
+[exit 0]

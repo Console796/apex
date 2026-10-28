@@ -316,6 +316,7 @@ MainWindow::MainWindow(QWidget* parent)
 MainWindow::~MainWindow() {
     compilePanel_->setDocument(nullptr);
     compilePanel_->setGameContent(nullptr);
+    compilePanel_->setEditorSession(nullptr);
     delete piePopup_.data();
     closeMaterialPicker();
     session_.unobserve(sessionObserver_);
@@ -448,6 +449,10 @@ void MainWindow::buildMenus() {
     compileDock->setObjectName(QStringLiteral("compileDock"));
     compilePanel_ = new CompilePanel(compileDock);
     compilePanel_->setGameContent(gameContent_.get());
+    compilePanel_->setEditorSession(&session_);
+    connect(compilePanel_, &CompilePanel::frameRequested, this, [this] {
+        if (const auto bounds = session_.selectionBounds()) viewport_->centerOn(*bounds);
+    });
     compileDock->setWidget(compilePanel_);
     addDockWidget(Qt::BottomDockWidgetArea, compileDock);
     compileDock->hide();

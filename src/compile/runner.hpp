@@ -34,6 +34,7 @@ enum class Status { Queued, Running, Ok, Failed, Cancelled, Skipped };
 
 struct StepResult {
     Status status = Status::Queued;
+    std::string program; // the expanded executable, empty for special commands
     std::vector<std::string> lines;
     std::string message;
     std::optional<int> exitCode;

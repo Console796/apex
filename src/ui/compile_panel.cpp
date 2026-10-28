@@ -3,6 +3,7 @@
 #include "compile/wc_import.hpp"
 #include "ui/profile_editor.hpp"
 #include "ui/profile_store.hpp"
+#include "editor/diagnostic_lookup.hpp"
 #include "ui/game_content.hpp"
 #include <QComboBox>
 #include <QFileDialog>
@@ -80,6 +81,22 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     steps_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     steps_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layout->addWidget(steps_);
+    auto* filterRow = new QHBoxLayout;
+    severity_ = new QComboBox(this);
+    severity_->setObjectName(QStringLiteral("compileSeverity"));
+    severity_->addItems({tr("All"), tr("Errors and warnings"), tr("Errors")});
+    summary_ = new QLabel(this);
+    summary_->setObjectName(QStringLiteral("compileSummary"));
+    filterRow->addWidget(severity_);
+    filterRow->addWidget(summary_, 1);
+    layout->addLayout(filterRow);
+    diagnosticsTable_ = new QTableWidget(0, 3, this);
+    diagnosticsTable_->setObjectName(QStringLiteral("compileDiagnostics"));
+    diagnosticsTable_->setHorizontalHeaderLabels({tr("Severity"), tr("Tool"), tr("Message")});
+    diagnosticsTable_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    diagnosticsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    diagnosticsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    layout->addWidget(diagnosticsTable_);
     log_ = new QPlainTextEdit(this);
     log_->setObjectName(QStringLiteral("compileLog"));
     log_->setReadOnly(true);
@@ -88,6 +105,8 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     connect(run_, &QPushButton::clicked, this, &CompilePanel::run);
     connect(cancel_, &QPushButton::clicked, this, &CompilePanel::cancel);
     connect(import, &QPushButton::clicked, this, &CompilePanel::importProfiles);
+    connect(severity_, &QComboBox::currentIndexChanged, this, [this] { diagnosticLines_ = static_cast<std::size_t>(-1); refreshDiagnostics(); });
+    connect(diagnosticsTable_, &QTableWidget::cellClicked, this, [this](int row) { activateDiagnostic(row); });
     connect(edit, &QPushButton::clicked, this, &CompilePanel::editProfile);
     connect(remove, &QPushButton::clicked, this, &CompilePanel::deleteProfile);
     timer_ = new QTimer(this);
@@ -107,6 +126,9 @@ void CompilePanel::setDocument(document::Document* document) {
     error_.clear();
     log_->clear();
     steps_->setRowCount(0);
+    diagnostics_.clear();
+    diagnosticLines_ = 0;
+    refreshDiagnostics();
     refresh();
 }
 void CompilePanel::setProcessRunner(compile::ProcessRunner* runner) {
@@ -148,6 +170,9 @@ void CompilePanel::run() {
     steps_->setRowCount(0);
     error_.clear();
     log_->clear();
+    diagnostics_.clear();
+    diagnosticLines_ = 0;
+    refreshDiagnostics();
     const auto& game = *content_->profile();
     editor::CompileGamePaths paths{game.gameDirectory, game.toolDirectory(), game.instanceSearchRoot(), {}};
     for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"},
@@ -195,6 +220,56 @@ void CompilePanel::refresh() {
         }
     }
     if (!batch.isEmpty()) log_->appendPlainText(batch.join('\n'));
+    refreshDiagnostics();
+}
+
+void CompilePanel::refreshDiagnostics() {
+    std::size_t lines = 0;
+    if (job_) for (const auto& step : job_->steps()) lines += step.lines.size() + (step.status == compile::Status::Running ? 0 : 1);
+    if (lines == diagnosticLines_ && !(job_ == nullptr && diagnosticsTable_->rowCount())) return;
+    diagnosticLines_ = lines;
+    if (job_) diagnostics_ = compile::collectDiagnostics(job_->steps());
+    shown_.clear();
+    diagnosticsTable_->setRowCount(0);
+    const int level = severity_->currentIndex();
+    for (std::size_t i = 0; i < diagnostics_.size(); ++i) {
+        const auto& d = diagnostics_[i];
+        if (level == 1 && d.severity == compile::Severity::Info) continue;
+        if (level == 2 && d.severity != compile::Severity::Error) continue;
+        const int row = diagnosticsTable_->rowCount();
+        diagnosticsTable_->insertRow(row);
+        shown_.push_back(static_cast<int>(i));
+        diagnosticsTable_->setItem(row, 0, new QTableWidgetItem(d.severity == compile::Severity::Error ? tr("Error") :
+            d.severity == compile::Severity::Warning ? tr("Warning") : tr("Info")));
+        diagnosticsTable_->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(d.tool)));
+        diagnosticsTable_->setItem(row, 2, new QTableWidgetItem(QString::fromStdString(d.text)));
+    }
+    if (!job_) { summary_->clear(); return; }
+    const auto summary = compile::summarize(diagnostics_, job_->steps());
+    QStringList parts;
+    for (const auto& [tool, counts] : summary.tools)
+        parts << tr("%1: %2 errors, %3 warnings").arg(QString::fromStdString(tool)).arg(counts.errors).arg(counts.warnings);
+    if (summary.seconds) parts << tr("%1 s in tools").arg(summary.seconds);
+    summary_->setText(parts.isEmpty() ? tr("No problems reported") : parts.join(QStringLiteral(" · ")));
+}
+
+void CompilePanel::activateDiagnostic(int row) {
+    if (row < 0 || row >= static_cast<int>(shown_.size()) || !document_ || !session_) return;
+    const auto& diagnostic = diagnostics_[static_cast<std::size_t>(shown_[static_cast<std::size_t>(row)])];
+    if (diagnostic.objects.empty()) return;
+    std::vector<editor::Target> targets;
+    for (const auto& object : diagnostic.objects)
+        if (const auto node = editor::findDiagnosticObject(*document_, object)) targets.emplace_back(*node);
+    auto* message = diagnosticsTable_->item(row, 2);
+    if (targets.empty()) {
+        message->setToolTip(tr("No longer in the map"));
+        summary_->setText(tr("%1 is no longer in the map").arg(message->text().section(':', 0, 0)));
+        return;
+    }
+    message->setToolTip({});
+    session_->selection().setMode(editor::SelectionMode::Objects);
+    session_->selection().replace(targets);
+    emit frameRequested();
 }
 
 void CompilePanel::importProfiles() {

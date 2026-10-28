@@ -8,6 +8,7 @@
 #include "ui/profile_store.hpp"
 #include <QComboBox>
 #include <QSettings>
+#include <QSignalSpy>
 #include "../editor/corpus.hpp"
 #include "editor/compile_snapshot.hpp"
 
@@ -294,6 +295,71 @@ TEST_CASE("compile panel Cancel updates steps and stops the injected process") {
     panel.run();
     CHECK(runner.calls.size() == 1);
     panel.setDocument(nullptr);
+}
+
+TEST_CASE("compile panel lists diagnostics, selects the named object and flags stale ids") {
+    ui_test::app();
+    QTemporaryDir dir;
+    const auto root = std::filesystem::path(dir.path().toStdU16String());
+    std::filesystem::create_directories(root / "game/maps");
+    assets::GameProfile game;
+    game.gameDirectory = root / "game";
+    for (const auto* tool : {"vbsp", "vvis", "vrad", "postcompiler"}) {
+        std::ofstream(root / tool) << "fake";
+        game.toolPaths[tool] = root / tool;
+    }
+    ui::GameContent content;
+    content.reload(&game);
+    document::Document doc(editor_test::parsed("world { id 1 classname worldspawn }"));
+    const auto solid = editor_test::addBox(doc, DVec3{0.0}, DVec3{64.0});
+    const auto brushId = doc.get(solid)->block->find("id")->decodedValue().value();
+    editor::EditorSession session;
+    session.attach(doc);
+    compile::test::ScriptedRunner runner;
+    compile::test::Script vbsp;
+    vbsp.lines = {"Brush " + brushId + ": FloatPlane: bad normal, side 0, texture tile/white_wall_tile003a",
+                  "Brush 99999: FloatPlane: bad normal, side 0, texture tile/white_wall_tile003a",
+                  "Material not found!: apex/not_a_material"};
+    runner.scripts = {vbsp, {{"post"}}, {{"vis"}}, {{"light"}}};
+    ui::CompilePanel panel;
+    panel.setGameContent(&content);
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.setCacheDirectory(root / "cache");
+    struct BspRunner final : compile::ProcessRunner {
+        compile::test::ScriptedRunner& scripted;
+        explicit BspRunner(compile::test::ScriptedRunner& value) : scripted(value) {}
+        Result<std::unique_ptr<compile::ProcessHandle>> start(const std::string& program,
+            const std::vector<std::string>& args, const std::filesystem::path& cwd,
+            const compile::Environment& env) override {
+            std::ofstream(cwd / "untitled.bsp") << "fake bsp";
+            return scripted.start(program, args, cwd, env);
+        }
+    } bspRunner(runner);
+    panel.setProcessRunner(&bspRunner);
+    auto* table = panel.findChild<QTableWidget*>("compileDiagnostics");
+    auto* filter = panel.findChild<QComboBox*>("compileSeverity");
+    auto* summary = panel.findChild<QLabel*>("compileSummary");
+    REQUIRE(table); REQUIRE(filter); REQUIRE(summary);
+    panel.run();
+    REQUIRE(until([&] { return table->rowCount() == 3; }));
+    CHECK(summary->text().contains("vbsp"));
+    QSignalSpy framed(&panel, &ui::CompilePanel::frameRequested);
+    panel.activateDiagnostic(0);
+    CHECK(framed.count() == 1);
+    CHECK(session.selectionBounds().has_value());
+    session.selection().clear();
+    panel.activateDiagnostic(1);
+    CHECK(framed.count() == 1);
+    CHECK(table->item(1, 2)->toolTip() == "No longer in the map");
+    CHECK_FALSE(session.selectionBounds().has_value());
+    filter->setCurrentIndex(2);
+    CHECK(table->rowCount() == 2);
+    for (int i = 0; i < table->rowCount(); ++i) CHECK(table->item(i, 0)->text() == "Error");
+    filter->setCurrentIndex(0);
+    CHECK(table->rowCount() == 3);
+    panel.setDocument(nullptr);
+    panel.setEditorSession(nullptr);
 }
 
 TEST_CASE("compile profiles round-trip through the store and the editor") {

@@ -1,0 +1,11 @@
+Valve Software - vvis (Apr 23 2026)
+Command line: "<install>/bin/linux64/vvis" "-fast" "-game" "<install>/p2ce" "<work>/leak" 
+
+fastvis = true
+MSG_FILEWRITE - Filesystem was asked to write to '<work>/leak.log', but we don't own that location. Allowing...
+24 threads
+reading <work>/leak.bsp
+reading <work>/leak.prt
+LoadPortals: couldn't read <work>/leak.prt
+
+[exit 1]

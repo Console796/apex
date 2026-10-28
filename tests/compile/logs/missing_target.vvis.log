@@ -1,0 +1,22 @@
+Valve Software - vvis (Apr 23 2026)
+Command line: "<install>/bin/linux64/vvis" "-fast" "-game" "<install>/p2ce" "<work>/missing_target" 
+
+fastvis = true
+MSG_FILEWRITE - Filesystem was asked to write to '<work>/missing_target.log', but we don't own that location. Allowing...
+24 threads
+reading <work>/missing_target.bsp
+reading <work>/missing_target.prt
+  29 portalclusters
+  75 numportals
+BasePortalVis : 0...1...2...3...4...5...6...7...8...9...10 (0)
+Optimized: 12 visible clusters (1.60%)
+Total clusters visible: 751
+Average clusters visible: 25
+Building PAS...
+Average clusters audible: 29
+visdatasize:468  compressed from 464
+writing <work>/missing_target.bsp
+MSG_FILEWRITE - Filesystem was asked to write to '<work>/missing_target.bsp', but we don't own that location. Allowing...
+0 seconds elapsed
+
+[exit 0]
