@@ -463,10 +463,18 @@ void MainWindow::buildMenus() {
     addDockWidget(Qt::BottomDockWidgetArea, compileDock);
     compileDock->hide();
     compileMenu->addAction(compileDock->toggleViewAction());
-    compileMenu->addAction(tr("Run"), this, [this, compileDock] {
+    compileMenu->addAction(tr("Compile"), this, [this, compileDock] {
         compileDock->show();
         compilePanel_->run();
     });
+    for (const char* id : {"compile.compile_run", "compile.run_game"}) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = compileMenu->addAction(fromStd(entry->name));
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        editorActions_.emplace(entry->id, action);
+        connect(action, &QAction::triggered, this, [this, id = entry->id] { performEditAction(id); });
+    }
     compileMenu->addAction(tr("Cancel"), compilePanel_, &CompilePanel::cancel);
 
     addonsMenu_ = menuBar()->addMenu(tr("&Addons"));
@@ -839,7 +847,7 @@ void MainWindow::updateEditorActions() {
                     : tr("The selected instance file could not be resolved."));
             }
         }
-        if (id == "assets.reload" || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
+        if (id == "assets.reload" || id.starts_with("compile.") || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
         if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
             action->setEnabled(session_.isToolEnabled(id));
             action->setChecked(session_.activeTool() == id);
@@ -1373,6 +1381,12 @@ editor::PasteOptions MainWindow::pastePlacement(bool inPlace) const {
 bool MainWindow::performEditAction(const editor::ActionId& id) {
     const auto say = [this](const QString& text) { statusBar()->showMessage(text, 5000); };
     if (id == "assets.reload") { reloadGameContent(); return true; }
+    if (id == "compile.compile_run" || id == "compile.run_game") {
+        if (auto* dock = compilePanel_->parentWidget()) dock->show();
+        if (id == "compile.run_game") compilePanel_->runGame();
+        else compilePanel_->compileAndRun();
+        return true;
+    }
     if (!session_.document()) return false;
     bool ok = true;
     if (id == "edit.copy" || id == "edit.cut") {

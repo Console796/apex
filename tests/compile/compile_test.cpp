@@ -1,4 +1,5 @@
 #include "compile/diagnostics.hpp"
+#include "compile/game_launch.hpp"
 #include "compile/map_files.hpp"
 #include "compile/runner.hpp"
 #include "compile/wc_import.hpp"
@@ -441,4 +442,77 @@ TEST_CASE("leak and portal readers tolerate empty and truncated files") {
         for (const auto& portal : cut.portals) CHECK(portal.points.size() == 3);
     }
     CHECK(parsePortalFile(good.substr(0, good.find("3 1 0") + 12)).portals.size() == 1);
+}
+
+TEST_CASE("game launch builds literal arguments for names with spaces and an addon target") {
+    GameLaunchRequest request;
+    request.gameExe = "/Steam/Portal 2 Community Edition/p2ce.sh";
+    request.gameDir = "/Steam/Portal 2 Community Edition/p2ce";
+    request.mapName = "my map 'one'";
+    auto launch = buildGameLaunch(request);
+    REQUIRE(launch);
+    CHECK(launch->program == request.gameExe.string());
+    CHECK(launch->arguments == std::vector<std::string>{"-dev", "-console", "-allowdebug", "-game",
+        "/Steam/Portal 2 Community Edition/p2ce", "+map", "my map 'one'", "-condebug"});
+    CHECK(launch->logFile == std::filesystem::path("/Steam/Portal 2 Community Edition/p2ce/console.log"));
+    CHECK(launch->bspFile == std::filesystem::path("/Steam/Portal 2 Community Edition/p2ce/maps/my map 'one'.bsp"));
+
+    // A map in an addon is loaded by name through the addon's mount; a campaign adds its own flag.
+    request.mapName = "addon_chamber";
+    request.campaign = "workshop/my campaign";
+    request.arguments = "-game $gamedir -condebug +map $mapname";
+    launch = buildGameLaunch(request);
+    REQUIRE(launch);
+    CHECK(launch->arguments == std::vector<std::string>{"-game", "/Steam/Portal 2 Community Edition/p2ce",
+        "-condebug", "+map", "addon_chamber", "-campaign", "workshop/my campaign"});
+}
+
+TEST_CASE("game launch rejects what cannot be launched") {
+    GameLaunchRequest request;
+    request.gameExe = "/g/p2ce.sh";
+    request.gameDir = "/g/p2ce";
+    request.mapName = "a";
+    CHECK(buildGameLaunch(request));
+    SUBCASE("no executable") { request.gameExe.clear(); }
+    SUBCASE("no game directory") { request.gameDir.clear(); }
+    SUBCASE("no map") { request.mapName.clear(); }
+    SUBCASE("path in the map name") { request.mapName = "../maps/a"; }
+    SUBCASE("unknown variable") { request.arguments = "+map $nothing"; }
+    CHECK_FALSE(buildGameLaunch(request));
+    CHECK(withConsoleLog({"-condebug"}) == std::vector<std::string>{"-condebug"});
+}
+
+TEST_CASE("compile game step starts detached and ignores a game that exits at once") {
+    JobFixture f;
+    f.tree.put("p2ce.sh", "fake");
+    f.paths.variables["game_exe"] = (f.tree.root / "p2ce.sh").string();
+    f.paths.variables["file"] = "chamber";
+    f.profile.commands = {{"$bsp_exe", "map"}, {"$game_exe", "-game $gamedir +map $file"}};
+    f.profile.runGameAfter = true;
+    f.runner.scripts = {{{"vbsp line"}, 0, false}};
+    CompileJob job(f.profile, f.paths, f.runner, f.files);
+    REQUIRE(job.start());
+    CHECK(job.status() == Status::Ok);
+    CHECK(job.steps()[1].status == Status::Ok);
+    CHECK(f.runner.calls.size() == 1);
+    REQUIRE(f.runner.detached.size() == 1);
+    CHECK(f.runner.detached[0].program == (f.tree.root / "p2ce.sh").string());
+    CHECK(f.runner.detached[0].args == std::vector<std::string>{"-game", f.paths.variables["gamedir"], "+map", "chamber", "-condebug"});
+    // Cancelling after the sequence is done never reaches the game.
+    job.cancel();
+    CHECK(job.status() == Status::Ok);
+}
+
+TEST_CASE("compile game step failing to start fails the job") {
+    JobFixture f;
+    f.tree.put("p2ce.sh", "fake");
+    f.paths.variables["game_exe"] = (f.tree.root / "p2ce.sh").string();
+    f.paths.variables["file"] = "chamber";
+    f.profile.commands = {{"$game_exe", "+map $file"}};
+    f.profile.runGameAfter = true;
+    f.runner.failDetached = true;
+    CompileJob job(f.profile, f.paths, f.runner, f.files);
+    REQUIRE(job.start());
+    CHECK(job.status() == Status::Failed);
+    CHECK(job.steps()[0].status == Status::Failed);
 }

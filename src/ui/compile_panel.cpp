@@ -5,6 +5,7 @@
 #include "ui/cordon_editor.hpp"
 #include "ui/profile_editor.hpp"
 #include "ui/profile_store.hpp"
+#include "compile/game_launch.hpp"
 #include "compile/map_files.hpp"
 #include "editor/compile_overlay.hpp"
 #include "editor/diagnostic_lookup.hpp"
@@ -22,6 +23,7 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <fstream>
 
 namespace apex::ui {
 namespace {
@@ -60,12 +62,11 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     }
     builtinCount_ = static_cast<int>(profiles_.size());
     for (auto& profile : loadUserProfiles()) {
-        profile.runGameAfter = false;
         profilesCombo_->addItem(QString::fromStdString(profile.name));
         profiles_.push_back(std::move(profile));
     }
     row->addWidget(profilesCombo_);
-    run_ = new QPushButton(tr("Run"), this);
+    run_ = new QPushButton(tr("Compile"), this);
     run_->setObjectName(QStringLiteral("compileRun"));
     cancel_ = new QPushButton(tr("Cancel"), this);
     cancel_->setObjectName(QStringLiteral("compileCancel"));
@@ -74,7 +75,11 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     edit->setObjectName(QStringLiteral("compileEdit"));
     auto* remove = new QPushButton(tr("Delete"), this);
     remove->setObjectName(QStringLiteral("compileDelete"));
-    row->addWidget(run_); row->addWidget(cancel_); row->addWidget(edit); row->addWidget(remove); row->addWidget(import);
+    compileRun_ = new QPushButton(tr("Compile and Run"), this);
+    compileRun_->setObjectName(QStringLiteral("compileAndRun"));
+    runGame_ = new QPushButton(tr("Run Game"), this);
+    runGame_->setObjectName(QStringLiteral("compileRunGame"));
+    row->addWidget(run_); row->addWidget(compileRun_); row->addWidget(runGame_); row->addWidget(cancel_); row->addWidget(edit); row->addWidget(remove); row->addWidget(import);
     layout->addLayout(row);
     header_ = new QLabel(this);
     header_->setObjectName(QStringLiteral("compileHeader"));
@@ -158,7 +163,26 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     log_->setReadOnly(true);
     log_->setMaximumBlockCount(10000);
     layout->addWidget(log_);
+    auto* gameRow = new QHBoxLayout;
+    reloadMap_ = new QPushButton(tr("Reload map"), this);
+    reloadMap_->setObjectName(QStringLiteral("gameReloadMap"));
+    reloadMap_->setToolTip(tr("Start the game again in the last compiled map."));
+    gameRow->addWidget(new QLabel(tr("Game log"), this));
+    gameRow->addStretch(1);
+    gameRow->addWidget(reloadMap_);
+    layout->addLayout(gameRow);
+    gameLog_ = new QPlainTextEdit(this);
+    gameLog_->setObjectName(QStringLiteral("gameLog"));
+    gameLog_->setReadOnly(true);
+    gameLog_->setMaximumBlockCount(10000);
+    layout->addWidget(gameLog_);
+    gameLogTimer_ = new QTimer(this);
+    gameLogTimer_->setInterval(250);
+    connect(gameLogTimer_, &QTimer::timeout, this, &CompilePanel::pollGameLog);
     connect(run_, &QPushButton::clicked, this, &CompilePanel::run);
+    connect(compileRun_, &QPushButton::clicked, this, &CompilePanel::compileAndRun);
+    connect(runGame_, &QPushButton::clicked, this, &CompilePanel::runGame);
+    connect(reloadMap_, &QPushButton::clicked, this, &CompilePanel::runGame);
     connect(cancel_, &QPushButton::clicked, this, &CompilePanel::cancel);
     connect(import, &QPushButton::clicked, this, &CompilePanel::importProfiles);
     connect(severity_, &QComboBox::currentIndexChanged, this, [this] { diagnosticLines_ = static_cast<std::size_t>(-1); refreshDiagnostics(); });
@@ -210,13 +234,21 @@ void CompilePanel::stopJob() {
 }
 void CompilePanel::cancel() { stopJob(); refresh(); }
 
-void CompilePanel::run() {
+void CompilePanel::run() { startCompile(false); }
+void CompilePanel::compileAndRun() { startCompile(true); }
+
+void CompilePanel::startCompile(bool withGame) {
     if (cancelling_ || !document_ || !content_ || !content_->profile() ||
         (job_ && job_->status() == compile::Status::Running)) return;
     const int index = profilesCombo_->currentIndex();
     if (index < 0) return;
     auto profile = profiles_[static_cast<std::size_t>(index)];
-    profile.runGameAfter = false;
+    if (withGame) {
+        profile.runGameAfter = true;
+        const bool hasGame = std::ranges::any_of(profile.commands, [](const auto& c) { return c.executable == "$game_exe"; });
+        if (!hasGame) profile.commands.push_back({"$game_exe", compile::defaultGameArguments(), true, false});
+        for (auto& command : profile.commands) if (command.executable == "$game_exe") command.enabled = true;
+    }
     if (index >= builtinCount_ && !confirmed_.contains(index)) {
         QStringList commands;
         for (const auto& executable : compile::listNonToolExecutables(profile))
@@ -265,6 +297,7 @@ void CompilePanel::run() {
     cluster_->clear();
     cluster_->addItem(tr("All clusters"), -1);
     goToLeak_->setEnabled(false);
+    if (profile.runGameAfter) watchGameLog();
     logged_.assign(profile.commands.size(), 0);
     steps_->setRowCount(static_cast<int>(profile.commands.size()));
     for (std::size_t i = 0; i < profile.commands.size(); ++i) {
@@ -278,9 +311,70 @@ void CompilePanel::run() {
     refresh();
 }
 
+void CompilePanel::runGame() {
+    if (!content_ || !content_->profile()) return;
+    const auto& game = *content_->profile();
+    compile::GameLaunchRequest request;
+    request.gameExe = game.toolPath("game");
+    request.gameDir = game.gameDirectory;
+    request.mapName = source_.stem().string();
+    const int index = profilesCombo_->currentIndex();
+    if (index >= 0)
+        for (const auto& command : profiles_[static_cast<std::size_t>(index)].commands)
+            if (command.executable == "$game_exe") request.arguments = command.arguments;
+    if (request.mapName.empty()) { error_ = tr("Save the map and compile it before running the game."); refresh(); return; }
+    auto launch = compile::buildGameLaunch(request);
+    if (!launch) { error_ = QString::fromStdString(launch.error().what()); refresh(); return; }
+    std::error_code ec;
+    if (!std::filesystem::exists(launch->bspFile, ec)) {
+        error_ = tr("There is no compiled map to run: %1").arg(QString::fromStdU16String(launch->bspFile.u16string()));
+        refresh();
+        return;
+    }
+    watchGameLog();
+    if (auto started = runner_->startDetached(launch->program, launch->arguments, game.gameDirectory.parent_path(), {}); !started) {
+        error_ = QString::fromStdString(started.error().what());
+        gameLogTimer_->stop();
+    } else error_.clear();
+    refresh();
+}
+
+// The log is appended to across launches unless the game clears it, so only what comes after this point is shown.
+void CompilePanel::watchGameLog() {
+    if (!content_ || !content_->profile()) return;
+    gameLogFile_ = compile::gameLogPath(content_->profile()->gameDirectory);
+    std::error_code ec;
+    gameLogOffset_ = std::filesystem::exists(gameLogFile_, ec) ? std::filesystem::file_size(gameLogFile_, ec) : 0;
+    gameLog_->clear();
+    gameLogTimer_->start();
+}
+
+void CompilePanel::pollGameLog() {
+    if (gameLogFile_.empty()) return;
+    std::error_code ec;
+    const auto size = std::filesystem::exists(gameLogFile_, ec) ? std::filesystem::file_size(gameLogFile_, ec) : 0;
+    if (ec) return;
+    if (size < gameLogOffset_) gameLogOffset_ = 0; // the game cleared the log
+    if (size == gameLogOffset_) return;
+    std::ifstream in(gameLogFile_, std::ios::binary);
+    in.seekg(static_cast<std::streamoff>(gameLogOffset_));
+    std::string text(static_cast<std::size_t>(size - gameLogOffset_), '\0');
+    in.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<std::size_t>(in.gcount()));
+    gameLogOffset_ += text.size();
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r')) text.pop_back();
+    if (!text.empty()) gameLog_->appendPlainText(QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())));
+}
+
+QString CompilePanel::gameLogText() const { return gameLog_->toPlainText(); }
+
 void CompilePanel::refresh() {
     const bool running = job_ && job_->status() == compile::Status::Running;
-    run_->setEnabled(document_ && content_ && content_->hasProfile() && !running && !cancelling_);
+    const bool ready = document_ && content_ && content_->hasProfile() && !running && !cancelling_;
+    run_->setEnabled(ready);
+    compileRun_->setEnabled(ready);
+    runGame_->setEnabled(content_ && content_->hasProfile() && !running);
+    reloadMap_->setEnabled(content_ && content_->hasProfile() && !running);
     cancel_->setEnabled(running);
     profilesCombo_->setEnabled(!running);
     QString header = error_;
@@ -434,7 +528,6 @@ void CompilePanel::importProfiles() {
     auto imported = compile::importWc(std::filesystem::path(file.toStdU16String()));
     if (!imported) { error_ = QString::fromStdString(imported.error().what()); refresh(); return; }
     for (auto& profile : *imported) {
-        profile.runGameAfter = false;
         profilesCombo_->addItem(QString::fromStdString(profile.name));
         profiles_.push_back(std::move(profile));
     }
@@ -456,7 +549,6 @@ void CompilePanel::editProfile() {
     if (editor.exec() != QDialog::Accepted) return;
     auto edited = editor.profile();
     if (edited.name.empty()) edited.name = "Untitled";
-    edited.runGameAfter = false;
     if (builtin) {
         profilesCombo_->addItem(QString::fromStdString(edited.name));
         profiles_.push_back(std::move(edited));

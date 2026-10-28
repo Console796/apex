@@ -28,6 +28,14 @@ public:
     // env overrides the inherited environment; start errors do not return a handle.
     virtual Result<std::unique_ptr<ProcessHandle>> start(const std::string& program,
         const std::vector<std::string>& args, const std::filesystem::path& cwd, const Environment& env) = 0;
+    // Starts a process that outlives its caller: no output is read, the exit code is never seen, and
+    // cancelling or destroying a job does not stop it (0.5 D9, the game). The default drops a started handle.
+    virtual Result<void> startDetached(const std::string& program, const std::vector<std::string>& args,
+        const std::filesystem::path& cwd, const Environment& env) {
+        auto handle = start(program, args, cwd, env);
+        if (!handle) return std::unexpected(handle.error());
+        return {};
+    }
 };
 
 enum class Status { Queued, Running, Ok, Failed, Cancelled, Skipped };

@@ -582,3 +582,60 @@ TEST_CASE("compile panel lists problems, gates a compile on errors and reports p
     CHECK(summary->text().contains("No problems"));
     panel.setDocument(nullptr);
 }
+
+TEST_CASE("compile panel runs the game detached, tails its console log and reloads the map") {
+    ui_test::app();
+    QTemporaryDir dir;
+    const auto root = std::filesystem::path(dir.path().toStdU16String());
+    assets::GameProfile game;
+    game.gameDirectory = root / "Portal 2 CE" / "p2ce";
+    std::filesystem::create_directories(game.gameDirectory / "maps");
+    ui::GameContent content;
+    content.reload(&game);
+    document::Document doc(vmf::emptyMap());
+    ui::CompilePanel panel;
+    compile::test::ScriptedRunner runner;
+    panel.setGameContent(&content);
+    panel.setDocument(&doc);
+    panel.setSourcePath(root / "my map.vmf");
+    panel.setProcessRunner(&runner);
+    auto* header = panel.findChild<QLabel*>("compileHeader");
+    auto* log = panel.findChild<QPlainTextEdit*>("gameLog");
+    auto* reload = panel.findChild<QPushButton*>("gameReloadMap");
+    auto* runGame = panel.findChild<QPushButton*>("compileRunGame");
+    REQUIRE(header); REQUIRE(log); REQUIRE(reload); REQUIRE(runGame);
+
+    SUBCASE("no compiled map") {
+        runGame->click();
+        CHECK(runner.detached.empty());
+        CHECK(header->text().contains("no compiled map", Qt::CaseInsensitive));
+    }
+    SUBCASE("compiled map") {
+        std::ofstream(game.gameDirectory / "maps/my map.bsp") << "bsp";
+        std::ofstream(game.gameDirectory / "console.log") << "old line\n";
+        runGame->click();
+        REQUIRE(runner.detached.size() == 1);
+        CHECK(runner.detached[0].program == game.toolPath("game").string());
+        CHECK(runner.detached[0].args == std::vector<std::string>{"-dev", "-console", "-allowdebug", "-game",
+            game.gameDirectory.string(), "+map", "my map", "-condebug"});
+        CHECK(header->text().isEmpty());
+        // Only what the game writes after the launch is shown.
+        std::ofstream(game.gameDirectory / "console.log", std::ios::app) << "Map: my map\nloaded\n";
+        panel.pollGameLog();
+        CHECK(panel.gameLogText() == "Map: my map\nloaded");
+        // Reload map re-runs the launch and starts the log view again from the end of the file.
+        reload->click();
+        CHECK(runner.detached.size() == 2);
+        CHECK(panel.gameLogText().isEmpty());
+        std::ofstream(game.gameDirectory / "console.log", std::ios::trunc) << "fresh\n";
+        panel.pollGameLog();
+        CHECK(panel.gameLogText() == "fresh");
+    }
+    SUBCASE("start failure is reported") {
+        std::ofstream(game.gameDirectory / "maps/my map.bsp") << "bsp";
+        runner.failDetached = true;
+        runGame->click();
+        CHECK(header->text().contains("Cannot start"));
+    }
+    panel.setDocument(nullptr);
+}

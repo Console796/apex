@@ -41,10 +41,14 @@ ProfileEditor::ProfileEditor(compile::CompileProfile profile, QWidget* parent)
     name_->setObjectName(QStringLiteral("profileName"));
     copyBsp_ = new QCheckBox(tr("Copy BSP to maps"), this);
     copyBsp_->setChecked(base_.copyBspToMaps);
+    runGame_ = new QCheckBox(tr("Run game after"), this);
+    runGame_->setObjectName(QStringLiteral("profileRunGame"));
+    runGame_->setChecked(base_.runGameAfter);
     cordonOnly_ = new QCheckBox(tr("Compile the cordon only"), this);
     cordonOnly_->setChecked(base_.cordonOnly);
     form->addRow(tr("Name"), name_);
     form->addRow(copyBsp_);
+    form->addRow(runGame_);
     form->addRow(cordonOnly_);
     cordonMaterial_ = new QLineEdit(QString::fromStdString(base_.cordonMaterial), this);
     cordonMaterial_->setObjectName(QStringLiteral("profileCordonMaterial"));
@@ -120,6 +124,7 @@ compile::CompileProfile ProfileEditor::profile() const {
     auto result = base_;
     result.name = name_->text().trimmed().toStdString();
     result.copyBspToMaps = copyBsp_->isChecked();
+    result.runGameAfter = runGame_->isChecked();
     result.cordonOnly = cordonOnly_->isChecked();
     if (const auto material = cordonMaterial_->text().trimmed(); !material.isEmpty())
         result.cordonMaterial = material.toStdString();

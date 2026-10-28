@@ -22,6 +22,7 @@ private:
     compile::CompileProfile base_;
     QLineEdit* name_;
     QCheckBox* copyBsp_;
+    QCheckBox* runGame_;
     QCheckBox* cordonOnly_;
     QLineEdit* cordonMaterial_;
     QTableWidget* commands_;

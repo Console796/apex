@@ -174,4 +174,26 @@ Result<std::unique_ptr<compile::ProcessHandle>> QProcessRunner::start(const std:
     return std::unique_ptr<compile::ProcessHandle>(new Handle(raw));
 }
 
+Result<void> QProcessRunner::startDetached(const std::string& program, const std::vector<std::string>& args,
+    const std::filesystem::path& cwd, const compile::Environment& env) {
+    QProcess process;
+    process.setProgram(QString::fromStdString(program));
+    QStringList arguments;
+    for (const auto& arg : args) arguments.push_back(QString::fromStdString(arg));
+    process.setArguments(arguments);
+    process.setWorkingDirectory(QString::fromStdU16String(cwd.u16string()));
+    auto environment = QProcessEnvironment::systemEnvironment();
+    for (const auto& [key, value] : env)
+        environment.insert(QString::fromStdString(key), QString::fromStdString(value));
+    process.setProcessEnvironment(environment);
+#ifdef __linux__
+    process.setChildProcessModifier([] { if (::setsid() < 0) _exit(127); });
+#endif
+    // The child gets its own session (Linux) or console (Windows) and no job object, so closing Apex
+    // leaves the game running.
+    if (!process.startDetached())
+        return std::unexpected(Error{ErrorCode::IoError, "Cannot start " + program + ": " + process.errorString().toStdString()});
+    return {};
+}
+
 } // namespace apex::ui

@@ -9,6 +9,8 @@ public:
     Result<std::unique_ptr<compile::ProcessHandle>> start(const std::string& program,
         const std::vector<std::string>& args, const std::filesystem::path& cwd,
         const compile::Environment& env) override;
+    Result<void> startDetached(const std::string& program, const std::vector<std::string>& args,
+        const std::filesystem::path& cwd, const compile::Environment& env) override;
 };
 
 } // namespace apex::ui

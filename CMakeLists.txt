@@ -87,7 +87,7 @@ apex_layer(core SOURCES src/core/entity_helpers.cpp src/core/version.cpp src/cor
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(compile SOURCES src/compile/sequence.cpp src/compile/variables.cpp
                           src/compile/file_ops.cpp src/compile/special_commands.cpp
-                          src/compile/runner.cpp src/compile/diagnostics.cpp src/compile/map_files.cpp src/compile/wc_import.cpp
+                          src/compile/runner.cpp src/compile/game_launch.cpp src/compile/diagnostics.cpp src/compile/map_files.cpp src/compile/wc_import.cpp
            DEPS apex_core)
 target_link_libraries(apex_compile PRIVATE sourcepp::toolpp)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_uv.cpp src/geometry/face_matching.cpp

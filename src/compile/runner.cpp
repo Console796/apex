@@ -1,5 +1,7 @@
 #include "compile/runner.hpp"
 
+#include "compile/game_launch.hpp"
+
 #include <algorithm>
 #include <array>
 
@@ -72,6 +74,7 @@ Result<void> CompileJob::start() {
             }
             add("-game", game->second);
         }
+        if (command.executable == "$game_exe") step.args = withConsoleLog(std::move(step.args));
         const auto bsp = paths_.variables.find("bsp_exe");
         if (command.executable == "$bsp_exe" || (bsp != paths_.variables.end() && step.program == bsp->second))
             add("-instancepath", paths_.instanceRoot.string());
@@ -128,6 +131,13 @@ void CompileJob::advance() {
 #ifdef __linux__
         env["LD_LIBRARY_PATH"] = paths_.toolDirectory.string();
 #endif
+        if (command.executable == "$game_exe") {
+            auto started = runner_.startDetached(step.program, step.args, cwd_, env);
+            if (!started) { fail(i, started.error().message); return; }
+            result.status = Status::Ok;
+            result.message = "Game started";
+            continue;
+        }
         auto handle = runner_.start(step.program, step.args, cwd_, env);
         if (!handle) { fail(i, handle.error().message); return; }
         handles_[i] = std::move(*handle);

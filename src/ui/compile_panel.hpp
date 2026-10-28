@@ -34,11 +34,20 @@ public:
     // The injected runner must outlive the panel's job. Changing it cancels the current job.
     void setProcessRunner(compile::ProcessRunner* runner);
     void setCacheDirectory(std::filesystem::path path) { cache_ = std::move(path); }
+    // Compiles with the selected profile; the game starts afterwards only when the profile's run game
+    // after option is on.
     void run();
+    // Compiles, then starts the game whatever the profile says (D9).
+    void compileAndRun();
+    // Starts the game in the last compiled map without compiling; also the Reload map command.
+    void runGame();
     void cancel();
     void refresh();
     // Selects the diagnostic row's objects in the document and asks for them to be framed.
     void activateDiagnostic(int row);
+    // The game's console log from the start of the last launch (-condebug), polled while it is watched.
+    QString gameLogText() const;
+    void pollGameLog();
     int profileCount() const { return static_cast<int>(profiles_.size()); }
     // Runs the map checks (D8) and fills the Problems list; returns what was found.
     const std::vector<editor::Problem>& checkProblems();
@@ -53,6 +62,8 @@ signals:
     // Asks to bring a world point into view (the leak start, a diagnostic that names a position).
     void focusRequested(DVec3 point);
 private:
+    void startCompile(bool withGame);
+    void watchGameLog();
     void refreshDiagnostics();
     void refreshProblemList();
     void loadOverlay();
@@ -103,6 +114,13 @@ private:
     std::vector<int> shown_; // diagnostics_ index per table row
     std::size_t diagnosticLines_ = 0;
     QTimer* timer_;
+    QTimer* gameLogTimer_;
+    QPlainTextEdit* gameLog_;
+    QPushButton* runGame_;
+    QPushButton* compileRun_;
+    QPushButton* reloadMap_;
+    std::filesystem::path gameLogFile_;
+    std::uintmax_t gameLogOffset_ = 0;
     QString error_;
     bool cancelling_ = false;
 };

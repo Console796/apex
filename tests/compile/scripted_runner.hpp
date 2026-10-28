@@ -53,6 +53,16 @@ public:
     std::deque<Script> scripts;
     std::vector<Call> calls;
     std::vector<ScriptedHandle*> handles;
+    // The game is started detached: nothing is read from it and its exit code never reaches the job, so a
+    // game that exits at once looks the same as one that stays open.
+    std::vector<Call> detached;
+    bool failDetached = false;
+    Result<void> startDetached(const std::string& program, const std::vector<std::string>& args,
+        const std::filesystem::path& cwd, const Environment& env) override {
+        detached.push_back({program, args, cwd, env});
+        if (failDetached) return std::unexpected(Error{ErrorCode::IoError, "Cannot start " + program});
+        return {};
+    }
     Result<std::unique_ptr<ProcessHandle>> start(const std::string& program,
         const std::vector<std::string>& args, const std::filesystem::path& cwd, const Environment& env) override {
         calls.push_back({program, args, cwd, env});
