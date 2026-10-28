@@ -21,8 +21,8 @@ TEST_CASE("helper arguments split commas outside quotes and parentheses") {
         std::vector<std::string>{"a", "models/a,b(c).mdl", "(b, (c, d))", ""});
     CHECK(splitHelperArguments(" \t").empty());
     CHECK(splitHelperArguments(",a,") == std::vector<std::string>{"", "a", ""});
-    CHECK(splitHelperArguments(R"args("a\",b", c)args") ==
-        std::vector<std::string>{R"args(a\",b)args", "c"});
+    CHECK(splitHelperArguments("\"a\\\",b\", c") ==
+        std::vector<std::string>{"a\\\",b", "c"});
     CHECK(splitHelperArguments(R"args("a" "b", c)args") ==
         std::vector<std::string>{R"args("a" "b")args", "c"});
     CHECK(splitHelperArguments("a, (b, c") == std::vector<std::string>{"a", "(b, c"});

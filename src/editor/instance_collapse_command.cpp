@@ -97,7 +97,8 @@ Result<InstanceCollapseReport> stageInstanceCollapse(EditorSession& session, doc
                         if (child.kind() != kv1::NodeKind::Value ||
                             fgd.keyTypes(classname, child.key()) != document::InstanceKeyType::SideList) continue;
                         std::string mapped;
-                        for (const auto word : split(child.decodedValue().value_or(""), ' ')) {
+                        const std::string listText = child.decodedValue().value_or("");
+                        for (const auto word : split(listText, ' ')) {
                             const auto old = kv1::Node::value("", std::string(word)).asInt();
                             const auto found = old ? pasted->sideIds.find(*old) : pasted->sideIds.end();
                             if (found == pasted->sideIds.end()) continue;

@@ -212,7 +212,9 @@ entity { "id" "2" "classname" "func_instance" "targetname" "rot" "file" "instanc
     }
     REQUIRE(liveSides.size() == 6);
     std::vector<int> listed;
-    for (const auto word : split(overlays[0].find("sides")->decodedValue().value_or(""), ' '))
+    // Own the text: split() returns views into it, and a temporary here would dangle inside the loop.
+    const std::string sidesText = overlays[0].find("sides")->decodedValue().value_or("");
+    for (const auto word : split(sidesText, ' '))
         listed.push_back(kv1::Node::value("", std::string(word)).asInt().value());
     REQUIRE(listed.size() == 2);
     for (const auto id : listed) CHECK(liveSides.contains(id));

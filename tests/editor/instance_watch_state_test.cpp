@@ -1,6 +1,7 @@
 #include "fixtures.hpp"
 #include "editor/instance_expansion.hpp"
 #include "editor/instance_watch_state.hpp"
+#include "core/strings.hpp"
 
 #include <chrono>
 #include <fstream>
@@ -56,7 +57,8 @@ TEST_CASE("Instance watch state reports a missing template coming back, even und
     tree.put("LEAF.VMF", "entity { classname logic_relay }");
     const auto back = state.directoryChanged(tree.root);
     REQUIRE(back.size() == 1);
-    CHECK(back.begin()->filename() == "LEAF.VMF");
+    // A case-insensitive filesystem (Windows) finds the file under the spelling that was asked for.
+    CHECK(ciEquals(back.begin()->filename().string(), "LEAF.VMF"));
     // The folder appears first: re-sync listens inside it, and the file arriving there is reported.
     std::filesystem::create_directories(sub);
     CHECK(state.directoryChanged(tree.root).empty());
