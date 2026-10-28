@@ -582,6 +582,16 @@ double PaneWindow::draw() {
     }
     list.viewportSize = Vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
     appendWorldAxes(list, *vp);
+    if (session_ && session_->compileOverlay() && session_->document()) {
+        const auto& compiled = *session_->compileOverlay();
+        const auto primitives = editor::compileOverlayPrimitives(compiled,
+            compiled.revision != session_->document()->historyState(), vp->overlays.leak, vp->overlays.portals);
+        const float scale = static_cast<float>(devicePixelRatio());
+        for (const auto& p : primitives.worldSegments) list.worldSegments.push_back({p.a, p.b, p.colour, p.width * scale});
+        for (const auto& p : primitives.worldPoints) list.worldPoints.push_back({p.position, p.colour, p.size * scale});
+        list.labelScale = scale;
+        for (const auto& p : primitives.labels) list.labels.push_back({p.position, p.text, Vec2(p.offset * devicePixelRatio()), p.colour});
+    }
     transform_.appendOverlay(list, camera, QSizeF(width(), height()), devicePixelRatio());
 
     QElapsedTimer timer;
@@ -852,7 +862,9 @@ void PaneFrame::buildMenu() {
                                     {"Bounds", &viewport::Overlays::bounds},
                                     {"Normals", &viewport::Overlays::normals},
                                     {"Nodraw faces", &viewport::Overlays::nodrawFaces},
-                                    {"Entity names", &viewport::Overlays::entityNames}};
+                                    {"Entity names", &viewport::Overlays::entityNames},
+                                    {"Compile leak", &viewport::Overlays::leak},
+                                    {"Compile portals", &viewport::Overlays::portals}};
     for (const auto& entry : entries) {
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);

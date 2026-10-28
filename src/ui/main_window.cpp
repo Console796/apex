@@ -450,6 +450,12 @@ void MainWindow::buildMenus() {
     compilePanel_ = new CompilePanel(compileDock);
     compilePanel_->setGameContent(gameContent_.get());
     compilePanel_->setEditorSession(&session_);
+    connect(compilePanel_, &CompilePanel::focusRequested, this, [this](DVec3 point) {
+        AABB box;
+        box.expand(point - DVec3(48.0));
+        box.expand(point + DVec3(48.0));
+        viewport_->centerOn(box);
+    });
     connect(compilePanel_, &CompilePanel::frameRequested, this, [this] {
         if (const auto bounds = session_.selectionBounds()) viewport_->centerOn(*bounds);
     });

@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 
+class QCheckBox;
 class QComboBox;
 class QLabel;
 class QPlainTextEdit;
@@ -38,8 +39,12 @@ public:
     int profileCount() const { return static_cast<int>(profiles_.size()); }
 signals:
     void frameRequested();
+    // Asks to bring a world point into view (the leak start, a diagnostic that names a position).
+    void focusRequested(DVec3 point);
 private:
     void refreshDiagnostics();
+    void loadOverlay();
+    void overlayControlsChanged();
     void importProfiles();
     void editProfile();
     void deleteProfile();
@@ -65,6 +70,13 @@ private:
     QTableWidget* steps_;
     QPlainTextEdit* log_;
     QComboBox* severity_;
+    QCheckBox* showLeak_;
+    QCheckBox* showPortals_;
+    QComboBox* cluster_;
+    QPushButton* goToLeak_;
+    std::filesystem::path overlayDirectory_;
+    std::string overlayName_;
+    bool overlayLoaded_ = true;
     QLabel* summary_;
     QTableWidget* diagnosticsTable_;
     std::vector<compile::Diagnostic> diagnostics_;

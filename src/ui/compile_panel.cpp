@@ -3,8 +3,11 @@
 #include "compile/wc_import.hpp"
 #include "ui/profile_editor.hpp"
 #include "ui/profile_store.hpp"
+#include "compile/map_files.hpp"
+#include "editor/compile_overlay.hpp"
 #include "editor/diagnostic_lookup.hpp"
 #include "ui/game_content.hpp"
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
 #include <QHeaderView>
@@ -81,6 +84,32 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     steps_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     steps_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layout->addWidget(steps_);
+    auto* overlayRow = new QHBoxLayout;
+    showLeak_ = new QCheckBox(tr("Leak"), this);
+    showLeak_->setObjectName(QStringLiteral("compileShowLeak"));
+    showLeak_->setChecked(true);
+    showPortals_ = new QCheckBox(tr("Portals"), this);
+    showPortals_->setObjectName(QStringLiteral("compileShowPortals"));
+    showPortals_->setChecked(true);
+    cluster_ = new QComboBox(this);
+    cluster_->setObjectName(QStringLiteral("compileCluster"));
+    cluster_->addItem(tr("All clusters"), -1);
+    goToLeak_ = new QPushButton(tr("Go to leak start"), this);
+    goToLeak_->setObjectName(QStringLiteral("compileGoToLeak"));
+    goToLeak_->setEnabled(false);
+    overlayRow->addWidget(showLeak_);
+    overlayRow->addWidget(showPortals_);
+    overlayRow->addWidget(cluster_);
+    overlayRow->addWidget(goToLeak_);
+    overlayRow->addStretch(1);
+    layout->addLayout(overlayRow);
+    connect(showLeak_, &QCheckBox::toggled, this, [this] { overlayControlsChanged(); });
+    connect(showPortals_, &QCheckBox::toggled, this, [this] { overlayControlsChanged(); });
+    connect(cluster_, &QComboBox::currentIndexChanged, this, [this] { overlayControlsChanged(); });
+    connect(goToLeak_, &QPushButton::clicked, this, [this] {
+        if (session_ && session_->compileOverlay())
+            if (const auto start = session_->compileOverlay()->leakStart()) emit focusRequested(*start);
+    });
     auto* filterRow = new QHBoxLayout;
     severity_ = new QComboBox(this);
     severity_->setObjectName(QStringLiteral("compileSeverity"));
@@ -181,6 +210,13 @@ void CompilePanel::run() {
     auto snapshot = editor::writeCompileSnapshot(*document_, source_, cache_, paths);
     if (!snapshot) { error_ = QString::fromStdString(snapshot.error().what()); refresh(); return; }
     revision_ = snapshot->revision;
+    overlayDirectory_ = snapshot->paths.workDirectory;
+    overlayName_ = snapshot->paths.variables.at("file");
+    overlayLoaded_ = false;
+    if (session_) session_->setCompileOverlay(std::nullopt);
+    cluster_->clear();
+    cluster_->addItem(tr("All clusters"), -1);
+    goToLeak_->setEnabled(false);
     logged_.assign(profile.commands.size(), 0);
     steps_->setRowCount(static_cast<int>(profile.commands.size()));
     for (std::size_t i = 0; i < profile.commands.size(); ++i) {
@@ -221,6 +257,33 @@ void CompilePanel::refresh() {
     }
     if (!batch.isEmpty()) log_->appendPlainText(batch.join('\n'));
     refreshDiagnostics();
+    if (!overlayLoaded_ && job_->status() != compile::Status::Queued && job_->status() != compile::Status::Running)
+        loadOverlay();
+}
+
+// A finished compile replaces the overlay: a fixed leak leaves no .lin, and the portals take its place.
+void CompilePanel::loadOverlay() {
+    overlayLoaded_ = true;
+    if (!session_ || !revision_) return;
+    auto overlay = editor::loadCompileOverlay(overlayDirectory_, overlayName_, *revision_);
+    overlay.showLeak = showLeak_->isChecked();
+    overlay.showPortals = showPortals_->isChecked();
+    cluster_->blockSignals(true);
+    for (int i = 0; i < overlay.portals.clusters; ++i) cluster_->addItem(tr("Cluster %1").arg(i), i);
+    cluster_->blockSignals(false);
+    goToLeak_->setEnabled(overlay.leakStart().has_value());
+    if (overlay.leak.empty() && overlay.portals.portals.empty()) session_->setCompileOverlay(std::nullopt);
+    else session_->setCompileOverlay(std::move(overlay));
+}
+
+void CompilePanel::overlayControlsChanged() {
+    if (!session_ || !session_->compileOverlay()) return;
+    auto overlay = *session_->compileOverlay();
+    overlay.showLeak = showLeak_->isChecked();
+    overlay.showPortals = showPortals_->isChecked();
+    const int cluster = cluster_->currentData().toInt();
+    overlay.cluster = cluster < 0 ? std::nullopt : std::optional<int>(cluster);
+    session_->setCompileOverlay(std::move(overlay));
 }
 
 void CompilePanel::refreshDiagnostics() {
@@ -256,7 +319,10 @@ void CompilePanel::refreshDiagnostics() {
 void CompilePanel::activateDiagnostic(int row) {
     if (row < 0 || row >= static_cast<int>(shown_.size()) || !document_ || !session_) return;
     const auto& diagnostic = diagnostics_[static_cast<std::size_t>(shown_[static_cast<std::size_t>(row)])];
-    if (diagnostic.objects.empty()) return;
+    if (diagnostic.objects.empty()) {
+        if (diagnostic.position) emit focusRequested(DVec3((*diagnostic.position)[0], (*diagnostic.position)[1], (*diagnostic.position)[2]));
+        return;
+    }
     std::vector<editor::Target> targets;
     for (const auto& object : diagnostic.objects)
         if (const auto node = editor::findDiagnosticObject(*document_, object)) targets.emplace_back(*node);

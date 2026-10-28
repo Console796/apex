@@ -87,7 +87,7 @@ apex_layer(core SOURCES src/core/entity_helpers.cpp src/core/version.cpp src/cor
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
 apex_layer(compile SOURCES src/compile/sequence.cpp src/compile/variables.cpp
                           src/compile/file_ops.cpp src/compile/special_commands.cpp
-                          src/compile/runner.cpp src/compile/diagnostics.cpp src/compile/wc_import.cpp
+                          src/compile/runner.cpp src/compile/diagnostics.cpp src/compile/map_files.cpp src/compile/wc_import.cpp
            DEPS apex_core)
 target_link_libraries(apex_compile PRIVATE sourcepp::toolpp)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_uv.cpp src/geometry/face_matching.cpp
@@ -98,7 +98,7 @@ apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.c
                             src/document/document.cpp src/document/entity_transform.cpp
                             src/document/instance_fixup.cpp src/document/instance_collapse.cpp
            DEPS apex_geometry apex_core)
-apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_lookup.cpp src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp src/editor/pick_model.cpp
+apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_lookup.cpp src/editor/compile_overlay.cpp src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp src/editor/pick_model.cpp
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
                           src/editor/group_index.cpp src/editor/name_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp

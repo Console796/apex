@@ -1,4 +1,5 @@
 #include "compile/diagnostics.hpp"
+#include "compile/map_files.hpp"
 #include "compile/runner.hpp"
 #include "compile/wc_import.hpp"
 #include "scripted_runner.hpp"
@@ -397,4 +398,47 @@ TEST_CASE("compile diagnostics: steps, tool names and summary") {
     CHECK(summary.seconds == 0);
     steps[1].lines.push_back("12 seconds elapsed");
     CHECK(summarize(all, steps).seconds == 12);
+}
+
+TEST_CASE("leak and portal readers read the files the real tools wrote") {
+    const std::filesystem::path logs = APEX_COMPILE_LOG_DIR;
+    const auto leak = readLeakFile(logs, "leak");
+    REQUIRE(leak);
+    REQUIRE(leak->size() == 3);
+    CHECK((*leak)[0] == DVec3(2048, 2048, -16));
+    CHECK((*leak)[1].x == doctest::Approx(315.909851));
+    CHECK((*leak)[2] == DVec3(256, 192, 8));
+    CHECK_FALSE(readLeakFile(logs, "baseline")); // a compile that did not leak writes no .lin
+
+    const auto portals = readPortalFile(logs, "baseline");
+    REQUIRE(portals);
+    CHECK(portals->clusters == 29);
+    REQUIRE(portals->portals.size() == 75);
+    const auto& first = portals->portals[0];
+    CHECK(first.clusterA == 0);
+    CHECK(first.clusterB == 1);
+    CHECK(first.points == std::vector<DVec3>{{208, 400, 0}, {304, 400, 0}, {304, 400, 128}, {208, 400, 128}});
+    CHECK(portals->portals[2].points.size() == 9);
+    for (const auto& portal : portals->portals) CHECK(portal.points.size() >= 3);
+}
+
+TEST_CASE("leak and portal readers tolerate empty and truncated files") {
+    CHECK(parseLeakFile("").empty());
+    CHECK(parseLeakFile("1 2 3\n4 5").size() == 1);
+    CHECK(parseLeakFile("1 2 3\r\n4 5 6\r\n").size() == 2);
+    CHECK(parseLeakFile("x y z\n1 2 3\n").empty());
+    CHECK(parsePortalFile("").portals.empty());
+    CHECK(parsePortalFile("PRT2\n1\n1\n3 0 1 (0 0 0 ) (1 0 0 ) (1 1 0 ) \n").portals.empty());
+    CHECK(parsePortalFile("PRT1\n2\n").portals.empty());
+    const std::string good = "PRT1\n2\n2\n3 0 1 (0 0 0 ) (1 0 0 ) (1 1 0 ) \n3 1 0 (0 0 0 ) (0 1 0 ) (0 1 1 ) \n";
+    const auto full = parsePortalFile(good);
+    CHECK(full.clusters == 2);
+    CHECK(full.portals.size() == 2);
+    // Cut anywhere: only whole portals before the cut survive and nothing throws.
+    for (std::size_t length = 0; length < good.size(); ++length) {
+        const auto cut = parsePortalFile(good.substr(0, length));
+        CHECK(cut.portals.size() <= 2);
+        for (const auto& portal : cut.portals) CHECK(portal.points.size() == 3);
+    }
+    CHECK(parsePortalFile(good.substr(0, good.find("3 1 0") + 12)).portals.size() == 1);
 }

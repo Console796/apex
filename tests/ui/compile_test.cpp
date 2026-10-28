@@ -6,6 +6,7 @@
 #include "ui/game_content.hpp"
 #include "ui/profile_editor.hpp"
 #include "ui/profile_store.hpp"
+#include <QCheckBox>
 #include <QComboBox>
 #include <QSettings>
 #include <QSignalSpy>
@@ -358,6 +359,85 @@ TEST_CASE("compile panel lists diagnostics, selects the named object and flags s
     for (int i = 0; i < table->rowCount(); ++i) CHECK(table->item(i, 0)->text() == "Error");
     filter->setCurrentIndex(0);
     CHECK(table->rowCount() == 3);
+    panel.setDocument(nullptr);
+    panel.setEditorSession(nullptr);
+}
+
+TEST_CASE("compile panel shows the leak, then replaces it with portals after a fixed recompile") {
+    ui_test::app();
+    QTemporaryDir dir;
+    const auto root = std::filesystem::path(dir.path().toStdU16String());
+    std::filesystem::create_directories(root / "game/maps");
+    assets::GameProfile game;
+    game.gameDirectory = root / "game";
+    for (const auto* tool : {"vbsp", "vvis", "vrad", "postcompiler"}) {
+        std::ofstream(root / tool) << "fake";
+        game.toolPaths[tool] = root / tool;
+    }
+    ui::GameContent content;
+    content.reload(&game);
+    document::Document doc(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    compile::test::ScriptedRunner runner;
+    ui::CompilePanel panel;
+    panel.setGameContent(&content);
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.setCacheDirectory(root / "cache");
+    // vbsp "writes" a leak on the first compile and portals on the second.
+    int compiles = 0;
+    struct WritingRunner final : compile::ProcessRunner {
+        compile::test::ScriptedRunner& scripted;
+        int& compiles;
+        WritingRunner(compile::test::ScriptedRunner& value, int& count) : scripted(value), compiles(count) {}
+        Result<std::unique_ptr<compile::ProcessHandle>> start(const std::string& program,
+            const std::vector<std::string>& args, const std::filesystem::path& cwd,
+            const compile::Environment& env) override {
+            std::ofstream(cwd / "untitled.bsp") << "fake bsp";
+            if (program.find("vbsp") != std::string::npos) {
+                ++compiles;
+                if (compiles == 1) std::ofstream(cwd / "untitled.lin") << "0 0 0\n64 0 0\n64 64 0\n";
+                else std::ofstream(cwd / "untitled.prt") << "PRT1\n3\n1\n3 0 2 (0 0 0 ) (1 0 0 ) (1 1 0 ) \n";
+            }
+            return scripted.start(program, args, cwd, env);
+        }
+    } writing(runner, compiles);
+    panel.setProcessRunner(&writing);
+    runner.scripts = {{{"bsp"}}, {{"post"}}, {{"vis"}}, {{"light"}}};
+    auto* goTo = panel.findChild<QPushButton*>("compileGoToLeak");
+    auto* clusters = panel.findChild<QComboBox*>("compileCluster");
+    REQUIRE(goTo); REQUIRE(clusters);
+    std::vector<DVec3> focused;
+    QObject::connect(&panel, &ui::CompilePanel::focusRequested, &panel, [&](DVec3 point) { focused.push_back(point); });
+    CHECK_FALSE(goTo->isEnabled());
+
+    panel.run();
+    REQUIRE(until([&] { return session.compileOverlay().has_value(); }));
+    REQUIRE(session.compileOverlay()->leak.size() == 3);
+    CHECK(session.compileOverlay()->portals.portals.empty());
+    CHECK(session.compileOverlay()->revision == doc.historyState());
+    CHECK(goTo->isEnabled());
+    goTo->click();
+    REQUIRE(focused.size() == 1);
+    CHECK(focused[0] == DVec3(0, 0, 0));
+    // Hiding the leak keeps the data but not the drawing.
+    panel.findChild<QCheckBox*>("compileShowLeak")->setChecked(false);
+    CHECK_FALSE(session.compileOverlay()->showLeak);
+
+    editor_test::addBlock(doc, "entity { classname info_target }");
+    CHECK(session.compileOverlay()->revision != doc.historyState()); // drawn grey from here on
+
+    runner.scripts = {{{"bsp"}}, {{"post"}}, {{"vis"}}, {{"light"}}};
+    runner.calls.clear();
+    panel.run();
+    REQUIRE(until([&] { return session.compileOverlay() && session.compileOverlay()->leak.empty(); }));
+    CHECK(session.compileOverlay()->portals.portals.size() == 1);
+    CHECK(session.compileOverlay()->revision == doc.historyState());
+    CHECK_FALSE(goTo->isEnabled());
+    CHECK(clusters->count() == 4); // all + clusters 0..2
+    clusters->setCurrentIndex(2);
+    CHECK(session.compileOverlay()->cluster == 1);
     panel.setDocument(nullptr);
     panel.setEditorSession(nullptr);
 }

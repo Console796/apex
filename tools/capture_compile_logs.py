@@ -83,6 +83,11 @@ def main():
                                      stdin=subprocess.DEVNULL)
                 log = (run.stdout + run.stderr).replace(str(work), '<work>').replace(str(install), '<install>')
                 (OUT / f'{name}.{tool}.log').write_text(log + f'\n[exit {run.returncode}]\n')
+                if tool == 'vbsp':  # 0.5.3: the files the overlays read (D6), paths made portable
+                    for ext in ('lin', 'prt'):
+                        produced = work / f'{name}.{ext}'
+                        if produced.is_file():
+                            (OUT / f'{name}.{ext}').write_bytes(produced.read_bytes())
                 print(f'{name}.{tool}: exit {run.returncode}, {len(log.splitlines())} lines')
                 if run.returncode != 0:
                     break

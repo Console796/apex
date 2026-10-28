@@ -6,6 +6,7 @@
 #include "render/render_mirror.hpp"
 #include "render/render_target.hpp"
 #include "render/view_math.hpp"
+#include "editor/compile_overlay.hpp"
 #include "editor/editor_session.hpp"
 #include "../editor/fixtures.hpp"
 #include "editor/vertex_tool.hpp"
@@ -345,6 +346,41 @@ TEST_CASE("world overlays: partly occluded lines points triangles and Latin-1 la
     for (auto& p : list.worldTriangles) { p.a += far; p.b += far; p.c += far; }
     for (auto& p : list.labels) p.position += far;
     CHECK(frame(g, list).pixels == image.pixels);
+}
+
+TEST_CASE("world overlays: compile leak polyline and start marker draw, grey when stale") {
+    REQUIRE_GPU();
+    const auto font = testing::bitmapFont();
+    auto atlas = GlyphAtlas::create(*g.context, *g.heap, font);
+    REQUIRE(atlas);
+    g.renderer->setGlyphAtlas(*atlas);
+    editor::CompileOverlay overlay;
+    overlay.leak = {{64, -40, 0}, {64, 0, 0}, {64, 0, 30}};
+    auto drawn = [&](bool stale) {
+        DrawList list;
+        list.view = options().view;
+        list.mode = options().mode;
+        const auto primitives = editor::compileOverlayPrimitives(overlay, stale, true, true);
+        for (const auto& p : primitives.worldSegments) list.worldSegments.push_back({p.a, p.b, p.colour, p.width});
+        for (const auto& p : primitives.worldPoints) list.worldPoints.push_back({p.position, p.colour, p.size});
+        for (const auto& p : primitives.labels) list.labels.push_back({p.position, p.text, Vec2(p.offset), p.colour});
+        return frame(g, list);
+    };
+    const auto live = drawn(false);
+    // Pixel column = 64 - y, row = 64 - z in this view; the first segment runs along row 64.
+    auto reddest = [&](const Rgba8Image& image, unsigned x, unsigned y) {
+        int best = 0;
+        for (unsigned row = y - 2; row <= y + 2; ++row) best = std::max(best, channel(image, x, row, 0) - channel(image, x, row, 1));
+        return best;
+    };
+    CHECK(reddest(live, 84, 64) > 150);
+    CHECK(channel(live, 64, 40, 0) == 255); // the vertical segment up to z = 30 (row 34)
+    const auto grey = drawn(true);
+    CHECK(reddest(grey, 84, 64) == 0);
+    int bright = 0;
+    for (unsigned row = 62; row <= 66; ++row) bright = std::max(bright, channel(grey, 84, row, 0));
+    CHECK(bright > 60); // still drawn
+    CHECK(channel(live, 100, 100, 0) == channel(grey, 100, 100, 0)); // untouched background
 }
 
 TEST_CASE("world overlays: square points keep pixel size with distance and projection") {

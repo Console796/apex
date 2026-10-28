@@ -14,6 +14,7 @@
 #include "editor/placement.hpp"
 #include "editor/placement_item.hpp"
 #include "editor/modal_transform.hpp"
+#include "editor/compile_overlay.hpp"
 #include "editor/overlay_palette.hpp"
 #include "editor/preview.hpp"
 #include "editor/selection_ops.hpp"
@@ -147,6 +148,9 @@ public:
     void unpinWorkPlane();
     double gridSize() const { return gridSize_; }
     void setGridSize(double units);
+    const std::optional<CompileOverlay>& compileOverlay() const { return compileOverlay_; }
+    // Session state, never written to the document. Observers are told so panes redraw.
+    void setCompileOverlay(std::optional<CompileOverlay> overlay) { compileOverlay_ = std::move(overlay); notify(); }
     const OverlayPalette& overlayPalette() const { return overlayPalette_; }
     void setOverlayPalette(const OverlayPalette& palette);
     SnapResult snap(Ray ray, const ToolView& view, bool suspended = false,
@@ -379,6 +383,7 @@ private:
     std::optional<std::pair<NodeId, SideId>> hoverFace_;
     WorkPlaneState workPlane_;
     OverlayPalette overlayPalette_;
+    std::optional<CompileOverlay> compileOverlay_;
     double gridSize_ = GridLadder::kDefault;
     MarqueeMode marqueeMode_ = MarqueeMode::Enclosed;
     GizmoMode gizmoMode_ = GizmoMode::Translate;

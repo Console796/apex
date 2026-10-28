@@ -17,6 +17,8 @@ struct Overlays {
     bool normals = false;
     bool nodrawFaces = true; // False hides nodraw faces in Textured and Flat views.
     bool entityNames = false; // Draws each point entity's targetname beside it.
+    bool leak = true;         // The compile's leak path, when there is one (0.5 D6).
+    bool portals = true;      // The compile's portals, when there are any.
 
     bool operator==(const Overlays&) const = default;
 };
