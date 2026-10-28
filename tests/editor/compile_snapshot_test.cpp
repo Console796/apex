@@ -80,3 +80,24 @@ TEST_CASE("compile snapshot supports unsaved maps and refuses to erase a source 
     CHECK_FALSE(unsafe);
     CHECK(read(snapshot->path) == original);
 }
+
+TEST_CASE("compile snapshot copies instances that exist only beside the source") {
+    CompileDir dir;
+    fs::create_directories(dir.path / "src/inst/deep");
+    std::ofstream(dir.path / "src/inst/a.vmf") << "entity { \"classname\" \"func_instance\" \"file\" \"deep/b.vmf\" }";
+    std::ofstream(dir.path / "src/inst/deep/b.vmf") << "leaf";
+    std::ofstream(dir.path / "src/outside.vmf") << "not referenced";
+    document::Document doc(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor_test::addBlock(doc, "entity { id 2 classname func_instance file \"inst/a.vmf\" }");
+    editor_test::addBlock(doc, "entity { id 3 classname func_instance file \"../escape.vmf\" }");
+    editor_test::addBlock(doc, "entity { id 4 classname func_instance file \"missing/c.vmf\" }");
+    std::ofstream(dir.path / "escape.vmf") << "must not be copied";
+    auto snapshot = editor::writeCompileSnapshot(doc, dir.path / "src/map.vmf", dir.path / "cache", {});
+    REQUIRE(snapshot);
+    const auto work = snapshot->paths.workDirectory;
+    CHECK(fs::is_regular_file(work / "inst/a.vmf"));
+    CHECK(read(work / "inst/deep/b.vmf") == "leaf");
+    CHECK_FALSE(fs::exists(work / "outside.vmf"));
+    CHECK_FALSE(fs::exists(work / "../escape.vmf"));
+    CHECK_FALSE(fs::exists(work / "missing"));
+}
