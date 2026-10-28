@@ -1,4 +1,5 @@
 #include <doctest/doctest.h>
+#include "document/cordon.hpp"
 #include "editor/compile_snapshot.hpp"
 #include "fixtures.hpp"
 
@@ -100,4 +101,36 @@ TEST_CASE("compile snapshot copies instances that exist only beside the source")
     CHECK_FALSE(fs::exists(work / "outside.vmf"));
     CHECK_FALSE(fs::exists(work / "../escape.vmf"));
     CHECK_FALSE(fs::exists(work / "missing"));
+}
+
+TEST_CASE("cordon-only snapshot is filtered and walled while the document stays whole") {
+    CompileDir dir;
+    document::Document doc(editor_test::parsed("world { id 1 classname worldspawn }"));
+    const auto world = *doc.handle(doc.roots().front());
+    editor_test::addBox(doc, {0, 0, 0}, {64, 64, 64}, world);
+    editor_test::addBox(doc, {1000, 0, 0}, {1064, 64, 64}, world);
+    const auto whole = *doc.write();
+    SUBCASE("without an active cordon the whole map compiles") {
+        auto snapshot = editor::writeCompileSnapshot(doc, {}, dir.path, {}, editor::CompileCordon{});
+        REQUIRE(snapshot);
+        CHECK(read(snapshot->path) == whole);
+    }
+    SUBCASE("with one the outside is dropped and six walls are added") {
+        document::addCordon(doc, "cordon", AABB{{-16, -16, -16}, {128, 128, 128}});
+        const auto before = *doc.write();
+        auto snapshot = editor::writeCompileSnapshot(doc, {}, dir.path, {}, editor::CompileCordon{"tools/custom"});
+        REQUIRE(snapshot);
+        const auto filtered = read(snapshot->path);
+        const auto count = [&](const std::string& needle) {
+            std::size_t n = 0;
+            for (auto at = filtered.find(needle); at != std::string::npos; at = filtered.find(needle, at + 1)) ++n;
+            return n;
+        };
+        CHECK(count("\"solid\"") == 7);
+        CHECK(count("tools/custom") == 36);
+        CHECK(*doc.write() == before);
+        auto plain = editor::writeCompileSnapshot(doc, {}, dir.path, {});
+        REQUIRE(plain);
+        CHECK(read(plain->path) == before);
+    }
 }

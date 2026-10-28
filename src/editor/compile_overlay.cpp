@@ -46,4 +46,27 @@ ToolOverlay compileOverlayPrimitives(const CompileOverlay& overlay, bool stale, 
     return out;
 }
 
+ToolOverlay cordonOverlayPrimitives(const document::CordonSet& cordons) {
+    ToolOverlay out;
+    for (const auto& cordon : cordons.boxes) {
+        if (cordon.box.empty()) continue;
+        const bool live = cordons.enabled && cordon.active;
+        const Vec4 colour = live ? Vec4(1.0f, 0.25f, 0.2f, 1.0f) : Vec4(0.6f, 0.6f, 0.6f, 0.6f);
+        const float width = live ? 2.0f : 1.0f;
+        const auto& lo = cordon.box.min;
+        const auto& hi = cordon.box.max;
+        const auto corner = [&](int bits) {
+            return DVec3{bits & 1 ? hi.x : lo.x, bits & 2 ? hi.y : lo.y, bits & 4 ? hi.z : lo.z};
+        };
+        for (int bits = 0; bits < 8; ++bits) {
+            for (int axis = 0; axis < 3; ++axis) {
+                if (bits & (1 << axis)) continue;
+                out.worldSegments.push_back({corner(bits), corner(bits | (1 << axis)), colour, width});
+            }
+        }
+        if (!cordon.name.empty()) out.labels.push_back({corner(7), cordon.name, DVec2(6.0, -6.0), colour});
+    }
+    return out;
+}
+
 } // namespace apex::editor

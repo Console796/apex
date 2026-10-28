@@ -46,6 +46,10 @@ ProfileEditor::ProfileEditor(compile::CompileProfile profile, QWidget* parent)
     form->addRow(tr("Name"), name_);
     form->addRow(copyBsp_);
     form->addRow(cordonOnly_);
+    cordonMaterial_ = new QLineEdit(QString::fromStdString(base_.cordonMaterial), this);
+    cordonMaterial_->setObjectName(QStringLiteral("profileCordonMaterial"));
+    cordonMaterial_->setToolTip(tr("Material of the six walls added around the cordon in the compiled copy"));
+    form->addRow(tr("Cordon wall material"), cordonMaterial_);
     layout->addLayout(form);
     commands_ = new QTableWidget(0, 4, this);
     commands_->setObjectName(QStringLiteral("profileCommands"));
@@ -117,6 +121,8 @@ compile::CompileProfile ProfileEditor::profile() const {
     result.name = name_->text().trimmed().toStdString();
     result.copyBspToMaps = copyBsp_->isChecked();
     result.cordonOnly = cordonOnly_->isChecked();
+    if (const auto material = cordonMaterial_->text().trimmed(); !material.isEmpty())
+        result.cordonMaterial = material.toStdString();
     result.commands.clear();
     for (int row = 0; row < commands_->rowCount(); ++row) {
         compile::Command command;

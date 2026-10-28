@@ -19,9 +19,14 @@ struct CompileSnapshot {
     std::uint64_t revision = 0;
 };
 
+// A cordon compile (D7): the snapshot holds only what touches an active cordon, closed by six walls.
+struct CompileCordon {
+    std::string material = "tools/toolsskybox";
+};
+
 // Call on the document's owning thread at Run. Never saves or modifies the source document.
 Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
     const std::filesystem::path& source, const std::filesystem::path& cache,
-    const CompileGamePaths& game);
+    const CompileGamePaths& game, const std::optional<CompileCordon>& cordon = std::nullopt);
 
 } // namespace apex::editor

@@ -29,6 +29,7 @@ struct CompileProfile {
     bool runGameAfter = true;
     bool copyBspToMaps = true;
     bool cordonOnly = false;
+    std::string cordonMaterial = "tools/toolsskybox"; // Material of the six walls a cordon compile adds (D7).
     bool operator==(const CompileProfile&) const = default;
 };
 

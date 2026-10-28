@@ -1,6 +1,7 @@
 #include "ui/compile_panel.hpp"
 
 #include "compile/wc_import.hpp"
+#include "ui/cordon_editor.hpp"
 #include "ui/profile_editor.hpp"
 #include "ui/profile_store.hpp"
 #include "compile/map_files.hpp"
@@ -103,6 +104,9 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     overlayRow->addWidget(goToLeak_);
     overlayRow->addStretch(1);
     layout->addLayout(overlayRow);
+    cordons_ = new CordonEditor(this);
+    cordons_->setObjectName(QStringLiteral("cordonEditor"));
+    layout->addWidget(cordons_);
     connect(showLeak_, &QCheckBox::toggled, this, [this] { overlayControlsChanged(); });
     connect(showPortals_, &QCheckBox::toggled, this, [this] { overlayControlsChanged(); });
     connect(cluster_, &QComboBox::currentIndexChanged, this, [this] { overlayControlsChanged(); });
@@ -152,6 +156,7 @@ void CompilePanel::setDocument(document::Document* document) {
     job_.reset();
     revision_.reset();
     document_ = document;
+    cordons_->setDocument(document);
     error_.clear();
     log_->clear();
     steps_->setRowCount(0);
@@ -159,6 +164,10 @@ void CompilePanel::setDocument(document::Document* document) {
     diagnosticLines_ = 0;
     refreshDiagnostics();
     refresh();
+}
+void CompilePanel::setEditorSession(editor::EditorSession* session) {
+    session_ = session;
+    cordons_->setEditorSession(session);
 }
 void CompilePanel::setProcessRunner(compile::ProcessRunner* runner) {
     stopJob();
@@ -207,7 +216,8 @@ void CompilePanel::run() {
     for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"},
              {"light_exe", "vrad"}, {"postcompiler_exe", "postcompiler"}, {"game_exe", "game"}})
         paths.tools[variable] = game.toolPath(tool).string();
-    auto snapshot = editor::writeCompileSnapshot(*document_, source_, cache_, paths);
+    auto snapshot = editor::writeCompileSnapshot(*document_, source_, cache_, paths,
+        profile.cordonOnly ? std::optional(editor::CompileCordon{profile.cordonMaterial}) : std::nullopt);
     if (!snapshot) { error_ = QString::fromStdString(snapshot.error().what()); refresh(); return; }
     revision_ = snapshot->revision;
     overlayDirectory_ = snapshot->paths.workDirectory;

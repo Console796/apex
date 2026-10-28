@@ -5,6 +5,7 @@
 // with edits; it is greyed once the document has moved on.
 
 #include "compile/map_files.hpp"
+#include "document/cordon.hpp"
 #include "editor/tool.hpp"
 
 #include <cstdint>
@@ -32,5 +33,9 @@ CompileOverlay loadCompileOverlay(const std::filesystem::path& workDirectory, co
 
 // World-space primitives of the overlay; `stale` greys everything. Widths are logical pixels.
 ToolOverlay compileOverlayPrimitives(const CompileOverlay& overlay, bool stale, bool leak, bool portals);
+
+// The twelve edges of each cordon box, and its name at the minimum corner (D7). A cordon that is off, or in
+// a block that is off, is drawn grey and thin; a compile uses only the bright ones.
+ToolOverlay cordonOverlayPrimitives(const document::CordonSet& cordons);
 
 } // namespace apex::editor

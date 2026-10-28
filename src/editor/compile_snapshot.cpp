@@ -1,5 +1,7 @@
 #include "editor/compile_snapshot.hpp"
 
+#include "document/cordon.hpp"
+
 #include <fstream>
 #include <regex>
 #include <iterator>
@@ -46,9 +48,17 @@ void copySourceInstances(const std::string& text, const std::filesystem::path& s
 
 Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
     const std::filesystem::path& source, const std::filesystem::path& cache,
-    const CompileGamePaths& game) {
+    const CompileGamePaths& game, const std::optional<CompileCordon>& cordon) {
     auto text = document.write();
     if (!text) return std::unexpected(text.error());
+    if (cordon) {
+        const auto boxes = document::readCordons(document).compileBoxes();
+        if (!boxes.empty()) {
+            auto filtered = document::cordonFilteredText(*text, boxes, {.material = cordon->material});
+            if (!filtered) return std::unexpected(filtered.error());
+            *text = std::move(*filtered);
+        }
+    }
     try {
         auto name = source.empty() ? std::string("untitled") : source.stem().string();
         if (name.empty() || name == "." || name == "..") name = "untitled";

@@ -17,6 +17,7 @@ class QTableWidget;
 class QTimer;
 
 namespace apex::ui {
+class CordonEditor;
 class GameContent;
 
 class CompilePanel final : public QWidget {
@@ -27,7 +28,7 @@ public:
     void setDocument(document::Document* document);
     void setSourcePath(std::filesystem::path path) { source_ = std::move(path); }
     void setGameContent(GameContent* content) { content_ = content; }
-    void setEditorSession(editor::EditorSession* session) { session_ = session; }
+    void setEditorSession(editor::EditorSession* session);
     // The injected runner must outlive the panel's job. Changing it cancels the current job.
     void setProcessRunner(compile::ProcessRunner* runner);
     void setCacheDirectory(std::filesystem::path path) { cache_ = std::move(path); }
@@ -74,6 +75,7 @@ private:
     QCheckBox* showPortals_;
     QComboBox* cluster_;
     QPushButton* goToLeak_;
+    CordonEditor* cordons_;
     std::filesystem::path overlayDirectory_;
     std::string overlayName_;
     bool overlayLoaded_ = true;

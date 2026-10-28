@@ -30,7 +30,8 @@ QByteArray profilesToJson(const std::vector<compile::CompileProfile>& profiles) 
         }
         array.append(QJsonObject{{"name", QString::fromStdString(profile.name)}, {"commands", commands},
             {"runGameAfter", profile.runGameAfter}, {"copyBspToMaps", profile.copyBspToMaps},
-            {"cordonOnly", profile.cordonOnly}});
+            {"cordonOnly", profile.cordonOnly},
+            {"cordonMaterial", QString::fromStdString(profile.cordonMaterial)}});
     }
     return QJsonDocument(array).toJson(QJsonDocument::Compact);
 }
@@ -45,6 +46,8 @@ std::vector<compile::CompileProfile> profilesFromJson(const QByteArray& json) {
         profile.runGameAfter = object["runGameAfter"].toBool(true);
         profile.copyBspToMaps = object["copyBspToMaps"].toBool(true);
         profile.cordonOnly = object["cordonOnly"].toBool(false);
+        if (const auto material = object["cordonMaterial"].toString(); !material.isEmpty())
+            profile.cordonMaterial = material.toStdString();
         for (const auto& item : object["commands"].toArray()) {
             const auto c = item.toObject();
             compile::Command command;

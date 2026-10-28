@@ -8,6 +8,7 @@
 #include "ui/profile_store.hpp"
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QSettings>
 #include <QSignalSpy>
 #include "../editor/corpus.hpp"
@@ -495,4 +496,30 @@ TEST_CASE("compile panel restores saved user profiles") {
     ui::CompilePanel again;
     CHECK(again.findChild<QComboBox*>("compileProfile")->count() == 3);
     QSettings().remove("compile/profiles");
+}
+
+TEST_CASE("cordon editor adds, edits, deactivates and removes cordons as undoable steps") {
+    document::Document doc(editor_test::parsed("world { id 1 classname worldspawn }"));
+    ui::CompilePanel panel;
+    panel.setDocument(&doc);
+    auto* list = panel.findChild<QComboBox*>("cordonList");
+    auto* add = panel.findChild<QPushButton*>("cordonAdd");
+    auto* active = panel.findChild<QCheckBox*>("cordonActive");
+    auto* maxX = panel.findChild<QDoubleSpinBox*>("cordonMaxX");
+    auto* remove = panel.findChild<QPushButton*>("cordonRemove");
+    REQUIRE(list); REQUIRE(add); REQUIRE(active); REQUIRE(maxX); REQUIRE(remove);
+    CHECK(list->count() == 0);
+    CHECK_FALSE(remove->isEnabled());
+    add->click();
+    REQUIRE(list->count() == 1);
+    CHECK(maxX->value() == 256.0);
+    maxX->setValue(512.0);
+    CHECK(document::readCordons(doc).boxes[0].box.max.x == 512.0);
+    active->setChecked(false);
+    CHECK(document::readCordons(doc).compileBoxes().empty());
+    CHECK(list->itemText(0).contains("off"));
+    remove->click();
+    CHECK(list->count() == 0);
+    CHECK(doc.undo());
+    CHECK(list->count() == 1);
 }

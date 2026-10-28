@@ -23,6 +23,7 @@ private:
     QLineEdit* name_;
     QCheckBox* copyBsp_;
     QCheckBox* cordonOnly_;
+    QLineEdit* cordonMaterial_;
     QTableWidget* commands_;
 };
 
