@@ -3,6 +3,10 @@
 #include "../editor/fixtures.hpp"
 #include "../compile/scripted_runner.hpp"
 #include "ui/compile_panel.hpp"
+#include "ui/main_window.hpp"
+#include "ui/viewport_area.hpp"
+#include "ui/area_frame.hpp"
+#include <QAction>
 #include "ui/game_content.hpp"
 #include "ui/profile_editor.hpp"
 #include "ui/profile_store.hpp"
@@ -638,4 +642,92 @@ TEST_CASE("compile panel runs the game detached, tails its console log and reloa
         CHECK(header->text().contains("Cannot start"));
     }
     panel.setDocument(nullptr);
+}
+
+TEST_CASE("compilation role preserves a running job across layouts and floating windows") {
+    ui_test::app();
+    QTemporaryDir directory;
+    const auto root = std::filesystem::path(directory.path().toStdU16String());
+    assets::GameProfile game;
+    game.gameDirectory = root / "game";
+    std::filesystem::create_directories(game.gameDirectory);
+    std::ofstream(game.gameDirectory / "gameinfo.txt") << "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }";
+    for (const auto* tool : {"vbsp", "vvis", "vrad", "postcompiler"}) {
+        std::ofstream(root / tool) << "fake";
+        game.toolPaths[tool] = root / tool;
+    }
+    ui::GameContent content;
+    content.reload(&game);
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    compile::test::ScriptedRunner runner;
+    runner.scripts = {{{}, 0, true}};
+    ui::ViewportArea area;
+    area.setGameContent(&content);
+    area.setDocument(&document);
+    viewport::ViewportLayout dedicated;
+    const auto pane = dedicated.paneIds().front();
+    REQUIRE(dedicated.setRole(pane, viewport::AreaRole::Compile));
+    auto decoded = viewport::ViewportLayout::fromJson(dedicated.toJson());
+    REQUIRE(decoded);
+    CHECK(decoded->role(pane) == viewport::AreaRole::Compile);
+    area.setLayout(dedicated);
+    area.resize(640, 480);
+    area.show();
+    ui_test::app().processEvents();
+    auto* panel = area.compilePanel();
+    panel->setCacheDirectory(root / "cache");
+    panel->setProcessRunner(&runner);
+    auto* profile = panel->findChild<QComboBox*>("compileProfile");
+    auto* log = panel->findChild<QPlainTextEdit*>("compileLog");
+    REQUIRE(profile); REQUIRE(log);
+    profile->setCurrentIndex(0);
+    panel->run();
+    REQUIRE(runner.handles.size() == 1);
+    CHECK_FALSE(runner.handles.front()->terminated);
+    log->setPlainText("retained compilation output");
+    CHECK(area.minimumSizeHint().width() <= 640);
+    CHECK(area.minimumSizeHint().height() <= 480);
+    area.setLayout(viewport::ViewportLayout{});
+    CHECK(area.compilePanel() == panel);
+    CHECK_FALSE(runner.handles.front()->terminated);
+    auto* floating = qobject_cast<ui::CompilePanelView*>(area.showRole(viewport::AreaRole::Compile, true));
+    REQUIRE(floating);
+    CHECK(floating->compilePanel() == panel);
+    CHECK(floating->isAncestorOf(panel));
+    CHECK(log->toPlainText() == "retained compilation output");
+    area.setLayout(dedicated);
+    auto* embedded = qobject_cast<ui::CompilePanelView*>(area.showRole(viewport::AreaRole::Compile, false));
+    REQUIRE(embedded);
+    CHECK(embedded->isAncestorOf(panel));
+    CHECK_FALSE(floating->isAncestorOf(panel));
+    CHECK_FALSE(runner.handles.front()->terminated);
+    CHECK(log->toPlainText() == "retained compilation output");
+    panel->cancel();
+    CHECK(runner.handles.front()->terminated);
+    panel->setDocument(nullptr);
+}
+
+TEST_CASE("compilation menu respects workspace and floating window preferences") {
+    ui_test::app();
+    const auto previous = QSettings().value("ui/compilationWindow");
+    ui::MainWindow window;
+    auto* area = window.viewportArea();
+    viewport::ViewportLayout layout;
+    const auto pane = layout.paneIds().front();
+    REQUIRE(layout.setRole(pane, viewport::AreaRole::Compile));
+    area->setLayout(layout);
+    window.show();
+    ui::MainWindow::setCompilationInWindow(false);
+    auto* show = window.findChild<QAction*>("compile.show");
+    REQUIRE(show);
+    show->trigger();
+    CHECK_FALSE(area->floating(viewport::AreaRole::Compile));
+    CHECK(area->panel(pane)->isAncestorOf(area->compilePanel()));
+    ui::MainWindow::setCompilationInWindow(true);
+    show->trigger();
+    REQUIRE(area->floating(viewport::AreaRole::Compile));
+    CHECK(area->floating(viewport::AreaRole::Compile)->isVisible());
+    CHECK(area->floating(viewport::AreaRole::Compile)->isAncestorOf(area->compilePanel()));
+    CHECK_FALSE(window.findChild<QWidget*>("compileDock"));
+    QSettings().setValue("ui/compilationWindow", previous);
 }

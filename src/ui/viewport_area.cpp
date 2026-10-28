@@ -24,6 +24,7 @@
 #include "core/log.hpp"
 #include "editor/selection_expand.hpp"
 #include "ui/area_frame.hpp"
+#include "ui/compile_panel.hpp"
 #include "ui/gpu_host.hpp"
 #include "ui/input_log.hpp"
 #include "ui/theme.hpp"
@@ -137,6 +138,8 @@ ViewportArea::ViewportArea(QWidget* parent) : QWidget(parent) {
     setMinimumSize(320, 240);
     auto* column = new QVBoxLayout(this);
     column->setContentsMargins(0, 0, 0, 0);
+    compilePanel_ = new CompilePanel(this);
+    compilePanel_->hide();
     host_ = new GpuHost(this);
     connect(host_, &GpuHost::gpuNameChanged, this, &ViewportArea::gpuNameChanged);
     timer_.setInterval(16);
@@ -158,6 +161,7 @@ ViewportArea::~ViewportArea() {
 
 void ViewportArea::setDocument(document::Document* document, const assets::GameProfile* profile) {
     document_ = document;
+    compilePanel_->setDocument(document);
     host_->setDocument(document, gameContent_ ? gameContent_->vfs() : nullptr, profile);
     if (session_) {
         session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
@@ -180,6 +184,7 @@ void ViewportArea::setEditorSession(editor::EditorSession* session) {
         session_->setEntityBoundsProvider({});
     }
     session_ = session;
+    compilePanel_->setEditorSession(session);
     previewRevision_ = kNoPreview;
     if (session_) session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
         return host->modelPicks() ? host->modelPicks()->shape(entity) : std::nullopt;
@@ -201,6 +206,7 @@ void ViewportArea::setGameContent(GameContent* content) {
     if (gameContent_) disconnect(gameContent_, nullptr, this, nullptr);
     host_->clearModelThumbnails();
     gameContent_ = content;
+    compilePanel_->setGameContent(content);
     if (content) connect(content, &GameContent::contentAboutToChange, this, [this] { host_->clearModelThumbnails(); });
     if (content) connect(content, &GameContent::contentChanged, this, [this] {
         const auto& profile = gameContent_->profile();
@@ -271,7 +277,11 @@ void ViewportArea::configurePanel(QWidget* panel) {
     }
 }
 QWidget* ViewportArea::makePanel(viewport::AreaRole role) {
-    auto* panel = createPanel(role, document_, session_, gameContent_);
+    QWidget* panel = nullptr;
+    if (role == viewport::AreaRole::Compile) {
+        panel = new CompilePanelView(compilePanel_, this);
+        panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));
+    } else panel = createPanel(role, document_, session_, gameContent_);
     configurePanel(panel);
     return panel;
 }
@@ -317,6 +327,7 @@ QWidget* ViewportArea::showRole(viewport::AreaRole role, bool window) {
             emit layoutChanged();
         }
         auto* shown = panel(pane);
+        if (auto* compile = qobject_cast<CompilePanelView*>(shown)) compile->activate();
         if (shown) shown->setFocus(Qt::OtherFocusReason);
         return shown;
     }
@@ -329,6 +340,7 @@ FloatingPanel* ViewportArea::popOut(viewport::AreaRole role) {
     auto& slot = floating_[role];
     if (!slot) slot = new FloatingPanel(role, makePanel(role), window());
     slot->show();
+    if (auto* compile = qobject_cast<CompilePanelView*>(slot->panel())) compile->activate();
     slot->raise();
     slot->activateWindow();
     return slot;

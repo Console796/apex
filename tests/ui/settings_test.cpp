@@ -130,6 +130,7 @@ TEST_CASE("active material and UV alignment persist without a new solid material
     const auto oldWorld = settings.value("editor/newSolidWorldUv");
     const auto oldBrowser = settings.value("ui/materialBrowserWindow");
     const auto oldFaceWindow = settings.value("ui/facePropertiesWindow");
+    const auto oldCompilationWindow = settings.value("ui/compilationWindow");
     const auto oldExtrapolation = settings.value("editor/faceExtrapolation");
     settings.setValue("editor/newSolidMaterial", "test/loaded");
     settings.setValue("editor/newSolidWorldUv", true);
@@ -150,6 +151,9 @@ TEST_CASE("active material and UV alignment persist without a new solid material
         auto* alignment = dialog.findChild<QComboBox*>("settingsUvAlignment");
         auto* browser = dialog.findChild<QComboBox*>("settingsMaterialBrowserOpens");
         auto* faceProperties = dialog.findChild<QComboBox*>("settingsFacePropertiesOpens");
+        auto* compilation = dialog.findChild<QComboBox*>("settingsCompilationOpens");
+        REQUIRE(compilation);
+        compilation->setCurrentIndex(1);
         CHECK_FALSE(material);
         REQUIRE(alignment);
         REQUIRE(browser);
@@ -165,6 +169,7 @@ TEST_CASE("active material and UV alignment persist without a new solid material
         CHECK(window.editorSession().newSolidStyle().material == "test/changed");
         CHECK(ui::MainWindow::materialBrowserInWindow());
         CHECK(ui::MainWindow::facePropertiesInWindow());
+        CHECK(ui::MainWindow::compilationInWindow());
         CHECK(toggle->isChecked());
     }
     {
@@ -187,6 +192,8 @@ TEST_CASE("active material and UV alignment persist without a new solid material
     else settings.remove("ui/materialBrowserWindow");
     if (oldFaceWindow.isValid()) settings.setValue("ui/facePropertiesWindow", oldFaceWindow);
     else settings.remove("ui/facePropertiesWindow");
+    if (oldCompilationWindow.isValid()) settings.setValue("ui/compilationWindow", oldCompilationWindow);
+    else settings.remove("ui/compilationWindow");
     if (oldExtrapolation.isValid()) settings.setValue("editor/faceExtrapolation", oldExtrapolation);
     else settings.remove("editor/faceExtrapolation");
 }

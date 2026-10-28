@@ -22,10 +22,10 @@ enum class Orientation { Horizontal, Vertical };
 
 // What a leaf area shows, as in Blender's editor types. Every leaf keeps its Viewport settings
 // whatever its role, so switching an area to a panel and back restores its camera.
-enum class AreaRole { Viewport, Outliner, Inspector, Visgroups, History, Log, Materials, FaceProperties, Models, Sounds, Particles, Find, Addons };
+enum class AreaRole { Viewport, Outliner, Inspector, Visgroups, History, Log, Materials, FaceProperties, Models, Sounds, Particles, Find, Addons, Compile };
 inline constexpr AreaRole kAreaRoles[] = {AreaRole::Viewport, AreaRole::Outliner, AreaRole::Inspector,
                                           AreaRole::Visgroups, AreaRole::History, AreaRole::Log, AreaRole::Materials, AreaRole::FaceProperties,
-                                          AreaRole::Models, AreaRole::Sounds, AreaRole::Particles, AreaRole::Find, AreaRole::Addons};
+                                          AreaRole::Models, AreaRole::Sounds, AreaRole::Particles, AreaRole::Find, AreaRole::Addons, AreaRole::Compile};
 const char* nameOf(AreaRole role); // Stable JSON name: "viewport", "outliner", ...
 std::optional<AreaRole> roleFromName(std::string_view name);
 

@@ -15,7 +15,6 @@
 #include <QCheckBox>
 #include <QCompleter>
 #include <QDir>
-#include <QDockWidget>
 #include <QFile>
 #include <QFileSystemWatcher>
 #include <QFileDialog>
@@ -176,6 +175,18 @@ MainWindow::MainWindow(QWidget* parent)
     buildClipboardUi();
     buildEntityUi();
     buildAreas();
+    compilePanel_ = viewport_->compilePanel();
+    compilePanel_->setGameContent(gameContent_.get());
+    compilePanel_->setEditorSession(&session_);
+    connect(compilePanel_, &CompilePanel::focusRequested, this, [this](DVec3 point) {
+        AABB box;
+        box.expand(point - DVec3(48.0));
+        box.expand(point + DVec3(48.0));
+        viewport_->centerOn(box);
+    });
+    connect(compilePanel_, &CompilePanel::frameRequested, this, [this] {
+        if (const auto bounds = session_.selectionBounds()) viewport_->centerOn(*bounds);
+    });
     viewport_->setEditorSession(&session_);
     viewport_->setOpenInstanceHandler([this](document::NodeId id) {
         return std::ranges::any_of(session_.instances().contents(), [id](const auto& item) { return item.instance == id && item.depth == 1; });
@@ -351,6 +362,16 @@ void MainWindow::setFacePropertiesInWindow(bool window) {
     QSettings().setValue(QStringLiteral("ui/facePropertiesWindow"), window);
 }
 
+bool MainWindow::compilationInWindow() {
+    return QSettings().value(QStringLiteral("ui/compilationWindow"), false).toBool();
+}
+
+void MainWindow::setCompilationInWindow(bool window) {
+    QSettings().setValue(QStringLiteral("ui/compilationWindow"), window);
+}
+
+void MainWindow::showCompilation() { viewport_->showRole(viewport::AreaRole::Compile, compilationInWindow()); }
+
 void MainWindow::showInspector() { viewport_->showRole(viewport::AreaRole::Inspector, inspectorInWindow()); }
 
 void MainWindow::buildMenus() {
@@ -445,26 +466,10 @@ void MainWindow::buildMenus() {
     auto* compileMenu = new QMenu(tr("&Compile"), this);
     menuBar()->insertMenu(viewMenu_->menuAction(), compileMenu);
     compileMenu->setObjectName(QStringLiteral("menuCompile"));
-    auto* compileDock = new QDockWidget(tr("Compile"), this);
-    compileDock->setObjectName(QStringLiteral("compileDock"));
-    compilePanel_ = new CompilePanel(compileDock);
-    compilePanel_->setGameContent(gameContent_.get());
-    compilePanel_->setEditorSession(&session_);
-    connect(compilePanel_, &CompilePanel::focusRequested, this, [this](DVec3 point) {
-        AABB box;
-        box.expand(point - DVec3(48.0));
-        box.expand(point + DVec3(48.0));
-        viewport_->centerOn(box);
-    });
-    connect(compilePanel_, &CompilePanel::frameRequested, this, [this] {
-        if (const auto bounds = session_.selectionBounds()) viewport_->centerOn(*bounds);
-    });
-    compileDock->setWidget(compilePanel_);
-    addDockWidget(Qt::BottomDockWidgetArea, compileDock);
-    compileDock->hide();
-    compileMenu->addAction(compileDock->toggleViewAction());
-    compileMenu->addAction(tr("Compile"), this, [this, compileDock] {
-        compileDock->show();
+    auto* showCompile = compileMenu->addAction(tr("Show compilation"), this, &MainWindow::showCompilation);
+    showCompile->setObjectName(QStringLiteral("compile.show"));
+    compileMenu->addAction(tr("Compile"), this, [this] {
+        showCompilation();
         compilePanel_->run();
     });
     for (const char* id : {"compile.compile_run", "compile.run_game"}) {
@@ -475,7 +480,7 @@ void MainWindow::buildMenus() {
         editorActions_.emplace(entry->id, action);
         connect(action, &QAction::triggered, this, [this, id = entry->id] { performEditAction(id); });
     }
-    compileMenu->addAction(tr("Cancel"), compilePanel_, &CompilePanel::cancel);
+    compileMenu->addAction(tr("Cancel"), this, [this] { compilePanel_->cancel(); });
 
     addonsMenu_ = menuBar()->addMenu(tr("&Addons"));
     addonsMenu_->setObjectName(QStringLiteral("menuAddons"));
@@ -1382,7 +1387,7 @@ bool MainWindow::performEditAction(const editor::ActionId& id) {
     const auto say = [this](const QString& text) { statusBar()->showMessage(text, 5000); };
     if (id == "assets.reload") { reloadGameContent(); return true; }
     if (id == "compile.compile_run" || id == "compile.run_game") {
-        if (auto* dock = compilePanel_->parentWidget()) dock->show();
+        showCompilation();
         if (id == "compile.run_game") compilePanel_->runGame();
         else compilePanel_->compileAndRun();
         return true;

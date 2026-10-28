@@ -11,6 +11,7 @@
 #include <QVBoxLayout>
 
 #include "ui/history_panel.hpp"
+#include "ui/compile_panel.hpp"
 #include "ui/inspector_panel.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/materials_panel.hpp"
@@ -44,6 +45,7 @@ QString roleTitle(AreaRole role) {
     case AreaRole::Particles: return tr("Particles");
     case AreaRole::Find: return tr("Find");
     case AreaRole::Addons: return tr("Addons");
+    case AreaRole::Compile: return tr("Compilation");
     case AreaRole::FaceProperties: return tr("Face Properties");
     }
     return {};
@@ -51,7 +53,8 @@ QString roleTitle(AreaRole role) {
 
 namespace {
 template <typename F> void withPanel(QWidget* panel, F&& f) {
-    if (auto* p = qobject_cast<OutlinerPanel*>(panel)) f(*p);
+    if (auto* view = qobject_cast<CompilePanelView*>(panel)) f(*view->compilePanel());
+    else if (auto* p = qobject_cast<OutlinerPanel*>(panel)) f(*p);
     else if (auto* p = qobject_cast<InspectorPanel*>(panel)) f(*p);
     else if (auto* p = qobject_cast<VisgroupPanel*>(panel)) f(*p);
     else if (auto* p = qobject_cast<HistoryPanel*>(panel)) f(*p);
@@ -72,6 +75,7 @@ void setPanelDocument(QWidget* panel, document::Document* document) {
 }
 
 void setPanelGameContent(QWidget* panel, GameContent* content) {
+    if (auto* view = qobject_cast<CompilePanelView*>(panel)) view->compilePanel()->setGameContent(content);
     if (auto* p = qobject_cast<FindPanel*>(panel)) p->setGameContent(content);
     if (auto* p = qobject_cast<AddonsPanel*>(panel)) p->setGameContent(content);
     if (auto* p = qobject_cast<MaterialsPanel*>(panel)) p->setGameContent(content);
@@ -99,6 +103,7 @@ QWidget* createPanel(AreaRole role, document::Document* document, editor::Editor
     case AreaRole::Particles: panel = new ParticlesPanel; break;
     case AreaRole::Find: panel = new FindPanel; break;
     case AreaRole::Addons: panel = new AddonsPanel; break;
+    case AreaRole::Compile: panel = new CompilePanelView(nullptr, nullptr); break;
     case AreaRole::FaceProperties: panel = new FacePropertiesPanel; break;
     }
     panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));
@@ -233,7 +238,8 @@ FloatingPanel::FloatingPanel(AreaRole role, QWidget* panel, QWidget* parent)
     auto* column = new QVBoxLayout(this);
     column->setContentsMargins(4, 4, 4, 4);
     column->addWidget(panel_);
-    resize(360, 480);
+    if (role == AreaRole::Compile) resize(960, 720);
+    else resize(360, 480);
     if (const auto geometry = QSettings().value(QStringLiteral("ui/floating/") + QString::fromLatin1(viewport::nameOf(role)));
         geometry.isValid())
         restoreGeometry(geometry.toByteArray());

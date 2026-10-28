@@ -107,6 +107,7 @@ private:
     QSpinBox* undoMiB_ = nullptr;
     QComboBox* inspectorOpens_ = nullptr;
     QComboBox* facePropertiesOpens_ = nullptr;
+    QComboBox* compilationOpens_ = nullptr;
     QComboBox* materialBrowserOpens_ = nullptr;
 
     QComboBox* presetCombo_ = nullptr;

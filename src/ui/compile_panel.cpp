@@ -23,9 +23,61 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QScrollArea>
+#include <QShowEvent>
 #include <fstream>
 
 namespace apex::ui {
+
+CompilePanelView::CompilePanelView(CompilePanel* panel, QWidget* owner, QWidget* parent)
+    : QWidget(parent), panel_(panel), owner_(owner) {
+    if (!panel_) { panel_ = new CompilePanel(this); owner_ = this; }
+    auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(0, 0, 0, 0);
+    scroll_ = new QScrollArea(this);
+    scroll_->setWidgetResizable(true);
+    scroll_->setFrameShape(QFrame::NoFrame);
+    layout->addWidget(scroll_);
+    placeholder_ = new QWidget(this);
+    auto* message = new QVBoxLayout(placeholder_);
+    auto* text = new QLabel(tr("Compilation is displayed in another area or window."));
+    text->setWordWrap(true);
+    message->addWidget(text);
+    auto* show = new QPushButton(tr("Show compilation here"));
+    message->addWidget(show);
+    message->addStretch();
+    layout->addWidget(placeholder_);
+    connect(show, &QPushButton::clicked, this, &CompilePanelView::activate);
+    scroll_->hide();
+}
+
+CompilePanelView::~CompilePanelView() { release(); }
+
+void CompilePanelView::release() {
+    if (!panel_ || panel_->view_ != this) return;
+    scroll_->takeWidget();
+    panel_->hide();
+    panel_->setParent(owner_);
+    panel_->view_ = nullptr;
+    scroll_->hide();
+    placeholder_->show();
+}
+
+void CompilePanelView::activate() {
+    if (!panel_ || panel_->view_ == this) return;
+    if (panel_->view_) panel_->view_->release();
+    panel_->view_ = this;
+    scroll_->setWidget(panel_);
+    placeholder_->hide();
+    scroll_->show();
+    panel_->show();
+}
+
+void CompilePanelView::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    activate();
+}
+
 namespace {
 QString statusText(compile::Status status) {
     switch (status) {

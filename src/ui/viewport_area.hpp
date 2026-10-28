@@ -41,6 +41,7 @@ class AreaSplitter;
 class FloatingPanel;
 class GameContent;
 class ModelsPanel;
+class CompilePanel;
 
 // The window's area tree (plan 0.1, D15/D16; area roles 0.2.12): the viewport::ViewportLayout split
 // tree mirrored into nested QSplitters. Each leaf takes a role, as in Blender: a Viewport leaf is a
@@ -65,6 +66,7 @@ public:
     void setEditorSession(editor::EditorSession* session);
     void setGameContent(GameContent* content);
     void setModelPicker(ModelsPanel* panel);
+    CompilePanel* compilePanel() const { return compilePanel_; }
     void setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser);
     void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
     void setOpenInstanceHandler(std::function<bool(document::NodeId)> resolved,
@@ -196,6 +198,7 @@ private:
     document::Document* document_ = nullptr;
     viewport::ViewportLayout layout_ = viewport::ViewportLayout::quad();
     GpuHost* host_ = nullptr;
+    CompilePanel* compilePanel_ = nullptr;
     QWidget* root_ = nullptr;
     QWidget* body_ = nullptr;
     std::map<viewport::NodeId, QPointer<PaneFrame>> frames_;

@@ -329,6 +329,14 @@ QWidget* SettingsDialog::buildGeneralPage() {
     facePropertiesOpens_->setToolTip(tr("Where Face Properties shows when the Face edit tool is activated. "
                                         "Without a Face Properties area it opens a floating window."));
     form->addRow(tr("Face Properties opens in"), facePropertiesOpens_);
+    compilationOpens_ = new QComboBox;
+    compilationOpens_->setObjectName(QStringLiteral("settingsCompilationOpens"));
+    compilationOpens_->addItem(tr("Workspace area"), false);
+    compilationOpens_->addItem(tr("Floating window"), true);
+    compilationOpens_->setCurrentIndex(MainWindow::compilationInWindow() ? 1 : 0);
+    compilationOpens_->setToolTip(tr("Where compilation commands show the compilation screen. "
+                                    "Without a Compilation area it opens a floating window."));
+    form->addRow(tr("Compilation opens in"), compilationOpens_);
     materialBrowserOpens_ = new QComboBox;
     materialBrowserOpens_->setObjectName(QStringLiteral("settingsMaterialBrowserOpens"));
     materialBrowserOpens_->addItem(tr("Materials area"), false);
@@ -750,6 +758,7 @@ bool SettingsDialog::applyAll() {
     window_.gameContent().setPrefabUserFolder(std::filesystem::path(prefabFolder_->text().trimmed().toStdString()));
     MainWindow::setInspectorInWindow(inspectorOpens_->currentData().toBool());
     MainWindow::setFacePropertiesInWindow(facePropertiesOpens_->currentData().toBool());
+    MainWindow::setCompilationInWindow(compilationOpens_->currentData().toBool());
     MainWindow::setMaterialBrowserInWindow(materialBrowserOpens_->currentData().toBool());
     if (undoMiB_->value() != QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt())
         window_.setUndoCapMiB(undoMiB_->value());

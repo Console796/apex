@@ -88,6 +88,9 @@ public:
     static void setMaterialBrowserInWindow(bool window);
     static bool facePropertiesInWindow();
     static void setFacePropertiesInWindow(bool window);
+    static bool compilationInWindow();
+    static void setCompilationInWindow(bool window);
+    void showCompilation();
     void showInspector();
     QComboBox* profilePicker() const { return profileCombo_; }
     QStringList recentFiles() const;

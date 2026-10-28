@@ -6,6 +6,7 @@
 #include "editor/map_problems.hpp"
 #include "ui/qprocess_runner.hpp"
 #include <QWidget>
+#include <QPointer>
 #include <functional>
 #include <optional>
 #include <set>
@@ -17,10 +18,12 @@ class QPlainTextEdit;
 class QPushButton;
 class QTableWidget;
 class QTimer;
+class QScrollArea;
 
 namespace apex::ui {
 class CordonEditor;
 class GameContent;
+class CompilePanelView;
 
 class CompilePanel final : public QWidget {
     Q_OBJECT
@@ -62,6 +65,8 @@ signals:
     // Asks to bring a world point into view (the leak start, a diagnostic that names a position).
     void focusRequested(DVec3 point);
 private:
+    friend class CompilePanelView;
+    QPointer<CompilePanelView> view_;
     void startCompile(bool withGame);
     void watchGameLog();
     void refreshDiagnostics();
@@ -123,6 +128,25 @@ private:
     std::uintmax_t gameLogOffset_ = 0;
     QString error_;
     bool cancelling_ = false;
+};
+
+// Area/window presentations share one persistent panel, so moving between workspaces keeps
+// the current job, profiles and output. Only the presentation being used hosts its controls.
+class CompilePanelView final : public QWidget {
+    Q_OBJECT
+public:
+    CompilePanelView(CompilePanel* panel, QWidget* owner, QWidget* parent = nullptr);
+    ~CompilePanelView() override;
+    CompilePanel* compilePanel() const { return panel_; }
+    void activate();
+protected:
+    void showEvent(QShowEvent* event) override;
+private:
+    void release();
+    QPointer<CompilePanel> panel_;
+    QPointer<QWidget> owner_;
+    QScrollArea* scroll_;
+    QWidget* placeholder_;
 };
 
 } // namespace apex::ui
