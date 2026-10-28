@@ -71,3 +71,26 @@ TEST_CASE("GameProfile instance search root prefers the SDK source maps beside t
     std::filesystem::create_directories(tree.root / "install" / "sdk_content" / "maps");
     CHECK(profile.instanceSearchRoot() == tree.root / "install" / "sdk_content" / "maps");
 }
+
+TEST_CASE("GameProfile compile tools use platform paths and explicit overrides") {
+    GameProfile profile;
+    profile.gameDirectory = std::filesystem::path("install") / "p2ce";
+#ifdef _WIN32
+    const auto bin = std::filesystem::path("install/bin/win64");
+    const std::string suffix = ".exe";
+    CHECK(profile.toolPath("game") == std::filesystem::path("install/p2ce.exe"));
+    CHECK(profile.toolPath("postcompiler") == bin / "postcompiler/postcompiler.exe");
+#else
+    const auto bin = std::filesystem::path("install/bin/linux64");
+    const std::string suffix;
+    CHECK(profile.toolPath("game") == std::filesystem::path("install/p2ce.sh"));
+    CHECK(profile.toolPath("postcompiler") == bin / "postcompiler");
+#endif
+    CHECK(profile.toolDirectory() == bin);
+    for (const auto* name : {"vbsp", "vvis", "vrad", "bspzip", "vbspinfo"})
+        CHECK(profile.toolPath(name) == bin / (std::string(name) + suffix));
+    profile.toolPaths["vbsp"] = "custom/compiler";
+    profile.toolPaths["game"] = "custom/game";
+    CHECK(profile.toolPath("vbsp") == std::filesystem::path("custom/compiler"));
+    CHECK(profile.toolPath("game") == std::filesystem::path("custom/game"));
+}

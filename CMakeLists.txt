@@ -85,6 +85,11 @@ apex_layer(core SOURCES src/core/entity_helpers.cpp src/core/version.cpp src/cor
                        src/core/kv1.cpp src/core/kv1_parse.cpp src/core/kv1_write.cpp
            DEPS glm::glm spdlog::spdlog)
 target_include_directories(apex_core PUBLIC ${CMAKE_BINARY_DIR}/gen)
+apex_layer(compile SOURCES src/compile/sequence.cpp src/compile/variables.cpp
+                          src/compile/file_ops.cpp src/compile/special_commands.cpp
+                          src/compile/runner.cpp src/compile/wc_import.cpp
+           DEPS apex_core)
+target_link_libraries(apex_compile PRIVATE sourcepp::toolpp)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_uv.cpp src/geometry/face_matching.cpp
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
@@ -102,7 +107,7 @@ apex_layer(editor SOURCES src/editor/autosave.cpp src/editor/editor_session.cpp 
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
                           src/editor/connection_model.cpp src/editor/incoming_connections.cpp src/editor/rename_propagation.cpp src/editor/inspector_model.cpp src/editor/placement.cpp
-           DEPS apex_document apex_geometry apex_core)
+           DEPS apex_document apex_geometry apex_core apex_compile)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/unmounted_addons.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp src/assets/model_bake.cpp src/assets/model_pose.cpp
                          src/assets/material_cache.cpp src/assets/model_cache.cpp src/assets/material_index.cpp src/assets/asset_index.cpp src/assets/thumbnail_cache.cpp DEPS apex_core)

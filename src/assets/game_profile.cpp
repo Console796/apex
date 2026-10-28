@@ -15,6 +15,26 @@ std::filesystem::path GameProfile::instanceSearchRoot() const {
     return std::filesystem::is_directory(sdk, ec) ? sdk : gameDirectory / "maps";
 }
 
+std::filesystem::path GameProfile::toolDirectory() const {
+#ifdef _WIN32
+    return gameDirectory.parent_path() / "bin/win64";
+#else
+    return gameDirectory.parent_path() / "bin/linux64";
+#endif
+}
+
+std::filesystem::path GameProfile::toolPath(std::string_view tool) const {
+    if (auto it = toolPaths.find(std::string(tool)); it != toolPaths.end()) return it->second;
+#ifdef _WIN32
+    if (tool == "game") return gameDirectory.parent_path() / "p2ce.exe";
+    if (tool == "postcompiler") return toolDirectory() / "postcompiler/postcompiler.exe";
+    return toolDirectory() / (std::string(tool) + ".exe");
+#else
+    if (tool == "game") return gameDirectory.parent_path() / "p2ce.sh";
+    return toolDirectory() / std::string(tool);
+#endif
+}
+
 Result<GameProfile> parseGameProfile(std::string_view source) {
     auto parsed = json::parse(source);
     if (!parsed) {

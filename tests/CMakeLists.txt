@@ -1,6 +1,6 @@
 include(doctest)
 
-add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core/handle_test.cpp
+add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cpp core/math_test.cpp core/handle_test.cpp
                core/entity_helpers_test.cpp core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp core/kv3_test.cpp
                document/instance_test.cpp document/connection_codec_test.cpp document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
@@ -22,7 +22,7 @@ editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/inspec
                render/view_math_test.cpp render/helper_shapes_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
                ../src/ui/model_pick.cpp render/model_render_test.cpp render/model_thumbnail_test.cpp render/p0_point_data_test.cpp render/preview_overlay_test.cpp
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
-target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
+target_link_libraries(apex_tests PRIVATE apex_compile apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
                                          sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp
                                          apex_editor apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)

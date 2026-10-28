@@ -38,6 +38,8 @@ struct GameProfile {
     // Last place instance files are looked up (D7 root 3): the SDK's source maps beside the install when
     // present, since the game's own maps folder holds compiled maps rather than VMFs.
     std::filesystem::path instanceSearchRoot() const;
+    std::filesystem::path toolDirectory() const;
+    std::filesystem::path toolPath(std::string_view name) const;
     bool operator==(const GameProfile&) const = default;
 };
 
