@@ -81,6 +81,47 @@ TEST_CASE("carve synthetic wall doorway preserves identity volume and reveal att
     for (const auto h : solids(doc)) total += poly(doc, h).volume();
     CHECK(total == doctest::Approx(256.*32*128 - 64.*32*96 + 64.*64*96));
 }
+TEST_CASE("carve multiple selected carvers preserves earlier cuts and distant targets") {
+    Document doc{parsed()};
+    const auto target = addBox(doc, {0, 0, 0}, {64, 64, 64});
+    const auto distant = addBox(doc, {256, 256, 256}, {320, 320, 320});
+    const auto slab = [&](DVec3 min, DVec3 max, const char* material) {
+        auto tx = doc.begin("carver");
+        const auto h = tx.create(geometry::solidBlock(
+            geometry_test::build(geometry_test::boxSides(min, max)), {material}));
+        tx.commit();
+        return h;
+    };
+    const auto horizontal = slab({-16, -16, 24}, {80, 80, 40}, "apex/horizontal");
+    const auto vertical = slab({24, -16, -16}, {40, 80, 80}, "apex/vertical");
+    const auto untouched = doc.get(distant)->block;
+    const auto before = doc.write().value();
+    const auto history = doc.undoCount();
+    EditorSession session;
+    session.attach(doc);
+    select(session, doc, {horizontal, vertical});
+    REQUIRE(carve(session));
+    CHECK(doc.undoCount() == history + 1);
+    CHECK(doc.get(target));
+    CHECK(doc.get(distant)->block == untouched);
+    REQUIRE(solids(doc).size() == 7); // Four fragments, two carvers, and the distant solid.
+    int horizontalCaps = 0, verticalCaps = 0;
+    for (const auto h : solids(doc)) {
+        if (NodeHandle{h} == distant || NodeHandle{h} == horizontal || NodeHandle{h} == vertical) continue;
+        const auto piece = poly(doc, h);
+        CHECK(piece.volume() == doctest::Approx(24.0 * 24.0 * 64.0));
+        for (const auto& face : piece.faces) {
+            horizontalCaps += face.material == "apex/horizontal";
+            verticalCaps += face.material == "apex/vertical";
+        }
+    }
+    CHECK(horizontalCaps == 4);
+    CHECK(verticalCaps == 4);
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == before);
+    REQUIRE(doc.redo());
+    CHECK(solids(doc).size() == 7);
+}
 TEST_CASE("carve corpus wall doorway") {
     const auto paths = corpusPaths();
     if (paths.empty()) { MESSAGE("APEX_P2CE_DIR unset; skipping carve corpus wall"); return; }

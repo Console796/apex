@@ -544,21 +544,20 @@ std::vector<ConvexPolyhedron> subtract(const ConvexPolyhedron& target,
     }
     std::vector<ConvexPolyhedron> fragments;
     fragments.reserve(carver.faces.size());
-    std::optional<ConvexPolyhedron> remainder = target;
-    for (std::size_t i = 0; i < carver.faces.size() && remainder; ++i) {
+    ConvexPolyhedron remainder = target;
+    for (std::size_t i = 0; i < carver.faces.size(); ++i) {
         const auto& plane = carver.faces[i].plane;
-        const auto sides = classify(*remainder, plane);
+        const auto sides = classify(remainder, plane);
         if (!sides.front) continue;
+        // Earlier planes may have cut a disjoint target into temporary pieces.
         if (!sides.back) return {target};
         // Inputs are validated above; splitCrossing validates both assembled outputs.
-        auto cut = splitCrossing(*remainder, plane);
+        auto cut = splitCrossing(remainder, plane);
         if (cut.frontCap) cut.front->faces[*cut.frontCap].carverFace = i;
         if (cut.backCap) cut.back->faces[*cut.backCap].carverFace = i;
         if (cut.front) fragments.push_back(std::move(*cut.front));
-        remainder = std::move(cut.back);
+        remainder = std::move(*cut.back);
     }
-    // Earlier planes can cut an entirely disjoint target into several temporary pieces.
-    if (!remainder) return {target};
     return fragments;
 }
 
