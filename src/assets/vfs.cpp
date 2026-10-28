@@ -192,6 +192,15 @@ Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver app
             return std::unexpected(added.error());
         }
     }
+    // The engine mounts <install>/platform without listing it (editor icon sprites and other tool
+    // materials live there); it comes after every listed path so nothing is overridden.
+    std::error_code platformError;
+    if (const auto platform = engineDir / "platform"; fs::is_directory(platform, platformError)) {
+        auto added = result.impl_->add(platform);
+        if (!added) {
+            return std::unexpected(added.error());
+        }
+    }
     auto mountFiles = expand(gameDir / "cfg/mounts.kv");
     if (!mountFiles.empty()) {
         auto mountBytes = readText(mountFiles.front());

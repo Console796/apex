@@ -47,9 +47,15 @@ void capAttributes(Poly& piece, const Poly& source) {
         face.carverFace.reset();
     }
 }
-std::vector<Poly> subtract(const std::vector<Poly>& pieces, const Poly& carver) {
+std::vector<Poly> subtract(std::vector<Poly> pieces, const Poly& carver) {
     std::vector<Poly> result;
-    for (const auto& piece : pieces) {
+    result.reserve(pieces.size());
+    const auto bounds = carver.bounds();
+    for (auto& piece : pieces) {
+        if (!piece.bounds().intersects(bounds)) {
+            result.push_back(std::move(piece));
+            continue;
+        }
         auto fragments = geometry::subtract(piece, carver);
         for (auto& fragment : fragments) {
             // Only newly cut faces belong to this carver.
@@ -120,7 +126,10 @@ Result<void> carve(EditorSession& session) {
                 const auto source = geometry::solidGeometry(*doc.get(*solid)->block);
                 if (!source) return failure("Cannot carve invalid solid geometry");
                 std::vector<Poly> pieces{source->poly};
-                for (const auto& carver : *carvers) pieces = subtract(pieces, carver.poly);
+                for (const auto& carver : *carvers) {
+                    if (pieces.empty()) break;
+                    pieces = subtract(std::move(pieces), carver.poly);
+                }
                 double remaining = 0;
                 for (const auto& p : pieces) remaining += p.volume();
                 if (source->poly.volume() - remaining > 1e-6) {
@@ -215,7 +224,7 @@ Result<MergePlan> planMerge(const EditorSession& session) {
     try {
         for (const auto& input : *selected) {
             plan.inputs.push_back(input.handle);
-            plan.ghosts = subtract(plan.ghosts, input.poly);
+            plan.ghosts = subtract(std::move(plan.ghosts), input.poly);
         }
     } catch (const std::invalid_argument&) { return failure("Cannot merge: resulting geometry is degenerate"); }
     std::erase_if(plan.ghosts, [](const auto& p) { return p.volume() <= 1e-6; });

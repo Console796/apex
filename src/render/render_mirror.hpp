@@ -94,6 +94,8 @@ struct MirrorViewOptions {
     bool showNodraw = true;
     // Labels each point entity with its targetname (entities without one are skipped).
     bool showEntityNames = false;
+    // Samples entity icon sprites with nearest filtering instead of linear.
+    bool iconNearest = false;
 };
 
 class RenderMirror {

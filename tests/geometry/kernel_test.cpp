@@ -171,6 +171,36 @@ TEST_CASE("subtract disjoint touching containing and contained boxes") {
     CHECK(totalVolume(pieces) + inner.volume() == doctest::Approx(cube.volume()));
 }
 
+TEST_CASE("subtract preserves disjoint and tangent targets with overlapping bounds") {
+    const auto carver = build(wedgeSides()); // Its last plane is x + y <= 64.
+    for (const double corner : {32.0, 40.0}) {
+        auto target = build(boxSides({corner, corner, 0}, {72, 72, 32}));
+        REQUIRE(target.bounds().intersects(carver.bounds()));
+        target.faces.front().isCap = true;
+        target.faces.front().carverFace = 7;
+        const auto pieces = subtract(target, carver);
+        REQUIRE(pieces.size() == 1);
+        CHECK(pieces.front().vertices == target.vertices);
+        REQUIRE(pieces.front().faces.size() == target.faces.size());
+        for (std::size_t i = 0; i < target.faces.size(); ++i) {
+            const auto& face = pieces.front().faces[i];
+            const auto& original = target.faces[i];
+            sameAttributes(face, original);
+            CHECK(face.vertices == original.vertices);
+            CHECK(face.isCap == original.isCap);
+            CHECK(face.carverFace == original.carverFace);
+        }
+    }
+}
+
+TEST_CASE("subtract validates inputs before disjoint early exits") {
+    const auto target = build(boxSides());
+    auto invalid = build(boxSides({256, 256, 256}, {384, 384, 384}));
+    invalid.faces.front().plane.normal = {0, 0, 0};
+    CHECK_THROWS_AS(subtract(target, invalid), std::invalid_argument);
+    CHECK_THROWS_AS(subtract(invalid, target), std::invalid_argument);
+}
+
 TEST_CASE("new solid writer uses Hammer key order placeholders and Strata point data") {
     const auto cube = build(boxSides());
     const NewSolidStyle style{"brick/chosen", 0.5, 32};

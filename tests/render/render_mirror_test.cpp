@@ -1008,6 +1008,46 @@ TEST_CASE("mirror rotated asymmetric entity box follows angles in offscreen cove
     }
 }
 
+TEST_CASE("mirror point entity with an iconsprite draws a billboard in place of its box") {
+    REQUIRE_GPU();
+    assets::EntityClassTable classes;
+    assets::EntityClass cls;
+    cls.name = "iconed";
+    cls.type = "PointClass";
+    cls.mins = {-8, -8, -8};
+    cls.maxs = {8, 8, 8};
+    cls.color = {255, 0, 0};
+    cls.iconSprite = "test/green.vmt";
+    classes.classes.emplace(cls.name, cls);
+    cls.name = "plain";
+    cls.iconSprite.clear();
+    classes.classes.emplace(cls.name, cls);
+    auto file = vmf::parse("entity { id 1 classname iconed origin \"0 0 0\" } entity { id 2 classname plain origin \"64 0 0\" }");
+    REQUIRE(file);
+    document::Document doc(*file);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache, &classes);
+    mirror.rebuild(doc);
+    REQUIRE(mirror.settle());
+    MirrorViewOptions options;
+    options.view = makeView({-32, 0, 0}, {0, 0, 0});
+    {
+        const DrawList list = mirror.buildDrawList(options);
+        CHECK(list.sprites.size() == 1); // The entity without an icon keeps its box.
+        CHECK(list.boxes.size() == 1);
+    }
+    // The sprite faces the camera from any side, in the icon's colour rather than the class colour.
+    for (const auto& [position, angles] : {std::pair{DVec3{-32, 0, 0}, DVec3{0, 0, 0}}, std::pair{DVec3{0, -32, 0}, DVec3{0, 90, 0}},
+                                           std::pair{DVec3{-24, -24, 16}, DVec3{25, 45, 0}}}) {
+        CAPTURE(position.x); CAPTURE(position.y);
+        const auto image = drawFrame(*g, mirror, DisplayMode::Textured, false, makeView(position, angles));
+        const Px centre = at(image, kSize / 2, kSize / 2);
+        CHECK(centre.g > 150);
+        CHECK(centre.r < 80);
+    }
+    options.showEntities = false;
+    CHECK(mirror.buildDrawList(options).sprites.empty());
+}
+
 // --- Entity helpers (D5) -----------------------------------------------------------------------
 
 namespace {
@@ -1271,6 +1311,31 @@ TEST_CASE("mirror helpers: golden images per helper kind") {
         CHECK(g->context->validation().errorCount() == 0);
         golden::check(std::string("helper_") + kind.name, image, *g->context);
     }
+}
+
+TEST_CASE("Icon sprites of entities inside an instance are drawn") {
+    REQUIRE_GPU();
+    assets::EntityClassTable classes;
+    assets::EntityClass cls;
+    cls.name = "iconed";
+    cls.type = "PointClass";
+    cls.iconSprite = "test/green.vmt";
+    classes.classes.emplace(cls.name, cls);
+    g->tree.put("icons.vmf", R"(entity { classname iconed origin "16 0 0" })");
+    auto file = vmf::parse(R"(entity { classname func_instance file icons.vmf origin "64 0 0" })"); REQUIRE(file);
+    document::Document parent(*file);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 1);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache, &classes);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    MirrorViewOptions options;
+    CHECK(mirror.buildDrawList(options).sprites.size() == 1);
+    options.iconNearest = true; // Rebuilds the sprite buffers of the mirror and of its instances.
+    CHECK(mirror.buildDrawList(options).sprites.size() == 1);
 }
 
 TEST_CASE("Nested instance path labels follow the owner's selection and hover") {

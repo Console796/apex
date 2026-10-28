@@ -100,6 +100,7 @@ private:
     QCheckBox* confirmMerge_ = nullptr;
     QCheckBox* pivotAtOrigin_ = nullptr;
     QCheckBox* modelEdgeOverlay_ = nullptr;
+    QCheckBox* entityIconsNearest_ = nullptr;
     QCheckBox* autosave_ = nullptr;
     QSpinBox* autosaveMinutes_ = nullptr;
     QLineEdit* prefabFolder_ = nullptr;

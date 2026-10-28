@@ -182,6 +182,9 @@ public:
     // selection outline. Wireframe mode always draws them.
     bool modelEdgeOverlay() const { return modelEdgeOverlay_; }
     void setModelEdgeOverlay(bool enabled);
+    // Entity icon sprites sample with nearest filtering (crisp pixels) instead of linear.
+    bool entityIconsNearest() const { return entityIconsNearest_; }
+    void setEntityIconsNearest(bool enabled);
     // Work plane used by nudge when nothing is hovered or pinned (the viewport supplies it).
     void setFallbackPlane(SurfacePlane plane) { fallbackPlane_ = std::move(plane); }
     const SurfacePlane& fallbackPlane() const { return fallbackPlane_; }
@@ -386,6 +389,7 @@ private:
     bool textureLock_ = true;
     bool pivotAtObjectOrigin_ = true;
     bool modelEdgeOverlay_ = true;
+    bool entityIconsNearest_ = false;
     SurfacePlane fallbackPlane_{{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}, {}};
     Preset preset_;
     Keymap keymap_;

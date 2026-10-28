@@ -62,6 +62,8 @@ struct ModelMesh {
     std::map<std::int32_t, std::string> materials;
 };
 
+constexpr float kSpriteHalfSize = 8.0f; // World units; Hammer draws icons about 16 across.
+
 std::uint32_t entityUint(const kv1::Node& block, std::string_view key) {
     const auto* node = block.find(key);
     const auto text = node ? node->decodedValue().value_or("") : "";
@@ -83,6 +85,7 @@ struct EntityState {
     const assets::EntityClass* cls = nullptr;
     std::string targetname;         // As written, for labels.
     std::string instanceFile;
+    std::string sprite;             // Editor icon material of the class (iconsprite); empty when it has none.
     std::string nameKey;            // Lower case; empty when unnamed.
     HelperShapes helpers;
     std::set<std::string> watching; // Names peersNamed looked up during the last evaluation.
@@ -140,6 +143,9 @@ struct RenderMirror::Impl {
 
     Buffer entityBuffer;
     std::uint32_t entityCount = 0;
+    Buffer spriteBuffer;            // One SpriteInstance per entity drawn as its billboarded icon.
+    std::uint32_t spriteCount = 0;
+    bool iconNearest = false;       // Bit 31 of a sprite's texture selects the nearest sampler.
     DVec3 entityOrigin{0.0};
     bool entitiesDirty = false;
     // Helper dependencies: helpers that name other entities (line, cylinder, keyframe chains) are
@@ -331,6 +337,7 @@ struct RenderMirror::Impl {
             if (current == assets::MaterialState::Loading) continue;
             state.loading = false;
             if (current != assets::MaterialState::Ready) continue;
+            entitiesDirty = true; // An icon that just arrived swaps its entities' boxes for sprites.
             const TextureSize before = state.size;
             if (const auto material = cache.request(name)) uploadMaterial(name, state, *material);
             if (!(before == state.size)) {
@@ -526,6 +533,8 @@ struct RenderMirror::Impl {
                 state.cls = cls;
                 if (cls->mins) state.mins = {(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]};
                 if (cls->maxs) state.maxs = {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]};
+                state.sprite = spriteMaterial(cls->iconSprite);
+                if (!state.sprite.empty()) resolveMaterial(state.sprite);
                 if (cls->color) {
                     state.colour = {static_cast<float>((*cls->color)[0]) / 255.0f,
                                     static_cast<float>((*cls->color)[1]) / 255.0f,
@@ -540,6 +549,23 @@ struct RenderMirror::Impl {
         placeBrush(state);
         entities[entity->id] = std::move(state);
         helperDirty.insert(entity->id);
+    }
+
+    // The material name of an iconsprite value ("editor/logic_relay.vmt"): no materials/ prefix, no extension.
+    static std::string spriteMaterial(std::string_view value) {
+        std::string name = lower(value);
+        std::ranges::replace(name, '\\', '/');
+        if (name.starts_with("materials/")) name.erase(0, 10);
+        if (name.ends_with(".vmt")) name.resize(name.size() - 4);
+        return name;
+    }
+
+    // Point entities without a model show their class icon as a camera-facing sprite once its texture is
+    // resident (the box stands in while it loads, and for classes or icons that never resolve).
+    bool drawsSprite(const EntityState& e) const {
+        if (e.brush || e.sprite.empty() || (!e.model.empty() && models.at(e.model).data)) return false;
+        const auto found = materials.find(e.sprite);
+        return found != materials.end() && found->second.slot != kCheckerboardSlot;
     }
 
     // A brush entity sits at the centre of its meshed solids, unless it carries an `origin` key.
@@ -645,15 +671,25 @@ struct RenderMirror::Impl {
         if (entityBuffer) garbage.push_back(std::move(entityBuffer));
         entityBuffer = Buffer();
         entityCount = 0;
+        if (spriteBuffer) garbage.push_back(std::move(spriteBuffer));
+        spriteBuffer = Buffer();
+        spriteCount = 0;
         collectGarbage();
         if (entities.empty()) return;
         AABB bounds;
         for (const auto& [id, e] : entities) if (!e.brush) bounds.expand(e.position);
         entityOrigin = (bounds.min + bounds.max) * 0.5;
         std::vector<BoxInstance> boxes;
+        std::vector<SpriteInstance> sprites;
         for (const auto& [id, e] : entities) {
             if (e.brush || (!e.model.empty() && models.at(e.model).data)) continue;
             const DVec3 origin = e.position - entityOrigin;
+            if (drawsSprite(e)) {
+                sprites.push_back({{static_cast<float>(origin.x), static_cast<float>(origin.y), static_cast<float>(origin.z)},
+                                   kSpriteHalfSize, {1.0f, 1.0f, 1.0f, 1.0f},
+                                   materials.at(e.sprite).slot | (iconNearest ? 0x80000000u : 0u), {}});
+                continue;
+            }
             BoxInstance box{{static_cast<float>(e.mins.x), static_cast<float>(e.mins.y), static_cast<float>(e.mins.z)},
                             {static_cast<float>(e.maxs.x), static_cast<float>(e.maxs.y), static_cast<float>(e.maxs.z)},
                             {e.colour.x, e.colour.y, e.colour.z, e.colour.w},
@@ -663,6 +699,14 @@ struct RenderMirror::Impl {
                     box.basis[column][row] = static_cast<float>(e.basis[column][row]);
             }
             boxes.push_back(box);
+        }
+        if (!sprites.empty()) {
+            if (auto buffer = upload(sprites, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) {
+                spriteBuffer = std::move(*buffer);
+                spriteCount = static_cast<std::uint32_t>(sprites.size());
+            } else {
+                log::error("render mirror: entity sprite upload failed");
+            }
         }
         if (boxes.empty()) return;
         auto buffer = upload(boxes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -806,7 +850,9 @@ struct RenderMirror::Impl {
     }
 
     bool pending() const {
-        for (const auto& [keys, mirror] : instanceMirrors) if (mirror->pending()) return true;
+        // Hidden contents are not pumped (see pump), so their loads never finish and must not hold frames open.
+        if (instanceVisibility != document::InstanceVisibility::Hidden)
+            for (const auto& [keys, mirror] : instanceMirrors) if (mirror->pending()) return true;
         if (modelCache && std::ranges::any_of(models, [&](const auto& entry) {
             return !entry.second.data && (modelCache->state(entry.first) == assets::ModelState::Loading ||
                    modelCache->state(entry.first) == assets::ModelState::Unloaded);
@@ -1025,6 +1071,10 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     impl_->refreshHelpers(); // Brush entities move when their solids finish meshing, between apply() calls.
     Impl& m = *impl_;
     m.redraw = false;
+    if (m.iconNearest != options.iconNearest) {
+        m.iconNearest = options.iconNearest;
+        m.entitiesDirty = true;
+    }
     if (m.entitiesDirty) m.rebuildEntityBuffer();
     DrawList list;
     list.mode = options.mode;
@@ -1166,7 +1216,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     if (options.showEntities && m.entityBuffer && m.entityCount > 0) {
         std::uint32_t instance = 0;
         for (const auto& [id, entity] : m.entities) {
-            if (entity.brush || (!entity.model.empty() && m.models.at(entity.model).data)) continue;
+            if (entity.brush || (!entity.model.empty() && m.models.at(entity.model).data) || m.drawsSprite(entity)) continue;
             BoxDraw draw{&m.entityBuffer, 1, m.entityOrigin, options.mode != DisplayMode::Wireframe};
             draw.firstInstance = instance++;
             draw.previewIndex = previewIndex(id, m.entityOrigin);
@@ -1179,6 +1229,23 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.solid = false;
                 draw.tint = m.highlight.outlineColour;
                 list.boxOutlines.push_back(draw);
+            }
+        }
+    }
+    if (options.showEntities && m.spriteBuffer && m.spriteCount > 0) {
+        std::uint32_t instance = 0;
+        for (const auto& [id, entity] : m.entities) {
+            if (!m.drawsSprite(entity)) continue;
+            SpriteDraw draw{&m.spriteBuffer, 1, m.entityOrigin};
+            draw.firstInstance = instance++;
+            draw.previewIndex = previewIndex(id, m.entityOrigin);
+            const bool selected = m.selected.contains(id);
+            draw.tint = selected ? m.highlight.selectTint
+                                 : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
+            list.sprites.push_back(draw);
+            if (selected) {
+                draw.tint = m.highlight.outlineColour;
+                list.spriteOutlines.push_back(draw);
             }
         }
     }
@@ -1344,6 +1411,15 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.previewIndex = preview(draw.previewIndex, draw.origin);
                 list.boxOutlines.push_back(draw);
             }
+            for (auto draw : child.sprites) {
+                draw.previewIndex = preview(draw.previewIndex, draw.origin);
+                draw.tint = tint;
+                list.sprites.push_back(draw);
+            }
+            for (auto draw : child.spriteOutlines) {
+                draw.previewIndex = preview(draw.previewIndex, draw.origin);
+                list.spriteOutlines.push_back(draw);
+            }
             for (auto segment : child.worldSegments) {
                 segment.a = point(segment.a); segment.b = point(segment.b);
                 list.worldSegments.push_back(segment);
@@ -1376,7 +1452,7 @@ std::size_t RenderMirror::batchCount() const {
 }
 
 std::size_t RenderMirror::meshBytes() const {
-    std::size_t bytes = impl_->entityBuffer.size();
+    std::size_t bytes = impl_->entityBuffer.size() + impl_->spriteBuffer.size();
     for (const auto& [id, solid] : impl_->solids)
         for (const auto& batch : solid.batches) bytes += batch.vertices.size() + batch.indices.size() + batch.edges.size();
     for (const auto& [name, model] : impl_->models) bytes += model.vertices.size() + model.indices.size() + model.edges.size();

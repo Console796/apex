@@ -121,24 +121,46 @@ TEST_CASE("[measure] 0.3 release carve 1000 targets") {
         MESSAGE("APEX_MEASURE=1 is required; skipping release measurements");
         return;
     }
-    Document doc(synthetic(1000));
-    const auto before = solidIds(doc);
-    REQUIRE(before.size() == 1000);
-    const auto carverHandle = addBox(doc, {-16, -16, 24}, {8016, 816, 40});
-    const auto* carver = doc.get(std::get<Handle<Solid>>(carverHandle));
-    REQUIRE(carver);
-    EditorSession session;
-    session.attach(doc);
-    session.selection().setMode(SelectionMode::Solids);
-    session.selection().setIgnoreGroups(true);
-    session.selection().select(carver->id);
-    const double elapsed = milliseconds([&] { REQUIRE(session.perform("edit.carve")); });
-    const auto after = solidIds(doc);
-    const auto fragments = after.size() - before.size() - 1;
-    REQUIRE(after.size() >= before.size() + 1);
+    Document seed(synthetic(1000));
+    const auto carverHandle = addBox(seed, {-16, -16, 24}, {8016, 816, 40});
+    const auto carverId = id(seed, carverHandle);
+    const auto before = seed.write().value();
+    const auto file = parsed(before);
+    std::vector<double> samples;
+    // Fresh documents avoid timing an undo or a progressively fragmented workload.
+    for (int sample = 0; sample < 3; ++sample) {
+        Document doc(file);
+        EditorSession session;
+        session.attach(doc);
+        session.selection().setMode(SelectionMode::Solids);
+        session.selection().setIgnoreGroups(true);
+        session.selection().select(carverId);
+        const auto original = solidIds(doc);
+        REQUIRE(original.size() == 1001);
+        bool carved = false;
+        samples.push_back(milliseconds([&] { carved = session.perform("edit.carve"); }));
+        REQUIRE(carved);
+        REQUIRE(doc.undoCount() == 1);
+        const auto after = solidIds(doc);
+        REQUIRE(after.size() == 2001); // Two slabs per target plus the untouched carver.
+        for (const auto node : original) REQUIRE(doc.handle(node));
+        for (const auto node : after) {
+            if (node == carverId) continue;
+            const auto handle = std::get<Handle<Solid>>(*doc.handle(node));
+            const auto geometry = geometry::solidGeometry(*doc.get(handle)->block);
+            REQUIRE(geometry);
+            CHECK(geometry->poly.volume() == doctest::Approx(64.0 * 64.0 * 24.0));
+        }
+        const auto carvedBytes = doc.write().value();
+        REQUIRE(doc.undo());
+        CHECK(doc.write().value() == before);
+        REQUIRE(doc.redo());
+        CHECK(doc.write().value() == carvedBytes);
+    }
+    std::ranges::sort(samples);
     std::ostringstream report;
-    report << std::fixed << std::setprecision(3) << "Carve 1000 target solids | " << elapsed
-           << " ms | " << fragments << " new fragments (D10; no time budget specified)";
+    report << std::fixed << std::setprecision(3) << "Carve 1000 target solids | median (3) " << samples[1]
+           << " ms | 1000 new fragments (D10; no time budget specified)";
     MESSAGE(report.str());
     std::cout << report.str() << '\n';
 }

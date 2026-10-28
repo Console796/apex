@@ -13,7 +13,9 @@ void main() {
         outColor = push.colour;
         return;
     }
-    vec4 texel = sampleSlot(vSlot, vUv) * vColour;
+    // Bit 31 of the slot asks for the nearest sampler (the editor's icon filtering preference).
+    const uint sampler_ = (vSlot >> 31) != 0u ? 1u : 0u;
+    vec4 texel = texture(sampler2D(textures[nonuniformEXT(vSlot & 0x7FFFFFFFu)], samplers[sampler_]), vUv) * vColour;
     texel.rgb = mix(texel.rgb, push.colour.rgb, push.colour.a);
     if (texel.a < 0.5) discard;
     outColor = vec4(texel.rgb, 1.0);

@@ -529,6 +529,12 @@ void EditorSession::setModelEdgeOverlay(bool enabled) {
     notify();
 }
 
+void EditorSession::setEntityIconsNearest(bool enabled) {
+    if (enabled == entityIconsNearest_) return;
+    entityIconsNearest_ = enabled;
+    notify();
+}
+
 bool EditorSession::moveSelection(DVec3 value, bool relative) {
     const auto context = document_ && !transformActive() ? gizmoContext() : std::nullopt;
     if (!context) return false;

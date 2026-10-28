@@ -1,7 +1,7 @@
 # Apex-authored material availability baseline for the P2CE corpus (510 instance VMFs).
-# 201 unique side materials; 192 resolve to a shader and an on-disk base VTF.
-# 6 missing VMTs: optional/custom content (anim_wp, bee2), older metal variants,
-# and toolsinvisibleladder. These are content gaps, not parser errors.
+# 201 unique side materials; 193 resolve to a shader and an on-disk base VTF.
+# 5 missing VMTs: optional/custom content (anim_wp, bee2) and older metal variants.
+# These are content gaps, not parser errors (the engine platform directory is mounted).
 # _rt_camera is a runtime render target. Refract and Water intentionally use
 # shader-specific inputs instead of $basetexture; all three use the placeholder
 # until their rendering features are implemented. No proprietary files copied.
@@ -13,4 +13,3 @@ metal/black_wall_metal_pinger_blue | VMT: Asset missing: materials/metal/black_w
 metal/black_wall_metal_pinger_orange | VMT: Asset missing: materials/metal/black_wall_metal_pinger_orange.vmt
 metal/metalwall048b_nopaint | VMT: Asset missing: materials/metal/metalwall048b_nopaint.vmt
 nature/water_bts_01 | no $basetexture (shader Water)
-tools/toolsinvisibleladder | VMT: Asset missing: materials/tools/toolsinvisibleladder.vmt

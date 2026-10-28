@@ -568,6 +568,7 @@ double PaneWindow::draw() {
     options.showEntities = vp->overlays.entityHelpers;
     options.showNodraw = vp->overlays.nodrawFaces;
     options.showEntityNames = vp->overlays.entityNames;
+    options.iconNearest = session_ && session_->entityIconsNearest();
     options.grid = makeGridSettings(*vp, session_);
     if (lightBackground) options.grid.colour = Vec4(0.25f, 0.25f, 0.3f, 0.8f);
 

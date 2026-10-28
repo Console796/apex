@@ -267,6 +267,12 @@ QWidget* SettingsDialog::buildGeneralPage() {
     modelEdgeOverlay_->setToolTip(tr("Triangle edges over models in the Flat display mode and on selected models. "
                                      "The Wireframe mode always shows them. Also on the Transform toolbar."));
     form->addRow(tr("Models"), modelEdgeOverlay_);
+    entityIconsNearest_ = new QCheckBox(tr("Turn off texture filtering on entity icons"));
+    entityIconsNearest_->setObjectName(QStringLiteral("settingsEntityIconsNearest"));
+    entityIconsNearest_->setChecked(window_.editorSession().entityIconsNearest());
+    entityIconsNearest_->setToolTip(tr("Draws the billboarded icons of entities with nearest-neighbour sampling, so "
+                                       "their pixels stay sharp instead of blurring when scaled."));
+    form->addRow(tr("Entity icons"), entityIconsNearest_);
 
     autosave_ = new QCheckBox(tr("Enable autosave"));
     autosave_->setObjectName(QStringLiteral("settingsAutosave"));
@@ -734,6 +740,8 @@ bool SettingsDialog::applyAll() {
     QSettings().setValue("editing/pivotAtObjectOrigin", pivotAtOrigin_->isChecked());
     window_.editorSession().setModelEdgeOverlay(modelEdgeOverlay_->isChecked());
     QSettings().setValue("view/modelEdgeOverlay", modelEdgeOverlay_->isChecked());
+    window_.editorSession().setEntityIconsNearest(entityIconsNearest_->isChecked());
+    QSettings().setValue("view/entityIconsNearest", entityIconsNearest_->isChecked());
     window_.setNewSolidStyle(window_.editorSession().newSolidStyle().material,
                              static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
     if (theme_->currentData().toString() != currentThemeId()) window_.setThemeId(theme_->currentData().toString());

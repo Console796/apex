@@ -211,6 +211,7 @@ MainWindow::MainWindow(QWidget* parent)
     session_.confirmNonConvexMerge = QSettings().value("editing/confirmNonConvexMerge", true).toBool();
     session_.setPivotAtObjectOrigin(QSettings().value("editing/pivotAtObjectOrigin", true).toBool());
     session_.setModelEdgeOverlay(QSettings().value("view/modelEdgeOverlay", true).toBool());
+    session_.setEntityIconsNearest(QSettings().value("view/entityIconsNearest", false).toBool());
     session_.hollowThickness = [this]() -> std::optional<double> {
         bool ok = false;
         const auto value = QInputDialog::getDouble(this, tr("Make Hollow"),

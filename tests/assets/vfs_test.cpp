@@ -187,3 +187,20 @@ TEST_CASE("P0: P2CE material enumeration includes subdirectories (D14)") {
         return path.starts_with("materials/") && path.find('/', std::string_view("materials/").size()) != std::string::npos;
     }), "D14: material enumeration must include VMTs in subdirectories");
 }
+
+TEST_CASE("Vfs mounts the unlisted platform directory after the listed paths") {
+    GameTree tree;
+    tree.put("game/gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    tree.put("game/materials/editor/a.vmt", "game");
+    tree.put("platform/materials/editor/a.vmt", "platform");
+    tree.put("platform/materials/editor/b.vmt", "platform");
+    GameProfile profile;
+    profile.gameDirectory = tree.root / "game";
+    JobPool jobs(1);
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    CHECK(vfs->exists("materials/editor/b.vmt"));
+    auto a = vfs->open("materials/editor/a.vmt");
+    REQUIRE(a);
+    CHECK(a->size() == 4); // "game", not "platform".
+}
