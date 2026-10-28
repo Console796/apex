@@ -24,6 +24,8 @@ struct ModelView {
     double zoom = 1.0;                // 1 frames the bounding sphere, larger is closer.
     DVec2 pan{0.0, 0.0};
     std::uint32_t body = 0, skin = 0;
+    int sequence = 0;
+    double frame = 0.0;
     bool operator==(const ModelView&) const = default;
 };
 

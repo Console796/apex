@@ -648,3 +648,64 @@ TEST_CASE("ModelInspector reports render failures and waits for nothing when mat
     CHECK(missing.materialCounts.back() == 0);
     CHECK(missing.materialRequests == 0);
 }
+
+TEST_CASE("ModelInspector forwards animation metadata and renders only when the requested frame changes") {
+    InspectorRig rig;
+    rig.model->sequences = {{"idle", 30, 60, true, {}}, {"open", 24, 20, true, {}}};
+    rig.states["box.mdl"] = assets::ModelState::Ready;
+    auto inspector = rig.make();
+    ModelView view;
+    const auto& first = inspector.update("box", view, false);
+    REQUIRE(first.stats.sequences.size() == 2);
+    CHECK(first.stats.sequences[1].name == "open");
+    REQUIRE(rig.renders.size() == 1);
+    view.frame = 12.5;
+    inspector.update("box", view, false);
+    REQUIRE(rig.renders.size() == 2);
+    CHECK(rig.renders.back().frame == doctest::Approx(12.5));
+    inspector.update("box", view, false);
+    CHECK(rig.renders.size() == 2);
+    view.sequence = 1;
+    inspector.update("box", view, false);
+    REQUIRE(rig.renders.size() == 3);
+    CHECK(rig.renders.back().sequence == 1);
+}
+
+TEST_CASE("model animation inspector renders distinct open and closed EverythingPBR door poses") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    profile.addons.list = assets::AddonSettings::List::Game;
+    JobPool jobs(2);
+    auto vfs = assets::Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    constexpr auto path = "models/pbr/test_chambers/l2_testchmb_door.mdl";
+    if (!vfs->exists(path)) { MESSAGE("Skipped: EverythingPBR is not mounted"); return; }
+    assets::ModelCache models(*vfs, jobs);
+    models.request(path);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (models.state(path) == assets::ModelState::Loading && std::chrono::steady_clock::now() < deadline) {
+        jobs.drainCompletions();
+        std::this_thread::yield();
+    }
+    REQUIRE(models.state(path) == assets::ModelState::Ready);
+    const auto model = models.request(path);
+    REQUIRE(model);
+    const auto sequence = std::ranges::find_if(model->sequences, [](const auto& value) {
+        return value.supported && value.frames > 1;
+    });
+    REQUIRE(sequence != model->sequences.end());
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    auto renderer = ModelThumbnailRenderer::create(*context, **heap); REQUIRE(renderer);
+    ModelView view;
+    view.sequence = static_cast<int>(std::distance(model->sequences.begin(), sequence));
+    const auto first = (*renderer)->renderView(*model, {}, view);
+    REQUIRE(first);
+    view.frame = sequence->frames - 1;
+    const auto last = (*renderer)->renderView(*model, {}, view);
+    REQUIRE(last);
+    CHECK(first->rgba != last->rgba);
+}

@@ -19,10 +19,12 @@ struct ModelInspectMaterial {
     std::size_t triangles = 0;  // Drawn with this material in the current body and skin.
 };
 // What the inspector shows next to the image. Counts cover the draw ranges of the current body and skin.
+using ModelInspectSequence = assets::ModelSequence;
 struct ModelInspectStats {
     std::size_t vertices = 0, triangles = 0, submeshes = 0;
     DVec3 size{0.0};
     std::size_t skinFamilies = 0;
+    std::vector<ModelInspectSequence> sequences;
     std::vector<ModelInspectBodyPart> bodyParts;
     std::vector<ModelInspectMaterial> materials;
 };

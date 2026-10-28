@@ -1,4 +1,5 @@
 #include "render/model_thumbnail.hpp"
+#include "assets/model_pose.hpp"
 
 #include "assets/thumbnail_cache.hpp"
 #include "render/view_math.hpp"
@@ -84,9 +85,21 @@ Result<assets::Thumbnail> ModelThumbnailRenderer::draw(RenderTarget& target, con
         }
     }
     if (bounds.empty()) return std::unexpected(Error{ErrorCode::InvalidArgument, "Model has no triangles"});
+    if (view.sequence >= 0 && static_cast<std::size_t>(view.sequence) < model.sequences.size()) {
+        const auto& sequence = model.sequences[static_cast<std::size_t>(view.sequence)];
+        const auto& motion = sequence.bounds;
+        if (sequence.supported && !motion.empty() &&
+            std::isfinite(motion.min.x) && std::isfinite(motion.min.y) && std::isfinite(motion.min.z) &&
+            std::isfinite(motion.max.x) && std::isfinite(motion.max.y) && std::isfinite(motion.max.z)) {
+            bounds.expand(motion.min);
+            bounds.expand(motion.max);
+        }
+    }
+    const auto animated = assets::animateModel(model, view.sequence, view.frame);
+    const auto& sourceVertices = animated.empty() ? model.vertices : animated;
     std::vector<BrushVertex> vertices;
-    vertices.reserve(model.vertices.size());
-    for (const auto& v : model.vertices)
+    vertices.reserve(sourceVertices.size());
+    for (const auto& v : sourceVertices)
         vertices.push_back({{v.position.x, v.position.y, v.position.z},
                             {v.normal.x, v.normal.y, v.normal.z}, {v.uv.x, v.uv.y}, 0});
     auto vb = uploadBuffer(context_, heap_.uploadRing(), std::as_bytes(std::span(vertices)),

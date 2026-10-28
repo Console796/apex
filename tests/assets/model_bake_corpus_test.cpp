@@ -1,4 +1,5 @@
 #include "assets/model_bake.hpp"
+#include "assets/model_pose.hpp"
 #include "assets/vfs.hpp"
 #include "geometry/bvh.hpp"
 
@@ -341,4 +342,39 @@ TEST_CASE("model bake corpus poses sequence 0 frame 0 so bounds agree with the s
         CHECK(posed->vertices.size() == reference->vertices.size());
         CHECK(posed->indices == reference->indices);
     }
+}
+
+TEST_CASE("model animation corpus previews the EverythingPBR door's embedded sequences") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    profile.addons.list = AddonSettings::List::Game;
+    JobPool jobs(2);
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    const std::string stem = "models/pbr/test_chambers/l2_testchmb_door";
+    if (!vfs->exists(stem + ".mdl")) { MESSAGE("Skipped: EverythingPBR is not mounted"); return; }
+    const auto mdl = vfs->open(stem + ".mdl");
+    const auto vtx = vfs->open(stem + ".dx90.vtx");
+    const auto vvd = vfs->open(stem + ".vvd");
+    REQUIRE(mdl); REQUIRE(vtx); REQUIRE(vvd);
+    mdlpp::StudioModel source{};
+    REQUIRE(source.open(*mdl, *vtx, *vvd));
+    const auto model = bakeModel(source, *mdl);
+    REQUIRE(model);
+    REQUIRE(model->animation);
+    REQUIRE_FALSE(model->sequences.empty());
+    bool moves = false;
+    for (std::size_t i = 0; i < model->sequences.size(); ++i) {
+        const auto& sequence = model->sequences[i];
+        if (!sequence.supported || sequence.frames < 2) continue;
+        const auto first = animateModel(*model, static_cast<int>(i), 0);
+        const auto last = animateModel(*model, static_cast<int>(i), sequence.frames - 1);
+        REQUIRE(first.size() == model->vertices.size());
+        REQUIRE(last.size() == first.size());
+        for (std::size_t vertex = 0; vertex < first.size(); ++vertex)
+            moves |= glm::length(first[vertex].position - last[vertex].position) > 0.1f;
+    }
+    CHECK(moves);
 }

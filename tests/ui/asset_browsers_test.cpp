@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDataStream>
+#include <QDoubleSpinBox>
 #include <QLabel>
 #include <QDialog>
 #include <QListWidget>
@@ -683,4 +684,80 @@ TEST_CASE("Create Prefab from Selection opens its dialog, writes the file and re
     dialog->setOverwrite(true);
     CHECK(dialog->create());
     dialog->reject();
+}
+
+TEST_CASE("Model inspector animation choices scrub frames and stop playback on hide or model changes") {
+    app();
+    ui::ModelInspectView inspect;
+    inspect.resize(700, 500);
+    inspect.show();
+    ui::ModelInspectView::Summary summary;
+    summary.name = "models/animated.mdl";
+    inspect.setModel(summary);
+    render::ModelInspection inspection;
+    inspection.state = render::ModelInspection::State::Ready;
+    inspection.revision = 1;
+    inspection.stats.sequences = {{"idle", 30, 120, true, {}},
+                                 {"open", 24, 61, true, {}},
+                                 {"external", 30, 90, false, "External animation data is unavailable"}};
+    inspect.setInspection(&inspection);
+    auto* sequence = child<QComboBox>(inspect, "modelInspectSequence");
+    auto* frame = child<QDoubleSpinBox>(inspect, "modelInspectFrame");
+    auto* scrub = child<QSlider>(inspect, "modelInspectScrub");
+    auto* play = child<QPushButton>(inspect, "modelInspectPlay");
+    auto* speed = child<QDoubleSpinBox>(inspect, "modelInspectSpeed");
+    auto* status = child<QLabel>(inspect, "modelInspectAnimationStatus");
+    REQUIRE(sequence->count() == 3);
+    CHECK(play->isEnabled());
+    CHECK(frame->maximum() == 119);
+    CHECK(scrub->maximum() == 119);
+    QSignalSpy changed(&inspect, &ui::ModelInspectView::viewChanged);
+    sequence->setCurrentIndex(1);
+    CHECK(inspect.view().sequence == 1);
+    CHECK(frame->maximum() == 60);
+    scrub->setValue(23);
+    CHECK(inspect.view().frame == 23);
+    frame->setValue(12.5);
+    CHECK(inspect.view().frame == 12.5);
+    CHECK(scrub->value() == 12);
+    REQUIRE(changed.count() >= 3);
+    // New renders retain the requested frame and sequence while controls are refreshed.
+    ++inspection.revision;
+    inspect.setInspection(&inspection);
+    CHECK(inspect.view().sequence == 1);
+    CHECK(inspect.view().frame == 12.5);
+    speed->setValue(2);
+    play->click();
+    REQUIRE(play->isChecked());
+    QTest::qWait(80);
+    CHECK(inspect.view().frame > 12.5);
+    play->click();
+    CHECK_FALSE(play->isChecked());
+    const auto paused = inspect.view().frame;
+    QTest::qWait(50);
+    CHECK(inspect.view().frame == paused);
+    play->click();
+    inspect.hide();
+    CHECK_FALSE(play->isChecked());
+    const auto hidden = inspect.view().frame;
+    QTest::qWait(50);
+    CHECK(inspect.view().frame == hidden);
+    inspect.show();
+    sequence->setCurrentIndex(2);
+    CHECK_FALSE(play->isEnabled());
+    CHECK_FALSE(frame->isEnabled());
+    CHECK(status->text().contains("External animation"));
+    CHECK(inspect.view().frame == 0);
+    sequence->setCurrentIndex(0);
+    play->click();
+    REQUIRE(play->isChecked());
+    summary.name = "models/other.mdl";
+    inspect.setModel(summary);
+    CHECK_FALSE(play->isChecked());
+    CHECK(inspect.view().sequence == 0);
+    CHECK(inspect.view().frame == 0);
+    CHECK(sequence->count() == 0);
+    CHECK_FALSE(play->isEnabled());
+    inspect.clearModel();
+    CHECK_FALSE(inspect.hasModel());
 }

@@ -1,13 +1,15 @@
 #pragma once
 
+#include "assets/model_data.hpp"
+
 #include <array>
+#include <optional>
 #include <cstddef>
 #include <span>
 #include <vector>
 
-namespace mdlpp::MDL {
-struct MDL;
-}
+namespace mdlpp::MDL { struct MDL; }
+namespace mdlpp::VVD { struct VVD; }
 
 namespace apex::assets {
 
@@ -24,5 +26,16 @@ using BoneMatrix = std::array<float, 12>;
 // `mdlBytes` is the raw .mdl file: mdlpp flattens the per-axis animation values, which loses which axis each
 // value belongs to.
 std::vector<BoneMatrix> sequenceZeroSkinning(const mdlpp::MDL::MDL& mdl, std::span<const std::byte> mdlBytes);
+
+// Returns nullopt for unavailable/malformed animation data. A valid reference pose returns identity
+// matrices. Frames are clamped to the sequence; fractional frames interpolate local bone poses.
+std::optional<std::vector<BoneMatrix>> sequenceSkinning(const mdlpp::MDL::MDL& mdl,
+    std::span<const std::byte> bytes, int sequence, double frame);
+// Own the immutable animation bytes, skeleton and source weights alongside a baked model.
+void retainModelAnimation(ModelData& model, const mdlpp::MDL::MDL& mdl, const mdlpp::VVD::VVD& vvd,
+    std::span<const std::byte> bytes, std::span<const std::uint32_t> vertexSources);
+// Empty for unavailable animation; the caller then keeps the model's initial static pose.
+std::vector<ModelVertex> animateModel(const ModelData& model, int sequence, double frame);
+std::size_t modelAnimationByteSize(const ModelData& model);
 
 } // namespace apex::assets

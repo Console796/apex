@@ -35,6 +35,7 @@ void ModelInspector::fill(const assets::ModelData& model, const ModelView& view)
     auto& stats = inspection_.stats;
     stats = {};
     stats.skinFamilies = model.skins.size();
+    stats.sequences = model.sequences;
     stats.submeshes = model.submeshes.size();
     for (const auto& part : model.bodyParts) {
         ModelInspectBodyPart info{part.name, part.base ? part.base : 1, {}};

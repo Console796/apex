@@ -2,6 +2,8 @@
 
 #include <QComboBox>
 #include <QFormLayout>
+#include <QDoubleSpinBox>
+#include <QHideEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
@@ -9,6 +11,8 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QSlider>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <algorithm>
@@ -98,6 +102,63 @@ ModelInspectView::ModelInspectView(QWidget* parent) : QWidget(parent) {
     skinLabel_ = new QLabel(tr("Skin"), this);
     choices_->addRow(skinLabel_, skin_);
     side->addLayout(choices_);
+    auto* animation = new QFormLayout;
+    sequence_ = new QComboBox(this);
+    sequence_->setObjectName(QStringLiteral("modelInspectSequence"));
+    animation->addRow(tr("Sequence"), sequence_);
+    auto* frameRow = new QHBoxLayout;
+    frame_ = new QDoubleSpinBox(this);
+    frame_->setObjectName(QStringLiteral("modelInspectFrame"));
+    frame_->setDecimals(2);
+    frame_->setSingleStep(1);
+    frameRow->addWidget(frame_);
+    scrub_ = new QSlider(Qt::Horizontal, this);
+    scrub_->setObjectName(QStringLiteral("modelInspectScrub"));
+    frameRow->addWidget(scrub_, 1);
+    animation->addRow(tr("Frame"), frameRow);
+    auto* playback = new QHBoxLayout;
+    play_ = new QPushButton(tr("Play"), this);
+    play_->setObjectName(QStringLiteral("modelInspectPlay"));
+    play_->setCheckable(true);
+    playback->addWidget(play_);
+    speed_ = new QDoubleSpinBox(this);
+    speed_->setObjectName(QStringLiteral("modelInspectSpeed"));
+    speed_->setRange(0.1, 4.0);
+    speed_->setSingleStep(0.1);
+    speed_->setValue(1);
+    speed_->setSuffix(QStringLiteral(" ×"));
+    speed_->setToolTip(tr("Animation playback speed"));
+    playback->addWidget(speed_);
+    animation->addRow(tr("Playback"), playback);
+    side->addLayout(animation);
+    animationStatus_ = new QLabel(this);
+    animationStatus_->setObjectName(QStringLiteral("modelInspectAnimationStatus"));
+    animationStatus_->setWordWrap(true);
+    side->addWidget(animationStatus_);
+    animationTimer_ = new QTimer(this);
+    animationTimer_->setInterval(33);
+    animationTimer_->setTimerType(Qt::PreciseTimer);
+    connect(animationTimer_, &QTimer::timeout, this, &ModelInspectView::advanceAnimation);
+    connect(play_, &QPushButton::toggled, this, &ModelInspectView::setPlaying);
+    connect(sequence_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        setPlaying(false);
+        view_.sequence = std::max(0, index);
+        view_.frame = 0;
+        updateAnimationControls();
+        emit viewChanged();
+    });
+    connect(frame_, &QDoubleSpinBox::valueChanged, this, [this](double frame) {
+        setPlaying(false);
+        setFrame(frame);
+    });
+    connect(scrub_, &QSlider::valueChanged, this, [this](int frame) {
+        setPlaying(false);
+        setFrame(frame);
+    });
+    connect(speed_, &QDoubleSpinBox::valueChanged, this, [this] {
+        if (animationTimer_->isActive()) animationClock_.restart();
+    });
+    updateAnimationControls();
     materials_ = new QListWidget(this);
     materials_->setObjectName(QStringLiteral("modelInspectMaterials"));
     materials_->setSelectionMode(QAbstractItemView::NoSelection);
@@ -126,7 +187,10 @@ void ModelInspectView::resetCamera() {
 
 void ModelInspectView::setModel(const Summary& summary) {
     if (summary.name == summary_.name) { summary_ = summary; updateText(); return; }
+    setPlaying(false);
     summary_ = summary;
+    view_.sequence = 0;
+    view_.frame = 0;
     view_.zoom = 1.0;
     view_.pan = {};
     view_.body = view_.skin = 0;
@@ -141,7 +205,10 @@ void ModelInspectView::setModel(const Summary& summary) {
     emit viewChanged();
 }
 void ModelInspectView::clearModel() {
+    setPlaying(false);
     summary_ = {};
+    view_.sequence = 0;
+    view_.frame = 0;
     view_.zoom = 1.0;
     view_.pan = {};
     view_.body = view_.skin = 0;
@@ -158,6 +225,12 @@ void ModelInspectView::clearModel() {
 void ModelInspectView::setInspection(const render::ModelInspection* inspection) {
     if (!hasModel()) return;
     if (!inspection) {
+        revision_ = ~std::uint64_t{0};
+        setPlaying(false);
+        sequence_->setEnabled(false);
+        frame_->setEnabled(false);
+        scrub_->setEnabled(false);
+        play_->setEnabled(false);
         canvas_->setStatus(tr("Preview unavailable: no GPU or game content"));
         return;
     }
@@ -177,6 +250,7 @@ void ModelInspectView::setInspection(const render::ModelInspection* inspection) 
             inspection->error ? QString::fromUtf8(inspection->error->what().data(), static_cast<qsizetype>(inspection->error->what().size())) : QString{}));
         break;
     }
+    if (inspection->state != State::Ready) setPlaying(false);
     if (inspection->state == State::Ready) {
         haveStats_ = true;
         stats_ = inspection->stats;
@@ -224,12 +298,92 @@ void ModelInspectView::rebuildChoices(const render::ModelInspectStats& stats) {
         }
         // A null entry stands for a part with nothing to choose, keeping indices aligned with bodyParts.
     }
+    rebuildAnimationChoices();
     for (std::size_t i = 0; i < bodyCombos_.size() && i < stats.bodyParts.size(); ++i) {
         if (!bodyCombos_[i]) continue;
         const QSignalBlocker blocker(bodyCombos_[i]);
         const auto& part = stats.bodyParts[i];
         bodyCombos_[i]->setCurrentIndex(static_cast<int>((view_.body / part.base) % part.choices.size()));
     }
+}
+
+
+void ModelInspectView::rebuildAnimationChoices() {
+    const QSignalBlocker blocker(sequence_);
+    bool same = sequence_->count() == static_cast<int>(stats_.sequences.size());
+    for (int i = 0; same && i < sequence_->count(); ++i)
+        same = sequence_->itemText(i) == QString::fromStdString(stats_.sequences[static_cast<std::size_t>(i)].name);
+    if (!same) {
+        sequence_->clear();
+        for (const auto& sequence : stats_.sequences) sequence_->addItem(QString::fromStdString(sequence.name));
+    }
+    for (int i = 0; i < sequence_->count(); ++i)
+        sequence_->setItemData(i, QString::fromStdString(stats_.sequences[static_cast<std::size_t>(i)].reason), Qt::ToolTipRole);
+    sequence_->setCurrentIndex(stats_.sequences.empty() ? -1 : std::clamp(view_.sequence, 0, sequence_->count() - 1));
+    updateAnimationControls();
+}
+
+void ModelInspectView::updateAnimationControls() {
+    const int index = sequence_->currentIndex();
+    view_.sequence = std::max(0, index);
+    const bool selected = index >= 0 && static_cast<std::size_t>(index) < stats_.sequences.size();
+    sequence_->setEnabled(hasModel() && !stats_.sequences.empty());
+    const auto* sequence = selected ? &stats_.sequences[static_cast<std::size_t>(index)] : nullptr;
+    const bool supported = sequence && sequence->supported;
+    const bool playable = supported && sequence->frames > 1 && std::isfinite(sequence->fps) && sequence->fps > 0;
+    if (!playable) setPlaying(false);
+    frame_->setEnabled(supported);
+    scrub_->setEnabled(supported && sequence->frames > 1);
+    play_->setEnabled(playable);
+    speed_->setEnabled(playable);
+    const QSignalBlocker frameBlock(frame_), scrubBlock(scrub_);
+    const int last = sequence ? std::max(0, sequence->frames - 1) : 0;
+    frame_->setRange(0, last);
+    scrub_->setRange(0, last);
+    view_.frame = std::clamp(view_.frame, 0.0, static_cast<double>(last));
+    frame_->setValue(view_.frame);
+    scrub_->setValue(static_cast<int>(view_.frame));
+    if (!sequence) animationStatus_->setText(haveStats_ ? tr("No animation sequences") : QString{});
+    else if (!supported) animationStatus_->setText(QString::fromStdString(sequence->reason.empty()
+        ? "This sequence cannot be previewed." : sequence->reason));
+    else animationStatus_->setText(tr("%1 frames · %2 fps").arg(sequence->frames).arg(sequence->fps, 0, 'f', 1));
+}
+
+void ModelInspectView::setPlaying(bool playing) {
+    playing = playing && isVisible() && play_->isEnabled();
+    const QSignalBlocker block(play_);
+    play_->setChecked(playing);
+    play_->setText(playing ? tr("Pause") : tr("Play"));
+    if (playing) {
+        animationClock_.restart();
+        animationTimer_->start();
+    } else animationTimer_->stop();
+}
+
+void ModelInspectView::setFrame(double frame) {
+    if (!std::isfinite(frame)) return;
+    frame = std::clamp(frame, frame_->minimum(), frame_->maximum());
+    if (view_.frame == frame) return;
+    view_.frame = frame;
+    const QSignalBlocker frameBlock(frame_), scrubBlock(scrub_);
+    frame_->setValue(frame);
+    scrub_->setValue(static_cast<int>(frame));
+    emit viewChanged();
+}
+
+void ModelInspectView::advanceAnimation() {
+    if (!isVisible() || !play_->isEnabled()) { setPlaying(false); return; }
+    const auto index = static_cast<std::size_t>(sequence_->currentIndex());
+    if (index >= stats_.sequences.size()) { setPlaying(false); return; }
+    const auto& sequence = stats_.sequences[index];
+    const double elapsed = static_cast<double>(animationClock_.restart()) / 1000.0;
+    const double duration = std::max(1, sequence.frames - 1);
+    setFrame(std::fmod(view_.frame + elapsed * sequence.fps * speed_->value(), duration));
+}
+
+void ModelInspectView::hideEvent(QHideEvent* event) {
+    setPlaying(false);
+    QWidget::hideEvent(event);
 }
 
 void ModelInspectView::changeChoice() {

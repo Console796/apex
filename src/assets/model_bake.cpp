@@ -77,6 +77,7 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
             return std::unexpected(bakeError("body part count mismatch"));
 
         ModelData result;
+        std::vector<std::uint32_t> vertexSources;
         result.skins = mdl.skins;
         result.materialDirectories = mdl.materialDirectories;
         result.materialNames.reserve(mdl.materials.size());
@@ -88,6 +89,7 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
                 if (i >= std::numeric_limits<std::uint32_t>::max())
                     return std::unexpected(bakeError("vertex id out of range: model exceeds uint32"));
                 result.vertices.push_back(convertVertex(vvd.vertices[i], skinning));
+                vertexSources.push_back(static_cast<std::uint32_t>(i));
             }
         } else {
             for (const auto& fixup : vvd.fixups) {
@@ -103,6 +105,7 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
                         return std::unexpected(bakeError("vertex id out of range: model exceeds uint32"));
                     const auto sourceIndex = static_cast<std::size_t>(fixup.sourceVertexID + i);
                     result.vertices.push_back(convertVertex(vvd.vertices.at(sourceIndex), skinning));
+                    vertexSources.push_back(static_cast<std::uint32_t>(sourceIndex));
                 }
             }
         }
@@ -212,6 +215,7 @@ Result<ModelData> bakeModel(const mdlpp::MDL::MDL& mdl, const mdlpp::VTX::VTX& v
             result.bounds.expand(DVec3{mdl.hullMin[0], mdl.hullMin[1], mdl.hullMin[2]});
             result.bounds.expand(DVec3{mdl.hullMax[0], mdl.hullMax[1], mdl.hullMax[2]});
         }
+        retainModelAnimation(result, mdl, vvd, mdlBytes, vertexSources);
         return result;
     } catch (const std::exception& exception) {
         return std::unexpected(bakeError("mdlpp exception: " + std::string(exception.what())));

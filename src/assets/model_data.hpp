@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,15 @@ struct ModelBodyPart {
     std::uint32_t base = 1;
     std::vector<ModelChoice> choices;
 };
+struct ModelSequence {
+    std::string name;
+    double fps = 30.0;
+    int frames = 1;
+    bool supported = false;
+    std::string reason;
+    AABB bounds; // Sequence bounds keep the inspector camera stable during playback.
+};
+struct ModelAnimationData;
 struct ModelData {
     std::vector<ModelVertex> vertices;
     std::vector<std::uint32_t> indices;
@@ -37,6 +47,8 @@ struct ModelData {
     std::vector<std::string> materialNames;
     std::vector<std::string> materialDirectories;
     AABB bounds;
+    std::vector<ModelSequence> sequences;
+    std::shared_ptr<const ModelAnimationData> animation;
 };
 struct ModelDrawRange {
     std::uint32_t firstIndex = 0, indexCount = 0;

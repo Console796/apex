@@ -3,11 +3,16 @@
 #include "render/model_inspector.hpp"
 
 #include <QImage>
+#include <QElapsedTimer>
 #include <QWidget>
 #include <array>
 
 class QComboBox;
 class QFormLayout;
+class QDoubleSpinBox;
+class QHideEvent;
+class QSlider;
+class QTimer;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -39,6 +44,9 @@ public:
     bool hasModel() const { return !summary_.name.isEmpty(); }
     std::uint64_t shownRevision() const { return revision_; }
 
+protected:
+    void hideEvent(QHideEvent* event) override;
+
 signals:
     void viewChanged();
 
@@ -47,6 +55,11 @@ private:
     void rebuildChoices(const render::ModelInspectStats& stats);
     void updateText();
     void changeChoice();
+    void rebuildAnimationChoices();
+    void updateAnimationControls();
+    void setPlaying(bool playing);
+    void advanceAnimation();
+    void setFrame(double frame);
     Summary summary_;
     render::ModelView view_;
     render::ModelInspectStats stats_;
@@ -61,6 +74,14 @@ private:
     QLabel* skinLabel_ = nullptr;
     std::vector<QComboBox*> bodyCombos_;
     QListWidget* materials_ = nullptr;
+    QComboBox* sequence_ = nullptr;
+    QDoubleSpinBox* frame_ = nullptr;
+    QSlider* scrub_ = nullptr;
+    QDoubleSpinBox* speed_ = nullptr;
+    QPushButton* play_ = nullptr;
+    QLabel* animationStatus_ = nullptr;
+    QTimer* animationTimer_ = nullptr;
+    QElapsedTimer animationClock_;
     friend class ModelInspectCanvas;
 };
 } // namespace apex::ui

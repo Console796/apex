@@ -1,4 +1,8 @@
 #include "assets/model_bake.hpp"
+#include "assets/model_pose.hpp"
+#include <cstring>
+#include <limits>
+#include <glm/gtc/constants.hpp>
 
 #include <doctest/doctest.h>
 #include <mdlpp/mdlpp.h>
@@ -191,4 +195,110 @@ TEST_CASE("model material resolution walks cdmaterials in order and normalises n
     CHECK(resolveModelMaterial(model, -1, exists).empty());
     model.materialDirectories.clear();
     CHECK(resolveModelMaterial(model, 0, exists).empty());
+}
+
+namespace {
+template <typename T> void animationField(std::vector<std::byte>& bytes, std::size_t at, T value) {
+    REQUIRE(at + sizeof(value) <= bytes.size());
+    std::memcpy(bytes.data() + at, &value, sizeof(value));
+}
+std::vector<std::byte> animatedTriangle(mdlpp::StudioModel& source) {
+    triangleModel(source, 1, 0);
+    source.mdl.bones.resize(1);
+    auto& bone = source.mdl.bones[0];
+    bone.parent = -1;
+    bone.rotationQuat[3] = 1;
+    bone.positionScale[0] = 1;
+    for (int r = 0; r < 3; ++r) bone.poseToBose[r][r] = 1;
+    source.mdl.sequences.resize(1);
+    source.mdl.sequences[0].label = "slide";
+    source.mdl.sequences[0].animIndices = {0};
+    for (auto& vertex : source.vvd.vertices) {
+        vertex.position[0] = 1;
+        vertex.normal[1] = 1;
+        vertex.boneWeight.bones = {0};
+        vertex.boneWeight.weight = {1};
+    }
+    std::vector<std::byte> bytes(512);
+    animationField<std::int32_t>(bytes, 180, 1);
+    animationField<std::int32_t>(bytes, 184, 192);
+    animationField<float>(bytes, 200, 30);
+    animationField<std::int32_t>(bytes, 208, 7);
+    animationField<std::int32_t>(bytes, 248, 100);
+    bytes[293] = std::byte{0x04}; // Animated position, one bone, no following entry.
+    animationField<std::int16_t>(bytes, 296, 6); // X axis value stream.
+    animationField<std::uint16_t>(bytes, 302, 0x0503); // Three values, five total frames.
+    animationField<std::int16_t>(bytes, 304, 0);
+    animationField<std::int16_t>(bytes, 306, 10);
+    animationField<std::int16_t>(bytes, 308, 20);
+    animationField<std::uint16_t>(bytes, 310, 0x0202);
+    animationField<std::int16_t>(bytes, 312, 30);
+    animationField<std::int16_t>(bytes, 314, 40);
+    return bytes;
+}
+}
+
+TEST_CASE("model animation evaluates RLE hold spans and fractional frames from retained vertex weights") {
+    mdlpp::StudioModel source{};
+    auto bytes = animatedTriangle(source);
+    const auto baked = bakeModel(source, bytes);
+    REQUIRE(baked);
+    REQUIRE(baked->animation);
+    REQUIRE(baked->sequences.size() == 1);
+    CHECK(baked->sequences[0].name == "slide");
+    CHECK(baked->sequences[0].supported);
+    CHECK(baked->sequences[0].frames == 7);
+    CHECK(baked->sequences[0].fps == doctest::Approx(30));
+    for (const auto [frame, translation] : std::array<std::pair<double, double>, 8>{
+             {{0, 0}, {1, 10}, {2, 20}, {3, 20}, {4, 20}, {4.5, 25}, {5.5, 35}, {100, 40}}}) {
+        const auto posed = animateModel(*baked, 0, frame);
+        REQUIRE(posed.size() == 3);
+        CHECK(posed[0].position.x == doctest::Approx(1 + translation));
+        CHECK(posed[0].normal.y == doctest::Approx(1));
+    }
+    CHECK(baked->vertices[0].position.x == doctest::Approx(1)); // Cached initial pose is immutable.
+    CHECK(animateModel(*baked, -1, 0).empty());
+    CHECK(animateModel(*baked, 99, 0).empty());
+    CHECK(animateModel(*baked, 0, std::numeric_limits<double>::quiet_NaN()).empty());
+    CHECK(modelAnimationByteSize(*baked) > bytes.size());
+}
+
+TEST_CASE("model animation interpolates local quaternion rotations without shrinking the mesh") {
+    mdlpp::StudioModel source{};
+    auto bytes = animatedTriangle(source);
+    source.mdl.bones[0].rotationScale[2] = static_cast<float>(glm::half_pi<double>());
+    animationField<std::int32_t>(bytes, 208, 2);
+    bytes[293] = std::byte{0x08}; // Animated Euler rotation around Z.
+    animationField<std::int16_t>(bytes, 296, 0);
+    animationField<std::int16_t>(bytes, 300, 6);
+    animationField<std::uint16_t>(bytes, 302, 0x0202);
+    animationField<std::int16_t>(bytes, 304, 0);
+    animationField<std::int16_t>(bytes, 306, 1);
+    const auto baked = bakeModel(source, bytes);
+    REQUIRE(baked);
+    REQUIRE(baked->sequences[0].supported);
+    const auto posed = animateModel(*baked, 0, 0.5);
+    REQUIRE(posed.size() == 3);
+    CHECK(posed[0].position.x == doctest::Approx(std::sqrt(0.5)).epsilon(1e-5));
+    CHECK(posed[0].position.y == doctest::Approx(std::sqrt(0.5)).epsilon(1e-5));
+    CHECK(glm::length(posed[0].position) == doctest::Approx(1));
+    CHECK(glm::length(posed[0].normal) == doctest::Approx(1));
+}
+
+TEST_CASE("model animation reports unsupported sequences and rejects malformed tracks") {
+    mdlpp::StudioModel source{};
+    auto bytes = animatedTriangle(source);
+    SUBCASE("external animation block") { animationField<std::int32_t>(bytes, 244, 1); }
+    SUBCASE("delta animation") { animationField<std::int32_t>(bytes, 204, 4); }
+    SUBCASE("pose blending") { source.mdl.sequences[0].animIndices = {0, 0}; }
+    SUBCASE("truncated RLE stream") { bytes.resize(306); }
+    SUBCASE("invalid RLE span") { animationField<std::uint16_t>(bytes, 302, 0x0203); }
+    SUBCASE("invalid bone parent") { source.mdl.bones[0].parent = 0; }
+    const auto baked = bakeModel(source, bytes);
+    REQUIRE(baked);
+    REQUIRE(baked->sequences.size() == 1);
+    CHECK_FALSE(baked->sequences[0].supported);
+    CHECK_FALSE(baked->sequences[0].reason.empty());
+    CHECK_FALSE(baked->animation);
+    CHECK(animateModel(*baked, 0, 0).empty());
 }

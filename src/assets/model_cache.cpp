@@ -1,4 +1,5 @@
 #include "assets/model_cache.hpp"
+#include "assets/model_pose.hpp"
 
 #include "core/log.hpp"
 #include "core/paths.hpp"
@@ -48,7 +49,7 @@ std::size_t modelByteSize(const ModelData& model) {
         bytes += sizeof(part) + part.name.size();
         for (const auto& choice : part.choices) bytes += sizeof(choice) + choice.name.size();
     }
-    return bytes;
+    return bytes + modelAnimationByteSize(model);
 }
 
 struct ModelCache::Impl {
