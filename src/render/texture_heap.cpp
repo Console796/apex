@@ -2,9 +2,27 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <utility>
 
 namespace apex::render {
+
+std::optional<VkFormat> vulkanFormat(assets::TextureFormat format) {
+    using F = assets::TextureFormat;
+    switch (format) {
+    case F::Rgba8: return VK_FORMAT_R8G8B8A8_UNORM;
+    case F::Bc1: return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+    case F::Bc2: return VK_FORMAT_BC2_UNORM_BLOCK;
+    case F::Bc3: return VK_FORMAT_BC3_UNORM_BLOCK;
+    case F::Bc4: return VK_FORMAT_BC4_UNORM_BLOCK;
+    case F::Bc5: return VK_FORMAT_BC5_UNORM_BLOCK;
+    case F::Bc6Signed: return VK_FORMAT_BC6H_SFLOAT_BLOCK;
+    case F::Bc6Unsigned: return VK_FORMAT_BC6H_UFLOAT_BLOCK;
+    case F::Bc7: return VK_FORMAT_BC7_UNORM_BLOCK;
+    case F::Rgba32Float: return std::nullopt;
+    }
+    return std::nullopt;
+}
 
 namespace {
 
@@ -157,6 +175,15 @@ Result<TextureSlot> TextureHeap::upload(const TextureDesc& desc, std::span<const
 
 Result<TextureSlot> TextureHeap::upload(const TextureDesc& desc,
                                         std::span<const std::span<const std::byte>> mips) {
+    if (freeSlots_.empty()) return std::unexpected(Error{ErrorCode::Internal, "texture heap is full"});
+    const auto slot = freeSlots_.back();
+    auto result = uploadAt(slot, desc, mips);
+    if (result) freeSlots_.pop_back();
+    return result;
+}
+
+Result<TextureSlot> TextureHeap::uploadAt(TextureSlot slot, const TextureDesc& desc,
+                                         std::span<const std::span<const std::byte>> mips) {
     if (desc.width == 0 || desc.height == 0 || mips.empty()) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, "texture needs size and at least one mip"});
     }
@@ -176,8 +203,6 @@ Result<TextureSlot> TextureHeap::upload(const TextureDesc& desc,
                                          "mip " + std::to_string(i) + " has the wrong byte size"});
         }
     }
-    if (freeSlots_.empty()) return std::unexpected(Error{ErrorCode::Internal, "texture heap is full"});
-
     auto image = Image::create(*context_, {desc.format, desc.width, desc.height, levels, 1,
                                            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT});
     if (!image) return std::unexpected(image.error());
@@ -204,11 +229,54 @@ Result<TextureSlot> TextureHeap::upload(const TextureDesc& desc,
     transitionImage(*commands, image->handle(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-    const TextureSlot slot = freeSlots_.back();
-    freeSlots_.pop_back();
     images_[slot] = std::move(*image);
     writeDescriptor(slot, images_[slot].view());
     return slot;
+}
+
+bool TextureHeap::thumbnailSlot(TextureSlot slot) const {
+    return thumbnailFirst_ != 0 && slot >= thumbnailFirst_ && slot < thumbnailFirst_ + kThumbnailTextureSlots;
+}
+Result<TextureSlot> TextureHeap::reserveThumbnailSlots() {
+    if (thumbnailFirst_) return thumbnailFirst_;
+    // High slots keep the map's existing low-slot allocation order intact.
+    if (capacity_ > kThumbnailTextureSlots) {
+        for (TextureSlot first = capacity_ - kThumbnailTextureSlots; first > 0; --first) {
+            bool free = true;
+            for (auto slot = first; slot < first + kThumbnailTextureSlots; ++slot)
+                if (images_[slot]) { free = false; break; }
+            if (!free) continue;
+            thumbnailFirst_ = first;
+            std::erase_if(freeSlots_, [&](TextureSlot slot) { return thumbnailSlot(slot); });
+            return first;
+        }
+    }
+    return std::unexpected(Error{ErrorCode::Internal, "No 64-slot thumbnail range available"});
+}
+Result<void> TextureHeap::uploadThumbnail(TextureSlot slot, const TextureDesc& desc, std::span<const std::byte> pixels) {
+    if (!thumbnailSlot(slot))
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "Not a thumbnail texture slot"});
+    // Uploads must finish before replacing an image, even if no thumbnail sampled it yet.
+    auto flushed = flush();
+    if (!flushed) return flushed;
+    const std::array<std::span<const std::byte>, 1> mips{pixels};
+    auto result = uploadAt(slot, desc, mips);
+    if (!result) return std::unexpected(result.error());
+    maxThumbnailSlotsLive_ = std::max(maxThumbnailSlotsLive_, thumbnailSlotsLive());
+    assert(maxThumbnailSlotsLive_ <= kThumbnailTextureSlots);
+    return flush();
+}
+void TextureHeap::releaseThumbnail(TextureSlot slot) {
+    if (!thumbnailSlot(slot) || !images_[slot]) return;
+    writeDescriptor(slot, images_[0].view());
+    images_[slot] = Image();
+}
+std::uint32_t TextureHeap::thumbnailSlotsLive() const {
+    std::uint32_t count = 0;
+    if (thumbnailFirst_)
+        for (auto slot = thumbnailFirst_; slot < thumbnailFirst_ + kThumbnailTextureSlots; ++slot)
+            if (images_[slot]) ++count;
+    return count;
 }
 
 Result<void> TextureHeap::flush() {
@@ -216,7 +284,7 @@ Result<void> TextureHeap::flush() {
 }
 
 void TextureHeap::release(TextureSlot slot) {
-    if (slot == kCheckerboardSlot || slot >= capacity_ || !images_[slot]) return;
+    if (slot == kCheckerboardSlot || slot >= capacity_ || thumbnailSlot(slot) || !images_[slot]) return;
     writeDescriptor(slot, images_[kCheckerboardSlot].view());
     garbage_.push_back(std::move(images_[slot]));
     images_[slot] = Image();

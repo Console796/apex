@@ -17,8 +17,10 @@
 
 #include "assets/fgd.hpp"
 #include "assets/material_cache.hpp"
+#include "assets/model_cache.hpp"
 #include "core/job_pool.hpp"
 #include "document/document.hpp"
+#include "document/instance_contents.hpp"
 #include "render/renderer.hpp"
 #include "geometry/convex_polyhedron.hpp"
 
@@ -27,6 +29,7 @@
 #include <memory>
 #include <map>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace apex::render {
@@ -54,6 +57,16 @@ struct MirrorStats {
     std::size_t texturesUploaded = 0;
 };
 
+struct InstanceMirrorStats {
+    std::size_t placements = 0;
+    std::size_t drawnSolids = 0;
+    std::size_t uniqueSolids = 0;
+    std::size_t meshBytes = 0; // Allocated buffer payload, excluding textures and driver overhead.
+    std::size_t textureBytes = 0; // Uploaded mip payload, excluding driver overhead.
+    std::size_t jobsSubmitted = 0;
+    std::size_t solidsRemeshed = 0;
+};
+
 // Owned IDs; independent of editor selection. Tint alpha controls the colour blend.
 struct Highlight {
     std::vector<document::NodeId> selected;
@@ -71,26 +84,38 @@ struct MirrorViewOptions {
     FrameView view;
     GridSettings grid;
     bool edgeOverlay = false;
+    // False leaves model triangle edges out of the edge overlay and the selection outline (Wireframe is unaffected).
+    bool modelEdgeOverlay = true;
     Vec4 edgeColour{0.0f, 0.0f, 0.0f, 1.0f};
     Vec4 wireColour{0.85f, 0.9f, 1.0f, 1.0f}; // Wireframe mode line colour.
     bool showEntities = true;
     // False omits tools/toolsnodraw (and %compilenodraw) faces from Textured and Flat fills.
     // Wireframe ignores it so brush edges stay complete; selection outlines are kept.
     bool showNodraw = true;
+    // Labels each point entity with its targetname (entities without one are skipped).
+    bool showEntityNames = false;
+    // Samples entity icon sprites with nearest filtering instead of linear.
+    bool iconNearest = false;
 };
 
 class RenderMirror {
   public:
     RenderMirror(Context& context, TextureHeap& heap, JobPool& jobs, assets::MaterialCache& materials,
-                 const assets::EntityClassTable* entityClasses = nullptr);
+                 const assets::EntityClassTable* entityClasses = nullptr,
+                 assets::ModelCache* models = nullptr,
+                 std::function<bool(const std::string&)> modelMaterialExists = {});
     ~RenderMirror();
     RenderMirror(const RenderMirror&) = delete;
     RenderMirror& operator=(const RenderMirror&) = delete;
 
     // Treats every node of the document as created (initial load).
     void rebuild(const document::Document& document);
+    // After ModelCache::clear(), retire model meshes and re-request visible paths.
+    void refreshModels();
     // Applies a committed ChangeSet; call after the commit/undo/redo that produced it.
     void apply(const document::Document& document, const document::ChangeSet& changes);
+    void setInstanceContents(std::span<const document::InstanceContent> contents,
+                             document::InstanceVisibility visibility = document::InstanceVisibility::Normal);
 
     // Delivers completed jobs and finished material loads, uploads results, and releases retired
     // buffers. Returns true when something visible changed.
@@ -122,10 +147,14 @@ class RenderMirror {
     std::size_t meshedSolidCount() const;
     std::size_t entityBoxCount() const;
     std::size_t batchCount() const;     // GPU batches (draws per frame at most).
+    InstanceMirrorStats instanceStats() const;
+    std::size_t meshBytes() const;
+    std::size_t textureBytes() const;
 
   private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    void replaceSnapshot(const document::Document& before, const document::Document& after);
 };
 
 } // namespace apex::render

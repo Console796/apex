@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/vmt.hpp"
+#include "assets/asset_index.hpp"
 
 #include <chrono>
 #include <set>
@@ -32,31 +33,13 @@ struct MaterialFilter {
 std::vector<std::size_t> filterMaterials(const MaterialIndexSnapshot& snapshot,
                                        const MaterialFilter& filter);
 
-struct MaterialIndexProgress {
-    std::size_t done = 0, total = 0;
-    bool finished = false;
+struct MaterialKind {
+    using Entry = MaterialIndexEntry;
+    using Snapshot = MaterialIndexSnapshot;
+    static std::function<std::vector<std::string>()> walk(const Vfs& vfs);
+    static std::string key(std::string_view name);
 };
-// Owner thread, including destruction and drainCompletions. Vfs and JobPool must outlive
-// calls. step reads bytes on the owner, workers parse owned snapshots. The walk owns the
-// Vfs backing state: destruction/cancel is safe, but no Vfs refresh/mutation until
-// walking() is false (or the pool has joined), even after destroying this builder.
-class MaterialIndex {
-public:
-    MaterialIndex(const Vfs& vfs, JobPool& jobs,
-                  kv1::EscapeMode mode = kv1::EscapeMode::Strata);
-    ~MaterialIndex();
-    MaterialIndex(const MaterialIndex&) = delete;
-    MaterialIndex& operator=(const MaterialIndex&) = delete;
-    // Cooperatively bounded reads; a single filesystem read can exceed the budget.
-    // Pump this and JobPool::drainCompletions until progress().finished.
-    void step(std::chrono::milliseconds budget = std::chrono::milliseconds(4));
-    void cancel();
-    bool walking() const;
-    MaterialIndexProgress progress() const;
-    std::shared_ptr<const MaterialIndexSnapshot> snapshot() const; // null until finished
-private:
-    struct Impl;
-    std::shared_ptr<Impl> impl_;
-};
+using MaterialIndex = AssetIndex<MaterialKind>;
+using MaterialIndexProgress = AssetIndexProgress;
 
 } // namespace apex::assets

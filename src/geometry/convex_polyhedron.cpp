@@ -469,27 +469,37 @@ double ConvexPolyhedron::volume() const {
     const auto origin = vertices.front();
     double result = 0.0;
     for (const auto& face : faces) {
-        const auto points = facePoints(*this, face);
-        for (std::size_t i = 1; i + 1 < points.size(); ++i)
-            result += glm::dot(points[0] - origin, glm::cross(points[i] - origin, points[i + 1] - origin)) / 6.0;
+        // Keep the same invalid-index behavior as facePoints without allocating a loop.
+        if (face.vertices.empty() || std::ranges::any_of(face.vertices,
+                [&](auto index) { return index >= vertices.size(); })) continue;
+        const auto first = vertices[face.vertices[0]] - origin;
+        for (std::size_t i = 1; i + 1 < face.vertices.size(); ++i)
+            result += glm::dot(first, glm::cross(vertices[face.vertices[i]] - origin,
+                                               vertices[face.vertices[i + 1]] - origin)) / 6.0;
     }
     return result;
 }
 
-SplitResult split(const ConvexPolyhedron& poly, const Plane& plane) {
-    if (!validPlane(plane) || !poly.isValid())
-        throw std::invalid_argument("Split requires a valid solid and finite unit plane");
-    bool front = false, back = false;
+namespace {
+struct PlaneClassification { bool front = false, back = false; };
+
+PlaneClassification classify(const ConvexPolyhedron& poly, const Plane& plane) {
+    PlaneClassification result;
     for (const auto point : poly.vertices) {
         const double distance = plane.signedDistance(point);
-        front |= distance > kPlanarEps;
-        back |= distance < -kPlanarEps;
+        result.front |= distance > kPlanarEps;
+        result.back |= distance < -kPlanarEps;
+        if (result.front && result.back) break;
     }
+    return result;
+}
+
+// The caller has validated the solid and plane and found vertices on both sides.
+SplitResult splitCrossing(const ConvexPolyhedron& poly, const Plane& plane) {
     SplitResult result;
-    if (!front) { result.back = poly; return result; }
-    if (!back) { result.front = poly; return result; }
     const auto piece = [&](Plane boundary) {
         std::vector<Polygon> polygons;
+        polygons.reserve(poly.faces.size());
         for (std::size_t i = 0; i < poly.faces.size(); ++i) {
             const auto& face = poly.faces[i];
             PlaneSide side;
@@ -510,15 +520,38 @@ SplitResult split(const ConvexPolyhedron& poly, const Plane& plane) {
     result.frontCap = result.front->faces.size() - 1;
     return result;
 }
+} // namespace
+
+SplitResult split(const ConvexPolyhedron& poly, const Plane& plane) {
+    if (!validPlane(plane) || !poly.isValid())
+        throw std::invalid_argument("Split requires a valid solid and finite unit plane");
+    const auto sides = classify(poly, plane);
+    SplitResult result;
+    if (!sides.front) { result.back = poly; return result; }
+    if (!sides.back) { result.front = poly; return result; }
+    return splitCrossing(poly, plane);
+}
 
 std::vector<ConvexPolyhedron> subtract(const ConvexPolyhedron& target,
                                        const ConvexPolyhedron& carver) {
     if (!target.isValid() || !carver.isValid())
         throw std::invalid_argument("Subtract requires valid solids");
+    if (!target.bounds().intersects(carver.bounds())) return {target};
+    // Reject separating planes before building fragments that would be discarded.
+    for (const auto& face : carver.faces) {
+        const auto sides = classify(target, face.plane);
+        if (sides.front && !sides.back) return {target};
+    }
     std::vector<ConvexPolyhedron> fragments;
+    fragments.reserve(carver.faces.size());
     std::optional<ConvexPolyhedron> remainder = target;
     for (std::size_t i = 0; i < carver.faces.size() && remainder; ++i) {
-        auto cut = split(*remainder, carver.faces[i].plane);
+        const auto& plane = carver.faces[i].plane;
+        const auto sides = classify(*remainder, plane);
+        if (!sides.front) continue;
+        if (!sides.back) return {target};
+        // Inputs are validated above; splitCrossing validates both assembled outputs.
+        auto cut = splitCrossing(*remainder, plane);
         if (cut.frontCap) cut.front->faces[*cut.frontCap].carverFace = i;
         if (cut.backCap) cut.back->faces[*cut.backCap].carverFace = i;
         if (cut.front) fragments.push_back(std::move(*cut.front));

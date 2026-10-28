@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QHelpEvent>
 #include <QPlatformSurfaceEvent>
 #include <QStyle>
 #include <QToolButton>
@@ -145,6 +146,27 @@ render::GridSettings makeGridSettings(const viewport::Viewport& view, const edit
     return grid;
 }
 
+bool handleModelDrop(editor::EditorSession* session, const viewport::Viewport* view, QSizeF size,
+                     QDropEvent& event, const std::function<void(const QString&)>& reportFailure) {
+    event.ignore();
+    const auto mime = QStringLiteral("application/x-apex-model");
+    if (!session || !session->document() || !view || size.width() <= 0 || size.height() <= 0 ||
+        !event.mimeData()->hasFormat(mime)) return false;
+    const auto model = QString::fromUtf8(event.mimeData()->data(mime)).toStdString();
+    if (model.empty()) return false;
+    const auto point = event.position();
+    const auto ray = viewport::pixelRay(view->camera, size.width() / size.height(),
+                                       point.x(), point.y(), size.width(), size.height());
+    const auto placed = session->placeModel(model, ray, session->alignToSurface());
+    if (!placed) {
+        reportFailure(QString::fromStdString(placed.error().what()));
+        return false;
+    }
+    event.setDropAction(Qt::CopyAction);
+    event.accept();
+    return true;
+}
+
 // ---- PaneWindow ----
 
 PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor accessor)
@@ -155,6 +177,12 @@ PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor ac
     setVulkanInstance(host.vulkanInstance());
     sinceTick_.start();
     traceClock_.start();
+    tooltipTimer_.setSingleShot(true);
+    tooltipTimer_.setInterval(700);
+    connect(&tooltipTimer_, &QTimer::timeout, this, [this] {
+        QHelpEvent help(QEvent::ToolTip, cursor_.toPoint(), mapToGlobal(cursor_.toPoint()));
+        QCoreApplication::sendEvent(this, &help);
+    });
 }
 
 PaneWindow::~PaneWindow() {
@@ -198,15 +226,28 @@ void PaneWindow::releaseCapture() {
     grabbed_ = false;
     pointerLock_.cancel();
     buttons_ = Qt::NoButton;
+    modelDragOver_ = false;
     delta_ = {};
     forward_ = back_ = left_ = right_ = up_ = down_ = false;
 }
 
 bool PaneWindow::event(QEvent* e) {
     switch (e->type()) {
+    case QEvent::DragLeave:
+        modelDragOver_ = false;
+        break;
     case QEvent::DragEnter:
     case QEvent::DragMove: {
         auto* drag = static_cast<QDragMoveEvent*>(e);
+        if (drag->mimeData()->hasFormat(QStringLiteral("application/x-apex-model"))) {
+            drag->ignore();
+            modelDragOver_ = true;
+            if (session_ && session_->document()) {
+                drag->setDropAction(Qt::CopyAction);
+                drag->accept();
+            }
+            return true;
+        }
         if (session_ && session_->document() && drag->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
             drag->acceptProposedAction();
             return true;
@@ -215,6 +256,12 @@ bool PaneWindow::event(QEvent* e) {
     }
     case QEvent::Drop: {
         auto* drop = static_cast<QDropEvent*>(e);
+        if (drop->mimeData()->hasFormat(QStringLiteral("application/x-apex-model"))) {
+            modelDragOver_ = false;
+            handleModelDrop(session_, accessor_(), QSizeF(width(), height()), *drop,
+                            [this](const QString& message) { emit modelPlacementFailed(message); });
+            return true;
+        }
         if (session_ && session_->document() && drop->mimeData()->hasFormat(QStringLiteral("application/x-apex-material"))) {
             auto name = QString::fromUtf8(drop->mimeData()->data(QStringLiteral("application/x-apex-material"))).toStdString();
             const auto* vp = accessor_();
@@ -244,8 +291,11 @@ bool PaneWindow::event(QEvent* e) {
     case QEvent::MouseButtonPress:
     case QEvent::MouseButtonRelease:
     case QEvent::MouseMove:
+        if (e->type() == QEvent::MouseMove && !static_cast<QMouseEvent*>(e)->buttons()) tooltipTimer_.start();
+        else tooltipTimer_.stop();
         return handleMouse(static_cast<QMouseEvent*>(e));
     case QEvent::Leave:
+        tooltipTimer_.stop();
         pointerInside_ = false;
         transform_.leave();
         if (transform_.takeDirty()) dirty_ = true;
@@ -286,6 +336,11 @@ bool PaneWindow::event(QEvent* e) {
         break;
     }
     return QWindow::event(e);
+}
+
+bool PaneWindow::interacting() const {
+    return resizeDragging_ || grabbed_ || modelDragOver_ || buttons_ != Qt::NoButton || transform_.owns() ||
+        forward_ || back_ || left_ || right_ || up_ || down_ || scroll_ != 0.0 || !delta_.isNull();
 }
 
 std::optional<Ray> PaneWindow::pointerRay() const {
@@ -509,8 +564,11 @@ double PaneWindow::draw() {
     options.wireColour = Vec4(line, line, line + (lightBackground ? 0.05f : 0.05f), 1.0f);
     options.edgeColour = Vec4(0.0f, 0.0f, 0.0f, 1.0f);
     options.edgeOverlay = vp->mode == viewport::DisplayMode::Flat;
+    options.modelEdgeOverlay = !session_ || session_->modelEdgeOverlay();
     options.showEntities = vp->overlays.entityHelpers;
     options.showNodraw = vp->overlays.nodrawFaces;
+    options.showEntityNames = vp->overlays.entityNames;
+    options.iconNearest = session_ && session_->entityIconsNearest();
     options.grid = makeGridSettings(*vp, session_);
     if (lightBackground) options.grid.colour = Vec4(0.25f, 0.25f, 0.3f, 0.8f);
 
@@ -616,6 +674,21 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     mode_->setToolTip(tr("Current editing mode"));
     mode_->hide();
     row->addWidget(mode_);
+    instanceVisibilityButton_ = new QToolButton(header);
+    instanceVisibilityButton_->setObjectName(QStringLiteral("instanceVisibilityToggle"));
+    instanceVisibilityButton_->setAutoRaise(true);
+    instanceVisibilityButton_->setToolTip(tr("Instance contents: Hidden, Tinted, Normal"));
+    row->addWidget(instanceVisibilityButton_);
+    connect(instanceVisibilityButton_, &QToolButton::clicked, this, [this] {
+        if (!session_) return;
+        const auto current = session_->instanceVisibility();
+        session_->setInstanceVisibility(current == document::InstanceVisibility::Hidden ? document::InstanceVisibility::Tinted
+            : current == document::InstanceVisibility::Tinted ? document::InstanceVisibility::Normal
+            : document::InstanceVisibility::Hidden);
+        refreshInstanceVisibility();
+        if (window_) window_->requestRedraw();
+        emit edited(pane_);
+    });
     row->addWidget(makeCollapseButton([this] { emit collapseRequested(pane_); }, header));
     menuButton_ = new QToolButton;
     menuButton_->setObjectName(QStringLiteral("PaneMenuButton"));
@@ -694,6 +767,20 @@ void PaneFrame::setModeText(const QString& text, bool entityTool) {
     mode_->setVisible(!text.isEmpty());
 }
 
+void PaneFrame::setEditorSession(editor::EditorSession* session) {
+    session_ = session;
+    refreshInstanceVisibility();
+}
+
+void PaneFrame::refreshInstanceVisibility() {
+    if (!instanceVisibilityButton_) return;
+    const auto visibility = session_ ? session_->instanceVisibility() : document::InstanceVisibility::Normal;
+    const QString name = visibility == document::InstanceVisibility::Hidden ? tr("Hidden")
+        : visibility == document::InstanceVisibility::Tinted ? tr("Tinted") : tr("Normal");
+    instanceVisibilityButton_->setText(tr("Instances: %1").arg(name));
+    instanceVisibilityButton_->setEnabled(session_ && session_->document());
+}
+
 void PaneFrame::buildMenu() {
     menu_->clear();
     auto* vp = accessor_();
@@ -764,7 +851,8 @@ void PaneFrame::buildMenu() {
                                     {"Entity helpers", &viewport::Overlays::entityHelpers},
                                     {"Bounds", &viewport::Overlays::bounds},
                                     {"Normals", &viewport::Overlays::normals},
-                                    {"Nodraw faces", &viewport::Overlays::nodrawFaces}};
+                                    {"Nodraw faces", &viewport::Overlays::nodrawFaces},
+                                    {"Entity names", &viewport::Overlays::entityNames}};
     for (const auto& entry : entries) {
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);

@@ -9,16 +9,18 @@
 #include <cstdio>
 #include <fstream>
 #include <memory>
+#include <map>
 #include <iterator>
 
 namespace apex::assets {
 namespace fs = std::filesystem;
 namespace {
-Result<kv3::Document> read(const fs::path& file) {
+Result<kv3::Document> read(const fs::path& file, std::string* source = nullptr) {
     std::ifstream input(file, std::ios::binary);
     if (!input) return std::unexpected(Error{ErrorCode::IoError, "Cannot read " + file.string()});
     std::string bytes(std::istreambuf_iterator<char>{input}, {});
     if (input.bad()) return std::unexpected(Error{ErrorCode::IoError, "Cannot read " + file.string()});
+    if (source) *source = bytes;
     auto doc = kv3::parse(bytes);
     if (!doc) return std::unexpected(doc.error().withContext(file.string()));
     return doc;
@@ -78,7 +80,7 @@ Result<AddonList> readAddonList(const GameProfile& profile) try {
         }
         if (files.empty()) return result;
         result.file = files.front();
-        auto doc = read(result.file);
+        auto doc = read(result.file, &result.sourceBytes);
         if (!doc) return std::unexpected(doc.error());
         auto addons = doc->root.find("addons");
         auto array = addons ? addons->get<kv3::Value::Array>() : nullptr;
@@ -110,7 +112,8 @@ Result<AddonList> readAddonList(const GameProfile& profile) try {
         std::ranges::replace(normalized, '\\', '/');
         entry.name = fs::path(normalized).filename().string();
         if (entry.resolved.empty()) {
-            result.problems.push_back("Cannot resolve addon directory: " + entry.dir);
+            entry.problems.push_back("Cannot resolve addon directory: " + entry.dir);
+            result.problems.push_back(entry.problems.back());
             continue;
         }
         entry.name = entry.resolved.filename().string();
@@ -124,7 +127,39 @@ Result<AddonList> readAddonList(const GameProfile& profile) try {
         auto manifest = read(manifests.empty() ? entry.resolved / "addon.kv3" : manifests.front());
         auto name = manifest ? string(manifest->root, "mod") : nullptr;
         if (name) entry.name = *name;
-        else result.problems.push_back(manifest ? "Missing mod in " + entry.dir + "/addon.kv3" : manifest.error().what());
+        if (manifest) {
+            const auto& root = manifest->root;
+            if (auto type = string(root, "type")) entry.addonType = *type;
+            if (auto id = root.find("id")) {
+                if (auto value = id->get<std::string>()) entry.workshopId = *value;
+                else if (auto number = id->get<std::int64_t>()) entry.workshopId = std::to_string(*number);
+            }
+            for (const auto key : {"authors", "tags"}) {
+                const auto* value = root.find(key);
+                const auto* array = value ? value->get<kv3::Value::Array>() : nullptr;
+                if (array) for (const auto& item : *array)
+                    if (auto text = item.get<std::string>())
+                        (std::string_view(key) == "authors" ? entry.authors : entry.tags).push_back(*text);
+            }
+            if (auto image = string(root, "thumbnail")) {
+                auto relative = fs::path(*image).lexically_normal();
+                if (!relative.empty() && *relative.begin() == ".assets") {
+                    auto paths = detail::expand(entry.resolved / relative);
+                    if (!paths.empty()) entry.thumbnail = paths.front();
+                }
+            }
+        }
+        if (!name) result.problems.push_back(manifest ? "Missing mod in " + entry.dir + "/addon.kv3" : manifest.error().what());
+    }
+    std::map<std::string, std::vector<std::size_t>> ids;
+    for (std::size_t i = 0; i < result.entries.size(); ++i) {
+        const auto& id = result.entries[i].workshopId;
+        if (!id.empty() && id != "0") ids[id].push_back(i);
+    }
+    for (const auto& [id, indices] : ids) if (indices.size() > 1) {
+        const auto warning = "Duplicate Workshop ID: " + id;
+        result.problems.push_back(warning);
+        for (const auto index : indices) result.entries[index].problems.push_back(warning);
     }
     return result;
 } catch (const fs::filesystem_error& error) {

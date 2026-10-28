@@ -281,7 +281,11 @@ struct Renderer::Impl {
             binding.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
             attributes = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, mins)},
                           {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, maxs)},
-                          {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(BoxInstance, colour)}};
+                          {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(BoxInstance, colour)},
+                          {3, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, origin)},
+                          {4, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, basis)},
+                          {5, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, basis) + 3 * sizeof(float)},
+                          {6, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BoxInstance, basis) + 6 * sizeof(float)}};
             break;
         case Input::Sprite:
             binding.stride = sizeof(SpriteInstance);
@@ -542,12 +546,13 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             push.offsetSlot = slotVec(toCameraRelative(mesh.origin, camera), mesh.texture);
             setup(push, mesh);
             previewPush(push, mesh.previewIndex);
+            if (mesh.instancedTransforms) push.p1.z = std::bit_cast<float>(mesh.previewIndex | 0x80000000u);
             push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha));
             // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
             const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
             for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;
             s.pushAll(commands, push);
-            vkCmdDrawIndexed(commands, n, 1, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
+            vkCmdDrawIndexed(commands, n, mesh.instanceCount, edges ? mesh.firstEdgeIndex : mesh.firstIndex, 0, 0);
         }
     };
     auto trianglesOf = [](const MeshDraw& m) { return m.indexCount; };
@@ -594,7 +599,8 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
                    list.ghosts, brushColour, trianglesOf, trianglesBuf, false);
     if (list.edgeOverlay && list.mode != DisplayMode::Wireframe && s.has(Kind::Edges)) {
         vkCmdSetDepthBias(commands, list.edgeDepthBias, 0.0f, 1.0f);
-        drawMeshes(Kind::Edges, list.meshes, [&](PushConstants& p, const MeshDraw&) { p.colour = list.edgeColour; }, edgesOf, edgesBuf, true);
+        drawMeshes(Kind::Edges, list.meshes, [&](PushConstants& p, const MeshDraw&) { p.colour = list.edgeColour; },
+                   [](const MeshDraw& m) { return m.edgeOverlay ? m.edgeIndexCount : 0u; }, edgesBuf, true);
         vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
     }
 

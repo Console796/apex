@@ -109,6 +109,11 @@ There is no AppImage or installer yet.
 | `tools/` | CI runner, layer and licence checks, packaging, VMF dump and Hammer-check helpers |
 | `docs/` | [roadmap](docs/roadmap.md), [spec](docs/research.md), per-milestone [plans](docs/plans) |
 
+## New to the repository?
+
+Start with the [repository index](docs/index/README.md). It explains where things are, how the
+layers fit together, and which document answers which question.
+
 ## Contributing and licence
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Contributions are signed off under the Developer

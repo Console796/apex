@@ -15,6 +15,7 @@
 #include <QCompleter>
 #include <QDir>
 #include <QFile>
+#include <QFileSystemWatcher>
 #include <QFileDialog>
 #include <QKeySequence>
 #include <QInputDialog>
@@ -30,6 +31,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QProcess>
 #include <QToolBar>
 #include <QToolButton>
 #include <QTimer>
@@ -40,6 +42,7 @@
 #include <QSpinBox>
 #include <QDialogButtonBox>
 #include <QDialog>
+#include <QCoreApplication>
 #include <QFormLayout>
 #include "ui/recovery_dialog.hpp"
 #include "ui/settings_dialog.hpp"
@@ -68,10 +71,14 @@
 #include "ui/inspector_panel.hpp"
 #include "ui/paste_special_dialog.hpp"
 #include "ui/tie_dialog.hpp"
+#include "ui/prefab_dialog.hpp"
+#include "editor/prefab.hpp"
 #include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
 #include "ui/game_content.hpp"
 #include "ui/materials_panel.hpp"
+#include "ui/asset_browser_panel.hpp"
+#include "ui/models_panel.hpp"
 #include "ui/workspace_bar.hpp"
 #include "ui/area_frame.hpp"
 #include "ui/viewport_pane.hpp"
@@ -101,7 +108,8 @@ QString fromStd(std::string_view s) {
 
 bool isTransformAction(const editor::ActionId& id) {
     return id.starts_with("gizmo.") || id.starts_with("nudge.") || id.starts_with("edit.flip.") ||
-           id == "transform.dialog" || id == "transform.texture_lock.toggle" || id == "snap.mode.toggle";
+           id == "transform.dialog" || id == "transform.texture_lock.toggle" || id == "snap.mode.toggle" ||
+           id == "view.model_overlay.toggle";
 }
 
 // Actions whose plain (unmodified) default keys belong to the focused pane.
@@ -138,6 +146,7 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1280, 800);
     LogPanel::startCapture();
     gameContent_ = std::make_unique<GameContent>();
+    gameContent_->setPrefabUserFolder(std::filesystem::path(QSettings().value(QStringLiteral("prefabs/folder")).toString().toStdString()));
     const auto material = QSettings().value(QStringLiteral("editor/newSolidMaterial"),
                                            QStringLiteral("dev/dev_measuregeneric01")).toString();
     const bool worldUv = QSettings().value(QStringLiteral("editor/newSolidWorldUv"), false).toBool();
@@ -166,15 +175,43 @@ MainWindow::MainWindow(QWidget* parent)
     buildEntityUi();
     buildAreas();
     viewport_->setEditorSession(&session_);
+    viewport_->setOpenInstanceHandler([this](document::NodeId id) {
+        return std::ranges::any_of(session_.instances().contents(), [id](const auto& item) { return item.instance == id && item.depth == 1; });
+    }, [this](document::NodeId id) { openSelectedInstance(id); });
     viewport_->setGameContent(gameContent_.get());
     viewport_->setMaterialBrowser([this](QString current, QString what, std::function<void(QString)> choose) {
         openMaterialPicker(std::move(current), std::move(what), std::move(choose));
     });
+    viewport_->setAssetBrowser([this](QString kind, QString current, QString what, std::function<void(QString)> choose) {
+        openAssetPicker(std::move(kind), std::move(current), std::move(what), std::move(choose));
+    });
     connect(viewport_, &ViewportArea::activeMaterialRequested, this, &MainWindow::activateMaterial);
+    connect(viewport_, &ViewportArea::modelPlacementRequested, this, [this](const QString& path) {
+        session_.setPlacementModel(path.toStdString());
+        session_.perform(editor::EditorSession::Tool::Entity);
+        statusBar()->showMessage(tr("Placing %1").arg(path), 3000);
+    });
+    connect(viewport_, &ViewportArea::prefabPlacementRequested, this, [this](const QString& file) {
+        auto item = editor::prefabItem(std::filesystem::path(file.toStdString()));
+        if (!item.bounds) {
+            statusBar()->showMessage(tr("Cannot read the prefab %1").arg(file), 4000);
+            return;
+        }
+        session_.setPlacementItem(std::move(item));
+        session_.perform(editor::EditorSession::Tool::Entity);
+        statusBar()->showMessage(tr("Placing prefab %1").arg(QFileInfo(file).completeBaseName()), 3000);
+    });
+    connect(viewport_, &ViewportArea::prefabCreateRequested, this, [this] { performEditAction("edit.create_prefab"); });
+    connect(viewport_, &ViewportArea::modelPlacementFailed, this, [this](const QString& message) {
+        statusBar()->showMessage(message, 4000);
+    });
     connect(viewport_, &ViewportArea::materialStatusMessage, this, [this](const QString& message) {
         statusBar()->showMessage(message, 4000);
     });
     session_.confirmNonConvexMerge = QSettings().value("editing/confirmNonConvexMerge", true).toBool();
+    session_.setPivotAtObjectOrigin(QSettings().value("editing/pivotAtObjectOrigin", true).toBool());
+    session_.setModelEdgeOverlay(QSettings().value("view/modelEdgeOverlay", true).toBool());
+    session_.setEntityIconsNearest(QSettings().value("view/entityIconsNearest", false).toBool());
     session_.hollowThickness = [this]() -> std::optional<double> {
         bool ok = false;
         const auto value = QInputDialog::getDouble(this, tr("Make Hollow"),
@@ -232,7 +269,28 @@ MainWindow::MainWindow(QWidget* parent)
         updateTitle();
         refreshEntityUi();
         modeLabel_->setText(modeSummary(session_));
+        viewport_->updateModeBadges();
+        syncInstanceWatches();
     });
+    instanceWatcher_ = new QFileSystemWatcher(this);
+    instanceWatcher_->setObjectName(QStringLiteral("instanceWatcher"));
+    instanceReloadTimer_ = new QTimer(this);
+    instanceReloadTimer_->setSingleShot(true);
+    instanceReloadTimer_->setInterval(150);
+    connect(instanceWatcher_, &QFileSystemWatcher::fileChanged, this, [this](const QString& path) {
+        pendingInstanceReloads_.insert(std::filesystem::path(path.toStdU16String()));
+        instanceReloadTimer_->start();
+    });
+    connect(instanceWatcher_, &QFileSystemWatcher::directoryChanged, this, [this](const QString& changed) {
+        // The notification only says something in the folder changed: reload the templates whose
+        // file actually did, and pick up a missing template that came back.
+        auto reload = instanceWatch_.directoryChanged(std::filesystem::path(changed.toStdU16String()));
+        // A folder a missing template was waiting for may have appeared; listen deeper and look again.
+        for (const auto& added : syncInstanceWatches()) reload.merge(instanceWatch_.directoryChanged(added));
+        pendingInstanceReloads_.merge(reload);
+        if (!pendingInstanceReloads_.empty()) instanceReloadTimer_->start();
+    });
+    connect(instanceReloadTimer_, &QTimer::timeout, this, &MainWindow::reloadChangedInstances);
     lastActiveTool_ = session_.activeTool();
     lastFaceExtrapolation_ = session_.faceExtrapolation();
     const auto presetName = QSettings().value(QStringLiteral("editor/preset"), QStringLiteral("Hammer")).toString();
@@ -413,6 +471,9 @@ void MainWindow::buildMenus() {
         if (i < 0 || static_cast<std::size_t>(i) >= profiles_.size()) return;
         QSettings().setValue(QStringLiteral("profile/last"), QString::fromStdString(profiles_[static_cast<std::size_t>(i)].name));
         loadEntityClasses();
+        const auto* profile = currentProfile();
+        session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+            profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
         log::info("game profile: {}", profiles_[static_cast<std::size_t>(i)].name);
         reloadGameContent();
     });
@@ -595,6 +656,8 @@ void MainWindow::closeMaterialPicker() {
     QObject::disconnect(areaPickCancelled_);
     if (areaMaterialPicker_) areaMaterialPicker_->setPickMode(false);
     areaMaterialPicker_.clear();
+    if (areaAssetPicker_) areaAssetPicker_->setPickMode(false);
+    areaAssetPicker_.clear();
     delete materialPicker_.data();
 }
 void MainWindow::openMaterialPicker(QString current, QString what, std::function<void(QString)> choose) {
@@ -638,6 +701,49 @@ void MainWindow::openMaterialPicker(QString current, QString what, std::function
     dialog->resize(720, 480);
     dialog->show();
 }
+void MainWindow::openAssetPicker(QString kind, QString current, QString what, std::function<void(QString)> choose) {
+    using viewport::AreaRole;
+    AreaRole role;
+    QString title;
+    if (kind == "model") { role = AreaRole::Models; title = tr("Choose Model"); }
+    else if (kind == "sound") { role = AreaRole::Sounds; title = tr("Choose Sound"); }
+    else if (kind == "particle") { role = AreaRole::Particles; title = tr("Choose Particle System"); }
+    else return;
+    closeMaterialPicker();
+    if (!materialBrowserInWindow() && !viewport_->viewportLayout().paneIds(role).empty()) {
+        auto* panel = qobject_cast<AssetBrowserPanel*>(viewport_->showRole(role, false));
+        if (panel) {
+            areaAssetPicker_ = panel;
+            panel->setPickMode(true, current, what);
+            areaPickChosen_ = connect(panel, &AssetBrowserPanel::assetChosen, this,
+                [this, choose = std::move(choose)](const QString& value) {
+                    closeMaterialPicker();
+                    choose(value);
+                });
+            areaPickCancelled_ = connect(panel, &AssetBrowserPanel::pickCancelled, this, &MainWindow::closeMaterialPicker);
+            return;
+        }
+    }
+    auto* dialog = new QDialog(this, Qt::Tool);
+    materialPicker_ = dialog;
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("assetPicker"));
+    dialog->setWindowTitle(title);
+    auto* layout = new QVBoxLayout(dialog);
+    auto* panel = qobject_cast<AssetBrowserPanel*>(createPanel(role, document_.get(), &session_, gameContent_.get()));
+    layout->addWidget(panel);
+    viewport_->setModelPicker(qobject_cast<ModelsPanel*>(panel));
+    panel->setPickMode(true, current, what);
+    connect(panel, &AssetBrowserPanel::assetChosen, dialog, [dialog, panel, choose = std::move(choose)](const QString& value) {
+        // Disconnect before the callback: a second activation cannot apply the same pick twice.
+        QObject::disconnect(panel, nullptr, dialog, nullptr);
+        dialog->close();
+        choose(value);
+    });
+    connect(panel, &AssetBrowserPanel::pickCancelled, dialog, &QDialog::close);
+    dialog->resize(720, 480);
+    dialog->show();
+}
 void MainWindow::setNewSolidStyle(std::string material, geometry::UvAlignment alignment) {
     session_.setNewSolidMaterial(std::move(material));
     session_.setNewSolidUvAlignment(alignment);
@@ -664,7 +770,12 @@ void MainWindow::updateActiveMaterialIndicator() {
                     thumb->width, thumb->height, thumb->width * 4, QImage::Format_RGBA8888).copy());
     }
     activeMaterialLabel_->setIcon(QIcon(swatch));
-    activeMaterialLabel_->setToolTip(shader.isEmpty() ? fromStd(name) : fromStd(name) + QStringLiteral("\n") + shader);
+    auto tip = shader.isEmpty() ? fromStd(name) : fromStd(name) + QStringLiteral("\n") + shader;
+    if (gameContent_) {
+        const auto missing = gameContent_->missingAssetTooltip("materials/" + name + ".vmt");
+        if (!missing.isEmpty()) tip += '\n' + missing;
+    }
+    activeMaterialLabel_->setToolTip(tip);
 }
 
 void MainWindow::openPreferences() {
@@ -676,6 +787,26 @@ void MainWindow::openPreferences() {
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
+        if (id == "instance.collapse_all")
+            action->setEnabled(session_.document() && (!session_.instances().contents().empty() || !session_.instances().problems().empty()));
+        if (id == "instance.open" || id == "instance.collapse") {
+            bool selectedInstance = false;
+            for (const auto node : editor::selectedNodes(session_.selection())) {
+                const auto* found = session_.document() ? session_.document()->get(*session_.document()->handle(node)) : nullptr;
+                const auto* classname = found ? found->block->find("classname") : nullptr;
+                if (classname && classname->decodedValue().value_or("") == "func_instance") selectedInstance = true;
+            }
+            if (id == "instance.collapse") action->setEnabled(selectedInstance);
+            else {
+                const auto selected = editor::selectedNodes(session_.selection());
+                const bool resolved = selected.size() == 1 && std::ranges::any_of(session_.instances().contents(), [&](const auto& item) {
+                    return item.instance == selected.front() && item.depth == 1;
+                });
+                action->setEnabled(resolved);
+                action->setToolTip(resolved ? tr("Open this instance in another Apex window.")
+                    : tr("The selected instance file could not be resolved."));
+            }
+        }
         if (id == "assets.reload" || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
         if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
             action->setEnabled(session_.isToolEnabled(id));
@@ -687,7 +818,7 @@ void MainWindow::updateEditorActions() {
             const bool objects = have && !editor::selectedNodes(session_.selection()).empty();
             if (id == "edit.copy" || id == "edit.cut" || id == "edit.delete" || id == "edit.duplicate" ||
                 id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world" ||
-                id == "edit.carve" || id == "edit.hollow" || id == "edit.merge")
+                id == "edit.carve" || id == "edit.hollow" || id == "edit.merge" || id == "edit.create_prefab")
                 action->setEnabled(objects);
             if (id == "edit.paste" || id == "edit.paste_in_place" || id == "edit.paste_special")
                 action->setEnabled(have && clipboardHasFragment_);
@@ -731,6 +862,8 @@ void MainWindow::updateEditorActions() {
             action->setText(relative ? tr("Snap: Relative") : tr("Snap: Absolute"));
         }
         if (id == "transform.texture_lock.toggle") action->setChecked(session_.textureLock());
+        if (id == "gizmo.pivot.origin.toggle") action->setChecked(session_.pivotAtObjectOrigin());
+        if (id == "view.model_overlay.toggle") action->setChecked(session_.modelEdgeOverlay());
         const std::pair<const char*, editor::SelectionMode> modes[] = {
             {"selection.mode.groups", editor::SelectionMode::Groups},
             {"selection.mode.objects", editor::SelectionMode::Objects},
@@ -742,6 +875,100 @@ void MainWindow::updateEditorActions() {
     }
     for (const auto& [tool, options] : toolOptions_)
         for (auto* option : options) option->setVisible(session_.activeTool() == tool);
+}
+
+void MainWindow::reportCollapse(const editor::InstanceCollapseReport& report) {
+    std::size_t failed = 0;
+    std::string firstReason;
+    for (const auto& item : report) if (!item.collapsed) {
+        if (!failed) firstReason = item.reason;
+        ++failed;
+        log::warn("instance collapse failed for {}: {}", item.instance, item.reason);
+    }
+    if (!failed) {
+        statusBar()->showMessage(tr("Collapsed %1 instance(s)").arg(report.size()), 3000);
+        return;
+    }
+    const auto collapsed = report.size() - failed;
+    statusBar()->showMessage(tr("Collapsed %1, could not collapse %2: %3")
+        .arg(collapsed).arg(failed).arg(fromStd(firstReason)), 15000);
+}
+
+void MainWindow::collapseSelectedInstances() {
+    const auto selected = editor::selectedNodes(session_.selection());
+    std::vector<document::NodeId> instances;
+    for (const auto id : selected) {
+        const auto handle = session_.document()->handle(id);
+        const auto* entity = handle ? session_.document()->get(*handle) : nullptr;
+        const auto* classname = entity ? entity->block->find("classname") : nullptr;
+        if (classname && classname->decodedValue().value_or("") == "func_instance") instances.push_back(id);
+    }
+    if (auto result = session_.collapseInstances(instances)) reportCollapse(*result);
+    else { log::warn("collapse instances: {}", result.error().what()); statusBar()->showMessage(fromStd(result.error().what()), 5000); }
+}
+
+void MainWindow::openSelectedInstance(document::NodeId instance) {
+    if (!instance) {
+        const auto selected = editor::selectedNodes(session_.selection());
+        if (selected.size() != 1) return;
+        instance = selected.front();
+    }
+    const auto found = std::ranges::find_if(session_.instances().contents(), [&](const auto& item) {
+        return item.instance == instance && item.depth == 1;
+    });
+    if (found == session_.instances().contents().end()) return;
+    const auto executable = QCoreApplication::applicationFilePath();
+    const QStringList arguments{QString::fromStdU16String(found->path.u16string())};
+    const bool started = instanceLauncher_ ? instanceLauncher_(executable, arguments)
+        : QProcess::startDetached(executable, arguments);
+    if (!started) statusBar()->showMessage(tr("Could not open instance: %1").arg(arguments.front()), 5000);
+}
+
+std::vector<std::filesystem::path> MainWindow::syncInstanceWatches() {
+    std::vector<std::filesystem::path> added;
+    if (!instanceWatcher_) return added;
+    std::set<std::filesystem::path> dependencies;
+    for (const auto& [path, users] : session_.instances().dependencies()) if (!users.empty()) dependencies.insert(path);
+    const auto watches = instanceWatch_.sync(dependencies, session_.instances().missing());
+    std::set<QString> files, directories;
+    for (const auto& path : watches.files) files.insert(QString::fromStdU16String(path.u16string()));
+    for (const auto& path : watches.directories) directories.insert(QString::fromStdU16String(path.u16string()));
+    for (const auto& path : instanceWatcher_->files()) if (!files.contains(path)) instanceWatcher_->removePath(path);
+    for (const auto& path : instanceWatcher_->directories()) if (!directories.contains(path)) instanceWatcher_->removePath(path);
+    for (const auto& path : files) if (QFileInfo::exists(path) && !instanceWatcher_->files().contains(path)) instanceWatcher_->addPath(path);
+    for (const auto& path : directories)
+        if (QFileInfo(path).isDir() && !instanceWatcher_->directories().contains(path) && instanceWatcher_->addPath(path))
+            added.emplace_back(path.toStdU16String());
+    for (const auto& problem : session_.instances().problems()) {
+        const auto key = problem.path.empty() ? std::filesystem::path(problem.file) : problem.path;
+        const std::string signature = problem.message;
+        if (reportedInstanceProblems_[key] != signature) {
+            reportedInstanceProblems_[key] = signature;
+            log::warn("{}", problem.message);
+        }
+    }
+    return added;
+}
+
+void MainWindow::reloadChangedInstances() {
+    const auto changed = std::exchange(pendingInstanceReloads_, {});
+    for (const auto& path : changed) {
+        const auto result = session_.invalidateInstance(path);
+        instanceWatch_.restamp(path);
+        if (result.problem) {
+            const auto signature = result.problem->message;
+            if (reportedInstanceProblems_[path] != signature) {
+                reportedInstanceProblems_[path] = signature;
+                log::warn("instance reload failed for {}: {}", path.string(), signature);
+                statusBar()->showMessage(fromStd(signature), 6000);
+            }
+        } else {
+            reportedInstanceProblems_.erase(path);
+            log::info("reloaded instance template {}", path.string());
+        }
+    }
+    syncInstanceWatches();
+    if (viewport_) viewport_->update();
 }
 
 void MainWindow::buildAreas() {
@@ -873,9 +1100,21 @@ void MainWindow::buildTransformUi() {
         action->setCheckable(checkable);
         editorActions_.emplace(entry->id, action);
         connect(action, &QAction::triggered, this, [this, id = entry->id] {
-            if (id == "transform.dialog") openTransformDialog();
+            if (id == "view.instances") {
+                const auto current = session_.instanceVisibility();
+                const auto next = current == document::InstanceVisibility::Hidden ? document::InstanceVisibility::Tinted
+                    : current == document::InstanceVisibility::Tinted ? document::InstanceVisibility::Normal
+                    : document::InstanceVisibility::Hidden;
+                session_.setInstanceVisibility(next);
+                viewport_->updateModeBadges();
+            } else if (id == "transform.dialog") openTransformDialog();
             else if (id == "view.center_selection") centerViewsOnSelection();
             else session_.perform(id);
+            // The toolbar toggles are the preferences; keep them across sessions.
+            if (id == "gizmo.pivot.origin.toggle")
+                QSettings().setValue("editing/pivotAtObjectOrigin", session_.pivotAtObjectOrigin());
+            if (id == "view.model_overlay.toggle")
+                QSettings().setValue("view/modelEdgeOverlay", session_.modelEdgeOverlay());
             updateEditorActions();
         });
         return action;
@@ -887,8 +1126,29 @@ void MainWindow::buildTransformUi() {
     viewMenu_->addSeparator();
     make("view.center_selection", viewMenu_, false);
     viewMenu_->addSeparator();
+    auto* modelOverlay = make("view.model_overlay.toggle", viewMenu_, true);
+    make("view.instances", viewMenu_, false);
+    viewMenu_->addSeparator();
 
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
+    auto* instancing = menuBar()->addMenu(tr("&Instancing"));
+    instancing->setObjectName(QStringLiteral("menuInstancing"));
+    for (const char* id : {"instance.open", "instance.collapse", "instance.collapse_all"}) {
+        const auto* entry = editor::actionRegistry().find(id);
+        auto* action = instancing->addAction(fromStd(entry->name));
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        editorActions_.emplace(entry->id, action);
+        connect(action, &QAction::triggered, this, [this, id = std::string_view(id)] {
+            if (id == "instance.open") openSelectedInstance();
+            else if (id == "instance.collapse") collapseSelectedInstances();
+            else if (id == "instance.collapse_all") {
+                if (auto result = session_.collapseAllInstances()) reportCollapse(*result);
+                else { log::warn("collapse all instances: {}", result.error().what()); statusBar()->showMessage(fromStd(result.error().what()), 5000); }
+            }
+            updateEditorActions();
+        });
+    }
     auto* transform = edit->addMenu(tr("Transform"));
     transform->setObjectName(QStringLiteral("menuTransform"));
     make("transform.dialog", transform, false);
@@ -911,6 +1171,7 @@ void MainWindow::buildTransformUi() {
     gizmo->addSeparator();
     auto* space = make("gizmo.space.toggle", gizmo, true);
     make("gizmo.pivot.cycle", gizmo, false);
+    auto* pivotOrigin = make("gizmo.pivot.origin.toggle", gizmo, true);
     auto* snap = make("snap.mode.toggle", gizmo, true);
 
     auto* bar = addToolBar(tr("Transform"));
@@ -919,12 +1180,15 @@ void MainWindow::buildTransformUi() {
     bar->addSeparator();
     bar->addAction(snap);
     bar->addAction(textureLock);
+    bar->addAction(pivotOrigin);
+    bar->addAction(modelOverlay);
     bar->addAction(space);
 
     // The same actions as checkable buttons in the status bar (always visible, even with the
     // toolbar hidden).
     const std::pair<const char*, QAction*> buttons[] = {
-        {"statusSnapMode", snap}, {"statusTextureLock", textureLock}};
+        {"statusSnapMode", snap}, {"statusTextureLock", textureLock}, {"statusPivotOrigin", pivotOrigin},
+        {"statusModelOverlay", modelOverlay}};
     for (const auto& [name, action] : buttons) {
         auto* button = new QToolButton;
         button->setObjectName(QString::fromLatin1(name));
@@ -1021,10 +1285,14 @@ void MainWindow::refreshEntityUi() {
         entityClass_->addItems(names);
         entityClass_->setCurrentIndex(static_cast<int>(names.indexOf(name)));
         entityClass_->setEditText(name);
-        session_.setCurrentEntityClass(name.toStdString());
+        if (session_.placementModel().empty()) session_.setCurrentEntityClass(name.toStdString());
     }
-    if (entityClass_->currentText() != fromStd(session_.currentEntityClass()))
-        entityClass_->setEditText(fromStd(session_.currentEntityClass()));
+    const auto item = session_.placementModel().empty() ? fromStd(session_.currentEntityClass())
+        : tr("Model: %1").arg(fromStd(session_.placementModel()));
+    if (entityClass_->currentText() != item) {
+        entityClass_->setCurrentIndex(-1);
+        entityClass_->setEditText(item);
+    }
     entityClass_->setEnabled(entityClass_->count() != 0);
     const QSignalBlocker alignBlock(alignToSurface_);
     alignToSurface_->setChecked(session_.alignToSurface());
@@ -1100,6 +1368,8 @@ bool MainWindow::performEditAction(const editor::ActionId& id) {
         openPasteSpecial();
     } else if (id == "edit.tie_to_entity") {
         openTieDialog();
+    } else if (id == "edit.create_prefab") {
+        openPrefabDialog();
     } else {
         ok = session_.perform(id);
         if (!ok) say((id != "edit.carve" && id != "edit.hollow" && id != "edit.merge") || session_.topologyMessage().empty() ?
@@ -1146,12 +1416,39 @@ void MainWindow::openTieDialog() {
     dialog->show();
 }
 
+void MainWindow::openPrefabDialog() {
+    if (!document_) return;
+    if (auto* open = findChild<PrefabDialog*>(QStringLiteral("prefabDialog"))) {
+        open->raise();
+        open->activateWindow();
+        return;
+    }
+    const auto folder = gameContent_->prefabFolder();
+    if (folder.empty()) {
+        statusBar()->showMessage(tr("No prefab folder: pick a game profile or set one in Preferences."), 5000);
+        return;
+    }
+    if (editor::selectedNodes(session_.selection()).empty()) {
+        statusBar()->showMessage(tr("Create Prefab: nothing is selected."), 5000);
+        return;
+    }
+    QStringList categories;
+    for (const auto& entry : editor::listPrefabs(folder)) categories << QString::fromStdString(entry.category);
+    auto* dialog = new PrefabDialog(session_, folder, categories, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &PrefabDialog::created, this, [this](const QString& file) {
+        statusBar()->showMessage(tr("Created prefab %1").arg(file), 5000);
+        gameContent_->notifyPrefabsChanged();
+    });
+    dialog->show();
+}
+
 void MainWindow::buildClipboardUi() {
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
     edit->addSeparator();
     for (const char* id : {"edit.cut", "edit.copy", "edit.paste", "edit.paste_in_place", "edit.paste_special",
                            "edit.duplicate", "edit.delete", "edit.group", "edit.ungroup", "edit.tie_to_entity",
-                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge"}) {
+                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge", "edit.create_prefab"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = edit->addAction(fromStd(entry->name));
         action->setObjectName(fromStd(entry->id));
@@ -1248,12 +1545,16 @@ void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {
         profileCombo_->addItem(tr("(no game profiles)"));
         profileCombo_->setEnabled(false);
         loadEntityClasses();
+        session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()));
         reloadGameContent();
         return;
     }
     profileCombo_->setEnabled(true);
     if (const int i = profileCombo_->findText(previous); i >= 0) profileCombo_->setCurrentIndex(i);
     loadEntityClasses();
+    const auto* profile = currentProfile();
+    session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+        profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
     reloadGameContent();
 }
 
@@ -1320,6 +1621,9 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
     session_.attach(*document_);
     path_ = path;
+    const auto* profile = currentProfile();
+    session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+        profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
     unsaved_ = unsaved;
     savedState_ = document_->historyState();
     viewport_->setDocument(document_.get(), currentProfile());
@@ -1432,6 +1736,9 @@ bool MainWindow::saveFile(const QString& path) {
     if (path_ != path) {
         autosave_.reset();
         path_ = path;
+        const auto* profile = currentProfile();
+        session_.setConnectionContext(std::filesystem::path(path_.toStdU16String()),
+            profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
         startAutosave();
     }
     unsaved_ = false;

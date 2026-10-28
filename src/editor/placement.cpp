@@ -29,4 +29,20 @@ Result<EntityPlacement> placeOnSurface(DVec3 hit, DVec3 normal, const AABB& boun
     result.origin -= normal * support;
     return result;
 }
+Result<geometry::ConvexPolyhedron> placedBox(const EntityPlacement& placement, const AABB& bounds) {
+    if (bounds.empty()) return std::unexpected(Error{ErrorCode::InvalidArgument, "invalid placement bounds"});
+    const DMat3 basis = placement.angles ? basisFromAngles(*placement.angles) : DMat3{1.0};
+    std::vector<geometry::PlaneSide> sides;
+    for (int axis = 0; axis < 3; ++axis) {
+        const DVec3 direction = basis[axis];
+        geometry::PlaneSide side;
+        side.plane = {direction, glm::dot(direction, placement.origin) + bounds.max[axis]};
+        sides.push_back(side);
+        side.plane = {-direction, -glm::dot(direction, placement.origin) - bounds.min[axis]};
+        sides.push_back(side);
+    }
+    auto poly = geometry::ConvexPolyhedron::fromPlanes(sides);
+    if (!poly) return std::unexpected(Error{ErrorCode::InvalidArgument, "placement bounds are not a solid box"});
+    return std::move(*poly);
+}
 } // namespace apex::editor

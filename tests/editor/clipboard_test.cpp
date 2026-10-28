@@ -398,6 +398,33 @@ TEST_CASE("Paste special makes unique entity names, accumulates offset and group
     CHECK(m.groupCount() == 0);
 }
 
+TEST_CASE("Paste special rewrites ESC and comma connection targets") {
+    Map m;
+    const auto door = m.point("info_target", "door", {0, 0, 0});
+    const std::string esc(1, '\x1b');
+    const auto relay = m.point("logic_relay", "relay", {0, 200, 0},
+        "connections\n{\n\"OnEsc\" \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"\n"
+        "\"OnComma\" \"door,Close,,0,-1\"\n}\n");
+    m.select({door, relay});
+    const auto text = m.session.copyText();
+    REQUIRE(text);
+
+    PasteSpecial special;
+    special.names = NamePolicy::Prefix;
+    special.affix = "copy_";
+    special.rewriteReferences = true;
+    PasteOptions options;
+    options.inPlace = true;
+    options.special = special;
+    REQUIRE(m.session.pasteText(*text, options));
+
+    const auto result = bytes(m.doc);
+    CHECK(count(result, "\"copy_door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") == 1);
+    CHECK(count(result, "\"copy_door,Close,,0,-1\"") == 1);
+    CHECK(count(result, "\"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") == 1);
+    CHECK(count(result, "\"door,Close,,0,-1\"") == 1);
+}
+
 TEST_CASE("Paste special rotates each copy about its own bounds centre") {
     Map m;
     const auto a = m.point("info_target", "a", {0, 0, 0});

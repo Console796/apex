@@ -25,6 +25,7 @@
 
 #include "core/log.hpp"
 #include "editor/preset_io.hpp"
+#include "ui/game_content.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
 #include "ui/pie_menu_popup.hpp"
@@ -254,6 +255,24 @@ QWidget* SettingsDialog::buildGeneralPage() {
     confirmMerge_->setObjectName(QStringLiteral("settingsConfirmNonConvexMerge"));
     confirmMerge_->setChecked(window_.editorSession().confirmNonConvexMerge);
     form->addRow(tr("Editing"), confirmMerge_);
+    pivotAtOrigin_ = new QCheckBox(tr("Rotate a single object about its origin"));
+    pivotAtOrigin_->setObjectName(QStringLiteral("settingsPivotAtObjectOrigin"));
+    pivotAtOrigin_->setChecked(window_.editorSession().pivotAtObjectOrigin());
+    pivotAtOrigin_->setToolTip(tr("Like Hammer, a lone selected entity rotates and scales about its origin. Off pivots "
+                                  "on the centre of its bounds. Applies while the transform pivot is Bounds centre."));
+    form->addRow(QString(), pivotAtOrigin_);
+    modelEdgeOverlay_ = new QCheckBox(tr("Draw model wireframe overlay in Flat view"));
+    modelEdgeOverlay_->setObjectName(QStringLiteral("settingsModelEdgeOverlay"));
+    modelEdgeOverlay_->setChecked(window_.editorSession().modelEdgeOverlay());
+    modelEdgeOverlay_->setToolTip(tr("Triangle edges over models in the Flat display mode and on selected models. "
+                                     "The Wireframe mode always shows them. Also on the Transform toolbar."));
+    form->addRow(tr("Models"), modelEdgeOverlay_);
+    entityIconsNearest_ = new QCheckBox(tr("Turn off texture filtering on entity icons"));
+    entityIconsNearest_->setObjectName(QStringLiteral("settingsEntityIconsNearest"));
+    entityIconsNearest_->setChecked(window_.editorSession().entityIconsNearest());
+    entityIconsNearest_->setToolTip(tr("Draws the billboarded icons of entities with nearest-neighbour sampling, so "
+                                       "their pixels stay sharp instead of blurring when scaled."));
+    form->addRow(tr("Entity icons"), entityIconsNearest_);
 
     autosave_ = new QCheckBox(tr("Enable autosave"));
     autosave_->setObjectName(QStringLiteral("settingsAutosave"));
@@ -277,6 +296,22 @@ QWidget* SettingsDialog::buildGeneralPage() {
     const auto cap = QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toInt(&valid);
     undoMiB_->setValue(valid ? std::clamp(cap, 16, 8192) : 512);
     form->addRow(tr("Undo memory limit"), undoMiB_);
+
+    prefabFolder_ = new QLineEdit(QSettings().value(QStringLiteral("prefabs/folder")).toString());
+    prefabFolder_->setObjectName(QStringLiteral("settingsPrefabFolder"));
+    prefabFolder_->setPlaceholderText(tr("Default: the game's prefabs folder"));
+    prefabFolder_->setToolTip(tr("Where Create Prefab saves and the Prefabs tab lists. Empty uses the active game "
+                                 "profile's own prefabs folder."));
+    auto* prefabBrowse = new QPushButton(tr("Browse…"));
+    prefabBrowse->setObjectName(QStringLiteral("settingsPrefabFolderBrowse"));
+    connect(prefabBrowse, &QPushButton::clicked, this, [this] {
+        const auto dir = QFileDialog::getExistingDirectory(this, tr("Prefab folder"), prefabFolder_->text());
+        if (!dir.isEmpty()) prefabFolder_->setText(dir);
+    });
+    auto* prefabRow = new QHBoxLayout;
+    prefabRow->addWidget(prefabFolder_, 1);
+    prefabRow->addWidget(prefabBrowse);
+    form->addRow(tr("Prefab folder"), prefabRow);
 
     inspectorOpens_ = new QComboBox;
     inspectorOpens_->setObjectName(QStringLiteral("settingsInspectorOpens"));
@@ -701,10 +736,18 @@ bool SettingsDialog::applyAll() {
     originalInput_ = settings;
     window_.editorSession().confirmNonConvexMerge = confirmMerge_->isChecked();
     QSettings().setValue("editing/confirmNonConvexMerge", confirmMerge_->isChecked());
+    window_.editorSession().setPivotAtObjectOrigin(pivotAtOrigin_->isChecked());
+    QSettings().setValue("editing/pivotAtObjectOrigin", pivotAtOrigin_->isChecked());
+    window_.editorSession().setModelEdgeOverlay(modelEdgeOverlay_->isChecked());
+    QSettings().setValue("view/modelEdgeOverlay", modelEdgeOverlay_->isChecked());
+    window_.editorSession().setEntityIconsNearest(entityIconsNearest_->isChecked());
+    QSettings().setValue("view/entityIconsNearest", entityIconsNearest_->isChecked());
     window_.setNewSolidStyle(window_.editorSession().newSolidStyle().material,
                              static_cast<geometry::UvAlignment>(uvAlignment_->currentData().toInt()));
     if (theme_->currentData().toString() != currentThemeId()) window_.setThemeId(theme_->currentData().toString());
     window_.setAutosave(autosave_->isChecked(), autosaveMinutes_->value());
+    QSettings().setValue(QStringLiteral("prefabs/folder"), prefabFolder_->text().trimmed());
+    window_.gameContent().setPrefabUserFolder(std::filesystem::path(prefabFolder_->text().trimmed().toStdString()));
     MainWindow::setInspectorInWindow(inspectorOpens_->currentData().toBool());
     MainWindow::setFacePropertiesInWindow(facePropertiesOpens_->currentData().toBool());
     MainWindow::setMaterialBrowserInWindow(materialBrowserOpens_->currentData().toBool());

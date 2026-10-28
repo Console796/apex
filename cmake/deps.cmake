@@ -30,12 +30,15 @@ CPMAddPackage(
   OPTIONS "SPDLOG_INSTALL OFF" "SPDLOG_BUILD_EXAMPLE OFF" "SPDLOG_BUILD_TESTS OFF"
 )
 
-# SourcePP v2026.9.11: only the libraries 0.1 needs (vpkpp, steampp, vtfpp, toolpp).
+# SourcePP v2026.9.11: asset readers (vpkpp, steampp, vtfpp, toolpp, mdlpp, kvpp for DMX, bsppp for BSP entity lumps).
 set(SOURCEPP_LIBS_START_ENABLED OFF CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_VPKPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_STEAMPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_VTFPP ON CACHE BOOL "" FORCE)
 set(SOURCEPP_USE_TOOLPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_MDLPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_KVPP ON CACHE BOOL "" FORCE)
+set(SOURCEPP_USE_BSPPP ON CACHE BOOL "" FORCE)
 # We only decode VTFs; the image-import codecs are unused (and libjxl rejects mixed compilers).
 set(SOURCEPP_VTFPP_SUPPORT_EXR OFF CACHE BOOL "" FORCE)
 set(SOURCEPP_VTFPP_SUPPORT_JXL OFF CACHE BOOL "" FORCE)
@@ -79,6 +82,7 @@ target_include_directories(VulkanMemoryAllocator SYSTEM INTERFACE
                            "${VulkanMemoryAllocator_SOURCE_DIR}/include")
 
 if(APEX_BUILD_APP)
+  # Qt Multimedia (qt6-multimedia-dev) is required by apex_ui (root CMakeLists.txt).
   # Qt GuiPrivate (qt6-base-private-dev) for Wayland pointer lock. Qt-ADS was dropped in 0.2.12:
   # panels are area roles in the central split tree. Done in a function so Qt's directory-scope flag changes (it drops /EHsc on MSVC) don't leak.
   function(apex_find_qt_private)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor/work_plane.hpp"
+#include "core/entity_class.hpp"
 
 #include <map>
 #include <span>
@@ -59,11 +60,14 @@ Result<geometry::SolidGeometry> applyToSolid(const geometry::SolidGeometry& soli
 struct EntityTransform {
     std::optional<DVec3> origin, angles;
     std::map<NodeId, geometry::SolidGeometry> solids;
+    std::map<std::string, std::string> keys;
 };
 Result<EntityTransform> applyToEntity(const document::Document& doc, NodeId entity,
-                                       const Transform& transform, bool textureLock = true);
+                                       const Transform& transform, bool textureLock = true,
+                                       const assets::EntityClassTable* classes = nullptr);
 struct TransformOptions {
     bool textureLock = true;
+    const assets::EntityClassTable* classes = nullptr;
 };
 // The transform is already snapped by the drag/modal caller, shared with preview.
 // Expand entity/group descendants and deduplicate overlapping selection nodes.

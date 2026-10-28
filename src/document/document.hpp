@@ -113,6 +113,9 @@ public:
     kv1::Node exportSubtree(NodeId id) const { return exportNode(id); }
     Result<vmf::VmfFile> toVmf() const;
     Result<std::string> write() const;
+    std::optional<std::string> viewSetting(std::string_view key) const;
+    // Per-file display preferences, like the editor grid, are outside undo history.
+    void setViewSetting(std::string key, std::string value);
 
     bool undo();
     bool redo();
@@ -156,6 +159,7 @@ private:
     };
     Pools pools_;
     kv1::Document source_;
+    std::map<std::string, std::string> viewSettings_;
     std::map<NodeId, NodeHandle> handles_;
     std::vector<NodeId> roots_, originalRoots_;
     std::map<SideId, SideLocation> sides_;
@@ -217,6 +221,12 @@ public:
     void setKeyValue(NodeHandle handle, std::string key, std::optional<std::string> value);
     // Edit one scalar occurrence without replacing or dropping duplicate keys.
     void setKeyValueOccurrence(NodeHandle handle, std::string key, std::size_t occurrence, std::string value);
+    // Edit/rename one entity scalar by block-local index, preserving duplicate keys and
+    // source provenance. Identity keys remain protected; structural entries cannot change.
+    void setEntityKeyValueEntry(NodeHandle entity, std::size_t index, std::string key, std::string value);
+    // Replace the scalar entries of an entity connections block, retaining KV1 provenance.
+    // An empty block removes it; no existing block creates one.
+    void setConnections(NodeHandle entity, kv1::Node block);
     void setEditor(NodeHandle handle, EditorEdit edit);
     // Side identity is stable; the face index is resolved internally for each write.
     void setSideKeyValue(SideId side, std::string key, std::string value);

@@ -32,6 +32,9 @@ public:
     // retained on error. Call from the owner thread, never from one of this pool's jobs.
     Result<void> refresh(JobPool& jobs);
     Result<Blob> open(std::string_view path) const;
+    // Read at most maxBytes. Loose files use a bounded read; archive readers may extract
+    // the entry first. Useful for cheap header probes without retaining whole payloads.
+    Result<Blob> openPrefix(std::string_view path, std::size_t maxBytes) const;
     bool exists(std::string_view path) const;
     const AddonList& addons() const;
     std::optional<std::size_t> provider(std::string_view path) const;

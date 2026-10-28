@@ -38,6 +38,12 @@ def closure(layer):
 def main():
     root = Path(__file__).resolve().parent.parent / "src"
     errors = []
+    # D1: Apex owns model baking; the upstream convenience bake is unsafe.
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if "processModelData" in line:
+                    errors.append(f"{path.relative_to(root.parent)}:{n}: processModelData is forbidden under src/")
     for layer in DEPS:
         allowed = closure(layer)
         for path in sorted((root / layer).rglob("*")) if (root / layer).is_dir() else []:

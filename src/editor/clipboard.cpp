@@ -1,6 +1,7 @@
 #include "editor/clipboard.hpp"
 
 #include "core/strings.hpp"
+#include "document/connection_codec.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -225,12 +226,15 @@ void rewriteReferences(Kv& entity, const std::map<std::string, std::string>& nam
             if (const auto it = names.find(lower(*value)); it != names.end()) (void)child.setValue(it->second);
         } else if (isBlock(child, "connections")) {
             for (auto& entry : child.children()) {
+                if (entry.kind() != kv1::NodeKind::Value) continue;
                 const auto value = entry.decodedValue();
-                if (entry.kind() != kv1::NodeKind::Value || !value) continue;
-                const auto comma = value->find(',');
-                const auto head = value->substr(0, comma);
-                if (const auto it = names.find(lower(head)); it != names.end())
-                    (void)entry.setValue(it->second + (comma == std::string::npos ? "" : value->substr(comma)));
+                if (!value) continue;
+                auto connection = document::parseConnection(*value);
+                if (!connection.wellFormed) continue;
+                if (const auto it = names.find(lower(connection.target)); it != names.end()) {
+                    connection.setField(document::ConnectionField::Target, it->second);
+                    (void)entry.setValue(document::serialize(connection));
+                }
             }
         }
     }
@@ -379,6 +383,51 @@ Result<std::string> serializeSelection(const document::Document& doc, const Grou
         }
     }
     return kv1::write(out);
+}
+
+
+static void collectSideIds(const Kv& block, std::vector<int>& out) {
+    for (const auto& child : block.children()) {
+        if (child.kind() != kv1::NodeKind::Block) continue;
+        if (ciEquals(child.key(), "side")) {
+            if (const auto id = intOf(child.find("id"))) out.push_back(*id);
+        } else if (ciEquals(child.key(), "solid")) {
+            collectSideIds(child, out);
+        }
+    }
+}
+// Pair the source block's sides with the created ones; the document re-ids them in order.
+static void recordSideIds(const Kv& source, const Kv& created, std::map<int, int>& out) {
+    std::vector<int> from, to;
+    collectSideIds(source, from);
+    collectSideIds(created, to);
+    for (std::size_t i = 0; i < from.size() && i < to.size(); ++i) out[from[i]] = to[i];
+}
+
+Result<FragmentShape> fragmentShape(std::string_view text) {
+    auto parsed = parseFragment(text);
+    if (!parsed) return std::unexpected(parsed.error());
+    FragmentShape shape;
+    const auto add = [&](const Kv& solid) {
+        const auto geometry = geometry::solidGeometry(solid);
+        if (!geometry) return;
+        for (const auto vertex : geometry->poly.vertices) shape.bounds.expand(vertex);
+        for (const auto& face : geometry->poly.faces) {
+            std::vector<DVec3> polygon;
+            for (const auto index : face.vertices)
+                if (index < geometry->poly.vertices.size()) polygon.push_back(geometry->poly.vertices[index]);
+            if (polygon.size() >= 3) shape.polygons.push_back(std::move(polygon));
+        }
+    };
+    for (const auto& solid : parsed->solids) add(solid);
+    for (const auto& entity : parsed->entities) {
+        bool solids = false;
+        forEachSolid(entity, [&](const Kv& solid) { solids = true; add(solid); });
+        if (solids) continue;
+        if (const auto* origin = entity.find("origin"))
+            if (const auto v = origin->asVec3()) shape.bounds.expand(DVec3{(*v)[0], (*v)[1], (*v)[2]});
+    }
+    return shape;
 }
 
 Result<EditedObjects> stagePaste(const document::Document& doc, document::Transaction& tx,
@@ -531,6 +580,7 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             const auto group = rewriteEditor(block, groupMap, &visMap, wrapperId);
             const auto handle = tx.create(std::move(block), world);
             const auto node = doc.get(handle)->id;
+            recordSideIds(source, doc.exportSubtree(node), result.sideIds);
             moved.push_back(node);
             EditedObjects::Item item;
             item.node = node;
@@ -550,6 +600,7 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             }
             const auto handle = tx.create(std::move(block));
             const auto node = doc.get(handle)->id;
+            recordSideIds(source, doc.exportSubtree(node), result.sideIds);
             moved.push_back(node);
             EditedObjects::Item item;
             item.node = node;
@@ -559,7 +610,7 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             result.items.push_back(std::move(item));
         }
         if (current.matrix() != DMat4{1.0} && !moved.empty()) {
-            if (auto done = stageTransform(doc, tx, moved, current, {options.textureLock.value_or(true)}); !done)
+            if (auto done = stageTransform(doc, tx, moved, current, {options.textureLock.value_or(true), options.classes}); !done)
                 return std::unexpected(done.error());
         }
     }

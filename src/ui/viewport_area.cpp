@@ -4,6 +4,8 @@
 
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QKeyEvent>
 #include <QJsonArray>
 #include <QMouseEvent>
@@ -27,9 +29,12 @@
 #include "ui/theme.hpp"
 #include "ui/viewport_pane.hpp"
 #include "ui/materials_panel.hpp"
+#include "ui/models_panel.hpp"
 #include "ui/face_properties_panel.hpp"
 #include "ui/game_content.hpp"
 #include "ui/inspector_panel.hpp"
+#include "ui/find_panel.hpp"
+#include "viewport/pick_math.hpp"
 
 namespace apex::ui {
 namespace {
@@ -154,6 +159,11 @@ ViewportArea::~ViewportArea() {
 void ViewportArea::setDocument(document::Document* document, const assets::GameProfile* profile) {
     document_ = document;
     host_->setDocument(document, gameContent_ ? gameContent_->vfs() : nullptr, profile);
+    if (session_) {
+        session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
+            return host->modelPicks() ? host->modelPicks()->shape(entity) : std::nullopt;
+        });
+    }
     previewRevision_ = kNoPreview;  // The mirror may be new.
     updateHighlight();
     forceDraw_ = true;
@@ -165,9 +175,15 @@ void ViewportArea::setDocument(document::Document* document, const assets::GameP
 }
 
 void ViewportArea::setEditorSession(editor::EditorSession* session) {
-    if (session_) session_->unobserve(sessionObserver_);
+    if (session_) {
+        session_->unobserve(sessionObserver_);
+        session_->setEntityBoundsProvider({});
+    }
     session_ = session;
     previewRevision_ = kNoPreview;
+    if (session_) session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
+        return host->modelPicks() ? host->modelPicks()->shape(entity) : std::nullopt;
+    });
     if (session_) sessionObserver_ = session_->observe([this] {
         updateHighlight();
         updateModeBadges();
@@ -182,24 +198,71 @@ void ViewportArea::setEditorSession(editor::EditorSession* session) {
 }
 
 void ViewportArea::setGameContent(GameContent* content) {
+    if (gameContent_) disconnect(gameContent_, nullptr, this, nullptr);
+    host_->clearModelThumbnails();
     gameContent_ = content;
+    if (content) connect(content, &GameContent::contentAboutToChange, this, [this] { host_->clearModelThumbnails(); });
+    if (content) connect(content, &GameContent::contentChanged, this, [this] {
+        const auto& profile = gameContent_->profile();
+        setDocument(document_, profile ? &*profile : nullptr);
+    });
     for (auto& [id, panel] : panels_) setPanelGameContent(panel, content);
     for (auto& [role, window] : floating_) if (window) setPanelGameContent(window->panel(), content);
+}
+void ViewportArea::setModelPicker(ModelsPanel* panel) {
+    modelPicker_ = panel;
+    if (panel) configurePanel(panel);
+}
+void ViewportArea::setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser) {
+    assetBrowser_ = std::move(browser);
+    for (auto& [id, panel] : panels_) configurePanel(panel);
+    for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
 }
 void ViewportArea::setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser) {
     materialBrowser_ = std::move(browser);
     for (auto& [id, panel] : panels_) configurePanel(panel);
     for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
 }
+void ViewportArea::setOpenInstanceHandler(std::function<bool(document::NodeId)> resolved,
+                                          std::function<void(document::NodeId)> open) {
+    instanceResolved_ = std::move(resolved);
+    openInstance_ = std::move(open);
+    for (auto& [id, panel] : panels_) configurePanel(panel);
+    for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
+}
 void ViewportArea::configurePanel(QWidget* panel) {
+    if (auto* find = qobject_cast<FindPanel*>(panel); find && !find->property("frameConnected").toBool()) {
+        find->setProperty("frameConnected", true);
+        connect(find, &FindPanel::frameRequested, this, [this] {
+            if (session_) if (const auto bounds = session_->selectionBounds()) centerOn(*bounds);
+        });
+    }
+    if (auto* models = qobject_cast<ModelsPanel*>(panel)) {
+        connect(models, &ModelsPanel::modelActivated, this,
+                &ViewportArea::modelPlacementRequested, Qt::UniqueConnection);
+        connect(models, &ModelsPanel::prefabActivated, this,
+                &ViewportArea::prefabPlacementRequested, Qt::UniqueConnection);
+        connect(models, &ModelsPanel::prefabCreateRequested, this,
+                &ViewportArea::prefabCreateRequested, Qt::UniqueConnection);
+        models->setThumbnailSink([host = QPointer<GpuHost>(host_), models](const QString& path, bool visible) {
+            if (host) host->requestModelThumbnail(models, path, visible);
+        });
+        models->setInspectSink([host = QPointer<GpuHost>(host_), models](const QString& path, const render::ModelView& view,
+                                                                         bool interacting) -> const render::ModelInspection* {
+            return host ? host->inspectModel(models, path, view, interacting) : nullptr;
+        });
+    }
     if (auto* materials = qobject_cast<MaterialsPanel*>(panel)) {
         connect(materials, &MaterialsPanel::activeMaterialRequested, this,
                 &ViewportArea::activeMaterialRequested, Qt::UniqueConnection);
         connect(materials, &MaterialsPanel::statusMessage, this,
                 &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
     }
-    if (auto* inspector = qobject_cast<InspectorPanel*>(panel))
+    if (auto* inspector = qobject_cast<InspectorPanel*>(panel)) {
         inspector->setMaterialBrowser(materialBrowser_);
+        inspector->setAssetBrowser(assetBrowser_);
+        inspector->setOpenInstanceHandler(instanceResolved_, openInstance_);
+    }
     if (auto* properties = qobject_cast<FacePropertiesPanel*>(panel)) {
         properties->setMaterialBrowser(materialBrowser_);
         properties->setGameContent(gameContent_);
@@ -277,6 +340,7 @@ void ViewportArea::updateModeBadges() {
     for (auto& [id, frame] : frames_)
         if (frame) {
             frame->setModeText(text, entity);
+            frame->setEditorSession(session_);
             if (session_) frame->setTool(session_->activeToolObject());
         }
 }
@@ -292,6 +356,7 @@ void ViewportArea::updateHighlight() {
         highlight.hover = session_->hoverDrawable();
     }
     if (auto* mirror = host_->mirror()) {
+        if (session_) mirror->setInstanceContents(session_->instances().contents(), session_->instanceVisibility());
         mirror->setHighlight(highlight);
         syncPreview(*mirror);
     }
@@ -332,6 +397,31 @@ void ViewportArea::setLayout(viewport::ViewportLayout layout) {
 PaneFrame* ViewportArea::frame(viewport::NodeId pane) const {
     const auto it = frames_.find(pane);
     return it == frames_.end() ? nullptr : it->second.data();
+}
+
+QString ViewportArea::missingAssetTooltip(Ray ray) const {
+    if (!session_ || !document_ || !gameContent_ || session_->document() != document_) return {};
+    const auto hit = session_->picks().first(ray);
+    if (!hit) return {};
+    const auto handle = document_->handle(hit->node);
+    if (!handle) return {};
+    const auto& block = *document_->get(*handle)->block;
+    if (hit->side) {
+        for (const auto& side : block.children()) if (side.key() == "side") {
+            const auto* id = side.find("id");
+            const auto* material = side.find("material");
+            if (id && id->asInt() == *hit->side && material)
+                return gameContent_->missingAssetTooltip("materials/" + material->decodedValue().value_or("") + ".vmt");
+        }
+    } else {
+        for (const auto& key : block.children()) {
+            if (editor::entityAssetKind(block, key.key(), gameContent_->classes()) == editor::AssetKind::Model) {
+                auto tip = gameContent_->missingAssetTooltip(key.decodedValue().value_or(""));
+                if (!tip.isEmpty()) return tip;
+            }
+        }
+    }
+    return {};
 }
 
 std::optional<Ray> ViewportArea::pointerRay() const {
@@ -618,6 +708,24 @@ void ViewportArea::endHandleDrag(const char* reason) {
 }
 
 bool ViewportArea::eventFilter(QObject* watched, QEvent* event) {
+    if (event->type() == QEvent::ToolTip) {
+        const auto* help = static_cast<QHelpEvent*>(event);
+        for (const auto& [id, frame] : frames_) {
+            if (!frame || !frame->window()) continue;
+            auto* container = frame->findChild<QWidget*>("PaneContainer");
+            if (watched != frame->window() && watched != container) continue;
+            const auto* view = layout_.viewport(id);
+            auto* window = frame->window();
+            if (!view || window->width() <= 0 || window->height() <= 0) break;
+            const auto point = window->mapFromGlobal(help->globalPos());
+            const auto ray = viewport::pixelRay(view->camera, double(window->width()) / window->height(),
+                point.x(), point.y(), window->width(), window->height());
+            const auto tip = missingAssetTooltip(ray);
+            if (!tip.isEmpty()) QToolTip::showText(help->globalPos(), tip, container);
+            else QToolTip::hideText();
+            return true;
+        }
+    }
     if (!drag_) return QWidget::eventFilter(watched, event);
     switch (event->type()) {
     case QEvent::MouseMove: {
@@ -714,6 +822,7 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
         window->setClearColour(clear);
     }
     auto* frame = new PaneFrame(pane, accessor, window, gpuReason_, maximized, canClose);
+    frame->setEditorSession(session_);
     frames_[pane] = frame;
     if (session_) {
         frame->setModeText(modeSummary(*session_), session_->activeToolObject().readout().warn);
@@ -722,7 +831,10 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     connect(frame, &PaneFrame::activated, this, &ViewportArea::setActive);
     connect(frame, &PaneFrame::edited, this, [this](viewport::NodeId) { emit layoutChanged(); });
     connectArea(frame);
-    if (window) connect(window, &PaneWindow::cameraChanged, this, &ViewportArea::emitCamera);
+    if (window) {
+        connect(window, &PaneWindow::cameraChanged, this, &ViewportArea::emitCamera);
+        connect(window, &PaneWindow::modelPlacementFailed, this, &ViewportArea::modelPlacementFailed);
+    }
     return frame;
 }
 
@@ -756,7 +868,18 @@ void ViewportArea::tick() {
         gpuAnnounced_ = true;
         emit gpuNameChanged(host_->gpuName());
     }
+    bool interacting = drag_.has_value();
+    for (const auto& [id, frame] : frames_)
+        if (frame && frame->window()) interacting |= frame->window()->interacting();
+    for (const auto& [id, panel] : panels_)
+        if (auto* models = qobject_cast<ModelsPanel*>(panel.data())) models->syncThumbnails(interacting);
+    for (const auto& [role, window] : floating_)
+        if (window) if (auto* models = qobject_cast<ModelsPanel*>(window->panel())) models->syncThumbnails(interacting);
+    if (modelPicker_) modelPicker_->syncThumbnails(interacting);
+    host_->tickModelThumbnails(gameContent_ ? gameContent_->thumbnails() : nullptr, interacting);
+    const auto pickRevision = host_->modelPickRevision();
     if (gpuReady_ && host_->pump()) forceDraw_ = true;
+    if (session_ && pickRevision != host_->modelPickRevision()) session_->refreshEntityBounds();
     const bool force = forceDraw_ || drag_.has_value();
     forceDraw_ = false;
     for (auto& [id, f] : frames_) {

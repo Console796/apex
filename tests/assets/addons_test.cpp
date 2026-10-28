@@ -1,3 +1,4 @@
+#include "assets/unmounted_addons.hpp"
 #include "assets/addons.hpp"
 #include "assets/vfs.hpp"
 #include "core/json.hpp"
@@ -301,4 +302,27 @@ TEST_CASE("addons mounted write-back changes VFS provider after reload") {
         REQUIRE(vfs);
         CHECK(vfs->provider("materials/probe.vmt") == 0);
     }
+}
+
+TEST_CASE("addons unmounted index reads loose names and VPK trees once with list-order providers") {
+    GameTree tree;
+    auto profile = setup(tree);
+    profile.addons.list = AddonSettings::List::Hammer;
+    tree.put("FirstAddon/.assets/hidden.vmt", "not content");
+    tree.put("FirstAddon/models/only.mdl", "not decoded");
+    pak(tree, "SecondAddon/pak01_dir.vpk", "not decoded");
+    fs::remove(tree.root / "SecondAddon/materials/probe.vmt");
+    list(tree, true, entry(tree.root / "FirstAddon", false) +
+                     entry(tree.root / "SecondAddon", false, "[\"pak01_dir.vpk\"]"));
+    auto addons = readAddonList(profile); REQUIRE(addons);
+    UnmountedAddonIndex index(*addons);
+    CHECK(index.provider("MODELS\\ONLY.MDL") == 0);
+    CHECK(index.provider("materials/probe.vmt") == 0);
+    CHECK_FALSE(index.provider(".assets/hidden.vmt"));
+    fs::remove(tree.root / "FirstAddon/materials/probe.vmt");
+    CHECK(index.provider("materials/probe.vmt") == 0); // Snapshot, no file reads on lookup.
+    UnmountedAddonIndex rebuilt(*addons);
+    CHECK(rebuilt.provider("materials/probe.vmt") == 1); // Archive-only file.
+    addons->entries[1].mounted = true;
+    CHECK_FALSE(UnmountedAddonIndex(*addons).provider("materials/probe.vmt"));
 }

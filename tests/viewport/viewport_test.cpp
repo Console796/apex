@@ -97,6 +97,7 @@ TEST_CASE("viewport JSON round trip and validation") {
     auto vp = makePreset(Preset::Front, {1, 2, 3}, 777);
     vp.overlays.normals = true;
     vp.overlays.nodrawFaces = false;
+    vp.overlays.entityNames = true;
     const auto text = json::write(toJson(vp));
     const auto parsed = json::parse(text);
     REQUIRE(parsed);
@@ -107,11 +108,13 @@ TEST_CASE("viewport JSON round trip and validation") {
     CHECK(back->mode == DisplayMode::Wireframe);
     CHECK(back->overlays.normals);
     CHECK_FALSE(back->overlays.nodrawFaces);
+    CHECK(back->overlays.entityNames);
     CHECK(json::write(toJson(*back)) == text);
     // Layouts saved before the option existed keep nodraw visible.
     const auto older = viewportFromJson(*json::parse(R"({"overlays":{"grid":true}})"));
     REQUIRE(older);
     CHECK(older->overlays.nodrawFaces);
+    CHECK_FALSE(older->overlays.entityNames);
 
     CHECK_FALSE(viewportFromJson(*json::parse(R"({"mode":"nope"})")));
     CHECK_FALSE(viewportFromJson(*json::parse(R"({"camera":{"fov":0}})")));

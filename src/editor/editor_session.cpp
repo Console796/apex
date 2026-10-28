@@ -1,4 +1,7 @@
 #include "editor/editor_session.hpp"
+#include "editor/connection_validation.hpp"
+#include "editor/instance_templates.hpp"
+#include "editor/instance_collapse_command.hpp"
 #include "editor/pie_menus.hpp"
 
 #include "core/strings.hpp"
@@ -23,6 +26,8 @@
 namespace apex::editor {
 
 EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
+    instanceTemplates_ = std::make_unique<InstanceTemplates>();
+    instanceExpansion_ = std::make_unique<InstanceExpansion>(*instanceTemplates_);
     clock_ = [] {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch());
@@ -45,13 +50,19 @@ void EditorSession::attach(document::Document& doc) {
     document_ = &doc;
     visgroupVisibility_ = buildVisgroupVisibility(doc);
     visgroupHistory_[doc.historyState()] = visgroupVisibility_;
-    picks_ = std::make_unique<PickIndex>(doc, [this](std::string_view name) -> std::optional<LocalBox> {
+    picks_ = std::make_unique<PickIndex>(doc, [this](const kv1::Node& block) -> std::optional<EntityPickShape> {
+        if (entityBoundsProvider_) {
+            if (auto shape = entityBoundsProvider_(block)) return shape;
+        }
+        const auto* key = block.find("classname");
+        const auto name = key ? key->decodedValue().value_or("") : "";
         const auto* cls = entityClasses_.find(name);
         if (!cls || !cls->mins || !cls->maxs) return {};
-        return LocalBox{{(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]},
-                        {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]}};
+        return EntityPickShape{{}, 0, LocalBox{{(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]},
+                                            {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]}}};
     });
     groups_ = std::make_unique<GroupIndex>(doc);
+    names_ = std::make_unique<NameIndex>(doc);
     documentObserver_ = doc.observe([this](const document::ChangeSet& changes) {
         const auto count = document_->historyState();
         if (visgroupHistory_.contains(count))
@@ -63,6 +74,8 @@ void EditorSession::attach(document::Document& doc) {
         }
         picks_->apply(changes);
         groups_->apply(changes);
+        names_->apply(changes);
+        refreshInstances();
         activeToolObject().documentChanged();
         if (transformActive()) endTransform(); // Undo/redo/external edits invalidate a drag.
         selectTool().cycle_ = {};
@@ -73,6 +86,16 @@ void EditorSession::attach(document::Document& doc) {
         selection_.prune(*document_);
         notify();
     });
+    refreshInstances();
+    notify();
+}
+void EditorSession::setEntityBoundsProvider(EntityBoundsProvider provider) {
+    entityBoundsProvider_ = std::move(provider);
+    refreshEntityBounds();
+}
+void EditorSession::refreshEntityBounds() {
+    if (!picks_) return;
+    picks_->rebuild();
     notify();
 }
 void EditorSession::detach() {
@@ -80,16 +103,20 @@ void EditorSession::detach() {
     activeToolObject().cancel();
     if (document_) document_->unobserve(documentObserver_);
     document_ = nullptr;
+    instanceExpansion_ = std::make_unique<InstanceExpansion>(*instanceTemplates_);
     visgroupHistory_.clear();
     visgroupVisibility_ = {};
     picks_.reset();
     groups_.reset();
+    names_.reset();
     selectTool().cycle_ = {};
     view_ = {};
     hover_.reset();
     hoverDrawable_.reset();
     hoverFace_.reset();
     workPlane_ = {};
+    placementModel_.clear();
+    placementPrefab_.reset();
     selection_.clear();
     notify();
 }
@@ -208,8 +235,40 @@ void EditorSession::setActiveTool(ToolId tool) {
     notify();
 }
 void EditorSession::setCurrentEntityClass(std::string classname) {
-    if (currentEntityClass_ == classname) return;
+    if (currentEntityClass_ == classname && placementModel_.empty() && !placementPrefab_) return;
+    placementModel_.clear();
+    placementPrefab_.reset();
     currentEntityClass_ = std::move(classname);
+    notify();
+}
+void EditorSession::setPlacementModel(std::string model) {
+    if (placementModel_ == model && !(placementPrefab_ && !model.empty())) return;
+    if (!model.empty()) placementPrefab_.reset();
+    placementModel_ = std::move(model);
+    notify();
+}
+void EditorSession::setPlacementPrefab(std::optional<PrefabItem> prefab) {
+    if (!prefab && !placementPrefab_) return;
+    if (prefab) placementModel_.clear();
+    placementPrefab_ = std::move(prefab);
+    notify();
+}
+PlacementItem EditorSession::placementItem() const {
+    if (placementPrefab_) return *placementPrefab_;
+    if (!placementModel_.empty()) return ModelItem{placementModel_};
+    return ClassItem{currentEntityClass_};
+}
+void EditorSession::setPlacementItem(PlacementItem item) {
+    std::visit([this](auto&& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, ClassItem>) setCurrentEntityClass(std::move(value.classname));
+        else if constexpr (std::is_same_v<T, ModelItem>) setPlacementModel(std::move(value.model));
+        else setPlacementPrefab(std::move(value));
+    }, std::move(item));
+}
+void EditorSession::setModelPlacementClass(std::string classname) {
+    if (modelPlacementClass_ == classname) return;
+    modelPlacementClass_ = std::move(classname);
     notify();
 }
 void EditorSession::setAlignToSurface(bool align) {
@@ -371,6 +430,14 @@ bool EditorSession::perform(const ActionId& action) {
         setSnapMode(snap_.mode == SnapMode::Absolute ? SnapMode::Relative : SnapMode::Absolute);
         return true;
     }
+    if (action == "gizmo.pivot.origin.toggle") {
+        setPivotAtObjectOrigin(!pivotAtObjectOrigin_);
+        return true;
+    }
+    if (action == "view.model_overlay.toggle") {
+        setModelEdgeOverlay(!modelEdgeOverlay_);
+        return true;
+    }
     if (action == "transform.texture_lock.toggle") {
         setTextureLock(!textureLock_);
         return true;
@@ -449,6 +516,22 @@ void EditorSession::setSnapMode(SnapMode mode) {
 void EditorSession::setTextureLock(bool lock) {
     if (lock == textureLock_) return;
     textureLock_ = lock;
+    notify();
+}
+void EditorSession::setPivotAtObjectOrigin(bool enabled) {
+    if (transformActive() || enabled == pivotAtObjectOrigin_) return;
+    pivotAtObjectOrigin_ = enabled;
+    notify();
+}
+void EditorSession::setModelEdgeOverlay(bool enabled) {
+    if (enabled == modelEdgeOverlay_) return;
+    modelEdgeOverlay_ = enabled;
+    notify();
+}
+
+void EditorSession::setEntityIconsNearest(bool enabled) {
+    if (enabled == entityIconsNearest_) return;
+    entityIconsNearest_ = enabled;
     notify();
 }
 
@@ -553,6 +636,100 @@ void EditorSession::setEntityClasses(assets::EntityClassTable classes) {
     if (picks_) picks_->rebuild();
     notify();
 }
+ConnectionModel EditorSession::connectionModel() const {
+    if (!document_) throw std::logic_error("no document");
+    return ConnectionModel(*document_, selection_);
+}
+ConnectionValidator EditorSession::connectionValidator() const {
+    if (!document_) throw std::logic_error("no document");
+    if (!instanceTemplates_) instanceTemplates_ = std::make_unique<InstanceTemplates>();
+    return ConnectionValidator(*document_, *names_, entityClasses_, instanceTemplates_.get(),
+                               connectionMapPath_, connectionExtraRoot_);
+}
+void EditorSession::setConnectionContext(std::filesystem::path map,
+                                         std::optional<std::filesystem::path> extraRoot) {
+    if (connectionMapPath_ != map && instanceTemplates_) instanceTemplates_->clear();
+    connectionMapPath_ = std::move(map);
+    connectionExtraRoot_ = std::move(extraRoot);
+    refreshInstances();
+    notify();
+}
+void EditorSession::refreshInstances() {
+    if (!document_) return;
+    instanceExpansion_->update(*document_, connectionMapPath_, connectionExtraRoot_);
+    if (picks_) picks_->setInstanceContents(instanceExpansion_->contents(), instanceVisibility());
+}
+InstanceReload EditorSession::invalidateInstance(const std::filesystem::path& path) {
+    auto result = instanceExpansion_->invalidate(path);
+    refreshInstances();
+    notify();
+    return result;
+}
+document::InstanceVisibility EditorSession::instanceVisibility() const {
+    if (document_) {
+        const auto value = document_->viewSetting("nInstanceVisibility");
+        if (value == "0") return document::InstanceVisibility::Hidden;
+        if (value == "1") return document::InstanceVisibility::Tinted;
+    }
+    return document::InstanceVisibility::Normal;
+}
+void EditorSession::setInstanceVisibility(document::InstanceVisibility visibility) {
+    if (!document_ || visibility == instanceVisibility()) return;
+    if (visibility != document::InstanceVisibility::Hidden && visibility != document::InstanceVisibility::Tinted &&
+        visibility != document::InstanceVisibility::Normal) return;
+    document_->setViewSetting("nInstanceVisibility", std::to_string(static_cast<int>(visibility)));
+}
+Result<void> EditorSession::setConnectionField(std::size_t row, ConnectionModel::Field field, std::string text) {
+    return runEdit("Edit connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().setField(tx, row, field, std::move(text));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::setConnectionOutput(std::size_t row, std::string name) {
+    return runEdit("Rename output", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().setOutput(tx, row, std::move(name));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::addConnection(std::string output, document::Connection connection,
+                                          std::optional<std::size_t> after) {
+    return runEdit("Add connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().add(tx, std::move(output), std::move(connection), after);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::removeConnection(std::size_t row) {
+    return runEdit("Delete connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().remove(tx, row);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::removeConnections(std::vector<std::size_t> rows) {
+    return runEdit("Delete connections", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().removeMany(tx, std::move(rows));
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::addConnections(std::vector<std::pair<std::string, document::Connection>> connections,
+                                          std::optional<std::size_t> after) {
+    return runEdit("Paste connections", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().addMany(tx, std::move(connections), after);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
+Result<void> EditorSession::duplicateConnection(std::size_t row) {
+    return runEdit("Duplicate connection", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto result = connectionModel().duplicate(tx, row);
+        if (!result) return std::unexpected(result.error());
+        return EditedObjects{};
+    });
+}
 InspectorModel EditorSession::inspectorModel(bool raw) const {
     if (!document_) throw std::logic_error("no document");
     return InspectorModel(*document_, selection_, entityClasses_, raw);
@@ -600,36 +777,53 @@ Result<void> EditorSession::setClass(std::string classname) {
         return EditedObjects{};
     });
 }
-Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
-                                       std::optional<DVec3> normal, bool align) {
-    return runEdit("Place entity", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
+Result<EntityPlacement> EditorSession::surfacePlacement(DVec3 hit, std::optional<DVec3> normal,
+                                                       const AABB& bounds, bool align) const {
+    if (!normal) {
+        const auto resolved = workPlane_.resolve();
+        const auto& plane = resolved ? resolved->plane : fallbackPlane_;
+        hit -= plane.normal * glm::dot(hit - plane.origin, plane.normal);
+        for (const auto axis : {plane.uAxis, plane.vAxis}) {
+            const double distance = glm::dot(hit - plane.origin, axis);
+            hit += axis * (std::round(distance / gridSize_) * gridSize_ - distance);
+        }
+        normal = plane.normal;
+    }
+    return placeOnSurface(hit, *normal, bounds, align);
+}
+AABB EditorSession::pointBounds(const assets::EntityClass& cls, const std::optional<std::string>& model) const {
+    AABB bounds{{-4, -4, -4}, {4, 4, 4}};
+    if (cls.mins && cls.maxs) {
+        bounds.min = {(*cls.mins)[0], (*cls.mins)[1], (*cls.mins)[2]};
+        bounds.max = {(*cls.maxs)[0], (*cls.maxs)[1], (*cls.maxs)[2]};
+    }
+    if (model && entityBoundsProvider_) {
+        auto block = kv1::Node::block("entity");
+        block.append(kv1::Node::value("classname", cls.name)).value();
+        block.append(kv1::Node::value("model", *model)).value();
+        if (const auto shape = entityBoundsProvider_(block))
+            bounds = shape->model ? shape->model->bounds(shape->body)
+                                  : AABB{shape->fallback.mins, shape->fallback.maxs};
+    }
+    return bounds;
+}
+Result<void> EditorSession::placePointEntity(std::string classname, std::optional<std::string> model,
+                                           DVec3 hit, std::optional<DVec3> normal, bool align) {
+    return runEdit(model ? "Place model" : "Place entity", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
         const auto* cls = entityClasses_.find(classname);
         if (!cls || !ciEquals(cls->type, "PointClass"))
             return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
-        AABB bounds{{-4, -4, -4}, {4, 4, 4}};
-        if (cls->mins && cls->maxs) {
-            bounds.min = {(*cls->mins)[0], (*cls->mins)[1], (*cls->mins)[2]};
-            bounds.max = {(*cls->maxs)[0], (*cls->maxs)[1], (*cls->maxs)[2]};
-        }
-        if (!normal) {
-            const auto resolved = workPlane_.resolve();
-            const auto& plane = resolved ? resolved->plane : fallbackPlane_;
-            hit -= plane.normal * glm::dot(hit - plane.origin, plane.normal);
-            for (const auto axis : {plane.uAxis, plane.vAxis}) {
-                const double distance = glm::dot(hit - plane.origin, axis);
-                hit += axis * (std::round(distance / gridSize_) * gridSize_ - distance);
-            }
-            normal = plane.normal;
-        }
-        auto placement = placeOnSurface(hit, *normal, bounds, align);
+        const AABB bounds = pointBounds(*cls, model);
+        auto block = kv1::Node::block("entity");
+        block.append(kv1::Node::value("classname", cls->name)).value();
+        if (model) block.append(kv1::Node::value("model", *model)).value();
+        auto placement = surfacePlacement(hit, normal, bounds, align);
         if (!placement) return std::unexpected(placement.error());
         const auto text = [](DVec3 v) {
             std::ostringstream stream;
             stream << std::setprecision(17) << v.x << ' ' << v.y << ' ' << v.z;
             return stream.str();
         };
-        auto block = kv1::Node::block("entity");
-        block.append(kv1::Node::value("classname", cls->name)).value();
         block.append(kv1::Node::value("origin", text(placement->origin))).value();
         if (placement->angles) block.append(kv1::Node::value("angles", text(*placement->angles))).value();
         const auto handle = tx.create(std::move(block));
@@ -638,10 +832,10 @@ Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
         return result;
     });
 }
-Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool align) {
+Result<EditorSession::PlacementTarget> EditorSession::placementTarget(Ray ray) const {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
     for (const auto& hit : picks_->pick(ray)) {
-        if (hit.side) return placeEntity(std::move(classname), hit.point, hit.normal, align);
+        if (hit.side || hit.modelTriangle) return PlacementTarget{hit.point, hit.normal};
     }
     const auto resolved = workPlane_.resolve();
     const auto& plane = resolved ? resolved->plane : fallbackPlane_;
@@ -650,7 +844,57 @@ Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool ali
         return std::unexpected(Error{ErrorCode::InvalidArgument, "ray is parallel to work plane"});
     const double t = glm::dot(plane.origin - ray.origin, plane.normal) / denominator;
     if (t < 0) return std::unexpected(Error{ErrorCode::InvalidArgument, "work plane is behind ray"});
-    return placeEntity(std::move(classname), ray.origin + ray.dir * t, std::nullopt, align);
+    return PlacementTarget{ray.origin + ray.dir * t, std::nullopt};
+}
+Result<void> EditorSession::placeEntity(std::string classname, DVec3 hit,
+                                      std::optional<DVec3> normal, bool align) {
+    return placePointEntity(std::move(classname), std::nullopt, hit, normal, align);
+}
+Result<void> EditorSession::placeEntity(std::string classname, Ray ray, bool align) {
+    const auto target = placementTarget(ray);
+    if (!target) return std::unexpected(target.error());
+    return placeEntity(std::move(classname), target->point, target->normal, align);
+}
+Result<void> EditorSession::placeModel(std::string model, DVec3 hit,
+                                     std::optional<DVec3> normal, bool align) {
+    return placePointEntity(modelPlacementClass_, std::move(model), hit, normal, align);
+}
+Result<void> EditorSession::placeModel(std::string model, Ray ray, bool align) {
+    const auto target = placementTarget(ray);
+    if (!target) return std::unexpected(target.error());
+    return placeModel(std::move(model), target->point, target->normal, align);
+}
+Result<PlacementPlan> EditorSession::planPlacement(const PlacementItem& item, DVec3 hit,
+                                                  std::optional<DVec3> normal, bool align) const {
+    AABB bounds{{-4, -4, -4}, {4, 4, 4}};
+    if (const auto* model = std::get_if<ModelItem>(&item)) {
+        const auto* cls = entityClasses_.find(modelPlacementClass_);
+        if (!cls || !ciEquals(cls->type, "PointClass"))
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
+        bounds = pointBounds(*cls, model->model);
+    } else if (const auto* prefab = std::get_if<PrefabItem>(&item)) {
+        if (prefab->bounds) bounds = *prefab->bounds;
+    } else {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "an entity class has no placement ghost"});
+    }
+    auto placement = surfacePlacement(hit, normal, bounds, align);
+    if (!placement) return std::unexpected(placement.error());
+    return PlacementPlan{*placement, bounds};
+}
+Result<PlacementPlan> EditorSession::planPlacement(const PlacementItem& item, Ray ray, bool align) const {
+    const auto target = placementTarget(ray);
+    if (!target) return std::unexpected(target.error());
+    return planPlacement(item, target->point, target->normal, align);
+}
+Result<void> EditorSession::placeItem(const PlacementItem& item, Ray ray, bool align) {
+    if (const auto* model = std::get_if<ModelItem>(&item)) return placeModel(model->model, ray, align);
+    if (const auto* prefab = std::get_if<PrefabItem>(&item)) {
+        if (!prefab->place) return std::unexpected(Error{ErrorCode::InvalidArgument, "prefab has no placer"});
+        const auto plan = planPlacement(item, ray, align);
+        if (!plan) return std::unexpected(plan.error());
+        return prefab->place(*this, plan->placement);
+    }
+    return placeEntity(std::get<ClassItem>(item).classname, ray, align);
 }
 Result<std::string> EditorSession::copyText() const {
     if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
@@ -673,6 +917,7 @@ Result<void> EditorSession::pasteText(std::string_view text, PasteOptions option
     }
     if (!options.snap) options.snap = snap_;
     if (!options.textureLock) options.textureLock = textureLock_;
+    options.classes = &entityClasses_;
     return runEdit(options.special ? "Paste special" : "Paste", AfterEdit::Computed, [&](document::Transaction& tx) {
         return stagePaste(*document_, tx, text, options);
     });
@@ -683,9 +928,31 @@ Result<void> EditorSession::duplicateSelection() {
     PasteOptions options;
     options.inPlace = true;
     options.textureLock = textureLock_;
+    options.classes = &entityClasses_;
     return runEdit("Duplicate", AfterEdit::Computed, [&](document::Transaction& tx) {
         return stagePaste(*document_, tx, *text, options);
     });
+}
+Result<InstanceCollapseReport> EditorSession::collapseInstances(std::span<const NodeId> selected) {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    return stageInstanceCollapse(*this, *document_, selected, false);
+}
+Result<InstanceCollapseReport> EditorSession::collapseAllInstances() {
+    if (!document_) return std::unexpected(Error{ErrorCode::InvalidArgument, "no document"});
+    std::vector<NodeId> instances;
+    for (const auto root : document_->roots()) {
+        const auto walk = [&](const auto& self, NodeId id) -> void {
+            const auto handle = document_->handle(id);
+            if (!handle) return;
+            const auto* node = document_->get(*handle);
+            if (std::holds_alternative<Handle<document::Entity>>(*handle) && node->block &&
+                ciEquals(node->block->find("classname") ? node->block->find("classname")->decodedValue().value_or("") : "", "func_instance"))
+                instances.push_back(id);
+            for (const auto child : node->children) self(self, child);
+        };
+        walk(walk, root);
+    }
+    return stageInstanceCollapse(*this, *document_, instances, true);
 }
 Result<void> EditorSession::deleteSelection() {
     return runEdit("Delete", AfterEdit::Clear, [&](document::Transaction& tx) {
@@ -719,9 +986,22 @@ Result<void> EditorSession::moveNodesInto(std::vector<NodeId> nodes, NodeId cont
         return stageMoveNodesInto(*document_, *groups_, std::move(nodes), container, tx);
     });
 }
+RenamePlan EditorSession::planEntityRename(NodeId entity, std::string_view targetname) const {
+    if (!document_) return {};
+    return planRename(*document_, entityClasses_, entity, targetname);
+}
 Result<void> EditorSession::renameEntity(NodeId entity, std::string_view targetname) {
     return runEdit("Rename entity", AfterEdit::Keep, [&](document::Transaction& tx) {
         return stageRenameEntity(*document_, entity, targetname, tx);
+    });
+}
+Result<void> EditorSession::renameEntity(NodeId entity, std::string_view targetname, bool updateReferences) {
+    if (!updateReferences) return renameEntity(entity, targetname);
+    const auto plan = planEntityRename(entity, targetname);
+    return runEdit("Rename entity", AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto staged = stageRename(*document_, plan, entity, tx);
+        if (!staged) return std::unexpected(staged.error());
+        return EditedObjects{};
     });
 }
 Result<void> EditorSession::setNodeHidden(std::vector<NodeId> nodes, bool hidden) {
@@ -892,7 +1172,7 @@ bool EditorSession::commitNow(const Transform& transform, std::string label) {
     const auto nodes = selectTool().transformNodes();
     if (nodes.empty()) return false;
     if (transform.matrix() == DMat4{1.0}) return true;
-    return commitTransform(*document_, nodes, transform, {textureLock_}, std::move(label)).has_value();
+    return commitTransform(*document_, nodes, transform, {textureLock_, &entityClasses_}, std::move(label)).has_value();
 }
 
 const TransformReadout& EditorSession::activeReadout() const { return selectTool().activeReadout(); }

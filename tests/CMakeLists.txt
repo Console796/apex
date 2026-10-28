@@ -1,28 +1,29 @@
 include(doctest)
 
 add_executable(apex_tests main.cpp core/version_test.cpp core/math_test.cpp core/handle_test.cpp
-               core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
+               core/entity_helpers_test.cpp core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp core/kv3_test.cpp
-               document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
-               document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp
+               document/instance_test.cpp document/connection_codec_test.cpp document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
+               document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp
                assets/vfs_test.cpp assets/addons_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
-               assets/material_corpus_test.cpp assets/material_index_test.cpp assets/thumbnail_test.cpp core/json_test.cpp
+               assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
+               assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
-editor/autosave_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/measure_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
+editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/placement_item_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/measure_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
                editor/pie_menu_test.cpp
-               editor/snapper_test.cpp editor/pick_index_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp editor/preset_io_test.cpp
-               editor/group_index_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
+               editor/snapper_test.cpp editor/pick_index_test.cpp editor/pick_model_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp editor/preset_io_test.cpp
+               editor/group_index_test.cpp editor/name_index_test.cpp editor/connection_model_test.cpp editor/incoming_connections_test.cpp editor/rename_propagation_test.cpp editor/connection_validation_test.cpp editor/instance_templates_test.cpp editor/instance_expansion_test.cpp editor/instance_watch_state_test.cpp assets/connection_corpus_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
                editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/hide_corpus_test.cpp editor/history_property_test.cpp editor/work_plane_test.cpp
-               editor/transform_test.cpp editor/preview_test.cpp editor/preview_geometry_test.cpp
-               editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp
-               render/view_math_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
-               render/p0_point_data_test.cpp render/preview_overlay_test.cpp
+               editor/transform_test.cpp editor/vector_key_test.cpp editor/preview_test.cpp editor/preview_geometry_test.cpp
+               editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp editor/prefab_test.cpp editor/asset_report_test.cpp editor/entity_report_test.cpp editor/find_replace_test.cpp
+               render/view_math_test.cpp render/helper_shapes_test.cpp render/context_test.cpp render/renderer_test.cpp render/render_mirror_test.cpp
+               ../src/ui/model_pick.cpp render/model_render_test.cpp render/model_thumbnail_test.cpp render/p0_point_data_test.cpp render/preview_overlay_test.cpp
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
 target_link_libraries(apex_tests PRIVATE apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
-                                         sourcepp::vtfpp sourcepp::toolpp
+                                         sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp
                                          apex_editor apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
 doctest_discover_tests(apex_tests

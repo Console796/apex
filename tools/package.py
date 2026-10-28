@@ -38,7 +38,11 @@ SYSTEM_LIB = re.compile(
     r"^(linux-vdso|ld-linux|libc\.|libm\.|libdl|libpthread|librt|libutil|libresolv|libgcc_s|"
     r"libstdc\+\+|libvulkan|libGL|libEGL|libGLX|libOpenGL|libX|libxcb|libxkbcommon|libwayland|"
     r"libdrm|libgbm|libfontconfig|libfreetype|libharfbuzz|libdbus|libglib|libgobject|libgio|"
-    r"libgmodule|libsystemd|libz\.|libasound|libpulse)")
+    r"libgmodule|libsystemd|libz\.|libasound|libpulse|"
+    # Host codecs are never bundled: the distro FFmpeg configuration is GPL (0.4.1 D4).
+    # ldd also lists libmp3lame transitively through the host PulseAudio library.
+    r"libavcodec|libavformat|libavutil|libavfilter|libavdevice|libswscale|libswresample|"
+    r"libpostproc|libx264|libx265|libmp3lame)")
 
 LAUNCHER = """#!/bin/sh
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
@@ -98,6 +102,8 @@ def bundle_qt_linux(stage: Path, exe: Path, qt_prefix):
                 plugdir = qt_prefix / "plugins"
     plugins = stage / "plugins"
     if plugdir and plugdir.exists():
+        # Intentionally omit multimedia: the host FFmpeg plugin pulls a GPL-configured
+        # FFmpeg (0.4.1 confirmation, 0.1 D4). Linux ships without playback.
         for sub in ("platforms", "iconengines", "imageformats", "wayland-decoration-client",
                     "wayland-graphics-integration-client", "wayland-shell-integration",
                     "xcbglintegrations"):

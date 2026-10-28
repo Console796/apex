@@ -78,6 +78,11 @@ const char* nameOf(AreaRole role) {
     case AreaRole::Log: return "log";
     case AreaRole::Materials: return "materials";
     case AreaRole::FaceProperties: return "face_properties";
+    case AreaRole::Models: return "models";
+    case AreaRole::Sounds: return "sounds";
+    case AreaRole::Particles: return "particles";
+    case AreaRole::Find: return "find";
+    case AreaRole::Addons: return "addons";
     }
     return "viewport";
 }

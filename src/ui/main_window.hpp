@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <functional>
 #include <QMetaObject>
 #include <QPointer>
 #include <QString>
@@ -10,6 +11,7 @@
 #include "assets/game_profile.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/autosave.hpp"
+#include "editor/instance_watch_state.hpp"
 #include "editor/preset_io.hpp"
 #include "ui/theme.hpp"
 
@@ -21,6 +23,7 @@ class QLabel;
 class QMenu;
 class QToolButton;
 class QTimer;
+class QFileSystemWatcher;
 class QWidgetAction;
 
 namespace apex::document {
@@ -36,6 +39,7 @@ class OutlinerPanel;
 class ViewportArea;
 class WorkspaceBar;
 class MaterialsPanel;
+class AssetBrowserPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -49,10 +53,11 @@ public:
     void reloadProfiles();
     const assets::GameProfile* currentProfile() const;
     GameContent& gameContent() const { return *gameContent_; }
-    // The inspector's material Browse: a non-modal Materials panel in pick mode. One at a time; it is
+    // The inspector's Browse: a non-modal browser panel in pick mode. One at a time; it is
     // closed when the document is replaced and at shutdown.
     void closeMaterialPicker();
     void openMaterialPicker(QString current, QString what, std::function<void(QString)> choose);
+    void openAssetPicker(QString kind, QString current, QString what, std::function<void(QString)> choose);
 
     bool openFile(const QString& path);
     void newFile();
@@ -109,6 +114,9 @@ public:
     void openPreferences();
     // A Materials panel click: sets the active material, and with the face edit tool applies it to the selected faces.
     void activateMaterial(const QString& name);
+    void setInstanceLauncher(std::function<bool(const QString&, const QStringList&)> launcher) {
+        instanceLauncher_ = std::move(launcher);
+    }
 
 private slots:
     void openDialog();
@@ -137,6 +145,7 @@ private:
     void buildClipboardUi();
     void openPasteSpecial();
     void openTieDialog();
+    void openPrefabDialog();
     QStringList solidClasses();
     void refreshClipboardState();
     void updateEditorActions();
@@ -147,6 +156,12 @@ private:
     void addRecent(const QString& path);
     void rebuildRecentMenu();
     void updateTitle();
+    // Returns the directories that only just came under watch.
+    std::vector<std::filesystem::path> syncInstanceWatches();
+    void reloadChangedInstances();
+    void openSelectedInstance(document::NodeId instance = 0);
+    void collapseSelectedInstances();
+    void reportCollapse(const editor::InstanceCollapseReport& report);
     void restoreLayout();
     void closeEvent(QCloseEvent* event) override;
 
@@ -154,10 +169,17 @@ private:
     std::unique_ptr<GameContent> gameContent_;
     QPointer<QDialog> materialPicker_; // Bound to the document and session; closed before either changes.
     QPointer<MaterialsPanel> areaMaterialPicker_;
+    QPointer<AssetBrowserPanel> areaAssetPicker_;
     QMetaObject::Connection areaPickChosen_, areaPickCancelled_;
     editor::EditorSession session_;
     std::unique_ptr<editor::Autosave> autosave_;
     QTimer* autosaveTimer_ = nullptr;
+    QFileSystemWatcher* instanceWatcher_ = nullptr;
+    QTimer* instanceReloadTimer_ = nullptr;
+    std::set<std::filesystem::path> pendingInstanceReloads_;
+    editor::InstanceWatchState instanceWatch_;
+    std::map<std::filesystem::path, std::string> reportedInstanceProblems_;
+    std::function<bool(const QString&, const QStringList&)> instanceLauncher_;
     std::uint64_t savedState_ = 0;
     bool unsaved_ = false;
     QPointer<PieMenuPopup> piePopup_;

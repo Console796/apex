@@ -571,6 +571,7 @@ TEST_CASE("Document duplicate side IDs and independent ID spaces are preserved")
 TEST_CASE("Document property sequences undo byte-identically on VMF fixtures") {
     for (const auto& entry : std::filesystem::directory_iterator(
              std::filesystem::path(APEX_FIXTURE_DIR) / "vmf")) {
+        if (!entry.is_regular_file()) continue; // vmf/instances holds the instance fixtures.
         CAPTURE(entry.path().string());
         const auto bytes = read(entry.path());
         for (std::uint32_t seed : {1U, 42U, 20261020U, 0xdeadbeefU})
@@ -988,6 +989,7 @@ TEST_CASE("Document shared block accounting releases only the last history refer
 TEST_CASE("Document frozen fixture states and coalesced edits stay byte exact at every cursor") {
     for (const auto& fixture : std::filesystem::directory_iterator(
              std::filesystem::path(APEX_FIXTURE_DIR) / "vmf")) {
+        if (!fixture.is_regular_file()) continue; // vmf/instances holds the instance fixtures.
         CAPTURE(fixture.path().string());
         const auto bytes = read(fixture.path());
         Document doc(parsed(bytes));

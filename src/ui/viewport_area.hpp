@@ -7,6 +7,7 @@
 #include <QString>
 #include <QTimer>
 #include <QWidget>
+#include <QPointer>
 #include <map>
 #include <functional>
 #include <optional>
@@ -39,6 +40,7 @@ class PaneFrame;
 class AreaSplitter;
 class FloatingPanel;
 class GameContent;
+class ModelsPanel;
 
 // The window's area tree (plan 0.1, D15/D16; area roles 0.2.12): the viewport::ViewportLayout split
 // tree mirrored into nested QSplitters. Each leaf takes a role, as in Blender: a Viewport leaf is a
@@ -62,7 +64,11 @@ public:
     document::Document* document() const { return document_; }
     void setEditorSession(editor::EditorSession* session);
     void setGameContent(GameContent* content);
+    void setModelPicker(ModelsPanel* panel);
+    void setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser);
     void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
+    void setOpenInstanceHandler(std::function<bool(document::NodeId)> resolved,
+                                std::function<void(document::NodeId)> open);
     void updateHighlight();
     void updateModeBadges();
 
@@ -99,6 +105,7 @@ public:
     // The world ray under the mouse pointer when it is over a pane (Paste places at its work-plane
     // hit). The override stands in for a real pointer in tests and scripted input.
     std::optional<Ray> pointerRay() const;
+    QString missingAssetTooltip(Ray ray) const;
     void setPointerRayOverride(std::optional<Ray> ray) { pointerOverride_ = ray; }
 
     // Runs queued rebuilds and one timer tick now (tests, screenshots).
@@ -130,6 +137,10 @@ signals:
     void gpuNameChanged(const QString& name);
     void layoutChanged();  // Structure or viewport settings changed (a persistence hint).
     void activeMaterialRequested(const QString& name);
+    void modelPlacementRequested(const QString& path);
+    void prefabPlacementRequested(const QString& file);
+    void prefabCreateRequested();
+    void modelPlacementFailed(const QString& message);
     void materialStatusMessage(const QString& message);
 
 private:
@@ -172,8 +183,12 @@ private:
     std::optional<HandleDrag> drag_;
 
     editor::EditorSession* session_ = nullptr;
-    GameContent* gameContent_ = nullptr;
+    QPointer<GameContent> gameContent_;
+    QPointer<ModelsPanel> modelPicker_;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
+    std::function<void(QString, QString, QString, std::function<void(QString)>)> assetBrowser_;
+    std::function<bool(document::NodeId)> instanceResolved_;
+    std::function<void(document::NodeId)> openInstance_;
     static constexpr std::uint64_t kNoPreview = ~std::uint64_t{0};
     std::uint64_t previewRevision_ = kNoPreview;
     bool previewEmpty_ = true;

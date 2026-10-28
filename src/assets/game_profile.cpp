@@ -9,6 +9,12 @@
 
 namespace apex::assets {
 
+std::filesystem::path GameProfile::instanceSearchRoot() const {
+    std::error_code ec;
+    const auto sdk = gameDirectory.parent_path() / "sdk_content" / "maps";
+    return std::filesystem::is_directory(sdk, ec) ? sdk : gameDirectory / "maps";
+}
+
 Result<GameProfile> parseGameProfile(std::string_view source) {
     auto parsed = json::parse(source);
     if (!parsed) {

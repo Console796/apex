@@ -1,12 +1,18 @@
 #pragma once
 
+#include "editor/instance_expansion.hpp"
+
 #include "editor/actions.hpp"
+#include "editor/name_index.hpp"
 #include "editor/face_edit.hpp"
 #include "editor/topology_ops.hpp"
 #include "editor/tool.hpp"
 #include "editor/clipboard.hpp"
 #include "editor/inspector_model.hpp"
+#include "editor/connection_model.hpp"
+#include "editor/rename_propagation.hpp"
 #include "editor/placement.hpp"
+#include "editor/placement_item.hpp"
 #include "editor/modal_transform.hpp"
 #include "editor/overlay_palette.hpp"
 #include "editor/preview.hpp"
@@ -20,9 +26,20 @@
 #include <memory>
 #include <span>
 #include <chrono>
+#include <filesystem>
 #include <functional>
 
 namespace apex::editor {
+
+struct InstanceCollapseItemResult {
+    NodeId instance = 0;
+    bool collapsed = false;
+    std::string reason;
+};
+using InstanceCollapseReport = std::vector<InstanceCollapseItemResult>;
+
+class ConnectionValidator;
+class InstanceTemplates;
 
 class SelectTool;
 class EntityTool;
@@ -63,6 +80,22 @@ public:
     void forgetInputSource(InputSource source);
     const std::string& currentEntityClass() const { return currentEntityClass_; }
     void setCurrentEntityClass(std::string classname);
+    const std::string& placementModel() const { return placementModel_; }
+    void setPlacementModel(std::string model);
+    const std::string& modelPlacementClass() const { return modelPlacementClass_; }
+    void setModelPlacementClass(std::string classname);
+    // The placement item (0.4 D13) is one of these three: a prefab if one is set, else the model
+    // if one is armed, else the current entity class. Setting one clears the others; the
+    // model placement class is a separate setting. The item survives tool changes.
+    const std::optional<PrefabItem>& placementPrefab() const { return placementPrefab_; }
+    void setPlacementPrefab(std::optional<PrefabItem> prefab);
+    PlacementItem placementItem() const;
+    void setPlacementItem(PlacementItem item);
+    // Where the item would land for this ray, with the box a ghost draws. Class items have no
+    // plan. This is the same placement placeItem() uses, so a ghost equals what is placed.
+    Result<PlacementPlan> planPlacement(const PlacementItem& item, DVec3 hit, std::optional<DVec3> normal, bool align) const;
+    Result<PlacementPlan> planPlacement(const PlacementItem& item, Ray ray, bool align) const;
+    Result<void> placeItem(const PlacementItem& item, Ray ray, bool align);
     bool alignToSurface() const { return alignToSurface_; }
     void setAlignToSurface(bool align);
 
@@ -79,6 +112,8 @@ public:
     EditorSession& operator=(const EditorSession&) = delete;
 
     void attach(document::Document& document);
+    void setEntityBoundsProvider(EntityBoundsProvider provider);
+    void refreshEntityBounds();
     void detach();
     document::Document* document() const { return document_; }
     Selection& selection() { return selection_; }
@@ -87,6 +122,16 @@ public:
     std::optional<AABB> selectionBounds() const;
     const PickIndex& picks() const { return *picks_; }
     const GroupIndex& groups() const { return *groups_; }
+    const NameIndex& names() const { return *names_; }
+    ConnectionValidator connectionValidator() const;
+    void setConnectionContext(std::filesystem::path map,
+                              std::optional<std::filesystem::path> extraRoot = {});
+    const std::filesystem::path& connectionMapPath() const { return connectionMapPath_; }
+    const std::optional<std::filesystem::path>& connectionExtraRoot() const { return connectionExtraRoot_; }
+    const InstanceExpansion& instances() const { return *instanceExpansion_; }
+    InstanceReload invalidateInstance(const std::filesystem::path& path);
+    document::InstanceVisibility instanceVisibility() const;
+    void setInstanceVisibility(document::InstanceVisibility visibility);
     const CycleState& cycle() const;
     const ViewState& viewState() const { return view_; }
     void setViewState(ViewState view);
@@ -129,6 +174,17 @@ public:
     void setSnapMode(SnapMode mode);
     bool textureLock() const { return textureLock_; }
     void setTextureLock(bool lock);
+    // Hammer's behaviour: a single selected object rotates and scales about its own origin. Off pivots on the
+    // selection's bounds centre. Only applies while the pivot mode is BoundsCentre.
+    bool pivotAtObjectOrigin() const { return pivotAtObjectOrigin_; }
+    void setPivotAtObjectOrigin(bool enabled);
+    // Model triangle edges drawn over models outside the Wireframe mode: the Flat edge overlay and the
+    // selection outline. Wireframe mode always draws them.
+    bool modelEdgeOverlay() const { return modelEdgeOverlay_; }
+    void setModelEdgeOverlay(bool enabled);
+    // Entity icon sprites sample with nearest filtering (crisp pixels) instead of linear.
+    bool entityIconsNearest() const { return entityIconsNearest_; }
+    void setEntityIconsNearest(bool enabled);
     // Work plane used by nudge when nothing is hovered or pinned (the viewport supplies it).
     void setFallbackPlane(SurfacePlane plane) { fallbackPlane_ = std::move(plane); }
     const SurfacePlane& fallbackPlane() const { return fallbackPlane_; }
@@ -162,6 +218,16 @@ public:
     void setEntityClasses(assets::EntityClassTable classes);
     const assets::EntityClassTable& entityClasses() const { return entityClasses_; }
     std::uint64_t entityClassesRevision() const { return entityClassesRevision_; }
+    ConnectionModel connectionModel() const;
+    Result<void> setConnectionField(std::size_t row, ConnectionModel::Field field, std::string text);
+    Result<void> setConnectionOutput(std::size_t row, std::string name);
+    Result<void> addConnection(std::string output, document::Connection connection,
+                               std::optional<std::size_t> after = {});
+    Result<void> removeConnection(std::size_t row);
+    Result<void> removeConnections(std::vector<std::size_t> rows);
+    Result<void> addConnections(std::vector<std::pair<std::string, document::Connection>> connections,
+                               std::optional<std::size_t> after = {});
+    Result<void> duplicateConnection(std::size_t row);
     InspectorModel inspectorModel(bool raw = false) const;
     // Supply a unique nonempty token for each field focus to coalesce typing. Rebuild the
     // model after each commit; raw selects occurrence-aware rows. Empty means one undo step.
@@ -173,6 +239,8 @@ public:
     // With no normal, hit is projected onto the resolved work plane and snapped in-plane.
     Result<void> placeEntity(std::string classname, DVec3 hit, std::optional<DVec3> normal, bool align = false);
     Result<void> placeEntity(std::string classname, Ray ray, bool align = false);
+    Result<void> placeModel(std::string model, DVec3 hit, std::optional<DVec3> normal, bool align = false);
+    Result<void> placeModel(std::string model, Ray ray, bool align = false);
 
     // Clipboard, duplicate, delete and groups (0.2.6). Each mutating call is one undoable
     // transaction that also records the selection before and after. On failure (empty
@@ -185,13 +253,17 @@ public:
     Result<std::string> cutText();
     Result<void> pasteText(std::string_view text, PasteOptions options = {});
     Result<void> duplicateSelection();
+    Result<InstanceCollapseReport> collapseInstances(std::span<const NodeId> selection);
+    Result<InstanceCollapseReport> collapseAllInstances();
     Result<void> deleteSelection();
     Result<void> groupSelection();
     Result<void> ungroupSelection();
     Result<void> tieToEntity(const TieParams& params = {});
     Result<void> moveToWorld();
     Result<void> moveNodesInto(std::vector<NodeId> nodes, NodeId container);
+    RenamePlan planEntityRename(NodeId entity, std::string_view targetname) const;
     Result<void> renameEntity(NodeId entity, std::string_view targetname);
+    Result<void> renameEntity(NodeId entity, std::string_view targetname, bool updateReferences);
     Result<void> setNodeHidden(std::vector<NodeId> nodes, bool hidden);
     bool nodeHidden(NodeId node) const;
     Result<void> hideSelection();
@@ -257,6 +329,8 @@ public:
     void publishToolStatus() { notify(); }
 
 private:
+    friend Result<InstanceCollapseReport> stageInstanceCollapse(EditorSession&, document::Document&,
+        std::span<const NodeId>, bool);
     void finishPie(PieResult result);
     Preview topologyPreview_;
     std::string topologyMessage_;
@@ -265,17 +339,35 @@ private:
     friend class PrimitiveTool;
     friend class ClipTool;
     friend class MeasureTool;
+    friend class EntityTool;
     friend class VertexTool;
     SelectTool& selectTool();
     const SelectTool& selectTool() const;
     document::Document* document_ = nullptr;
     std::size_t documentObserver_ = 0;
     std::unique_ptr<PickIndex> picks_;
+    EntityBoundsProvider entityBoundsProvider_;
     std::unique_ptr<GroupIndex> groups_;
+    std::unique_ptr<NameIndex> names_;
+    std::filesystem::path connectionMapPath_;
+    std::optional<std::filesystem::path> connectionExtraRoot_;
+    mutable std::unique_ptr<InstanceTemplates> instanceTemplates_;
+    std::unique_ptr<InstanceExpansion> instanceExpansion_;
+    void refreshInstances();
     Selection selection_;
     std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
     ToolId activeTool_ = Tool::Select;
     std::string currentEntityClass_;
+    std::string placementModel_;
+    std::string modelPlacementClass_ = "prop_static";
+    struct PlacementTarget { DVec3 point; std::optional<DVec3> normal; };
+    Result<PlacementTarget> placementTarget(Ray ray) const;
+    Result<EntityPlacement> surfacePlacement(DVec3 hit, std::optional<DVec3> normal,
+                                            const AABB& bounds, bool align) const;
+    Result<void> placePointEntity(std::string classname, std::optional<std::string> model,
+                                 DVec3 hit, std::optional<DVec3> normal, bool align);
+    AABB pointBounds(const assets::EntityClass& cls, const std::optional<std::string>& model) const;
+    std::optional<PrefabItem> placementPrefab_;
     bool alignToSurface_ = false;
     geometry::NewSolidStyle newSolidStyle_{"dev/dev_measuregeneric01"};
     FaceExtrapolation faceExtrapolation_ = FaceExtrapolation::Wrap;
@@ -295,6 +387,9 @@ private:
     DVec3 customPivot_{0.0};
     SnapSettings snap_;
     bool textureLock_ = true;
+    bool pivotAtObjectOrigin_ = true;
+    bool modelEdgeOverlay_ = true;
+    bool entityIconsNearest_ = false;
     SurfacePlane fallbackPlane_{{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {0, 1, 0}, {}};
     Preset preset_;
     Keymap keymap_;

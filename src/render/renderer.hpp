@@ -36,13 +36,15 @@ struct BrushVertex {
 };
 static_assert(sizeof(BrushVertex) == 36);
 
-// Per-instance data of an entity box, 40 bytes; corners relative to the draw origin.
+// Per-instance data of an entity box, 88 bytes; local corners and draw-relative origin.
 struct BoxInstance {
     float mins[3];
     float maxs[3];
     float colour[4];
+    float origin[3] = {};
+    float basis[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
 };
-static_assert(sizeof(BoxInstance) == 40);
+static_assert(sizeof(BoxInstance) == 88);
 
 // Per-instance data of a sprite, 48 bytes.
 struct SpriteInstance {
@@ -76,6 +78,9 @@ struct MeshDraw {
     bool outlineOnlyWire = false;      // Selected wire edges are emitted by the outline pass.
     std::uint32_t previewIndex = 0;     // 0 = identity; otherwise DrawList::previews[index - 1].
     AlphaMode alpha = AlphaMode::Opaque; // Textured mode only.
+    std::uint32_t instanceCount = 1;
+    bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
+    bool edgeOverlay = true;          // False skips this mesh in the Textured/Flat edge overlay pass.
 };
 
 struct BoxDraw {
@@ -185,6 +190,7 @@ struct DrawList {
 // Push constants shared by all pipelines (mirrors shaders/common.inc).
 // Preview ABI, without growing the block:
 //   brush/box: p1.xy = address low/high uint bits, p1.z = index uint bits;
+//   instanced models: p1.z high bit selects consecutive transforms by gl_InstanceIndex.
 //   sprite: offsetSlot.w / p1.w = address low/high, p0.w = (index << 1) | outline.
 // Sprite outline used to occupy both p0.w and p1.w; packing it frees the third word.
 // Grid retains every word of its existing layout. Index 0 skips all buffer reads.

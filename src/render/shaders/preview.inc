@@ -12,7 +12,10 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Pr
 uint previewIndex() { return floatBitsToUint(push.p0.w) >> 1; }
 uvec2 previewAddress() { return uvec2(floatBitsToUint(push.offsetSlot.w), floatBitsToUint(push.p1.w)); }
 #else
-uint previewIndex() { return floatBitsToUint(push.p1.z); }
+uint previewIndex() {
+    uint index = floatBitsToUint(push.p1.z);
+    return (index & 0x80000000u) != 0u ? (index & 0x7fffffffu) + gl_InstanceIndex : index;
+}
 uvec2 previewAddress() { return floatBitsToUint(push.p1.xy); }
 #endif
 

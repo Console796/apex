@@ -4,6 +4,7 @@
 #include <QFrame>
 #include <QPointF>
 #include <QWindow>
+#include <QTimer>
 #include <functional>
 #include <memory>
 
@@ -15,6 +16,7 @@
 #include "viewport/controllers.hpp"
 #include "viewport/layout.hpp"
 
+class QDropEvent;
 class QLabel;
 class QToolButton;
 class QMenu;
@@ -27,6 +29,10 @@ class ToolParameterStrip;
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session);
 // Red X, green Y and blue Z from the world origin while the grid overlay is on.
 void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view);
+
+// Shared with offscreen tests, where a native Vulkan pane cannot be created.
+bool handleModelDrop(editor::EditorSession* session, const viewport::Viewport* view, QSizeF size,
+                     QDropEvent& event, const std::function<void(const QString&)>& reportFailure);
 
 // The native Vulkan child window of one pane (plan 0.1, D15; pattern from spikes/wayland-vulkan).
 // Renders on demand into its own swapchain through the shared Renderer and RenderMirror, and turns
@@ -50,6 +56,8 @@ public:
     // Returns the milliseconds a draw took, or a negative value when nothing was drawn.
     double tick(bool forceDraw);
     std::uint64_t frames() const { return frames_; }
+    // Slice D can yield background thumbnails during navigation, tool gestures or resizing.
+    bool interacting() const;
     bool failed() const { return failed_; }
     std::uint32_t recreateCount() const { return swapchain_ ? swapchain_->recreateCount() : 0; }
 
@@ -65,12 +73,14 @@ public:
 
 signals:
     void pressed();             // Any mouse press: the pane becomes active and takes focus.
+    void modelPlacementFailed(const QString& message);
     void cameraChanged();       // Navigation moved the camera.
 
 protected:
     bool event(QEvent* event) override;
 
 private:
+    QTimer tooltipTimer_;
     bool handleMouse(QMouseEvent* event);
     void cancelSelectionGesture();
     void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);
@@ -105,6 +115,7 @@ private:
     double scroll_ = 0.0;
     bool forward_ = false, back_ = false, left_ = false, right_ = false, up_ = false, down_ = false;
     bool grabbed_ = false;
+    bool modelDragOver_ = false;  // A browser model drag is over the pane: no thumbnail work.
     QElapsedTimer sinceTick_;
     QElapsedTimer traceClock_;
     qint64 lastCameraTraceMs_ = -100;
@@ -134,6 +145,8 @@ public:
     void refreshTitle();
     void setTool(editor::Tool& tool);
     void setModeText(const QString& text, bool entityTool);
+    void setEditorSession(editor::EditorSession* session);
+    void refreshInstanceVisibility();
     void restyle();
     QMenu* menu() const { return menu_; }
 
@@ -157,6 +170,8 @@ private:
     QLabel* mode_ = nullptr;
     ToolParameterStrip* parameters_ = nullptr;
     QToolButton* menuButton_ = nullptr;
+    QToolButton* instanceVisibilityButton_ = nullptr;
+    editor::EditorSession* session_ = nullptr;
     QMenu* menu_ = nullptr;
     bool active_ = false;
     bool maximized_;

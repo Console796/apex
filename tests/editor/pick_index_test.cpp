@@ -1,5 +1,7 @@
 #include "fixtures.hpp"
 
+#include "document/entity_transform.hpp"
+
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -62,8 +64,9 @@ TEST_CASE("Pick entity provider boxes defaults world and brush entities") {
     const auto brush = addBlock(doc, "entity { classname func_detail }");
     const auto wrapper = addBlock(doc, "hidden {}", brush);
     addBox(doc, DVec3{-8}, DVec3{8}, wrapper);
-    PickIndex index(doc, [](std::string_view classname) -> std::optional<LocalBox> {
-        if (classname == "custom") return LocalBox{{-2, -3, -4}, {6, 7, 8}};
+    PickIndex index(doc, [](const kv1::Node& block) -> std::optional<EntityPickShape> {
+        const auto classname = block.find("classname")->decodedValue().value();
+        if (classname == "custom") return EntityPickShape{{}, 0, LocalBox{{-2, -3, -4}, {6, 7, 8}}};
         return std::nullopt;
     });
     CHECK(index.size() == 2);
@@ -167,7 +170,7 @@ TEST_CASE("Pick incremental inserts removals and entity hierarchy changes avoid 
     }
     const auto entity = addBlock(doc, "entity { classname target }");
     std::size_t providerCalls = 0;
-    PickIndex index(doc, [&](std::string_view) -> std::optional<LocalBox> {
+    PickIndex index(doc, [&](const kv1::Node&) -> std::optional<EntityPickShape> {
         ++providerCalls;
         return std::nullopt;
     });
@@ -383,5 +386,68 @@ TEST_CASE("Pick P2CE corpus 10000 rays per map match brute force and report buil
         MESSAGE("Pick corpus ", path.filename().string(), ": ", solids.size(), " visible valid solids, ",
                 rejected, " skipped; 10000 rays; build ", buildMs, " ms; single-solid refit ", refitMs,
                 " ms (release targets: <100 ms / <1 ms; no timing assertions)");
+    }
+}
+
+TEST_CASE("pick rotated asymmetric entity box follows angles on both sides") {
+    for (const auto angles : {"0 90 0", "0 -90 0", "0 0 0"}) {
+        CAPTURE(angles);
+        Document doc(parsed());
+        const auto entity = addBlock(doc, std::string("entity { classname asymmetric origin \"0 0 0\" angles \"") + angles + "\" }");
+        PickIndex index(doc, [](const kv1::Node& block) -> std::optional<EntityPickShape> {
+            const auto classname = block.find("classname")->decodedValue().value();
+            if (classname == "asymmetric") return EntityPickShape{{}, 0, LocalBox{{-8, -2, -2}, {8, 2, 2}}};
+            return std::nullopt;
+        });
+        const bool rotated = std::string_view(angles) != "0 0 0";
+        for (const double side : {-6.0, 6.0}) {
+            CAPTURE(side);
+            for (const double direction : {-1.0, 1.0}) {
+                CAPTURE(direction);
+                const auto hit = index.first({{-20 * direction, side, 0}, {direction, 0, 0}});
+                CHECK(hit.has_value() == rotated);
+                if (hit && rotated) {
+                    CHECK(hit->node == id(doc, entity));
+                    CHECK(hit->t == doctest::Approx(18));
+                }
+                const auto perpendicular = index.first({{side, -20 * direction, 0}, {0, direction, 0}});
+                CHECK(perpendicular.has_value() == !rotated);
+            }
+        }
+    }
+}
+
+TEST_CASE("pick entity transform mixed angles preserves points normals and bounds without scale") {
+    for (const auto angles : {"0 90 0", "0 -90 0", "30 45 60"}) {
+        CAPTURE(angles);
+        Document doc(parsed());
+        const auto entity = addBlock(doc, std::string("entity { classname asymmetric origin \"100 -20 30\" modelscale 9 angles \"") + angles + "\" }");
+        PickIndex index(doc, [](const kv1::Node&) -> std::optional<EntityPickShape> {
+            return EntityPickShape{{}, 0, LocalBox{{-8, -2, -3}, {12, 4, 7}}};
+        });
+        const auto pose = document::entityPose(*doc.get(entity)->block);
+        const DVec3 center{2, 1, 2};
+        AABB expectedBounds;
+        for (unsigned corner = 0; corner < 8; ++corner) {
+            expectedBounds.expand(pose.origin + pose.basis * DVec3{corner & 1 ? 12 : -8,
+                                                                  corner & 2 ? 4 : -2,
+                                                                  corner & 4 ? 7 : -3});
+        }
+        const auto bounds = index.bounds(id(doc, entity));
+        REQUIRE(bounds);
+        checkPoint(bounds->min, expectedBounds.min);
+        checkPoint(bounds->max, expectedBounds.max);
+        for (int axis = 0; axis < 3; ++axis) {
+            for (const double sign : {-1.0, 1.0}) {
+                const DVec3 normal = pose.basis[axis] * sign;
+                const Ray ray{pose.origin + pose.basis * center + normal * 30.0, -normal * 2.0};
+                const auto hit = index.first(ray);
+                REQUIRE(hit);
+                const double halfSize = axis == 0 ? 10.0 : axis == 1 ? 3.0 : 5.0;
+                CHECK(hit->t == doctest::Approx((30.0 - halfSize) / 2.0));
+                checkPoint(hit->point, pose.origin + pose.basis * center + normal * halfSize);
+                checkPoint(hit->normal, normal);
+            }
+        }
     }
 }

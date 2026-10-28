@@ -1,0 +1,2 @@
+// Apex-authored fixture: cycle A -> B for editor collapse tests.
+entity { "id" "1" "classname" "func_instance" "targetname" "b" "file" "instance_command_cycle_b.vmf" }

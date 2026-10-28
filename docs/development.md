@@ -10,7 +10,7 @@ Ubuntu 26.04 is the reference host. Install:
 
 ```bash
 sudo apt install build-essential g++-15 clang-21 libclang-rt-21-dev cmake ninja-build git python3 python3-venv \
-  qt6-base-dev qt6-base-private-dev libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers glslc \
+  qt6-base-dev qt6-base-private-dev qt6-multimedia-dev libvulkan-dev vulkan-validationlayers mesa-vulkan-drivers glslc \
   dbus-user-session socat qemu-system-x86 ovmf
 ```
 
@@ -47,6 +47,17 @@ build runs out of memory, and only one build should run at a time.
 ctest --preset linux-asan                       # everything registered
 ASAN_OPTIONS=detect_leaks=0 build/linux-asan/tests/apex_tests -tc='*face*'   # one area
 ```
+
+- **Watch the tests like CI:** `python3 tools/ci.py --tests [PRESET]` builds and runs `ctest` for one
+  preset (default `linux-asan`) and the layer check, with no BUILD number and no other stages. It
+  writes `build/ci/tests/`, so `tools/ci_top.py` (live stage table, ctest N/M progress, ETA from the
+  gate's timings, log tail) and `tools/ci_status.py` follow it exactly as they follow the full gate.
+
+- **Watch a direct run:** running a doctest binary by hand (`apex_tests`, `apex_ui_tests`) writes
+  `build/test-progress/<binary>/` (`progress.json`, `tests.log`, `failures.log`; override the root with
+  `APEX_TEST_PROGRESS_DIR`, disable with `APEX_TEST_PROGRESS=0`). `python3 tools/test_top.py` follows the
+  latest run: bar, ETA, the running case, slowest cases, failures. `ctest` runs and query flags
+  (`-ltc`, `-r=`) don't write it.
 
 - **Pick the tests your change touches.** The full ASan suite takes about 15 minutes, so leave it
   to CI.
@@ -136,6 +147,8 @@ let you reserve the VM so CI refuses to start it.
    - CMake, Ninja, Python 3.12, Git;
    - Qt 6.10.2 `msvc2022_64` (aqtinstall) at `C:\Qt\6.10.2\msvc2022_64`;
    - the Vulkan SDK (for `glslc`).
+
+   Include Multimedia when installing Qt: `aqt install-qt windows desktop 6.10.2 win64_msvc2022_64 -m qtmultimedia`.
 3. Enable the OpenSSH Server, set it to start automatically, and allow port 22 in the firewall.
 4. Generate the host key and authorise it in the guest:
 

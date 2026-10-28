@@ -11,7 +11,7 @@ Sign every commit with `git commit -s`. There is no CLA.
 
 ## Building
 
-Requirements: CMake >= 3.25, Ninja, GCC 14+ or Clang 18+, Qt 6.10 (`qt6-base-dev`), Vulkan
+Requirements: CMake >= 3.25, Ninja, GCC 14+ or Clang 18+, Qt 6.10 (`qt6-base-dev`, `qt6-multimedia-dev`), Vulkan
 headers/loader, `glslc`, and `vulkan-validationlayers`.
 
 ```

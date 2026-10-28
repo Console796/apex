@@ -13,13 +13,22 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QComboBox>
+#include <QWheelEvent>
 #include <QCoreApplication>
 #include <QDir>
 #include <QSettings>
 #include <QTabBar>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QCheckBox>
 #include <QTemporaryDir>
+#include <QThread>
+#include <QPointer>
+#include <QAbstractItemView>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <set>
+#include <tuple>
 
 #include "core/log.hpp"
 #include "../editor/fixtures.hpp"
@@ -37,7 +46,6 @@
 #include "ui/transform_input.hpp"
 #include "viewport/pick_math.hpp"
 #include <QLineEdit>
-#include <QCheckBox>
 #include <QTabWidget>
 #include <QToolButton>
 #include <QToolBar>
@@ -658,6 +666,18 @@ TEST_CASE("transform actions route through the session, menus, toolbar and statu
     scene.window.findChild<QToolButton*>("statusTextureLock")->click();
     CHECK(session.textureLock() == !lock);
     CHECK(scene.action("transform.texture_lock.toggle")->isChecked() == !lock);
+    // Object-origin pivot and the model wireframe are toolbar toggles beside snap and texture lock.
+    const bool originPivot = session.pivotAtObjectOrigin();
+    scene.action("gizmo.pivot.origin.toggle")->trigger();
+    CHECK(session.pivotAtObjectOrigin() == !originPivot);
+    CHECK(scene.action("gizmo.pivot.origin.toggle")->isChecked() == !originPivot);
+    scene.action("gizmo.pivot.origin.toggle")->trigger();
+    const bool overlay = session.modelEdgeOverlay();
+    scene.window.findChild<QToolButton*>("statusModelOverlay")->click();
+    CHECK(session.modelEdgeOverlay() == !overlay);
+    CHECK(scene.action("view.model_overlay.toggle")->isChecked() == !overlay);
+    scene.action("view.model_overlay.toggle")->trigger();
+    CHECK(session.modelEdgeOverlay() == overlay);
     scene.action("gizmo.space.toggle")->trigger();
     CHECK(session.gizmoSpace() == editor::GizmoSpace::Local);
     CHECK(scene.action("gizmo.space.toggle")->isChecked());
@@ -1269,6 +1289,7 @@ TEST_CASE("quad splitter bars stay aligned and the crossing drags both axes") {
 
 #include "ui/area_frame.hpp"
 #include "ui/inspector_panel.hpp"
+#include "editor/connection_validation.hpp"
 #include "ui/workspace_bar.hpp"
 #include "ui/visgroup_panel.hpp"
 #include "ui/history_panel.hpp"
@@ -1788,6 +1809,148 @@ std::map<std::string, std::string> inspectorValues(const document::Document& doc
         if (key.kind() == kv1::NodeKind::Value) values[std::string(key.key())] = key.decodedValue().value();
     return values;
 }
+assets::EntityClassTable connectionUiClasses() {
+    assets::EntityClassTable table;
+    auto& button = table.classes["func_button"];
+    button.name = "func_button";
+    button.type = "PointClass";
+    button.outputs.push_back({"OnPressed", "void", ""});
+    assets::EntityProperty targetname;
+    targetname.name = "targetname";
+    targetname.type = "target_name_or_class";
+    button.properties.push_back(targetname);
+    auto& door = table.classes["prop_door_rotating"];
+    door.name = "prop_door_rotating";
+    door.type = "PointClass";
+    door.inputs.push_back({"Open", "void", ""});
+    door.properties.push_back(targetname);
+    auto& relay = table.classes["logic_relay"];
+    relay.name = "logic_relay";
+    relay.type = "PointClass";
+    relay.inputs.push_back({"Trigger", "void", ""});
+    return table;
+}
+void key(QWidget* widget, int key, Qt::KeyboardModifiers modifiers = {}, QString value = {}) {
+    QKeyEvent event(QEvent::KeyPress, key, modifiers, value);
+    QApplication::sendEvent(widget, &event);
+    app().processEvents();
+}
+}
+
+TEST_CASE("inspector collapses dash spacer properties and elides long labels") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("spacer.fgd");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        const QByteArray dashes(120, '-');
+        file.write("@PointClass = spaced\n[\n"
+                   "\ttext(string) : \"A deliberately very long label that must not widen the inspector at all\" : \"x\"\n"
+                   "\tsep1(string) readonly : \"" + dashes + "\"\n"
+                   "\tother(string) : \"Other\" : \"y\"\n]\n");
+    }
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    document::Document doc(editor_test::parsed(R"(entity { id 1 classname spaced })"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 600);
+    panel.show();
+    session.selectNode(doc.roots()[0]);
+    app().processEvents();
+    auto* rule = panel.findChild<QFrame*>("property.sep1.0");
+    REQUIRE(rule);
+    CHECK(rule->frameShape() == QFrame::HLine);
+    CHECK(rule->height() < 10);
+    CHECK_FALSE(panel.findChild<QLineEdit*>("edit.sep1.0"));
+    auto* edit = panel.findChild<QLineEdit*>("edit.text.0");
+    REQUIRE(edit);
+    // The value column stays inside the panel instead of being pushed out by the label.
+    CHECK(edit->mapTo(&panel, QPoint(edit->width(), 0)).x() <= panel.width());
+    CHECK(edit->width() > 60);
+}
+
+TEST_CASE("inspector choice combos ignore the mouse wheel") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("wheel.fgd");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write("@PointClass = wheeled\n[\n"
+                   "\tmode(choices) : \"Mode\" : \"0\" = [ \"0\" : \"Zero\" \"1\" : \"One\" \"2\" : \"Two\" ]\n]\n");
+    }
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    document::Document doc(editor_test::parsed(R"(entity { id 1 classname wheeled mode 0 })"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 400);
+    panel.show();
+    session.selectNode(doc.roots()[0]);
+    app().processEvents();
+    auto* combo = panel.findChild<QComboBox*>("choice.mode");
+    REQUIRE(combo);
+    const int before = combo->currentIndex();
+    QWheelEvent wheel(QPointF(5, 5), combo->mapToGlobal(QPointF(5, 5)), {}, QPoint(0, -120), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(combo, &wheel);
+    app().processEvents();
+    CHECK_FALSE(wheel.isAccepted());
+    CHECK(combo->currentIndex() == before);
+    CHECK(doc.get(*doc.handle(doc.roots()[0]))->block->find("mode")->decodedValue().value_or("") == "0");
+}
+
+TEST_CASE("inspector choice combo keeps its popup open instead of rebuilding the rows") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("popup.fgd");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write("@PointClass = popped\n[\n"
+                   "\tmode(choices) : \"Mode\" : \"0\" = [ \"0\" : \"Zero\" \"1\" : \"One\" \"2\" : \"Two\" ]\n]\n");
+    }
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    document::Document doc(editor_test::parsed(R"(entity { id 1 classname popped mode 0 })"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 400);
+    panel.show();
+    session.selectNode(doc.roots()[0]);
+    app().processEvents();
+    QPointer<QComboBox> combo = panel.findChild<QComboBox*>("choice.mode");
+    REQUIRE(combo);
+    combo->setFocus(Qt::MouseFocusReason);
+    app().processEvents();
+    combo->showPopup();
+    for (int i = 0; i < 5; ++i) {
+        app().processEvents();
+        QThread::msleep(10);
+    }
+    REQUIRE(combo);
+    CHECK(combo == panel.findChild<QComboBox*>("choice.mode"));
+    CHECK(combo->view()->isVisible());
+    combo->hidePopup();
+    app().processEvents();
+    // Choosing an entry still writes the value after the popup closed.
+    emit combo->activated(2);
+    app().processEvents();
+    CHECK(doc.get(*doc.handle(doc.roots()[0]))->block->find("mode")->decodedValue().value_or("") == "2");
 }
 
 TEST_CASE("inspector builds FGD controls and coalesces one field focus") {
@@ -1942,6 +2105,582 @@ TEST_CASE("raw inspector preserves duplicate order and edits one occurrence") {
     CHECK(keys[1]->decodedValue().value() == "replacement");
     panel.setDocument(nullptr);
     CHECK(panel.findChildren<QLineEdit*>().size() == 1); // Class picker's editor only.
+}
+
+TEST_CASE("inspector connection tabs show validation, completions, and incoming sources") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname button connections { "
+        "OnPressed \"door" + esc + "Missing" + esc + esc + "0" + esc + "-1\" "
+        "OnPressed \"*" + esc + "Open" + esc + esc + "0" + esc + "-1\" OnBad \"broken\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door } "
+        "entity { id 3 classname logic_relay targetname relay }"));
+    const auto button = doc.get(*doc.handle(doc.roots()[0]))->id;
+    const auto door = doc.get(*doc.handle(doc.roots()[1]))->id;
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(button);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(700, 500);
+    panel.show();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    auto* inputs = panel.findChild<QTableWidget*>("inspectorInputs");
+    REQUIRE(tabs);
+    REQUIRE(outputs);
+    REQUIRE(inputs);
+    CHECK(tabs->tabText(0) == "Properties");
+    CHECK(tabs->tabText(1) == "Outputs");
+    CHECK(tabs->tabText(2) == "Inputs");
+    CHECK(outputs->rowCount() == 3);
+    CHECK(inputs->rowCount() == 0);
+    CHECK_FALSE(outputs->item(0, 2)->toolTip().isEmpty());
+    CHECK(outputs->item(2, 3)->toolTip().contains("editing rewrites this row as five fields"));
+
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->editItem(outputs->item(0, 1));
+    app().processEvents();
+    auto* edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    auto* completer = edit->completer();
+    REQUIRE(completer);
+    std::set<QString> targetValues;
+    for (int row = 0; row < completer->model()->rowCount(); ++row)
+        targetValues.insert(completer->model()->index(row, 0).data().toString());
+    CHECK(targetValues.contains("door"));
+    CHECK(targetValues.contains("relay"));
+    CHECK(targetValues.contains("!activator"));
+    key(edit, Qt::Key_Escape);
+    app().processEvents();
+    outputs->editItem(outputs->item(1, 2));
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    completer = edit->completer();
+    REQUIRE(completer);
+    std::set<QString> inputValues;
+    for (int row = 0; row < completer->model()->rowCount(); ++row)
+        inputValues.insert(completer->model()->index(row, 0).data().toString());
+    CHECK(inputValues.contains("Open"));
+    CHECK(inputValues.contains("Trigger"));
+    key(edit, Qt::Key_Escape);
+
+    session.selectNode(door);
+    app().processEvents();
+    CHECK(inputs->rowCount() == 0);
+    tabs->setCurrentWidget(inputs);
+    app().processEvents();
+    CHECK(inputs->rowCount() == 2);
+    CHECK(inputs->item(0, 0)->text().contains("func_button"));
+    inputs->setCurrentCell(0, 0);
+    inputs->setFocus();
+    key(inputs, Qt::Key_Enter);
+    CHECK(session.selection().contains(button));
+}
+
+TEST_CASE("inspector rename cancel survives a refresh during the dialog presenter") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button targetname button connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } entity { id 2 classname prop_door_rotating targetname door }"));
+    const auto door = doc.get(*doc.handle(doc.roots()[1]))->id;
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(door);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setFocus();
+    edit->setText("door_cancel");
+    const auto before = doc.write().value();
+    panel.setRenameDialogPresenter([&](QDialog*) {
+        panel.setDocument(nullptr);
+        panel.refresh();
+        app().processEvents();
+        return false;
+    });
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(doc.write().value() == before);
+}
+
+TEST_CASE("inspector refreshes common rows before another edit can target a collapsed row") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button connections { OnA \"x" + esc + "Open" + esc + esc + "0" + esc + "-1\" OnA \"x" + esc + "Open" + esc + esc + "1" + esc + "-1\" OnC \"z" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname func_button connections { OnA \"x" + esc + "Open" + esc + esc + "0" + esc + "-1\" OnA \"x" + esc + "Open" + esc + esc + "1" + esc + "-1\" OnC \"z" + esc + "Open" + esc + esc + "0" + esc + "-1\" } }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selection().add(doc.get(*doc.handle(doc.roots()[0]))->id);
+    session.selection().add(doc.get(*doc.handle(doc.roots()[1]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show(); app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs); REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
+    REQUIRE(outputs->rowCount() == 3);
+    REQUIRE(session.setConnectionField(1, editor::ConnectionModel::Field::Delay, "0"));
+    const auto history = doc.undoCount();
+    outputs->item(1, 5)->setText("2");
+    app().processEvents();
+    const auto model = session.connectionModel();
+    REQUIRE(model.rows().size() == 2);
+    CHECK(model.rows()[1].output == "OnC");
+    CHECK(model.rows()[1].connection.times == "-1");
+    CHECK(doc.undoCount() == history);
+    CHECK(outputs->rowCount() == 2);
+}
+
+TEST_CASE("inspector multi-row paste and delete each use one undo step") {
+    app();
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show(); app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs); REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->setFocus();
+    QGuiApplication::clipboard()->setText(QStringList{
+        QStringLiteral("OnA\ta\tOpen\t\t0\t-1"),
+        QStringLiteral("OnB\tb\tOpen\t\t0\t-1"),
+        QStringLiteral("OnC\tc\tOpen\t\t0\t-1")}.join('\n'));
+    const auto beforePaste = doc.undoCount();
+    key(outputs, Qt::Key_V, Qt::ControlModifier);
+    CHECK(doc.undoCount() == beforePaste + 1);
+    REQUIRE(outputs->rowCount() == 3);
+    CHECK(outputs->item(0, 0)->text() == "OnA");
+    CHECK(outputs->item(1, 0)->text() == "OnB");
+    CHECK(outputs->item(2, 0)->text() == "OnC");
+    outputs->selectRow(0); outputs->selectRow(1); outputs->selectRow(2);
+    const auto beforeDelete = doc.undoCount();
+    key(outputs, Qt::Key_Delete);
+    CHECK(doc.undoCount() == beforeDelete + 1);
+    CHECK(outputs->rowCount() == 0);
+    REQUIRE(doc.undo());
+    app().processEvents();
+    CHECK(outputs->rowCount() == 3);
+}
+
+TEST_CASE("inspector Outputs table claims its keys from window shortcuts and offers a menu and buttons") {
+    app();
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button targetname button }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    panel.activateWindow();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs); REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->setFocus();
+    app().processEvents();
+    REQUIRE(QApplication::focusWidget() == outputs);
+
+    for (const auto& [code, mods] : std::vector<std::pair<int, Qt::KeyboardModifiers>>{
+             {Qt::Key_N, Qt::ControlModifier}, {Qt::Key_D, Qt::ControlModifier}, {Qt::Key_C, Qt::ControlModifier},
+             {Qt::Key_V, Qt::ControlModifier}, {Qt::Key_Delete, {}}, {Qt::Key_Insert, {}}}) {
+        QKeyEvent override(QEvent::ShortcutOverride, code, mods);
+        override.ignore();
+        QApplication::sendEvent(outputs, &override);
+        CHECK(override.isAccepted());
+    }
+    QKeyEvent other(QEvent::ShortcutOverride, Qt::Key_S, Qt::ControlModifier);
+    other.ignore();
+    QApplication::sendEvent(outputs, &other);
+    CHECK_FALSE(other.isAccepted());
+
+    // Buttons.
+    auto* add = panel.findChild<QPushButton*>("outputAdd");
+    auto* duplicate = panel.findChild<QPushButton*>("outputDuplicate");
+    auto* remove = panel.findChild<QPushButton*>("outputDelete");
+    REQUIRE(add); REQUIRE(duplicate); REQUIRE(remove);
+    const auto history = doc.undoCount();
+    add->click();
+    app().processEvents();
+    CHECK(doc.undoCount() == history + 1);
+    REQUIRE(outputs->rowCount() == 1);
+    key(outputs->findChild<QLineEdit*>(), Qt::Key_Escape);
+    app().processEvents();
+    outputs->setCurrentCell(0, 0);
+    duplicate->click();
+    app().processEvents();
+    CHECK(outputs->rowCount() == 2);
+
+    // Context menu lists the shortcuts and drives the same actions.
+    QStringList labels;
+    panel.setConnectionMenuHook([&](QMenu* menu) {
+        for (auto* action : menu->actions()) labels.push_back(action->text());
+        menu->findChild<QAction*>("menuAddOutput")->trigger();
+    });
+    const auto rows = outputs->rowCount();
+    outputs->setCurrentCell(0, 0);
+    QMetaObject::invokeMethod(outputs, "customContextMenuRequested", Qt::DirectConnection,
+                              Q_ARG(QPoint, outputs->visualItemRect(outputs->item(0, 0)).center()));
+    app().processEvents();
+    CHECK(labels.join('|').contains("Ctrl+N"));
+    CHECK(labels.join('|').contains("Ctrl+D"));
+    CHECK(labels.join('|').contains("Del"));
+    CHECK(outputs->rowCount() == rows + 1);
+
+    if (auto* open = outputs->findChild<QLineEdit*>()) key(open, Qt::Key_Escape);
+    app().processEvents();
+    outputs->selectAll();
+    remove->click();
+    app().processEvents();
+    CHECK(outputs->rowCount() == 0);
+}
+
+TEST_CASE("inspector accepted rename still applies when a refresh runs during the dialog") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button targetname button connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } entity { id 2 classname prop_door_rotating targetname door }"));
+    const auto door = doc.get(*doc.handle(doc.roots()[1]))->id;
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(door);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setFocus();
+    edit->setText("door_new");
+    panel.setRenameDialogPresenter([&](QDialog*) {
+        panel.refresh();
+        app().processEvents();
+        return true;
+    });
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(doc.write().value().find("\"door_new\"") != std::string::npos);
+    CHECK(doc.write().value().find("\"door" + esc + "Open") == std::string::npos);
+}
+
+TEST_CASE("inspector Tab between output cells opens the next editor") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button targetname button connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } entity { id 2 classname prop_door_rotating targetname door }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->setCurrentCell(0, 1);
+    outputs->editItem(outputs->item(0, 1));
+    app().processEvents();
+    auto* edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "door2");
+    key(edit, Qt::Key_Tab);
+    app().processEvents();
+    CHECK(outputs->currentColumn() == 2);
+    auto* next = outputs->findChild<QLineEdit*>();
+    REQUIRE(next);
+    CHECK(next->text() == "Open");
+}
+
+TEST_CASE("inspector output cells preserve ESC edits and provide keyboard row operations") {
+    app();
+    const std::string esc(1, '\x1b');
+    const std::string original = "entity { id 1 classname func_button targetname button connections { "
+        "OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door } "
+        "entity { id 3 classname func_button targetname other_button }";
+    document::Document doc(editor_test::parsed(original));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs);
+    REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->setCurrentCell(0, 1);
+    outputs->editItem(outputs->item(0, 1));
+    app().processEvents();
+    auto* edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    const auto before = doc.write().value();
+    const auto history = doc.undoCount();
+    typeText(edit, "door2");
+    key(edit, Qt::Key_Return);
+    app().processEvents();
+    CHECK(doc.undoCount() == history + 1);
+    CHECK(doc.write()->find("\"door2" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == before);
+
+    panel.refresh();
+    outputs->setFocus();
+    key(outputs, Qt::Key_N, Qt::ControlModifier);
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "OnPressed");
+    key(edit, Qt::Key_Enter);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 2);
+    const int added = outputs->rowCount() - 1;
+    outputs->setCurrentCell(added, 1);
+    outputs->editItem(outputs->item(added, 1));
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "door");
+    key(edit, Qt::Key_Enter);
+    app().processEvents();
+    outputs->setCurrentCell(added, 2);
+    outputs->editItem(outputs->item(added, 2));
+    app().processEvents();
+    edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "Open");
+    key(edit, Qt::Key_Enter);
+    app().processEvents();
+    const auto saved = doc.write().value();
+    CHECK(saved.find("\"OnPressed\" \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+    CHECK(session.connectionValidator().validate(session.connectionModel().entities()[0],
+          session.connectionModel().rows().back().connection, session.connectionModel().rows().back().output).empty());
+
+    outputs->setCurrentCell(added, 0);
+    key(outputs, Qt::Key_D, Qt::ControlModifier);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 3);
+    outputs->selectRow(added);
+    key(outputs, Qt::Key_C, Qt::ControlModifier);
+    session.selectNode(doc.get(*doc.handle(doc.roots()[2]))->id);
+    app().processEvents();
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->setFocus();
+    key(outputs, Qt::Key_V, Qt::ControlModifier);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 1);
+    outputs->setCurrentCell(0, 0);
+    key(outputs, Qt::Key_Delete);
+    app().processEvents();
+    CHECK(outputs->rowCount() == 0);
+}
+
+TEST_CASE("inspector targetname commit uses the injected reference confirmation") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed("entity { id 1 classname func_button targetname button connections { "
+        "OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door }"));
+    const auto door = doc.get(*doc.handle(doc.roots()[1]))->id;
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(door);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    int dialogs = 0;
+    bool update = true;
+    panel.setRenameDialogPresenter([&](QDialog* dialog) {
+        ++dialogs;
+        auto* check = dialog->findChild<QCheckBox*>("renameUpdateReferences");
+        REQUIRE(check);
+        check->setChecked(update);
+        return true;
+    });
+    auto* edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    const auto before = doc.write().value();
+    const auto history = doc.undoCount();
+    edit->setText("door_new");
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(dialogs == 1);
+    CHECK(doc.undoCount() == history + 1);
+    CHECK(doc.write()->find("targetname\" \"door_new") != std::string::npos);
+    CHECK(doc.write()->find("\"door_new" + esc + "Open") != std::string::npos);
+    REQUIRE(doc.undo());
+    CHECK(doc.write().value() == before);
+
+    panel.setRenameDialogPresenter([&](QDialog*) { ++dialogs; return false; });
+    edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setText("cancelled");
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(doc.write().value() == before);
+
+    update = false;
+    panel.setRenameDialogPresenter([&](QDialog* dialog) {
+        ++dialogs;
+        dialog->findChild<QCheckBox*>("renameUpdateReferences")->setChecked(false);
+        return true;
+    });
+    edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setText("door_other");
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(doc.get(*doc.handle(door))->block->find("targetname")->decodedValue().value() == "door_other");
+    CHECK(doc.write()->find("\"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+    const auto beforeNoRefs = dialogs;
+    edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setText("door_final");
+    panel.setRenameDialogPresenter([&](QDialog*) { ++dialogs; return true; });
+    QMetaObject::invokeMethod(edit, "editingFinished", Qt::DirectConnection);
+    app().processEvents();
+    CHECK(dialogs == beforeNoRefs);
+    CHECK(doc.get(*doc.handle(door))->block->find("targetname")->decodedValue().value() == "door_final");
+}
+
+TEST_CASE("keyboard wires a button output to a door input") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname button } "
+        "entity { id 2 classname prop_door_rotating targetname door }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(tabs);
+    REQUIRE(outputs);
+    tabs->setCurrentWidget(outputs->parentWidget());
+    outputs->setFocus();
+    key(outputs, Qt::Key_N, Qt::ControlModifier);
+    app().processEvents();
+    auto* edit = outputs->findChild<QLineEdit*>();
+    REQUIRE(edit);
+    typeText(edit, "OnPressed");
+    key(edit, Qt::Key_Enter);
+    key(outputs, Qt::Key_Tab);
+    key(outputs, Qt::Key_unknown, Qt::NoModifier, "door");
+    auto* targetEdit = outputs->findChild<QLineEdit*>();
+    REQUIRE(targetEdit);
+    key(targetEdit, Qt::Key_Enter);
+    key(outputs, Qt::Key_Tab);
+    key(outputs, Qt::Key_unknown, Qt::NoModifier, "Open");
+    auto* inputEdit = outputs->findChild<QLineEdit*>();
+    REQUIRE(inputEdit);
+    key(inputEdit, Qt::Key_Enter);
+    const auto saved = doc.write().value();
+    CHECK(saved.find("\"OnPressed\" \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+}
+
+TEST_CASE("inspector multi-selection exposes only common connection rows") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname a connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" OnOther \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 2 classname func_button targetname b connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "-1\" } } "
+        "entity { id 3 classname prop_door_rotating targetname door }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selection().add(doc.get(*doc.handle(doc.roots()[0]))->id);
+    session.selection().add(doc.get(*doc.handle(doc.roots()[1]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    app().processEvents();
+    auto* outputs = panel.findChild<QTableWidget*>("inspectorOutputs");
+    REQUIRE(outputs);
+    CHECK(outputs->rowCount() == 1);
+    CHECK(outputs->item(0, 0)->text() == "OnPressed");
+}
+
+TEST_CASE("inspector Once checkbox toggles between 1 and unlimited") {
+    app();
+    const std::string esc(1, '\x1b');
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname a connections { OnPressed \"door" + esc + "Open" + esc + esc + "0" + esc + "1\" } } "
+        "entity { id 2 classname prop_door_rotating targetname door }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selectNode(doc.get(*doc.handle(doc.roots()[0]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    app().processEvents();
+    auto* once = panel.findChild<QCheckBox*>("connectionOnce.0");
+    REQUIRE(once);
+    CHECK(once->isChecked());
+    once->setChecked(false);
+    app().processEvents();
+    CHECK(doc.write()->find("\"door" + esc + "Open" + esc + esc + "0" + esc + "-1\"") != std::string::npos);
+}
+
+TEST_CASE("inspector targetname edits still write for a multi-selection") {
+    app();
+    document::Document doc(editor_test::parsed(
+        "entity { id 1 classname func_button targetname a } entity { id 2 classname func_button targetname b }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(connectionUiClasses());
+    session.selection().add(doc.get(*doc.handle(doc.roots()[0]))->id);
+    session.selection().add(doc.get(*doc.handle(doc.roots()[1]))->id);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* edit = panel.findChild<QLineEdit*>("edit.targetname.0");
+    REQUIRE(edit);
+    edit->setFocus();
+    typeText(edit, "shared");
+    app().processEvents();
+    const auto written = doc.write().value();
+    CHECK(written.find("targetname\" \"shared\"") != std::string::npos);
 }
 
 TEST_CASE("entity toolbar follows session actions and loads point classes from profile") {
@@ -2543,4 +3282,108 @@ TEST_CASE("addons menu reflects list order toggles and stale file errors") {
     std::filesystem::remove(tree.root / "Game/addons/addonlist.kv3");
     show();
     CHECK(menu->actions()[0]->text() == QStringLiteral("No addon list found"));
+}
+
+TEST_CASE("inspector asset Browse hooks edit typed keys once and reject stale picks") {
+    app();
+    assets::EntityClassTable classes;
+    auto& cls = classes.classes["picker_fixture"];
+    cls.name = "picker_fixture"; cls.type = "PointClass";
+    for (auto [name, type] : {std::pair{"mesh", "studio"}, {"noise", "sound"}, {"effect", "particlesystem"}}) {
+        assets::EntityProperty property; property.name = name; property.type = type;
+        cls.properties.push_back(std::move(property));
+    }
+    document::Document doc(editor_test::parsed(R"(
+        entity { id 1 classname picker_fixture mesh old.mdl noise Old.Sound effect OldParticle }
+        entity { id 2 classname picker_fixture mesh other.mdl })"));
+    editor::EditorSession session; session.attach(doc); session.setEntityClasses(classes);
+    ui::InspectorPanel panel; panel.setDocument(&doc); panel.setEditorSession(&session);
+    panel.resize(500, 600); panel.show(); session.selectNode(1); app().processEvents();
+    for (const auto* key : {"mesh", "noise", "effect"}) {
+        auto* browse = panel.findChild<QPushButton*>(QString("inspectorBrowse.") + key); REQUIRE(browse);
+        CHECK_FALSE(browse->isEnabled());
+    }
+    std::function<void(QString)> pending;
+    QString requestedKind, requestedCurrent, requestedWhat;
+    panel.setAssetBrowser([&](QString kind, QString current, QString what, std::function<void(QString)> choose) {
+        requestedKind = kind; requestedCurrent = current; requestedWhat = what; pending = std::move(choose);
+    });
+    app().processEvents();
+    for (auto [key, kind, value] : {std::tuple{"mesh", "model", "models/props/apex.mdl"},
+            {"noise", "sound", "Apex.Sound"}, {"effect", "particle", "ApexSmoke"}}) {
+        CAPTURE(key);
+        auto* browse = panel.findChild<QPushButton*>(QString("inspectorBrowse.") + key); REQUIRE(browse);
+        CHECK(browse->isEnabled());
+        const auto original = inspectorValues(doc, 1)[key]; const auto before = doc.undoCount();
+        pending = {}; browse->click(); REQUIRE(pending);
+        CHECK(requestedKind == kind); CHECK(requestedCurrent == QString::fromStdString(original)); CHECK(requestedWhat == key);
+        pending(value); app().processEvents();
+        CHECK(inspectorValues(doc, 1)[key] == value); CHECK(doc.undoCount() == before + 1);
+        REQUIRE(doc.undo()); CHECK(inspectorValues(doc, 1)[key] == original);
+        REQUIRE(doc.redo()); CHECK(inspectorValues(doc, 1)[key] == value); app().processEvents();
+    }
+    auto* browse = panel.findChild<QPushButton*>("inspectorBrowse.mesh"); REQUIRE(browse); browse->click(); REQUIRE(pending);
+    const auto before = doc.undoCount();
+    session.selectNode(2); app().processEvents(); pending("models/stale.mdl");
+    CHECK(doc.undoCount() == before); CHECK(inspectorValues(doc, 1)["mesh"] == "models/props/apex.mdl");
+    CHECK(inspectorValues(doc, 2)["mesh"] == "other.mdl");
+    panel.setAssetBrowser({}); app().processEvents();
+    browse = panel.findChild<QPushButton*>("inspectorBrowse.mesh"); REQUIRE(browse); CHECK_FALSE(browse->isEnabled());
+}
+
+TEST_CASE("viewport model drop places on a wall without changing the armed tool or model") {
+    app();
+    using namespace editor_test;
+    ui::MainWindow window;
+    window.newFile();
+    auto& session = window.editorSession();
+    auto& doc = *window.document();
+    addBox(doc, {-16, -64, -64}, {0, 64, 64});
+    assets::EntityClassTable table;
+    assets::EntityClass cls;
+    cls.name = "prop_static"; cls.type = "PointClass";
+    cls.mins = {-4, -8, -12}; cls.maxs = {4, 8, 12};
+    table.classes[cls.name] = cls;
+    session.setEntityClasses(std::move(table));
+    session.setPlacementModel("models/armed.mdl");
+    session.setAlignToSurface(true);
+    REQUIRE(session.perform("tool.block"));
+    viewport::Viewport view;
+    view.camera = cameraLooking({100, 0, 0}, {0, 0, 0});
+    QMimeData mime;
+    mime.setData("application/x-apex-model", "models/dropped.mdl");
+    const auto drop = [&] { return QDropEvent({400, 300}, Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier); };
+    QString error;
+    const auto report = [&](const QString& message) { error = message; };
+    auto event = drop();
+    const auto before = doc.undoCount();
+    REQUIRE(ui::handleModelDrop(&session, &view, kPane, event, report));
+    CHECK(event.isAccepted());
+    CHECK(event.dropAction() == Qt::CopyAction);
+    CHECK(error.isEmpty());
+    CHECK(doc.undoCount() == before + 1);
+    const auto id = std::get<NodeId>(*session.selection().active());
+    const auto& entity = *doc.get(*doc.handle(id))->block;
+    CHECK(entity.find("classname")->decodedValue() == "prop_static");
+    CHECK(entity.find("model")->decodedValue() == "models/dropped.mdl");
+    const auto origin = entity.find("origin")->asVec3().value();
+    checkPoint({origin[0], origin[1], origin[2]}, {12, 0, 0});
+    const auto angles = entity.find("angles")->asVec3().value();
+    checkPoint(angleVectors({angles[0], angles[1], angles[2]}).up, {1, 0, 0});
+    CHECK(session.activeTool() == "tool.block");
+    CHECK(session.placementModel() == "models/armed.mdl");
+    session.setModelPlacementClass("absent");
+    auto invalid = drop();
+    CHECK_FALSE(ui::handleModelDrop(&session, &view, kPane, invalid, report));
+    CHECK_FALSE(invalid.isAccepted());
+    CHECK(error == "choose a point entity class");
+    CHECK(doc.undoCount() == before + 1);
+    editor::EditorSession detached;
+    auto noDocument = drop();
+    CHECK_FALSE(ui::handleModelDrop(&detached, &view, kPane, noDocument, report));
+    CHECK_FALSE(noDocument.isAccepted());
+    mime.clear(); mime.setText("models/plain-text.mdl");
+    auto plain = drop();
+    CHECK_FALSE(ui::handleModelDrop(&session, &view, kPane, plain, report));
+    CHECK_FALSE(plain.isAccepted());
 }

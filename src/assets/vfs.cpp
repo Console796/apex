@@ -10,6 +10,7 @@
 #include <fstream>
 #include <future>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <sourcepp/Math.h>
@@ -191,6 +192,15 @@ Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver app
             return std::unexpected(added.error());
         }
     }
+    // The engine mounts <install>/platform without listing it (editor icon sprites and other tool
+    // materials live there); it comes after every listed path so nothing is overridden.
+    std::error_code platformError;
+    if (const auto platform = engineDir / "platform"; fs::is_directory(platform, platformError)) {
+        auto added = result.impl_->add(platform);
+        if (!added) {
+            return std::unexpected(added.error());
+        }
+    }
     auto mountFiles = expand(gameDir / "cfg/mounts.kv");
     if (!mountFiles.empty()) {
         auto mountBytes = readText(mountFiles.front());
@@ -351,6 +361,10 @@ Result<void> Vfs::refresh(JobPool& jobs) {
 }
 
 Result<Blob> Vfs::open(std::string_view path) const {
+    return openPrefix(path, std::numeric_limits<std::size_t>::max());
+}
+
+Result<Blob> Vfs::openPrefix(std::string_view path, std::size_t maxBytes) const {
     const auto key = lookupKey(path);
     if (!virtualPath(key)) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, "Invalid virtual path"});
@@ -358,6 +372,18 @@ Result<Blob> Vfs::open(std::string_view path) const {
     const auto loose = impl_->loose.find(key);
     for (std::size_t i = 0; i < impl_->mounts.size(); ++i) {
         if (loose != impl_->loose.end() && loose->second.mount == i) {
+            if (maxBytes != std::numeric_limits<std::size_t>::max()) {
+                std::ifstream input(loose->second.path, std::ios::binary);
+                if (!input) return std::unexpected(Error{ErrorCode::IoError, "Cannot read " + key});
+                // Asset probes are small; reject sizes that cannot fit streamsize.
+                if (maxBytes > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()))
+                    return std::unexpected(Error{ErrorCode::InvalidArgument, "Prefix too large"});
+                Blob bytes(maxBytes);
+                input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(maxBytes));
+                if (input.bad()) return std::unexpected(Error{ErrorCode::IoError, "Cannot read " + key});
+                bytes.resize(static_cast<std::size_t>(input.gcount()));
+                return bytes;
+            }
             auto bytes = readText(loose->second.path);
             if (!bytes) {
                 return std::unexpected(bytes.error());
@@ -371,6 +397,7 @@ Result<Blob> Vfs::open(std::string_view path) const {
             if (!bytes) {
                 return std::unexpected(Error{ErrorCode::IoError, "Cannot read VPK entry " + key});
             }
+            if (bytes->size() > maxBytes) bytes->resize(maxBytes);
             return std::move(*bytes);
         }
     }

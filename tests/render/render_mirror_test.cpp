@@ -10,6 +10,8 @@
 #include "render/view_math.hpp"
 #include "editor/preview.hpp"
 #include "editor/pick_index.hpp"
+#include "editor/instance_expansion.hpp"
+#include "../editor/corpus.hpp"
 
 #include <doctest/doctest.h>
 #include <vtfpp/VTF.h>
@@ -130,8 +132,9 @@ struct Scene {
     RenderMirror mirror;
     std::size_t token = 0;
 
-    explicit Scene(Gpu& g, std::unique_ptr<document::Document> document = loadMap())
-        : doc(std::move(document)), mirror(*g.context, *g.heap, g.jobs, *g.cache) {
+    explicit Scene(Gpu& g, std::unique_ptr<document::Document> document = loadMap(),
+                   const assets::EntityClassTable* classes = nullptr)
+        : doc(std::move(document)), mirror(*g.context, *g.heap, g.jobs, *g.cache, classes) {
         mirror.rebuild(*doc);
         REQUIRE(mirror.settle());
         token = doc->observe([this](const document::ChangeSet& c) { mirror.apply(*doc, c); });
@@ -969,4 +972,661 @@ TEST_CASE("mirror: translucent faces win against a coplanar opaque face") {
     const Px centre = at(image, kSize / 2, kSize / 2);
     CHECK(centre.g > 40);
     CHECK(centre.r > 40);
+}
+
+TEST_CASE("mirror rotated asymmetric entity box follows angles in offscreen coverage") {
+    REQUIRE_GPU();
+    assets::EntityClassTable classes;
+    assets::EntityClass cls;
+    cls.name = "asymmetric";
+    cls.type = "PointClass";
+    cls.mins = {-8, -2, -2};
+    cls.maxs = {8, 2, 2};
+    cls.color = {255, 0, 0};
+    classes.classes.emplace(cls.name, cls);
+    for (const auto angles : {"0 90 0", "0 -90 0", "0 0 0"}) {
+        CAPTURE(angles);
+        auto file = vmf::parse(std::string("entity { id 1 classname asymmetric origin \"0 0 0\" angles \"") + angles + "\" }");
+        REQUIRE(file);
+        document::Document doc(*file);
+        RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache, &classes);
+        mirror.rebuild(doc);
+        REQUIRE(mirror.settle());
+        REQUIRE(mirror.entityBoxCount() == 1);
+        const bool rotated = std::string_view(angles) != "0 0 0";
+        // A +X view at y = +/-6 intersects only the rotated box. The +Y view at x =
+        // +/-6 intersects only the unrotated box. Both signs guard against a shifted box.
+        for (const double side : {-6.0, 6.0}) {
+            CAPTURE(side);
+            const auto alongX = drawFrame(*g, mirror, DisplayMode::Flat, false,
+                                          makeView({-32, side, 0}, {0, 0, 0}));
+            const auto alongY = drawFrame(*g, mirror, DisplayMode::Flat, false,
+                                          makeView({side, -32, 0}, {0, 90, 0}));
+            CHECK(isBackground(at(alongX, kSize / 2, kSize / 2)) == !rotated);
+            CHECK(isBackground(at(alongY, kSize / 2, kSize / 2)) == rotated);
+        }
+    }
+}
+
+TEST_CASE("mirror point entity with an iconsprite draws a billboard in place of its box") {
+    REQUIRE_GPU();
+    assets::EntityClassTable classes;
+    assets::EntityClass cls;
+    cls.name = "iconed";
+    cls.type = "PointClass";
+    cls.mins = {-8, -8, -8};
+    cls.maxs = {8, 8, 8};
+    cls.color = {255, 0, 0};
+    cls.iconSprite = "test/green.vmt";
+    classes.classes.emplace(cls.name, cls);
+    cls.name = "plain";
+    cls.iconSprite.clear();
+    classes.classes.emplace(cls.name, cls);
+    auto file = vmf::parse("entity { id 1 classname iconed origin \"0 0 0\" } entity { id 2 classname plain origin \"64 0 0\" }");
+    REQUIRE(file);
+    document::Document doc(*file);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache, &classes);
+    mirror.rebuild(doc);
+    REQUIRE(mirror.settle());
+    MirrorViewOptions options;
+    options.view = makeView({-32, 0, 0}, {0, 0, 0});
+    {
+        const DrawList list = mirror.buildDrawList(options);
+        CHECK(list.sprites.size() == 1); // The entity without an icon keeps its box.
+        CHECK(list.boxes.size() == 1);
+    }
+    // The sprite faces the camera from any side, in the icon's colour rather than the class colour.
+    for (const auto& [position, angles] : {std::pair{DVec3{-32, 0, 0}, DVec3{0, 0, 0}}, std::pair{DVec3{0, -32, 0}, DVec3{0, 90, 0}},
+                                           std::pair{DVec3{-24, -24, 16}, DVec3{25, 45, 0}}}) {
+        CAPTURE(position.x); CAPTURE(position.y);
+        const auto image = drawFrame(*g, mirror, DisplayMode::Textured, false, makeView(position, angles));
+        const Px centre = at(image, kSize / 2, kSize / 2);
+        CHECK(centre.g > 150);
+        CHECK(centre.r < 80);
+    }
+    options.showEntities = false;
+    CHECK(mirror.buildDrawList(options).sprites.empty());
+}
+
+// --- Entity helpers (D5) -----------------------------------------------------------------------
+
+namespace {
+
+assets::EntityClass helperClass(std::string name, std::vector<assets::EntityHelper> helpers,
+                                std::vector<std::pair<std::string, std::string>> properties = {}) {
+    assets::EntityClass cls;
+    cls.name = std::move(name);
+    cls.type = "PointClass";
+    cls.helpers = std::move(helpers);
+    cls.mins = {-4, -4, -4};
+    cls.maxs = {4, 4, 4};
+    for (auto& [key, type] : properties) {
+        assets::EntityProperty property;
+        property.name = std::move(key);
+        property.type = std::move(type);
+        cls.properties.push_back(std::move(property));
+    }
+    return cls;
+}
+
+assets::EntityClassTable tableOf(std::vector<assets::EntityClass> classes) {
+    assets::EntityClassTable table;
+    for (auto& cls : classes) table.classes.emplace(toLowerAscii(cls.name), std::move(cls));
+    return table;
+}
+
+std::unique_ptr<document::Document> documentOf(const std::string& text) {
+    auto file = vmf::parse(text);
+    REQUIRE(file.has_value());
+    return std::make_unique<document::Document>(*file);
+}
+
+document::NodeId idOf(const document::Document& doc, std::string_view classname) {
+    const auto handle = findEntity(doc, classname);
+    REQUIRE(handle);
+    return doc.get(*handle)->id;
+}
+
+void select(RenderMirror& mirror, std::vector<document::NodeId> ids) {
+    Highlight h;
+    h.selected = std::move(ids);
+    mirror.setHighlight(h);
+}
+
+} // namespace
+
+TEST_CASE("mirror helpers: line() follows a rename and a deleted target") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_line", {{"line", "255 255 255,targetname,target"}}, {{"target", "target_destination"}})});
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname helper_line origin "0 0 0" target "dest" }
+        entity { id 2 classname info_target origin "100 0 0" targetname "Dest" })"), &classes);
+    const auto line = idOf(*scene.doc, "helper_line"), target = idOf(*scene.doc, "info_target");
+    const MirrorViewOptions options;
+
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty()); // Neither end is selected.
+    select(scene.mirror, {line});
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1);
+    CHECK(list.worldSegments[0].a == DVec3(0, 0, 0));
+    CHECK(list.worldSegments[0].b == DVec3(100, 0, 0));
+    select(scene.mirror, {target});
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.size() == 1); // Selecting the peer shows it too.
+
+    const auto rename = [&](const char* name) {
+        auto tx = scene.doc->begin("rename");
+        tx.setKeyValue(*findEntity(*scene.doc, "info_target"), "targetname", name);
+        tx.commit();
+    };
+    const auto move = [&](const char* origin) {
+        auto tx = scene.doc->begin("move");
+        tx.setKeyValue(*findEntity(*scene.doc, "info_target"), "origin", origin);
+        tx.commit();
+    };
+    rename("elsewhere");
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty());
+    rename("dest");
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.size() == 1);
+    move("0 64 0");
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1);
+    CHECK(list.worldSegments[0].b == DVec3(0, 64, 0));
+
+    auto tx = scene.doc->begin("delete target");
+    tx.destroy(*findEntity(*scene.doc, "info_target"));
+    tx.commit();
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty());
+    // A target created later is picked up without touching the line entity.
+    auto create = scene.doc->begin("add target");
+    auto block = kv1::Node::block("entity");
+    for (const auto& [key, value] : std::vector<std::pair<const char*, const char*>>{
+             {"id", "9"}, {"classname", "info_target"}, {"origin", "7 8 9"}, {"targetname", "DEST"}})
+        REQUIRE(block.append(kv1::Node::value(key, value)));
+    create.create(block);
+    create.commit();
+    select(scene.mirror, {line});
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1);
+    CHECK(list.worldSegments[0].b == DVec3(7, 8, 9));
+}
+
+TEST_CASE("mirror helpers: sphere() radius follows its key and appears only while selected") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_sphere", {{"sphere", "radius"}}, {{"radius", "float"}})});
+    Scene scene(*g, documentOf(R"(entity { id 1 classname helper_sphere origin "10 20 30" radius "64" })"), &classes);
+    const auto id = idOf(*scene.doc, "helper_sphere");
+    const MirrorViewOptions options;
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty());
+    select(scene.mirror, {id});
+    const auto distance = [&] {
+        const auto list = scene.mirror.buildDrawList(options);
+        CHECK(list.worldSegments.size() == 144);
+        double worst = 0;
+        for (const auto& segment : list.worldSegments) {
+            worst = std::max({worst, std::abs(glm::length(segment.a - DVec3(10, 20, 30)) - glm::length(segment.b - DVec3(10, 20, 30)))});
+        }
+        CHECK(worst < 1e-9);
+        return list.worldSegments.empty() ? 0.0 : glm::length(list.worldSegments[0].a - DVec3(10, 20, 30));
+    };
+    CHECK(distance() == doctest::Approx(64.0));
+    auto tx = scene.doc->begin("radius");
+    tx.setKeyValue(*findEntity(*scene.doc, "helper_sphere"), "radius", "32");
+    tx.commit();
+    CHECK(distance() == doctest::Approx(32.0));
+    MirrorViewOptions hidden;
+    hidden.showEntities = false;
+    CHECK(scene.mirror.buildDrawList(hidden).worldSegments.empty());
+}
+
+TEST_CASE("mirror helpers: entity names are labels only on request") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_text", {{"worldtext", ""}}, {{"message", "string"}})});
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname info_target origin "1 2 3" targetname "Alpha" }
+        entity { id 2 classname info_target origin "4 5 6" }
+        entity { id 3 classname helper_text origin "7 8 9" message "hello" })"), &classes);
+    MirrorViewOptions options;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.labels.size() == 1); // worldtext only.
+    CHECK(list.labels[0].text == "hello");
+    options.showEntityNames = true;
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.labels.size() == 2); // The unnamed entity gets none.
+    const auto named = std::ranges::find(list.labels, "Alpha", &Label::text);
+    REQUIRE(named != list.labels.end());
+    CHECK(named->position == DVec3(1, 2, 3));
+}
+
+TEST_CASE("mirror helpers: brush entities centre on their solids and can be line targets") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_brush", {{"sphere", "radius"}}, {{"radius", "float"}}),
+                                  helperClass("helper_pointer", {{"line", "255 255 255, targetname, target"}},
+                                              {{"target", "target_destination"}})});
+    Scene scene(*g, documentOf("entity { id 1 classname helper_pointer origin \"0 0 0\" target door }\n"
+                               "entity { id 2 classname helper_brush targetname door radius 8\n" +
+                               boxSolid(3, {0, 0, 0}, {64, 64, 32}, "test/red") + "}\n"),
+                &classes);
+    REQUIRE(scene.mirror.settle());
+    CHECK(scene.mirror.entityBoxCount() == 1); // The point entity only; the brush entity has no box.
+    MirrorViewOptions options;
+    select(scene.mirror, {idOf(*scene.doc, "helper_pointer")});
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1); // The line to the brush entity.
+    CHECK(list.worldSegments[0].b == DVec3(32, 32, 16));
+    // Selecting the brush entity's solid draws its own sphere around the bounds centre.
+    select(scene.mirror, {static_cast<document::NodeId>(3)});
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 1 + 3 * 48);
+}
+
+TEST_CASE("mirror helpers: sidelist highlights its SideIds through a vertex edit that keeps them") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("helper_sides", {{"sidelist", ""}}, {{"sides", "sidelist"}})});
+    Scene scene(*g, loadMap(), &classes);
+    const auto red = findSolid(*scene.doc, "test/red");
+    REQUIRE(red);
+    const int side = *scene.doc->get(*red)->block->find("side")->find("id")->asInt();
+    auto create = scene.doc->begin("add sidelist entity");
+    auto block = kv1::Node::block("entity");
+    for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
+             {"id", "9000"}, {"classname", "helper_sides"}, {"origin", "0 0 200"}, {"sides", std::to_string(side) + " 99999"}})
+        REQUIRE(block.append(kv1::Node::value(key, value)));
+    const auto entity = create.create(block);
+    create.commit();
+    REQUIRE(scene.mirror.settle());
+    const MirrorViewOptions options;
+
+    const auto outlines = [&] { return scene.mirror.buildDrawList(options).outlines.size(); };
+    CHECK(outlines() == 0);
+    select(scene.mirror, {scene.doc->get(entity)->id});
+    CHECK(outlines() == 1); // The listed face; the unknown id highlights nothing.
+
+    auto geometry = geometry::solidGeometry(*scene.doc->get(*red)->block);
+    REQUIRE(geometry);
+    for (auto& p : geometry->poly.vertices) p.x += 8;
+    for (auto& face : geometry->poly.faces) face.plane = geometry->poly.derivePlane(face).value();
+    auto edit = scene.doc->begin("shift solid");
+    edit.setSolidGeometry(std::get<Handle<document::Solid>>(*red), *geometry);
+    edit.commit();
+    REQUIRE(scene.mirror.settle());
+    CHECK(*scene.doc->get(*red)->block->find("side")->find("id")->asInt() == side);
+    CHECK(outlines() == 1);
+}
+
+TEST_CASE("mirror helpers: golden images per helper kind") {
+    REQUIRE_GPU();
+    struct Kind {
+        const char* name;
+        assets::EntityHelper helper;
+        std::vector<std::pair<std::string, std::string>> properties;
+        std::string keys, extra;
+    };
+    const std::vector<Kind> kinds{
+        {"sphere", {"sphere", "radius"}, {{"radius", "float"}}, R"(radius "48")", ""},
+        {"line", {"line", "255 128 0,targetname,target"}, {{"target", "target_destination"}}, R"(target "t")",
+         R"(entity { id 2 classname info_target origin "0 0 80" targetname "t" })"},
+        {"wirebox", {"wirebox", "mins,maxs"}, {{"mins", "vector"}, {"maxs", "vector"}}, R"(mins "-30 -20 -10" maxs "30 20 40")", ""},
+        {"frustum", {"frustum", "fov,near,far"}, {{"fov", "float"}, {"near", "float"}, {"far", "float"}},
+         R"(fov "60" near "8" far "96" angles "0 0 0")", ""},
+        {"cylinder", {"cylinder", "0 200 255,targetname,target,radius"}, {{"target", "target_destination"}, {"radius", "float"}},
+         R"(target "t" radius "20")", R"(entity { id 2 classname info_target origin "0 0 80" targetname "t" })"},
+        {"lightcone", {"lightcone", ""}, {{"_cone", "float"}, {"_distance", "float"}}, R"(_cone "30" _distance "96" angles "0 0 0")", ""},
+        {"rectangle", {"orientedwidthheight", "width,height"}, {{"width", "float"}, {"height", "float"}},
+         R"(width "80" height "40" angles "0 45 0")", ""},
+        {"catapult", {"catapult", ""}, {{"playerSpeed", "float"}, {"launchDirection", "angle"}},
+         R"(playerSpeed "400" launchDirection "-60 0 0")", ""},
+        {"chain", {"keyframe", ""}, {{"nextkey", "target_destination"}}, R"(nextkey "t")",
+         R"(entity { id 2 classname info_target origin "0 0 80" targetname "t" })"},
+    };
+    for (const auto& kind : kinds) {
+        CAPTURE(kind.name);
+        const auto classes = tableOf({helperClass("helper_kind", {kind.helper}, kind.properties)});
+        Scene scene(*g, documentOf("entity { id 1 classname helper_kind origin \"0 0 0\" " + kind.keys + " }\n" + kind.extra), &classes);
+        select(scene.mirror, {idOf(*scene.doc, "helper_kind")});
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Flat;
+        options.view = makeView({-200, -150, 120}, {25.6, 36.9, 0});
+        auto list = scene.mirror.buildDrawList(options);
+        CHECK_FALSE(list.worldSegments.empty());
+        list.viewportSize = Vec2(static_cast<float>(kSize));
+        const auto render = [&](const DrawList& drawn) {
+            REQUIRE(g->context->oneShot([&](VkCommandBuffer commands) {
+                g->target.begin(commands, kClear);
+                g->renderer->record(commands, drawn);
+                g->target.end(commands);
+            }));
+            auto readback = g->target.readback();
+            REQUIRE(readback);
+            return *readback;
+        };
+        const auto image = render(list);
+        // Hardware tolerance would pass a render that ignores the helper, so require the helper's own pixels.
+        auto without = list;
+        without.worldSegments.clear();
+        const auto bare = render(without);
+        std::size_t differing = 0;
+        for (std::size_t i = 0; i + 3 < image.pixels.size(); i += 4)
+            if (!std::equal(image.pixels.begin() + i, image.pixels.begin() + i + 4, bare.pixels.begin() + i)) ++differing;
+        CHECK(differing >= 10);
+        CHECK(g->context->validation().errorCount() == 0);
+        golden::check(std::string("helper_") + kind.name, image, *g->context);
+    }
+}
+
+TEST_CASE("Icon sprites of entities inside an instance are drawn") {
+    REQUIRE_GPU();
+    assets::EntityClassTable classes;
+    assets::EntityClass cls;
+    cls.name = "iconed";
+    cls.type = "PointClass";
+    cls.iconSprite = "test/green.vmt";
+    classes.classes.emplace(cls.name, cls);
+    g->tree.put("icons.vmf", R"(entity { classname iconed origin "16 0 0" })");
+    auto file = vmf::parse(R"(entity { classname func_instance file icons.vmf origin "64 0 0" })"); REQUIRE(file);
+    document::Document parent(*file);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 1);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache, &classes);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    MirrorViewOptions options;
+    CHECK(mirror.buildDrawList(options).sprites.size() == 1);
+    options.iconNearest = true; // Rebuilds the sprite buffers of the mirror and of its instances.
+    CHECK(mirror.buildDrawList(options).sprites.size() == 1);
+}
+
+TEST_CASE("Nested instance path labels follow the owner's selection and hover") {
+    REQUIRE_GPU();
+    g->tree.put("outer.vmf", R"(entity { classname func_instance file inner.vmf origin "64 0 0" })");
+    g->tree.put("inner.vmf", readFixture("render_map.vmf"));
+    auto file = vmf::parse(R"(entity { classname func_instance file outer.vmf })"); REQUIRE(file);
+    document::Document parent(*file);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 2);
+    REQUIRE(expansion.contents()[1].depth == 2);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    const auto texts = [&] {
+        std::vector<std::string> out;
+        for (const auto& label : mirror.buildDrawList({}).labels) out.push_back(label.text);
+        std::ranges::sort(out);
+        return out;
+    };
+    CHECK(texts().empty()); // Everything resolved: neither the placed instance nor the nested one is labelled.
+    Highlight h;
+    h.selected = {expansion.contents()[0].instance};
+    mirror.setHighlight(h);
+    CHECK(texts() == std::vector<std::string>{"inner.vmf", "outer.vmf"});
+    h.selected.clear();
+    h.hover = expansion.contents()[0].instance;
+    mirror.setHighlight(h);
+    CHECK(texts() == std::vector<std::string>{"inner.vmf", "outer.vmf"});
+    mirror.setHighlight({});
+    CHECK(texts().empty());
+}
+
+TEST_CASE("Instance mirror shares placements fixes materials and reloads only template users") {
+    REQUIRE_GPU();
+    auto templateBytes = readFixture("render_map.vmf");
+    for (auto pos = templateBytes.find("test/red"); pos != std::string::npos; pos = templateBytes.find("test/red", pos + 9))
+        templateBytes.replace(pos, 8, "$material");
+    g->tree.put("instance-a.vmf", templateBytes);
+    g->tree.put("instance-b.vmf", readFixture("render_map.vmf"));
+    auto file = vmf::parse(R"(
+        entity { classname func_instance targetname same file instance-a.vmf replace01 "$material test/red" }
+        entity { classname func_instance targetname same file instance-a.vmf replace01 "$material test/red" origin "600 0 0" }
+        entity { classname func_instance file instance-b.vmf origin "-600 0 0" }
+        entity { classname func_instance file absent.vmf origin "0 600 0" }
+    )"); REQUIRE(file);
+    document::Document parent(*file);
+    const auto before = parent.write().value();
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 3);
+    REQUIRE(expansion.problems().size() == 1);
+    CHECK(expansion.problems()[0].file == "absent.vmf");
+    CHECK(expansion.contents()[0].keys == expansion.contents()[1].keys);
+    const auto templateBefore = expansion.contents()[0].templ->write().value();
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    auto list = mirror.buildDrawList({});
+    REQUIRE_FALSE(list.meshes.empty());
+    const auto stats = mirror.instanceStats();
+    CHECK(stats.drawnSolids == 12);
+    CHECK(stats.uniqueSolids == 8);
+    CHECK(stats.meshBytes > 0);
+    // Only the unresolved instance is labelled until a resolved one is selected or hovered.
+    CHECK(list.labels.size() == 1);
+    CHECK(std::ranges::any_of(list.labels, [](const auto& label) { return label.text == "absent.vmf"; }));
+    {
+        Highlight h;
+        h.selected = {expansion.contents()[2].instance};
+        mirror.setHighlight(h);
+        auto selected = mirror.buildDrawList({});
+        CHECK(std::ranges::any_of(selected.labels, [](const auto& label) { return label.text == "instance-b.vmf"; }));
+        CHECK(selected.labels.size() == 2);
+        h.selected.clear();
+        h.hover = expansion.contents()[0].instance;
+        mirror.setHighlight(h);
+        auto hovered = mirror.buildDrawList({});
+        CHECK(std::ranges::any_of(hovered.labels, [](const auto& label) { return label.text == "instance-a.vmf"; }));
+        CHECK(hovered.labels.size() == 2);
+        mirror.setHighlight({});
+    }
+    const auto* stableBuffer = list.meshes.back().vertices;
+    // A material replacement reaches the real textured draw, not just an expansion key.
+    const auto normal = drawFrame(*g, mirror, DisplayMode::Textured);
+    CHECK(count(normal, [](Px p) { return p.r > 150 && p.g < 80 && p.b < 80; }) > 0);
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Tinted);
+    const auto tinted = drawFrame(*g, mirror, DisplayMode::Textured);
+    CHECK(tinted.pixels != normal.pixels);
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Hidden);
+    const auto hiddenList = mirror.buildDrawList({});
+    CHECK(hiddenList.meshes.empty());
+    CHECK(hiddenList.boxes.size() == 4);
+    CHECK(mirror.instanceStats().drawnSolids == 0);
+    mirror.resetStats();
+    mirror.setInstanceContents(expansion.contents());
+    mirror.buildDrawList({});
+    CHECK(mirror.instanceStats().jobsSubmitted == 0);
+    CHECK(mirror.instanceStats().solidsRemeshed == 0);
+    CHECK(parent.write().value() == before);
+    CHECK(expansion.contents()[0].templ->write().value() == templateBefore);
+    // An entity-only reload keeps every solid buffer, including the unrelated B template.
+    g->tree.put("instance-a.vmf", templateBytes + "\nentity { classname info_target origin \"100 0 0\" }\n");
+    const auto reload = expansion.invalidate(g->tree.root / "instance-a.vmf");
+    REQUIRE_FALSE(reload.problem);
+    CHECK(reload.users.size() == 2);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    list = mirror.buildDrawList({});
+    CHECK(list.meshes.back().vertices == stableBuffer);
+    CHECK(mirror.instanceStats().solidsRemeshed == 0);
+    // One changed solid is remeshed once, shared by both placements.
+    auto changed = templateBytes;
+    for (auto pos = changed.find("test/floor"); pos != std::string::npos; pos = changed.find("test/floor", pos + 9))
+        changed.replace(pos, 10, "test/blue");
+    g->tree.put("instance-a.vmf", changed + "\nentity { classname info_target origin \"100 0 0\" }\n");
+    CHECK_FALSE(expansion.invalidate(g->tree.root / "instance-a.vmf").problem);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    mirror.resetStats();
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    CHECK(mirror.instanceStats().solidsRemeshed == 1);
+    CHECK(mirror.buildDrawList({}).meshes.back().vertices == stableBuffer);
+    const auto good = expansion.contents()[0].keys;
+    g->tree.put("instance-a.vmf", "world {");
+    CHECK(expansion.invalidate(g->tree.root / "instance-a.vmf").problem.has_value());
+    expansion.update(parent, g->tree.root / "map.vmf");
+    mirror.resetStats();
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    CHECK(expansion.contents()[0].keys == good);
+    CHECK(mirror.instanceStats().jobsSubmitted == 0);
+    CHECK(parent.write().value() == before);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("Instance mirror opened hidden does not request frames forever") {
+    REQUIRE_GPU();
+    g->tree.put("instance-hidden.vmf", readFixture("render_map.vmf"));
+    auto file = vmf::parse(R"(entity { classname func_instance file instance-hidden.vmf })");
+    REQUIRE(file);
+    document::Document parent(*file);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.contents().size() == 1);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Hidden);
+    mirror.settle();
+    mirror.buildDrawList({});
+    CHECK_FALSE(mirror.needsRedraw());
+    // Showing the contents wakes the viewport again.
+    mirror.setInstanceContents(expansion.contents(), document::InstanceVisibility::Normal);
+    CHECK(mirror.needsRedraw());
+}
+
+TEST_CASE("Instance corpus draws every resolvable nested template and reports largest map cost") {
+    const auto paths = editor_test::corpusPaths();
+    if (paths.empty()) { MESSAGE("APEX_P2CE_DIR unset; skipping instance drawing corpus"); return; }
+    REQUIRE_GPU();
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(std::getenv("APEX_P2CE_DIR")) / "p2ce";
+    auto loadedVfs = assets::Vfs::load(profile, g->jobs); REQUIRE(loadedVfs);
+    assets::MaterialCache materials(*loadedVfs, g->jobs);
+    assets::ModelCache models(*loadedVfs, g->jobs);
+    auto heap = TextureHeap::create(*g->context); REQUIRE(heap);
+    editor::InstanceTemplates templates;
+    std::filesystem::path largest;
+    std::size_t largestSolids = 0, maps = 0, solids = 0;
+    // Independent file traversal: count visible source solids and follow fixed nested files.
+    const auto expected = [&](const document::Document& doc, const std::filesystem::path& map) {
+        std::vector<std::filesystem::path> ancestors;
+        const auto count = [&](const auto& self, const document::Document& current, const std::filesystem::path& referring,
+                               const std::optional<document::InstanceFixup>& fixup) -> std::size_t {
+            std::size_t total = 0;
+            const auto walk = [&](const auto& visit, document::NodeId id) -> void {
+                const auto handle = *current.handle(id);
+                const auto* node = current.get(handle);
+                if (node->block->key() == "hidden") return;
+                if (fixup && std::holds_alternative<Handle<document::Solid>>(handle)) ++total;
+                if (std::holds_alternative<Handle<document::Entity>>(handle)) {
+                    auto block = fixup ? document::fixedInstanceKeys(*node->block, *fixup) : *node->block;
+                    const auto* cls = block.find("classname");
+                    const auto* file = block.find("file");
+                    if (cls && file && cls->decodedValue().value_or("") == "func_instance") {
+                        auto path = editor::resolveInstanceFile(referring, file->decodedValue().value_or(""), profile.gameDirectory / "maps");
+                        if (path) {
+                            auto loaded = templates.load(*path, ancestors);
+                            if (loaded) {
+                                ancestors.push_back(*path);
+                                total += self(self, **loaded, *path, document::InstanceFixup::parse(block));
+                                ancestors.pop_back();
+                            }
+                        }
+                    }
+                }
+                for (auto child : node->children) visit(visit, child);
+            };
+            for (auto root : current.roots()) walk(walk, root);
+            return total;
+        };
+        return count(count, doc, map, {});
+    };
+    for (const auto& path : paths) {
+        document::Document doc(editor_test::readCorpus(path));
+        CAPTURE(path.string());
+        editor::InstanceExpansion expansion(templates);
+        expansion.update(doc, path, profile.gameDirectory / "maps");
+        if (expansion.contents().empty()) continue;
+        const auto want = expected(doc, path);
+        RenderMirror mirror(*g->context, **heap, g->jobs, materials, nullptr, &models,
+                            [&](const std::string& material) { return loadedVfs->exists(material); });
+        // This pass measures contents only. The largest-map pass below includes the parent.
+        document::ChangeSet owners;
+        for (const auto& content : expansion.contents()) owners.created.push_back(*doc.handle(content.instance));
+        mirror.apply(doc, owners);
+        mirror.setInstanceContents(expansion.contents());
+        REQUIRE(mirror.settle());
+        mirror.buildDrawList({});
+        CHECK(mirror.instanceStats().drawnSolids == want);
+        ++maps;
+        solids += want;
+        if (want > largestSolids) { largestSolids = want; largest = path; }
+    }
+    REQUIRE(maps > 0);
+    document::Document doc(editor_test::readCorpus(largest));
+    assets::MaterialCache coldMaterials(*loadedVfs, g->jobs);
+    assets::ModelCache coldModels(*loadedVfs, g->jobs);
+    const auto start = std::chrono::steady_clock::now();
+    editor::InstanceTemplates coldTemplates;
+    editor::InstanceExpansion expansion(coldTemplates);
+    expansion.update(doc, largest, profile.gameDirectory / "maps");
+    const auto expanded = std::chrono::steady_clock::now();
+    RenderMirror mirror(*g->context, **heap, g->jobs, coldMaterials, nullptr, &coldModels,
+                        [&](const std::string& material) { return loadedVfs->exists(material); });
+    mirror.rebuild(doc);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    const auto image = drawFrame(*g, mirror, DisplayMode::Textured);
+    CHECK_FALSE(image.pixels.empty());
+    const auto done = std::chrono::steady_clock::now();
+    std::size_t copyBytes = 0;
+    std::set<const document::Document*> unique;
+    for (const auto& content : expansion.contents()) if (unique.insert(content.keys.get()).second)
+        for (auto h : editor_test::nodes(*content.keys)) copyBytes += content.keys->get(h)->block->memory();
+    std::cout << "[instance corpus] maps=" << maps << " drawn_solids=" << solids
+              << " largest=" << largest.string() << " solids=" << largestSolids
+              << " expansion_ms=" << std::chrono::duration<double, std::milli>(expanded - start).count()
+              << " expand_draw_ms=" << std::chrono::duration<double, std::milli>(done - start).count()
+              << " mirror_mesh_bytes=" << mirror.meshBytes()
+              << " instance_mesh_bytes=" << mirror.instanceStats().meshBytes
+              << " mirror_texture_bytes=" << mirror.textureBytes()
+              << " instance_texture_bytes=" << mirror.instanceStats().textureBytes
+              << " fixed_key_bytes=" << copyBytes
+              << " placements=" << mirror.instanceStats().placements
+              << " unique_solids=" << mirror.instanceStats().uniqueSolids << '\n';
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("Instance mirror draws nested fixture solids with composed world transforms") {
+    REQUIRE_GPU();
+    g->tree.put("nested-inner.vmf", readFixture("render_map.vmf"));
+    g->tree.put("nested-outer.vmf", readFixture("render_map.vmf") + R"(
+        entity { classname func_instance file nested-inner.vmf origin "32 0 0" angles "19 23 37" }
+        hidden { entity { classname func_instance file nested-inner.vmf } }
+    )");
+    auto file = vmf::parse(R"(entity { classname func_instance file nested-outer.vmf origin "1000000 2000000 0" angles "31 47 13" })"); REQUIRE(file);
+    document::Document parent(*file);
+    const auto before = parent.write().value();
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(parent, g->tree.root / "map.vmf");
+    REQUIRE(expansion.problems().empty());
+    REQUIRE(expansion.contents().size() == 2);
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(parent);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    const auto list = mirror.buildDrawList({});
+    CHECK(mirror.instanceStats().drawnSolids == 8);
+    REQUIRE_FALSE(list.meshes.empty());
+    CHECK(list.previews[list.meshes.front().previewIndex - 1].matrix == expansion.contents()[0].transform);
+    CHECK(list.previews[list.meshes.back().previewIndex - 1].matrix == expansion.contents()[1].transform);
+    const auto image = drawFrame(*g, mirror, DisplayMode::Flat, false, makeView({999780.0, 1999830.0, 130.0}, {23.0, 38.0, 0.0}));
+    CHECK(count(image, [](Px p) { return p.r > 60 || p.g > 60 || p.b > 60; }) > 0);
+    CHECK(parent.write().value() == before);
 }

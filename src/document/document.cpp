@@ -335,7 +335,36 @@ kv1::Node Document::exportNode(NodeId id) const {
 Result<std::string> Document::write() const {
     auto output = source_;
     exportChildren(output.root(), roots_, rootSlots(source_, originalRoots_));
+    if (!viewSettings_.empty()) {
+        auto* settings = output.root().find("viewsettings");
+        if (!settings) {
+            output.root().append(kv1::Node::block("viewsettings")).value();
+            settings = output.root().find("viewsettings");
+        }
+        for (const auto& [key, value] : viewSettings_) {
+            if (auto* entry = settings->find(key)) entry->setValue(value).value();
+            else settings->append(kv1::Node::value(key, value)).value();
+        }
+    }
     return kv1::write(output);
+}
+std::optional<std::string> Document::viewSetting(std::string_view key) const {
+    for (const auto& [name, value] : viewSettings_) if (ciEquals(name, key)) return value;
+    for (auto id : roots_) {
+        const auto* n = get(*handle(id));
+        if (!ciEquals(n->block->key(), "viewsettings")) continue;
+        if (const auto* entry = n->block->find(key)) return entry->decodedValue().value_or("");
+    }
+    return {};
+}
+void Document::setViewSetting(std::string key, std::string value) {
+    if (active_ || notifying_) throw std::logic_error("view settings changed during a document edit");
+    if (viewSetting(key) == value) return;
+    for (auto it = viewSettings_.begin(); it != viewSettings_.end(); ++it) {
+        if (ciEquals(it->first, key)) { viewSettings_.erase(it); break; }
+    }
+    viewSettings_.emplace(std::move(key), std::move(value));
+    notify({});
 }
 Result<vmf::VmfFile> Document::toVmf() const {
     auto bytes = write();
@@ -800,6 +829,51 @@ void Transaction::setKeyValueOccurrence(NodeHandle h, std::string key, std::size
         return;
     }
     throw std::invalid_argument("missing key occurrence");
+}
+void Transaction::setEntityKeyValueEntry(NodeHandle entity, std::size_t index, std::string key, std::string text) {
+    const auto id = checked(entity);
+    const auto& original = *doc_->node(id)->block;
+    if (!std::holds_alternative<Handle<Entity>>(entity) || index >= original.children().size())
+        throw std::invalid_argument("missing entity scalar entry");
+    const auto& entry = original.children()[index];
+    if (entry.kind() != kv1::NodeKind::Value || identity(entry.key(), original) || identity(key, original) || key.empty())
+        throw std::invalid_argument("cannot edit structural or identity entry");
+    if (entry.key() == key && entry.decodedValue() == text) return;
+    auto block = original;
+    auto& changed = block.children()[index];
+    changed.setKey(std::move(key));
+    const auto result = changed.setValue(std::move(text));
+    if (!result) throw std::invalid_argument(result.error().what());
+    touch(id, Dirty::KeyValues);
+    doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
+    key_.reset();
+    ++operations_;
+}
+void Transaction::setConnections(NodeHandle entity, kv1::Node block) {
+    const auto id = checked(entity);
+    if (!std::holds_alternative<Handle<Entity>>(entity) ||
+        block.kind() != kv1::NodeKind::Block || !ciEquals(block.key(), "connections"))
+        throw std::invalid_argument("setConnections needs an entity and connections block");
+    for (const auto& child : block.children())
+        if (child.kind() != kv1::NodeKind::Value)
+            throw std::invalid_argument("connections entries must be scalar values");
+    NodeId existing = 0;
+    for (const auto child : doc_->node(id)->children) {
+        if (!ciEquals(doc_->node(child)->block->key(), "connections")) continue;
+        if (existing) throw std::invalid_argument("multiple connections blocks");
+        existing = child;
+    }
+    if (!existing) {
+        if (!block.children().empty()) create(std::move(block), entity);
+        return;
+    }
+    if (!doc_->node(existing)->children.empty())
+        throw std::invalid_argument("connections block has non-scalar children");
+    if (block.children().empty()) { destroy(*doc_->handle(existing)); return; }
+    touch(existing, Dirty::KeyValues);
+    doc_->node(existing)->block = std::make_shared<const kv1::Node>(std::move(block));
+    key_.reset();
+    ++operations_;
 }
 void Transaction::setEditor(NodeHandle h, EditorEdit edit) {
     const auto id = checked(h);

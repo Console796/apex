@@ -28,6 +28,8 @@ struct EditedObjects {
     std::vector<Item> items;
     // Parent group of every group an item can reach (nullopt for an outermost group).
     std::map<NodeId, std::optional<NodeId>> groupParents;
+    // Source side id to created side id, for creations that re-id solids (paste).
+    std::map<int, int> sideIds;
 };
 
 // The selection to show after an edit, in the current selection's mode: Groups (without

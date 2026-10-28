@@ -3,17 +3,21 @@
 #include <memory>
 #include <map>
 #include <string>
+#include <set>
 
 #include <QObject>
 #include <QString>
 #include <QTemporaryDir>
 
 #include "assets/fgd.hpp"
+#include "ui/model_pick.hpp"
 #include "assets/game_profile.hpp"
 #include "render/context.hpp"
 #include "render/render_mirror.hpp"
 #include "render/renderer.hpp"
 #include "render/texture_heap.hpp"
+#include "render/model_inspector.hpp"
+#include "render/model_thumbnail_scheduler.hpp"
 
 class QVulkanInstance;
 
@@ -58,10 +62,20 @@ public:
     document::Document* document() const { return document_; }
 
     render::Renderer* renderer(VkFormat colorFormat);
+    ModelPickCache* modelPicks() { return modelPicks_.get(); }
+    std::uint64_t modelPickRevision() const { return modelPickRevision_; }
     render::RenderMirror* mirror() { return mirror_.get(); }
 
     // Delivers finished mesh/texture jobs; returns true when the scene needs redrawing.
     bool pump();
+    void requestModelThumbnail(const QObject* owner, const QString& path, bool visible);
+    void clearModelThumbnails();
+    void tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting);
+    // The owner's inspected model, loaded and rendered from `view` on demand. Null when there is no
+    // GPU, document or model cache; an empty path releases the owner's model. Not rendered while
+    // `interacting`. The result is valid until the next call.
+    const render::ModelInspection* inspectModel(const QObject* owner, const QString& path,
+                                                const render::ModelView& view, bool interacting);
 
 signals:
     void gpuNameChanged(const QString& name);
@@ -79,6 +93,16 @@ private:
     std::map<VkFormat, std::unique_ptr<render::Renderer>> renderers_;
     std::shared_ptr<const assets::Vfs> vfs_;
     std::unique_ptr<assets::MaterialCache> materials_;
+    std::unique_ptr<assets::ModelCache> models_;
+    std::unique_ptr<render::ModelThumbnailRenderer> thumbnailRenderer_;
+    std::unique_ptr<render::ModelThumbnailScheduler> thumbnailScheduler_;
+    std::map<const QObject*, std::unique_ptr<render::ModelInspector>> inspectors_;
+    assets::ThumbnailCache* thumbnailCache_ = nullptr;
+    std::map<const QObject*, std::set<std::string>> thumbnailRequests_;
+    bool thumbnailTried_ = false;
+    bool ensureThumbnailRenderer();
+    std::unique_ptr<ModelPickCache> modelPicks_;
+    std::uint64_t modelPickRevision_ = 0;
     std::unique_ptr<assets::EntityClassTable> classes_;
     std::unique_ptr<render::RenderMirror> mirror_;
     document::Document* document_ = nullptr;

@@ -154,7 +154,12 @@ void GpuHost::unbind() {
     if (document_ && observerToken_) document_->unobserve(observerToken_);
     observerToken_ = 0;
     if (context_) context_->waitIdle();
+    clearModelThumbnails();
     mirror_.reset();
+    modelPicks_.reset();
+    if (models_) models_->clear();
+    models_.reset();
+    ++modelPickRevision_;
     classes_.reset();
     materials_.reset();
     vfs_.reset();
@@ -165,7 +170,7 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
                           const assets::GameProfile* profile) {
     unbind();
     document_ = document;
-    if (!document || !context_) return;
+    if (!context_) return;
 
     assets::GameProfile effective;
     if (profile) effective = *profile;
@@ -196,7 +201,11 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
             log::warn("viewports: FGD load failed: {}", table.error().what());
         }
     }
-    mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get());
+    models_ = std::make_unique<assets::ModelCache>(*vfs_, *jobs_);
+    modelPicks_ = std::make_unique<ModelPickCache>(*models_);
+    if (!document) return;
+    mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get(),
+        models_.get(), [this](const std::string& path) { return vfs_->exists(path); });
     mirror_->rebuild(*document);
     observerToken_ = document->observe([this](const document::ChangeSet& changes) {
         if (mirror_ && document_) mirror_->apply(*document_, changes);
@@ -204,9 +213,65 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
 }
 
 bool GpuHost::pump() {
-    if (!mirror_) return false;
+    if (!mirror_) { if (jobs_) jobs_->drainCompletions(); return false; }
     mirror_->pump();
+    if (modelPicks_ && modelPicks_->pump()) ++modelPickRevision_;
     return mirror_->needsRedraw();
+}
+
+void GpuHost::clearModelThumbnails() {
+    inspectors_.clear();
+    thumbnailScheduler_.reset();
+    thumbnailCache_ = nullptr;
+    thumbnailRequests_.clear();
+}
+void GpuHost::requestModelThumbnail(const QObject* owner, const QString& path, bool visible) {
+    const auto name = path.toStdString();
+    if (visible) thumbnailRequests_[owner].insert(name);
+    else {
+        if (auto found = thumbnailRequests_.find(owner); found != thumbnailRequests_.end()) {
+            found->second.erase(name);
+            if (found->second.empty()) thumbnailRequests_.erase(found);
+        }
+        if (thumbnailScheduler_ && std::ranges::none_of(thumbnailRequests_, [&](const auto& entry) {
+            return entry.second.contains(name);
+        })) thumbnailScheduler_->drop(name);
+    }
+}
+bool GpuHost::ensureThumbnailRenderer() {
+    if (!thumbnailTried_) {
+        thumbnailTried_ = true;
+        auto renderer = render::ModelThumbnailRenderer::create(*context_, *heap_);
+        if (renderer) thumbnailRenderer_ = std::move(*renderer);
+        else log::warn("model thumbnails: {}", renderer.error().what());
+    }
+    return thumbnailRenderer_ != nullptr;
+}
+const render::ModelInspection* GpuHost::inspectModel(const QObject* owner, const QString& path,
+                                                    const render::ModelView& view, bool interacting) {
+    if (path.isEmpty()) { inspectors_.erase(owner); return nullptr; }
+    if (!context_ || !models_ || !materials_ || !vfs_ || !ensureThumbnailRenderer()) return nullptr;
+    auto& inspector = inspectors_[owner];
+    if (!inspector) inspector = std::make_unique<render::ModelInspector>(
+        *models_, *materials_, [vfs = vfs_](const std::string& name) { return vfs->exists(name); }, *thumbnailRenderer_);
+    return &inspector->update(path.toStdString(), view, interacting);
+}
+void GpuHost::tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting) {
+    if (thumbnailCache_ != cache) { thumbnailScheduler_.reset(); thumbnailCache_ = cache; }
+    if (interacting || !context_ || !models_ || !cache || thumbnailRequests_.empty()) return;
+    if (!ensureThumbnailRenderer()) return;
+    if (!thumbnailScheduler_) {
+        if (materials_ && vfs_) thumbnailScheduler_ = std::make_unique<render::ModelThumbnailScheduler>(
+            *models_, *materials_, [vfs = vfs_](const std::string& path) { return vfs->exists(path); },
+            *cache, *thumbnailRenderer_);
+        else thumbnailScheduler_ = std::make_unique<render::ModelThumbnailScheduler>(
+            *models_, *cache, *thumbnailRenderer_);
+    }
+    for (const auto& [owner, paths] : thumbnailRequests_) for (const auto& path : paths) {
+        if (cache->state(assets::ThumbnailKind::Model, path, 128) == assets::ThumbnailState::Unloaded)
+            thumbnailScheduler_->request(path, true);
+    }
+    thumbnailScheduler_->tick(interacting);
 }
 
 }  // namespace apex::ui

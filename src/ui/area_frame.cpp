@@ -14,8 +14,13 @@
 #include "ui/inspector_panel.hpp"
 #include "ui/log_panel.hpp"
 #include "ui/materials_panel.hpp"
+#include "ui/models_panel.hpp"
+#include "ui/sounds_panel.hpp"
+#include "ui/particles_panel.hpp"
 #include "ui/game_content.hpp"
 #include "ui/face_properties_panel.hpp"
+#include "ui/find_panel.hpp"
+#include "ui/addons_panel.hpp"
 #include "ui/outliner_panel.hpp"
 #include "ui/theme.hpp"
 #include "ui/visgroup_panel.hpp"
@@ -34,6 +39,11 @@ QString roleTitle(AreaRole role) {
     case AreaRole::History: return tr("Undo History");
     case AreaRole::Log: return tr("Log");
     case AreaRole::Materials: return tr("Materials");
+    case AreaRole::Models: return tr("Models");
+    case AreaRole::Sounds: return tr("Sounds");
+    case AreaRole::Particles: return tr("Particles");
+    case AreaRole::Find: return tr("Find");
+    case AreaRole::Addons: return tr("Addons");
     case AreaRole::FaceProperties: return tr("Face Properties");
     }
     return {};
@@ -51,15 +61,21 @@ template <typename F> void withPanel(QWidget* panel, F&& f) {
 }  // namespace
 
 void setPanelSession(QWidget* panel, editor::EditorSession* session) {
+    if (auto* p = qobject_cast<FindPanel*>(panel)) p->setEditorSession(session);
     withPanel(panel, [session](auto& p) { p.setEditorSession(session); });
 }
 
 void setPanelDocument(QWidget* panel, document::Document* document) {
+    if (auto* p = qobject_cast<AssetBrowserPanel*>(panel)) p->setDocument(document);
+    if (auto* p = qobject_cast<FindPanel*>(panel)) p->setDocument(document);
     withPanel(panel, [document](auto& p) { p.setDocument(document); });
 }
 
 void setPanelGameContent(QWidget* panel, GameContent* content) {
+    if (auto* p = qobject_cast<FindPanel*>(panel)) p->setGameContent(content);
+    if (auto* p = qobject_cast<AddonsPanel*>(panel)) p->setGameContent(content);
     if (auto* p = qobject_cast<MaterialsPanel*>(panel)) p->setGameContent(content);
+    if (auto* p = qobject_cast<AssetBrowserPanel*>(panel)) p->setGameContent(content);
 }
 
 void bindPanel(QWidget* panel, document::Document* document, editor::EditorSession* session) {
@@ -78,6 +94,11 @@ QWidget* createPanel(AreaRole role, document::Document* document, editor::Editor
     case AreaRole::History: panel = new HistoryPanel; break;
     case AreaRole::Log: panel = new LogPanel; break;
     case AreaRole::Materials: panel = new MaterialsPanel; break;
+    case AreaRole::Models: panel = new ModelsPanel; break;
+    case AreaRole::Sounds: panel = new SoundsPanel; break;
+    case AreaRole::Particles: panel = new ParticlesPanel; break;
+    case AreaRole::Find: panel = new FindPanel; break;
+    case AreaRole::Addons: panel = new AddonsPanel; break;
     case AreaRole::FaceProperties: panel = new FacePropertiesPanel; break;
     }
     panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));

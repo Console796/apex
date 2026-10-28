@@ -27,8 +27,12 @@ std::string unquote(std::string_view text) {
         text = text.substr(1, text.size() - 2);
     return std::string(text);
 }
-// Only recover ordering here; toolpp remains responsible for interpreting field metadata.
-struct OrderToken { std::string text; bool quoted = false; };
+// Recover source ordering and header spans; toolpp interprets field metadata.
+struct OrderToken {
+    std::string text;
+    bool quoted = false;
+    std::size_t begin = 0, end = 0;
+};
 std::vector<OrderToken> orderTokens(std::string_view text) {
     std::vector<OrderToken> result;
     for (std::size_t i = 0; i < text.size();) {
@@ -37,6 +41,7 @@ std::vector<OrderToken> orderTokens(std::string_view text) {
             while (i < text.size() && text[i] != '\n') ++i;
             continue;
         }
+        const auto begin = i;
         if (text[i] == '"') {
             std::string value;
             for (++i; i < text.size() && text[i] != '"'; ++i) {
@@ -44,22 +49,26 @@ std::vector<OrderToken> orderTokens(std::string_view text) {
                 value += text[i];
             }
             if (i < text.size()) ++i;
-            result.push_back({std::move(value), true});
+            result.push_back({std::move(value), true, begin, i});
         } else if (std::string_view("[]()=:,+").find(text[i]) != std::string_view::npos) {
-            result.push_back({std::string(1, text[i++])});
+            ++i;
+            result.push_back({std::string(text.substr(begin, 1)), false, begin, i});
         } else {
             auto start = i++;
             while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i])) &&
                    std::string_view("[]()=:,+\"").find(text[i]) == std::string_view::npos) ++i;
-            result.push_back({std::string(text.substr(start, i - start))});
+            result.push_back({std::string(text.substr(start, i - start)), false, begin, i});
         }
     }
     return result;
 }
 using PropertyOrders = std::map<std::string, std::vector<std::string>>;
-void readOrder(const std::filesystem::path& file, PropertyOrders& orders,
-               std::set<std::filesystem::path>& seen) {
-    if (!seen.insert(std::filesystem::weakly_canonical(file)).second) return;
+using ClassHeaders = std::map<std::string, std::vector<EntityHelper>>;
+// Toolpp stops at the first ')' even inside quotes. Recover headers and flatten includes,
+// then pass a copy without class properties to toolpp for field metadata parsing.
+std::string readOrder(const std::filesystem::path& file, PropertyOrders& orders,
+                      ClassHeaders& headers, std::set<std::filesystem::path>& seen) {
+    if (!seen.insert(std::filesystem::weakly_canonical(file)).second) return {};
     std::ifstream input(file);
     if (!input) throw std::runtime_error("FGD missing: " + file.string());
     const std::string text{std::istreambuf_iterator<char>(input), {}};
@@ -67,16 +76,40 @@ void readOrder(const std::filesystem::path& file, PropertyOrders& orders,
     int brackets = 0, parens = 0;
     std::string entity;
     bool classHeader = false;
+    std::size_t headerStart = 0;
+    struct Replacement { std::size_t begin, end; std::string text; };
+    std::vector<Replacement> replacements;
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         const auto& token = tokens[i];
         if (token.quoted) continue;
         const auto key = toLowerAscii(token.text);
         if (brackets == 0 && key == "@include" && i + 1 < tokens.size()) {
-            readOrder(file.parent_path() / tokens[++i].text, orders, seen);
+            const auto begin = token.begin;
+            const auto& path = tokens[++i];
+            auto included = readOrder(file.parent_path() / path.text, orders, headers, seen);
+            replacements.push_back({begin, path.end, "\n" + included + "\n"});
         } else if (brackets == 0 && key.starts_with('@')) {
             classHeader = key.ends_with("class");
+            headerStart = i;
             entity.clear();
         } else if (brackets == 0 && parens == 0 && key == "=" && classHeader && i + 1 < tokens.size()) {
+            auto& header = headers[toLowerAscii(tokens[i + 1].text)];
+            header.clear(); // Like toolpp, ExtendClass replaces the class header.
+            for (std::size_t j = headerStart + 1; j < i; ++j) {
+                EntityHelper helper{toLowerAscii(tokens[j].text), {}};
+                if (j + 1 < i && tokens[j + 1].text == "(") {
+                    const auto start = tokens[++j].end;
+                    unsigned depth = 1;
+                    while (++j < i) {
+                        if (tokens[j].quoted) continue;
+                        if (tokens[j].text == "(") ++depth;
+                        else if (tokens[j].text == ")" && --depth == 0) break;
+                    }
+                    if (j < i) helper.arguments = text.substr(start, tokens[j].begin - start);
+                }
+                header.push_back(std::move(helper));
+            }
+            replacements.push_back({tokens[headerStart].end, token.begin, " "});
             entity = toLowerAscii(tokens[++i].text);
         } else if (key == "[") ++brackets;
         else if (key == "]") --brackets;
@@ -89,7 +122,20 @@ void readOrder(const std::filesystem::path& file, PropertyOrders& orders,
             if (std::ranges::find(order, key) == order.end()) order.push_back(key);
         }
     }
+    std::string sanitized = text;
+    for (auto it = replacements.rbegin(); it != replacements.rend(); ++it)
+        sanitized.replace(it->begin, it->end - it->begin, it->text);
+    return sanitized;
 }
+class HeaderlessFgd : public toolpp::FGD {
+public:
+    void loadText(const std::string& text, const std::filesystem::path& file) {
+        BufferStreamReadOnly stream{text.data(), text.size()};
+        std::vector seen{file};
+        try { readEntities(stream, file, seen); }
+        catch (const std::overflow_error&) {} // Toolpp uses stream overflow for EOF.
+    }
+};
 template <typename T> void mergeFields(std::vector<T>& into, const std::vector<T>& from, bool replace) {
     for (const auto& field : from) {
         auto it = std::ranges::find_if(into, [&](const auto& old) { return ciEquals(old.name, field.name); });
@@ -99,22 +145,23 @@ template <typename T> void mergeFields(std::vector<T>& into, const std::vector<T
 }
 } // namespace
 Result<EntityClassTable> loadEntityClasses(std::span<const std::filesystem::path> files) try {
-    toolpp::FGD parsed;
+    HeaderlessFgd parsed;
     PropertyOrders orders;
+    ClassHeaders headers;
     for (const auto& file : files) {
         if (!std::filesystem::is_regular_file(file))
             return std::unexpected(Error{ErrorCode::NotFound, "FGD missing: " + file.string()});
-        parsed.load(file);
         std::set<std::filesystem::path> seen;
-        readOrder(file, orders, seen);
+        parsed.loadText(readOrder(file, orders, headers, seen), file);
     }
     EntityClassTable result;
     for (const auto& [name, entity] : parsed.getEntities()) {
         EntityClass out;
         out.name = name;
         out.type = entity.classType;
-        for (const auto& prop : entity.classProperties) {
+        for (const auto& prop : headers[toLowerAscii(name)]) {
             auto key = toLowerAscii(trim(prop.name));
+            if (key != "base") out.helpers.push_back({key, prop.arguments});
             if (key == "base") {
                 for (auto base : split(prop.arguments, ',')) {
                     out.bases.push_back(unquote(base));
@@ -187,6 +234,7 @@ Result<EntityClassTable> loadEntityClasses(std::span<const std::filesystem::path
         }
         state = 1;
         auto& entity = result.classes.at(key);
+        std::vector<EntityHelper> helpers;
         std::vector<EntityProperty> properties;
         std::vector<EntityIO> inputs, outputs;
         for (const auto& baseName : entity.bases) {
@@ -199,6 +247,7 @@ Result<EntityClassTable> loadEntityClasses(std::span<const std::filesystem::path
             if (!resolved) {
                 return resolved;
             }
+            helpers.insert(helpers.end(), base->second.helpers.begin(), base->second.helpers.end());
             mergeFields(properties, base->second.properties, false);
             mergeFields(inputs, base->second.inputs, false);
             mergeFields(outputs, base->second.outputs, false);
@@ -218,6 +267,8 @@ Result<EntityClassTable> loadEntityClasses(std::span<const std::filesystem::path
         mergeFields(properties, entity.properties, true);
         mergeFields(inputs, entity.inputs, true);
         mergeFields(outputs, entity.outputs, true);
+        helpers.insert(helpers.end(), entity.helpers.begin(), entity.helpers.end());
+        entity.helpers = std::move(helpers);
         entity.properties = std::move(properties);
         entity.inputs = std::move(inputs);
         entity.outputs = std::move(outputs);
