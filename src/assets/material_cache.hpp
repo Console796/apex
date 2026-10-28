@@ -21,8 +21,7 @@ enum class MaterialState { Unloaded, Loading, Ready, Failed };
 // workers and undelivered completions never borrow the cache or Vfs.
 class MaterialCache {
 public:
-    MaterialCache(const Vfs& vfs, JobPool& jobs, std::size_t budgetBytes = 256 * 1024 * 1024,
-                  kv1::EscapeMode mode = kv1::EscapeMode::Strata);
+    MaterialCache(const Vfs& vfs, JobPool& jobs, std::size_t budgetBytes = 256 * 1024 * 1024);
     ~MaterialCache();
     MaterialCache(const MaterialCache&) = delete;
     MaterialCache& operator=(const MaterialCache&) = delete;

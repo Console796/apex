@@ -1,4 +1,6 @@
 #include "assets/addons.hpp"
+#include "assets/model_data.hpp"
+#include <mdlpp/structs/MDL.h>
 #include "assets/material_cache.hpp"
 #include "assets/vfs.hpp"
 #include "core/kv3.hpp"
@@ -137,4 +139,40 @@ TEST_CASE("addons corpus game list toggles byte for byte on a copy") {
     }
     fs::remove_all(temp);
     CHECK(read(source) == original);
+}
+
+TEST_CASE("EverythingPBR door model materials resolve and decode from the mounted pack") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    GameProfile profile;
+    profile.gameDirectory = fs::canonical(install) / "p2ce";
+    profile.addons.list = AddonSettings::List::Game;
+    JobPool jobs(2);
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    constexpr auto modelPath = "models/pbr/test_chambers/l2_testchmb_door.mdl";
+    if (!vfs->exists(modelPath)) { MESSAGE("Skipped: EverythingPBR is not mounted"); return; }
+    const auto bytes = vfs->open(modelPath);
+    REQUIRE(bytes);
+    mdlpp::MDL::MDL mdl;
+    REQUIRE(mdl.open(bytes->data(), bytes->size()));
+    ModelData model;
+    model.materialDirectories = mdl.materialDirectories;
+    for (const auto& material : mdl.materials) model.materialNames.push_back(material.name);
+    REQUIRE_FALSE(model.materialNames.empty());
+    MaterialCache cache(*vfs, jobs);
+    for (std::size_t i = 0; i < model.materialNames.size(); ++i) {
+        CAPTURE(model.materialNames[i]);
+        const auto name = resolveModelMaterial(model, static_cast<std::int32_t>(i),
+            [&](const std::string& path) { return vfs->exists(path); });
+        REQUIRE_FALSE(name.empty());
+        cache.request(name);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (cache.state(name) == MaterialState::Loading && std::chrono::steady_clock::now() < deadline) {
+            jobs.drainCompletions();
+            std::this_thread::yield();
+        }
+        CHECK_MESSAGE(cache.state(name) == MaterialState::Ready,
+                      (cache.error(name) ? cache.error(name)->what() : ""));
+    }
 }

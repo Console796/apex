@@ -193,9 +193,24 @@ void UvView::paintEvent(QPaintEvent*) {
         const auto left = std::floor(visible.left() / 512) * 512, top = std::floor(visible.top() / 512) * 512;
         const auto right = std::ceil(visible.right() / 512) * 512, bottom = std::ceil(visible.bottom() / 512) * 512;
         if ((right - left) / 512 * ((bottom - top) / 512) <= 4096) {
-            p.setOpacity(0.78);
-            p.drawTiledPixmap(QRectF(left, top, right - left, bottom - top), texture);
-            p.setOpacity(1);
+            p.save();
+            // Tile guides and gestures stay in VMF UV space; sample the image using the VMT transform.
+            DMat3 uvTransform{1.0};
+            if (content_ && content_->snapshot()) {
+                if (const auto* entry = content_->snapshot()->find(active_->face.material))
+                    uvTransform = entry->baseTextureTransform;
+            }
+            const QTransform sample(uvTransform[0][0], uvTransform[0][1],
+                                    uvTransform[1][0], uvTransform[1][1],
+                                    uvTransform[2][0] * 512, uvTransform[2][1] * 512);
+            if (sample.isInvertible()) {
+                const auto imageMapping = sample.inverted() * mapping;
+                const auto imageVisible = imageMapping.inverted().mapRect(QRectF(rect()));
+                p.setWorldTransform(imageMapping);
+                p.setOpacity(0.78);
+                p.drawTiledPixmap(imageVisible, texture, imageVisible.topLeft());
+            }
+            p.restore();
             p.setPen(QPen(t.border, 1));
             for (auto at = left; at <= right; at += 512) p.drawLine(QPointF(at, top), QPointF(at, bottom));
             for (auto at = top; at <= bottom; at += 512) p.drawLine(QPointF(left, at), QPointF(right, at));

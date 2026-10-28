@@ -15,14 +15,13 @@ struct MaterialCache::Impl {
     };
     const Vfs& vfs;
     JobPool& jobs;
-    kv1::EscapeMode mode;
     std::size_t budget, resident = 0;
     std::uint64_t clock = 0;
     std::map<std::string, Entry> entries;
     std::shared_ptr<const CachedMaterial> placeholder;
 
-    Impl(const Vfs& vfs_, JobPool& jobs_, std::size_t budget_, kv1::EscapeMode mode_)
-        : vfs(vfs_), jobs(jobs_), mode(mode_), budget(budget_),
+    Impl(const Vfs& vfs_, JobPool& jobs_, std::size_t budget_)
+        : vfs(vfs_), jobs(jobs_), budget(budget_),
           placeholder(std::make_shared<CachedMaterial>(Material{}, checkerboardTexture(), std::nullopt)) {}
     void evict() {
         while (resident > budget) {
@@ -41,8 +40,8 @@ struct MaterialCache::Impl {
         }
     }
 };
-MaterialCache::MaterialCache(const Vfs& vfs, JobPool& jobs, std::size_t budgetBytes, kv1::EscapeMode mode)
-    : impl_(std::make_shared<Impl>(vfs, jobs, budgetBytes, mode)) {}
+MaterialCache::MaterialCache(const Vfs& vfs, JobPool& jobs, std::size_t budgetBytes)
+    : impl_(std::make_shared<Impl>(vfs, jobs, budgetBytes)) {}
 MaterialCache::~MaterialCache() {
     for (auto& [key, entry] : impl_->entries) {
         entry.job.cancel();
@@ -63,7 +62,7 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
         entry.error = std::move(error);
         return impl_->placeholder;
     };
-    auto material = loadMaterial(impl_->vfs, key, impl_->mode);
+    auto material = loadMaterial(impl_->vfs, key);
     if (!material) {
         return fail(material.error());
     }

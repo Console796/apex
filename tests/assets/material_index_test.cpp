@@ -26,7 +26,8 @@ TEST_CASE("material index walks loose VPK and addons and resolves patches and di
         game |gameinfo_path|. game Pak/pak.vpk
     } } })");
     tree.put("Game/Materials/Nested/Base.VMT", R"(LightmappedGeneric {
-        $basetexture base %ToolViewportTexture viewport %tooltexture tool
+        $basetexture base %ToolViewportTexture "models\pbr\test_chambers\testchmb_door_Color" %tooltexture tool
+        $basetexturetransform "center 0 0 scale 2 2"
         %keywords "Metal, Factory" $keywords "Rusty panel"
     })");
     tree.put("Game/materials/patch.vmt", R"(patch { include materials/nested/base.vmt
@@ -67,7 +68,7 @@ TEST_CASE("material index walks loose VPK and addons and resolves patches and di
     REQUIRE(base);
     CHECK(base->name == "Nested/Base");
     CHECK(base->shader == "lightmappedgeneric");
-    CHECK(base->previewTexture == "viewport");
+    CHECK(texturePath(base->previewTexture) == "materials/models/pbr/test_chambers/testchmb_door_color.vtf");
     CHECK(base->toolTexture);
     CHECK(base->keywords == std::vector<std::string>{"metal", "factory", "rusty", "panel"});
     REQUIRE(snapshot->find("patch"));
@@ -79,6 +80,7 @@ TEST_CASE("material index walks loose VPK and addons and resolves patches and di
         if (material) {
             CHECK(entry.shader == toLowerAscii(material->shader));
             CHECK(entry.previewTexture == material->previewTexture());
+            CHECK(entry.baseTextureTransform == material->baseTextureTransform);
         } else CHECK_FALSE(entry.error.empty());
     }
     REQUIRE(snapshot->find("shadow"));

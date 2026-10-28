@@ -3,7 +3,9 @@
 #include "core/paths.hpp"
 #include "core/strings.hpp"
 
+#include <locale>
 #include <set>
+#include <sstream>
 
 namespace apex::assets {
 namespace {
@@ -104,6 +106,27 @@ std::string value(const kv1::Node& root, std::string_view key) {
     auto node = root.find(key);
     return node ? node->decodedValue().value_or("") : "";
 }
+DMat3 textureTransform(std::string text) {
+    DVec2 center{0.5}, scale{1.0}, translation{0.0};
+    double angle = 0.0;
+    std::istringstream in(toLowerAscii(text));
+    in.imbue(std::locale::classic());
+    for (std::string key; in >> key;) {
+        if (key == "center") in >> center.x >> center.y;
+        else if (key == "scale") in >> scale.x >> scale.y;
+        else if (key == "rotate") in >> angle;
+        else if (key == "translate") in >> translation.x >> translation.y;
+        else return DMat3{1.0};
+        if (!in || !std::isfinite(center.x) || !std::isfinite(center.y) ||
+            !std::isfinite(scale.x) || !std::isfinite(scale.y) || !std::isfinite(angle) ||
+            !std::isfinite(translation.x) || !std::isfinite(translation.y)) return DMat3{1.0};
+    }
+    // Source: translate to the pivot, scale, rotate, then restore the pivot and translate.
+    const double c = std::cos(glm::radians(angle)), s = std::sin(glm::radians(angle));
+    DMat3 result{{c * scale.x, s * scale.x, 0}, {-s * scale.y, c * scale.y, 0}, {0, 0, 1}};
+    result[2] = DVec3{center + translation - DVec2(result * DVec3{center, 0}), 1};
+    return result;
+}
 bool flag(const kv1::Node& root, std::string_view key) {
     auto node = root.find(key);
     return node && node->asDouble().value_or(0) != 0;
@@ -121,12 +144,12 @@ std::string_view Material::previewTexture() const {
     }
     return baseTexture;
 }
-Result<Material> loadMaterial(const Vfs& vfs, std::string_view name, kv1::EscapeMode mode) {
-    return parseMaterial([&](std::string_view path) { return read(vfs, path); }, name, mode);
+Result<Material> loadMaterial(const Vfs& vfs, std::string_view name) {
+    return parseMaterial([&](std::string_view path) { return read(vfs, path); }, name);
 }
-Result<Material> parseMaterial(const MaterialReader& read, std::string_view name, kv1::EscapeMode mode) {
+Result<Material> parseMaterial(const MaterialReader& read, std::string_view name) {
     std::set<std::string> stack;
-    auto root = resolve(read, materialPath(name), mode, stack);
+    auto root = resolve(read, materialPath(name), kv1::EscapeMode::Legacy, stack);
     if (!root) {
         return std::unexpected(root.error());
     }
@@ -134,6 +157,7 @@ Result<Material> parseMaterial(const MaterialReader& read, std::string_view name
     result.shader = root->key();
     result.baseTexture = value(*root, "$basetexture");
     result.baseTexture2 = value(*root, "$basetexture2");
+    result.baseTextureTransform = textureTransform(value(*root, "$basetexturetransform"));
     result.toolTexture = value(*root, "%tooltexture");
     result.toolViewportTexture = value(*root, "%ToolViewportTexture");
     result.keywords = value(*root, "%keywords") + " " + value(*root, "$keywords");

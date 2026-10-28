@@ -308,7 +308,7 @@ struct RenderMirror::Impl {
         state.slot = *slot;
         state.textureBytes = 0;
         for (auto mip : mips) state.textureBytes += mip.size();
-        state.size = {texture.mips[0].width, texture.mips[0].height};
+        state.size = {texture.mips[0].width, texture.mips[0].height, vmt.baseTextureTransform};
         uploaded = true;
         ++stats.texturesUploaded;
         redraw = true;

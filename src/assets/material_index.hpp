@@ -14,6 +14,7 @@ struct MaterialIndexEntry {
     std::vector<std::string> keywords;
     bool toolTexture = false;
     std::string previewTexture;
+    DMat3 baseTextureTransform{1.0};
     std::optional<std::size_t> mount; // Vfs::provider: addon index, empty for game content
     std::string error;
 };

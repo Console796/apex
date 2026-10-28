@@ -21,6 +21,7 @@ namespace apex::render {
 struct TextureSize {
     int width = 64;
     int height = 64;
+    DMat3 uvTransform{1.0};
     bool operator==(const TextureSize&) const = default;
 };
 
@@ -49,7 +50,7 @@ struct SolidMesh {
 // Lower-case material names of the block's sides (sorted, unique).
 std::vector<std::string> solidMaterials(const kv1::Node& solidBlock);
 
-// `sizeOf` maps a lower-case material name to its texture size (for UV normalization).
+// `sizeOf` maps a lower-case material name to its texture size and material transform (for UV normalization and sampling).
 // Fails when the sides do not bound a valid convex solid.
 Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
                             const std::function<TextureSize(std::string_view)>& sizeOf);

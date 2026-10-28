@@ -192,8 +192,7 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
         }
     }
     vfs_ = std::move(vfs);
-    materials_ = std::make_unique<assets::MaterialCache>(*vfs_, *jobs_, 256ull * 1024 * 1024,
-                                                         effective.escapeMode);
+    materials_ = std::make_unique<assets::MaterialCache>(*vfs_, *jobs_, 256ull * 1024 * 1024);
     if (profile && !profile->fgds.empty()) {
         if (auto table = assets::loadEntityClasses(profile->fgds)) {
             classes_ = std::make_unique<assets::EntityClassTable>(std::move(*table));

@@ -59,7 +59,7 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
         const auto base = static_cast<std::uint32_t>(batch.vertices.size());
         for (const std::size_t index : face.vertices) {
             const DVec3 p = polyhedron->vertices[index];
-            const DVec2 uv = geometry::uvAt(face, p, size.width, size.height);
+            const DVec2 uv = DVec2(size.uvTransform * DVec3{geometry::uvAt(face, p, size.width, size.height), 1.0});
             const DVec3 relative = p - mesh.origin;
             BrushVertex v{};
             v.position[0] = static_cast<float>(relative.x);

@@ -348,7 +348,7 @@ TEST_CASE("[measure] P0 corpus facts for 0.3") {
     std::vector<std::string> errors;
     const auto parseStart = Clock::now();
     for (const auto& path : materials.paths) {
-        const auto material = assets::loadMaterial(*vfs, path, profile.escapeMode);
+        const auto material = assets::loadMaterial(*vfs, path);
         if (material) {
             ++parsed;
             ++shaders[toLowerAscii(material->shader)];

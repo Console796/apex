@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assets/vfs.hpp"
+#include "core/math.hpp"
 
 #include <map>
 
@@ -10,6 +11,8 @@ struct Material {
     std::string shader;
     std::string baseTexture;
     std::string baseTexture2;
+    // Applied to normalized brush UVs after the VMF face mapping.
+    DMat3 baseTextureTransform{1.0};
     std::string toolTexture;
     std::string toolViewportTexture;
     std::string surfaceProp;
@@ -25,12 +28,11 @@ struct Material {
 
 // Accepts a material name or materials/...vmt. Patch includes and KV directives use Vfs;
 // includes are rooted virtual paths, not paths relative to the patch. Cycles are errors.
-Result<Material> loadMaterial(const Vfs& vfs, std::string_view name,
-                              kv1::EscapeMode mode = kv1::EscapeMode::Strata);
+// VMT KeyValues use literal backslashes, independently of the VMF escape mode.
+Result<Material> loadMaterial(const Vfs& vfs, std::string_view name);
 // The reader supplies owned text for canonical virtual paths; it may run on a worker.
 using MaterialReader = std::function<Result<std::string>(std::string_view)>;
-Result<Material> parseMaterial(const MaterialReader& read, std::string_view name,
-                               kv1::EscapeMode mode = kv1::EscapeMode::Strata);
+Result<Material> parseMaterial(const MaterialReader& read, std::string_view name);
 std::string materialPath(std::string_view name);
 std::string texturePath(std::string_view name);
 

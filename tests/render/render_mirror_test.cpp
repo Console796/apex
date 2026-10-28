@@ -86,6 +86,8 @@ Gpu* gpu() {
             g->tree.put(std::string("materials/test/") + name + ".vmt",
                         std::string("UnlitGeneric { $basetexture test/") + name + " }");
         }
+        g->tree.put("materials/test/scaled_floor.vmt",
+                    R"(patch { include test/floor insert { $basetexturetransform "center 0 0 scale 2 2" } })");
         writeVtf(g->tree.root / "materials/test/floor.vtf", true, {200, 200, 200});
         writeVtf(g->tree.root / "materials/test/red.vtf", false, {255, 0, 0});
         writeVtf(g->tree.root / "materials/test/green.vtf", false, {0, 255, 0});
@@ -1629,4 +1631,68 @@ TEST_CASE("Instance mirror draws nested fixture solids with composed world trans
     const auto image = drawFrame(*g, mirror, DisplayMode::Flat, false, makeView({999780.0, 1999830.0, 130.0}, {23.0, 38.0, 0.0}));
     CHECK(count(image, [](Px p) { return p.r > 60 || p.g > 60 || p.b > 60; }) > 0);
     CHECK(parent.write().value() == before);
+}
+
+TEST_CASE("solid meshing applies inherited PBR texture transforms after face UV mapping") {
+    const assets::MaterialReader reader = [](std::string_view path) -> Result<std::string> {
+        if (path == "materials/base.vmt")
+            return R"(PBR { $basetexture test $basetexturetransform "center 0 0 scale 2 2 rotate 0 translate 0.25 -0.5" })";
+        return R"(patch { include base replace { $basetexture test/red } })";
+    };
+    const auto material = assets::parseMaterial(reader, "patched");
+    REQUIRE(material);
+    const auto doc = loadMap();
+    const auto solid = findSolid(*doc, "test/red");
+    REQUIRE(solid);
+    const auto& block = *doc->get(*solid)->block;
+    const auto original = meshSolid(block, [](std::string_view) { return TextureSize{16, 16}; });
+    const auto transformed = meshSolid(block, [&](std::string_view) {
+        return TextureSize{16, 16, material->baseTextureTransform};
+    });
+    REQUIRE(original);
+    REQUIRE(transformed);
+    const auto& before = original->batches[0].vertices;
+    const auto& after = transformed->batches[0].vertices;
+    REQUIRE(before.size() == after.size());
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        CHECK(after[i].uv[0] == doctest::Approx(before[i].uv[0] * 2 + 0.25));
+        CHECK(after[i].uv[1] == doctest::Approx(before[i].uv[1] * 2 - 0.5));
+    }
+}
+
+TEST_CASE("mirror: PBR material scaling matches equivalent VMF face scaling") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto baseline = drawFrame(*g, scene.mirror, DisplayMode::Textured);
+    const auto floor = findSolid(*scene.doc, "test/floor");
+    REQUIRE(floor);
+    const auto block = *scene.doc->get(*floor)->block;
+    {
+        auto tx = scene.doc->begin("scale face UVs");
+        for (const auto* side : block.findAll("side")) {
+            const auto id = side->find("id")->asInt().value();
+            for (const auto* key : {"uaxis", "vaxis"}) {
+                auto axis = side->find(key)->decodedValue().value();
+                axis.replace(axis.rfind(' ') + 1, std::string::npos, "2");
+                tx.setSideKeyValue(id, key, axis);
+            }
+        }
+        tx.commit();
+    }
+    REQUIRE(scene.mirror.settle());
+    const auto faceScaled = drawFrame(*g, scene.mirror, DisplayMode::Textured);
+    CHECK(faceScaled.pixels != baseline.pixels);
+    {
+        auto tx = scene.doc->begin("use material scaling");
+        for (const auto* side : block.findAll("side")) {
+            const auto id = side->find("id")->asInt().value();
+            tx.setSideKeyValue(id, "material", "test/scaled_floor");
+            for (const auto* key : {"uaxis", "vaxis"})
+                tx.setSideKeyValue(id, key, side->find(key)->decodedValue().value());
+        }
+        tx.commit();
+    }
+    REQUIRE(scene.mirror.settle());
+    const auto materialScaled = drawFrame(*g, scene.mirror, DisplayMode::Textured);
+    CHECK(materialScaled.pixels == faceScaled.pixels);
 }

@@ -67,3 +67,27 @@ TEST_CASE("MaterialCache async completion placeholder failures and decoded LRU")
     // Completion after destruction must be harmless, including under ASan.
     jobs.drainCompletions();
 }
+
+TEST_CASE("MaterialCache preserves Windows texture paths through VMT patches") {
+    GameTree tree;
+    tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    tree.put("materials/dev/normal_pbr.vmt", R"(PBR { $model 1 })");
+    tree.put("materials/door.vmt", R"(patch {
+        include "materials\dev\normal_pbr.vmt"
+        insert { $basetexture "models\pbr\test_chambers\testchmb_door_Color" }
+    })");
+    std::filesystem::create_directories(tree.root / "materials/models/pbr/test_chambers");
+    auto texture = whiteVtf();
+    REQUIRE(texture.bake(tree.root / "materials/models/pbr/test_chambers/testchmb_door_color.vtf"));
+    JobPool jobs(1);
+    GameProfile profile;
+    profile.gameDirectory = tree.root;
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    MaterialCache cache(*vfs, jobs);
+    cache.request("door");
+    finish(jobs, cache, "door");
+    REQUIRE_MESSAGE(cache.state("door") == MaterialState::Ready,
+                    (cache.error("door") ? cache.error("door")->what() : ""));
+    CHECK(cache.request("door")->material.baseTexture == R"(models\pbr\test_chambers\testchmb_door_Color)");
+}

@@ -54,16 +54,17 @@ std::vector<std::string> manifestFiles(const kv1::Node& node) {
     return result;
 }
 std::vector<MaterialIndexEntry> parseIndexEntry(MaterialKind, const MaterialReader& reader,
-    const std::string& path, const Metadata& metadata, kv1::EscapeMode mode) {
+    const std::string& path, const Metadata& metadata, kv1::EscapeMode) {
     MaterialIndexEntry entry;
     const auto& [display, mount] = metadata.at(path);
     entry.name = display.substr(10, display.size() - 14);
     entry.mount = mount;
-    auto material = parseMaterial(reader, entry.name, mode);
+    auto material = parseMaterial(reader, entry.name);
     if (!material) entry.error = material.error().what();
     else {
         entry.shader = toLowerAscii(material->shader);
         entry.previewTexture = material->previewTexture();
+        entry.baseTextureTransform = material->baseTextureTransform;
         auto words = toLowerAscii(material->keywords);
         std::replace(words.begin(), words.end(), ',', ' ');
         std::istringstream in(words);

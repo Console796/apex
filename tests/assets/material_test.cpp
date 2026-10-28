@@ -67,3 +67,39 @@ TEST_CASE("VMT reports invalid patches cycles and syntax") {
     REQUIRE(material);
     CHECK(material->shader == "UnlitGeneric");
 }
+
+TEST_CASE("VMT texture transforms compose scale rotation pivot and translation") {
+    const auto read = [](std::string_view) -> Result<std::string> {
+        return R"(PBR { $basetexturetransform "translate 0.25 -0.5 rotate 90 scale 2 3 center 0.5 0.5" })";
+    };
+    const auto material = parseMaterial(read, "test");
+    REQUIRE(material);
+    const auto pivot = material->baseTextureTransform * DVec3{0.5, 0.5, 1};
+    CHECK(pivot.x == doctest::Approx(0.75));
+    CHECK(pivot.y == doctest::Approx(0.0));
+    const auto point = material->baseTextureTransform * DVec3{1, 1, 1};
+    CHECK(point.x == doctest::Approx(-0.75));
+    CHECK(point.y == doctest::Approx(1.0));
+    for (const auto* value : {"", "scale 2", "scale nope 2", "rotate nan", "unknown 1"}) {
+        const auto fallback = parseMaterial([&](std::string_view) -> Result<std::string> {
+            return std::string("PBR { $basetexturetransform \"") + value + "\" }";
+        }, "test");
+        REQUIRE(fallback);
+        CHECK(fallback->baseTextureTransform == DMat3{1.0});
+    }
+}
+
+TEST_CASE("VMT paths keep backslash n and t literal including trailing directory separators") {
+    const auto material = parseMaterial([](std::string_view) -> Result<std::string> {
+        return R"(PBR {
+            $basetexture "models\pbr\test_chambers\testchmb_door_Color"
+            $bumpmap "models\normal"
+            %tooltexture "tools\nodraw"
+            %ToolViewportTexture "textures\tiles\"
+        })";
+    }, "door");
+    REQUIRE(material);
+    CHECK(texturePath(material->baseTexture) == "materials/models/pbr/test_chambers/testchmb_door_color.vtf");
+    CHECK(texturePath(material->toolTexture) == "materials/tools/nodraw.vtf");
+    CHECK(material->toolViewportTexture == R"(textures\tiles\)");
+}
