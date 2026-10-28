@@ -30,8 +30,12 @@ public:
     void run();
     void cancel();
     void refresh();
+    int profileCount() const { return static_cast<int>(profiles_.size()); }
 private:
     void importProfiles();
+    void editProfile();
+    void deleteProfile();
+    void saveProfiles() const;
     void stopJob();
     document::Document* document_ = nullptr;
     GameContent* content_ = nullptr;

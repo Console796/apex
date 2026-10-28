@@ -5,6 +5,13 @@
 #include <filesystem>
 #include <fstream>
 #include <set>
+#ifdef _WIN32
+#include <process.h>
+#define APEX_GETPID _getpid
+#else
+#include <unistd.h>
+#define APEX_GETPID getpid
+#endif
 
 using namespace editor_test;
 
@@ -30,7 +37,7 @@ std::string valueOf(const Kv* parent, std::string_view key) {
 }
 
 struct TempDir {
-    fs::path path = fs::temp_directory_path() / ("apex_prefab_test_" + std::to_string(::getpid()));
+    fs::path path = fs::temp_directory_path() / ("apex_prefab_test_" + std::to_string(APEX_GETPID()));
     TempDir() { fs::remove_all(path); fs::create_directories(path); }
     ~TempDir() { std::error_code ec; fs::remove_all(path, ec); }
 };

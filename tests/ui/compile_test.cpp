@@ -4,6 +4,10 @@
 #include "../compile/scripted_runner.hpp"
 #include "ui/compile_panel.hpp"
 #include "ui/game_content.hpp"
+#include "ui/profile_editor.hpp"
+#include "ui/profile_store.hpp"
+#include <QComboBox>
+#include <QSettings>
 #include "../editor/corpus.hpp"
 #include "editor/compile_snapshot.hpp"
 
@@ -290,4 +294,59 @@ TEST_CASE("compile panel Cancel updates steps and stops the injected process") {
     panel.run();
     CHECK(runner.calls.size() == 1);
     panel.setDocument(nullptr);
+}
+
+TEST_CASE("compile profiles round-trip through the store and the editor") {
+    ui_test::app();
+    auto profiles = compile::builtinProfiles();
+    profiles[1].name = "Mine \"quoted\"";
+    profiles[1].cordonOnly = true;
+    profiles[1].commands[2].enabled = false;
+    profiles[1].commands[5].wait = false;
+    CHECK(ui::profilesFromJson(ui::profilesToJson(profiles)) == profiles);
+    CHECK(ui::profilesFromJson("not json").empty());
+    CHECK(ui::profilesFromJson(R"([1, {"commands": []}, {"name": "ok", "commands": [{"special": 7}]}])").size() == 1);
+    CHECK_FALSE(ui::profilesFromJson(R"([{"name": "ok", "commands": [{"special": 7}]}])")[0].commands[0].special);
+
+    // The editor keeps special commands and reorders, adds and removes rows.
+    ui::ProfileEditor editor(profiles[1]);
+    CHECK(editor.profile() == profiles[1]);
+    editor.findChild<QPushButton*>("profileAdd")->click();
+    auto edited = editor.profile();
+    REQUIRE(edited.commands.size() == profiles[1].commands.size() + 1);
+    CHECK(edited.commands.back() == compile::Command{});
+    auto* table = editor.findChild<QTableWidget*>("profileCommands");
+    table->setCurrentCell(1, 1);
+    editor.findChild<QPushButton*>("profileDown")->click();
+    edited = editor.profile();
+    CHECK(edited.commands[2] == profiles[1].commands[1]);
+    CHECK(edited.commands[1] == profiles[1].commands[2]);
+    table->setCurrentCell(0, 1);
+    editor.findChild<QPushButton*>("profileRemove")->click();
+    CHECK(editor.profile().commands.size() == profiles[1].commands.size());
+}
+
+TEST_CASE("compile panel restores saved user profiles") {
+    ui_test::app();
+    QSettings().remove("compile/profiles");
+    auto user = compile::builtinProfiles()[0];
+    user.name = "Saved";
+    user.runGameAfter = false;
+    ui::saveUserProfiles({user});
+    {
+        ui::CompilePanel panel;
+        auto* combo = panel.findChild<QComboBox*>("compileProfile");
+        REQUIRE(combo);
+        CHECK(combo->count() == 4);
+        CHECK(combo->itemText(3) == "Saved");
+        panel.findChild<QPushButton*>("compileDelete")->click();
+        CHECK(combo->count() == 4);
+        combo->setCurrentIndex(3);
+        panel.findChild<QPushButton*>("compileDelete")->click();
+        CHECK(combo->count() == 3);
+    }
+    CHECK(ui::loadUserProfiles().empty());
+    ui::CompilePanel again;
+    CHECK(again.findChild<QComboBox*>("compileProfile")->count() == 3);
+    QSettings().remove("compile/profiles");
 }

@@ -1,6 +1,8 @@
 #include "ui/compile_panel.hpp"
 
 #include "compile/wc_import.hpp"
+#include "ui/profile_editor.hpp"
+#include "ui/profile_store.hpp"
 #include "ui/game_content.hpp"
 #include <QComboBox>
 #include <QFileDialog>
@@ -51,13 +53,22 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
         profilesCombo_->addItem(QString::fromStdString(profile.name));
     }
     builtinCount_ = static_cast<int>(profiles_.size());
+    for (auto& profile : loadUserProfiles()) {
+        profile.runGameAfter = false;
+        profilesCombo_->addItem(QString::fromStdString(profile.name));
+        profiles_.push_back(std::move(profile));
+    }
     row->addWidget(profilesCombo_);
     run_ = new QPushButton(tr("Run"), this);
     run_->setObjectName(QStringLiteral("compileRun"));
     cancel_ = new QPushButton(tr("Cancel"), this);
     cancel_->setObjectName(QStringLiteral("compileCancel"));
     auto* import = new QPushButton(tr("Import .wc…"), this);
-    row->addWidget(run_); row->addWidget(cancel_); row->addWidget(import);
+    auto* edit = new QPushButton(tr("Edit…"), this);
+    edit->setObjectName(QStringLiteral("compileEdit"));
+    auto* remove = new QPushButton(tr("Delete"), this);
+    remove->setObjectName(QStringLiteral("compileDelete"));
+    row->addWidget(run_); row->addWidget(cancel_); row->addWidget(edit); row->addWidget(remove); row->addWidget(import);
     layout->addLayout(row);
     header_ = new QLabel(this);
     header_->setObjectName(QStringLiteral("compileHeader"));
@@ -77,6 +88,8 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     connect(run_, &QPushButton::clicked, this, &CompilePanel::run);
     connect(cancel_, &QPushButton::clicked, this, &CompilePanel::cancel);
     connect(import, &QPushButton::clicked, this, &CompilePanel::importProfiles);
+    connect(edit, &QPushButton::clicked, this, &CompilePanel::editProfile);
+    connect(remove, &QPushButton::clicked, this, &CompilePanel::deleteProfile);
     timer_ = new QTimer(this);
     timer_->setInterval(40);
     connect(timer_, &QTimer::timeout, this, &CompilePanel::refresh);
@@ -197,6 +210,47 @@ void CompilePanel::importProfiles() {
         profilesCombo_->addItem(QString::fromStdString(profile.name));
         profiles_.push_back(std::move(profile));
     }
+    saveProfiles();
+}
+
+void CompilePanel::saveProfiles() const {
+    saveUserProfiles({profiles_.begin() + builtinCount_, profiles_.end()});
+}
+
+// A built-in profile is edited as a copy; the edit is a new user profile, selected on accept.
+void CompilePanel::editProfile() {
+    const int index = profilesCombo_->currentIndex();
+    if (index < 0 || (job_ && job_->status() == compile::Status::Running)) return;
+    auto profile = profiles_[static_cast<std::size_t>(index)];
+    const bool builtin = index < builtinCount_;
+    if (builtin) profile.name += " copy";
+    ProfileEditor editor(std::move(profile), this);
+    if (editor.exec() != QDialog::Accepted) return;
+    auto edited = editor.profile();
+    if (edited.name.empty()) edited.name = "Untitled";
+    edited.runGameAfter = false;
+    if (builtin) {
+        profilesCombo_->addItem(QString::fromStdString(edited.name));
+        profiles_.push_back(std::move(edited));
+        profilesCombo_->setCurrentIndex(profileCount() - 1);
+    } else {
+        profilesCombo_->setItemText(index, QString::fromStdString(edited.name));
+        profiles_[static_cast<std::size_t>(index)] = std::move(edited);
+        confirmed_.erase(index);
+    }
+    saveProfiles();
+}
+
+void CompilePanel::deleteProfile() {
+    const int index = profilesCombo_->currentIndex();
+    if (index < builtinCount_ || (job_ && job_->status() == compile::Status::Running)) return;
+    profiles_.erase(profiles_.begin() + index);
+    profilesCombo_->removeItem(index);
+    // Confirmations are keyed by index, so those after the removed profile shift down.
+    std::set<int> shifted;
+    for (const int confirmed : confirmed_) if (confirmed != index) shifted.insert(confirmed > index ? confirmed - 1 : confirmed);
+    confirmed_ = std::move(shifted);
+    saveProfiles();
 }
 
 } // namespace apex::ui
