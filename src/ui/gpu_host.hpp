@@ -61,6 +61,7 @@ public:
                      const assets::GameProfile* profile);
     document::Document* document() const { return document_; }
 
+    render::TextureHeap* heap() { return heap_.get(); }
     render::Renderer* renderer(VkFormat colorFormat);
     ModelPickCache* modelPicks() { return modelPicks_.get(); }
     std::uint64_t modelPickRevision() const { return modelPickRevision_; }

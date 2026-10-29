@@ -117,7 +117,7 @@ target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
 apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp src/render/vk.cpp
                          src/render/context.cpp src/render/resources.cpp src/render/helper_shapes.cpp
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
-                         src/render/render_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/model_inspector.cpp src/render/swapchain.cpp
+                         src/render/render_target.cpp src/render/scene_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/model_inspector.cpp src/render/swapchain.cpp
                          src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
            DEPS apex_document apex_assets volk::volk GPUOpen::VulkanMemoryAllocator
                 Vulkan::Headers)

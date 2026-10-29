@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 #include <sstream>
 
 namespace apex::lighting {
@@ -146,10 +147,18 @@ std::vector<Light> lightsFromEntity(const kv1::Node& block, const assets::Entity
     return lightsFromEntity(compiled, target);
 }
 
+double surfaceResponse(double cosine) { return cosine > 0 ? 0.5 * cosine * (1 + cosine) : 0.0; }
+
+double skyAmbientResponse(double normalZ) {
+    const double z = std::clamp(normalZ, -1.0, 1.0);
+    const double pi = std::numbers::pi;
+    return 0.3 * (1 + z) + 0.2 + 2 / (5 * pi) * (std::asin(z) + z * std::sqrt(1 - z * z));
+}
+
 DVec3 irradiance(const Light& light, DVec3 point, DVec3 normal) {
     switch (light.kind) {
-    case LightKind::Sun: return light.intensity * std::max(0.0, glm::dot(normal, -light.direction));
-    case LightKind::Ambient: return light.intensity * (0.5 + 0.5 * normal.z);
+    case LightKind::Sun: return light.intensity * surfaceResponse(glm::dot(normal, -light.direction));
+    case LightKind::Ambient: return light.intensity * skyAmbientResponse(normal.z);
     case LightKind::Point:
     case LightKind::Spot: break;
     }
@@ -159,10 +168,11 @@ DVec3 irradiance(const Light& light, DVec3 point, DVec3 normal) {
     const DVec3 toLight = delta / distance;
     const double cosine = glm::dot(normal, toLight);
     if (cosine <= 0) return DVec3{0.0};
-    double scale = cosine / std::max(light.attenuation(distance), 1e-12);
+    double scale = surfaceResponse(cosine) / std::max(light.attenuation(distance), 1e-12);
     if (light.kind == LightKind::Spot) {
         const double along = glm::dot(-toLight, light.direction);
         if (along <= light.stopdot2) return DVec3{0.0};
+        scale *= along; // measured: a cosine emitter inside the cone, whatever the exponent
         if (along < light.stopdot) {
             double edge = (along - light.stopdot2) / (light.stopdot - light.stopdot2);
             if (light.exponent != 0 && light.exponent != 1) edge = std::pow(edge, light.exponent);

@@ -6,15 +6,18 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 
 using namespace apex;
 
 namespace {
 
-std::string fixtureText() {
-    std::ifstream stream(std::string(APEX_FIXTURE_DIR) + "/lighting/worldlights.json", std::ios::binary);
+std::string fixtureText(std::string_view name = "worldlights.json") {
+    std::ifstream stream(std::string(APEX_FIXTURE_DIR) + "/lighting/" + std::string(name), std::ios::binary);
     std::stringstream buffer;
     buffer << stream.rdbuf();
     return buffer.str();
@@ -188,7 +191,7 @@ TEST_CASE("fifty/zero attenuation puts 50% at the fifty distance and 1/256 of th
     CHECK(equal.quadratic == 0);
 }
 
-TEST_CASE("irradiance follows the inverse attenuation, the cosine and the cones; range bounds it") {
+TEST_CASE("irradiance follows the inverse attenuation, VRAD's surface response and the cones; range bounds it") {
     lighting::Light light;
     light.kind = lighting::LightKind::Point;
     light.origin = {0, 0, 100};
@@ -197,7 +200,9 @@ TEST_CASE("irradiance follows the inverse attenuation, the cosine and the cones;
     // Straight below at 100 units: intensity / 100².
     CHECK(lighting::irradiance(light, {0, 0, 0}, {0, 0, 1}).x == doctest::Approx(1.0));
     CHECK(lighting::irradiance(light, {0, 0, 0}, {0, 0, -1}).x == 0);
-    CHECK(lighting::irradiance(light, {100, 0, 0}, {0, 0, 1}).x == doctest::Approx(10000.0 / 20000.0 * std::sqrt(0.5)));
+    // Measured (lighting_0_6_2_reference.md): the response to light at cosine c is (c + c²)/2, not c.
+    const double c45 = std::sqrt(0.5);
+    CHECK(lighting::irradiance(light, {100, 0, 0}, {0, 0, 1}).x == doctest::Approx(10000.0 / 20000.0 * 0.5 * c45 * (1 + c45)));
     light.radius = 50;
     CHECK(lighting::irradiance(light, {0, 0, 0}, {0, 0, 1}).x == 0);
     light.radius = 0;
@@ -215,6 +220,39 @@ TEST_CASE("irradiance follows the inverse attenuation, the cosine and the cones;
     const double edge = lighting::irradiance(light, {std::tan(glm::radians(37.5)) * 100, 0, 0}, {0, 0, 1}).x;
     CHECK(edge > 0);
     CHECK(edge < 1.0);
+    // Inside the inner cone the spot is a cosine emitter: the axis cosine multiplies the surface response.
+    const double c20 = std::cos(glm::radians(20.0));
+    const DVec3 at20{std::tan(glm::radians(20.0)) * 100, 0, 0};
+    CHECK(lighting::irradiance(light, at20, {0, 0, 1}).x ==
+          doctest::Approx(10000.0 / (100 * 100 / (c20 * c20)) * 0.5 * c20 * (1 + c20) * c20));
+    // Between the cones: the linear ramp, raised to the exponent unless the exponent is 0 or 1.
+    const double c375 = std::cos(glm::radians(37.5));
+    const double ramp = (c375 - light.stopdot2) / (light.stopdot - light.stopdot2);
+    const double base = 10000.0 / (100 * 100 / (c375 * c375)) * 0.5 * c375 * (1 + c375) * c375;
+    CHECK(edge == doctest::Approx(base * ramp));
+    light.exponent = 1;
+    CHECK(lighting::irradiance(light, {std::tan(glm::radians(37.5)) * 100, 0, 0}, {0, 0, 1}).x == doctest::Approx(base * ramp));
+    light.exponent = 3;
+    CHECK(lighting::irradiance(light, {std::tan(glm::radians(37.5)) * 100, 0, 0}, {0, 0, 1}).x ==
+          doctest::Approx(base * ramp * ramp * ramp));
+    light.exponent = 0;
+
+    lighting::Light sun;
+    sun.kind = lighting::LightKind::Sun;
+    sun.intensity = DVec3{2.0};
+    sun.direction = {0, -std::sin(glm::radians(60.0)), -std::cos(glm::radians(60.0))};
+    CHECK(lighting::irradiance(sun, {}, {0, 0, 1}).x == doctest::Approx(2.0 * 0.5 * 0.5 * 1.5));
+    CHECK(lighting::irradiance(sun, {}, {0, 0, -1}).x == 0);
+
+    // Sky ambient under an open upper hemisphere, weighted by the same response: 1 up, ½ vertical, 0 down;
+    // a 60° slope is 0.77179 (measured 0.7718 by quadrature, not the 0.75 a cosine weighting gives).
+    lighting::Light ambient;
+    ambient.kind = lighting::LightKind::Ambient;
+    ambient.intensity = DVec3{1.0};
+    CHECK(lighting::irradiance(ambient, {}, {0, 0, 1}).x == doctest::Approx(1.0));
+    CHECK(lighting::irradiance(ambient, {}, {1, 0, 0}).x == doctest::Approx(0.5));
+    CHECK(lighting::irradiance(ambient, {}, {0, 0, -1}).x == doctest::Approx(0.0));
+    CHECK(lighting::irradiance(ambient, {}, {std::sqrt(0.75), 0, 0.5}).x == doctest::Approx(0.77179).epsilon(1e-4));
 
     // A curve whose minimum stays above peak/threshold never reaches the threshold.
     lighting::Light dim = light;
@@ -230,4 +268,57 @@ TEST_CASE("irradiance follows the inverse attenuation, the cosine and the cones;
     constant.constant = 1;
     CHECK(std::isinf(lighting::effectiveRange(constant, 0.5)));
     CHECK(lighting::effectiveRange(constant, 2.0) == 0);
+}
+
+// D3 test 3 without the native tools: luxels of native VRAD -bounce 0 -noextra -aoscale 0 lightmaps, recorded by
+// tools/light_parity.py --fixture, against the model averaged over VRAD's measured four sample points.
+TEST_CASE("irradiance reproduces native VRAD's direct lightmaps on the parity reference scenes") {
+    const auto parsed = json::parse(fixtureText("irradiance_parity.json"));
+    REQUIRE(parsed);
+    const auto* scenes = field(*parsed, "scenes").get<json::Value::Object>();
+    REQUIRE(scenes);
+    REQUIRE(scenes->size() >= 6);
+    for (const auto& [name, scene] : *scenes) {
+        CAPTURE(name);
+        std::vector<lighting::Light> lights;
+        for (const auto& record : *field(scene, "lights").get<json::Value::Array>()) {
+            lighting::Light light;
+            const int type = static_cast<int>(num(record, "type"));
+            light.kind = type == 1 ? lighting::LightKind::Point : type == 2 ? lighting::LightKind::Spot
+                                                                            : lighting::LightKind::Sun;
+            light.origin = vec(record, "origin");
+            light.intensity = vec(record, "intensity");
+            if (type != 1) light.direction = vec(record, "normal");
+            light.stopdot = num(record, "stopdot");
+            light.stopdot2 = num(record, "stopdot2");
+            light.exponent = num(record, "exponent");
+            light.radius = num(record, "radius");
+            light.constant = num(record, "constant");
+            light.linear = num(record, "linear");
+            light.quadratic = num(record, "quadratic");
+            lights.push_back(light);
+        }
+        const auto& samples = *field(scene, "samples").get<json::Value::Array>();
+        REQUIRE(samples.size() >= 16);
+        double worst = 0;
+        for (const auto& sample : samples) {
+            const DVec3 normal = vec(sample, "normal");
+            const DVec3 reference = vec(sample, "reference");
+            DVec3 model{0.0};
+            const auto& points = *field(sample, "points").get<json::Value::Array>();
+            for (const auto& point : points) {
+                const auto& xyz = *point.get<json::Value::Array>();
+                const DVec3 p{*xyz[0].get<double>(), *xyz[1].get<double>(), *xyz[2].get<double>()};
+                for (const auto& light : lights) model += lighting::irradiance(light, p, normal);
+            }
+            model /= static_cast<double>(points.size());
+            for (int i = 0; i < 3; ++i) {
+                // The lightmap keeps an 8-bit mantissa per channel, so dim channels of a coloured luxel carry
+                // more quantization; judge each against the luxel's brightest channel.
+                const double scale = std::max({reference.x, reference.y, reference.z});
+                worst = std::max(worst, std::abs(model[i] - reference[i]) / scale);
+            }
+        }
+        CHECK(worst < 0.01);
+    }
 }

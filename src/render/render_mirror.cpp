@@ -1094,6 +1094,7 @@ std::size_t RenderMirror::pendingPreviewCount() const {
 void RenderMirror::clearPreview() { setPreview(PreviewTransforms{}); }
 
 DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
+    const bool textured = options.mode == DisplayMode::Textured || options.mode == DisplayMode::Lit;
     impl_->refreshHelpers(); // Brush entities move when their solids finish meshing, between apply() calls.
     Impl& m = *impl_;
     m.redraw = false;
@@ -1147,8 +1148,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             // Wireframe keeps every edge: 2D views would otherwise lose the nodraw faces' outline.
             const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
                                   isNodraw(batch.material, material != m.materials.end() ? &material->second : nullptr);
-            if (options.mode == DisplayMode::Textured && material != m.materials.end()) draw.alpha = material->second.alpha;
+            if (textured && material != m.materials.end()) draw.alpha = material->second.alpha;
             switch (options.mode) {
+            case DisplayMode::Lit:
             case DisplayMode::Textured: draw.colour = Vec4(1.0f); break;
             case DisplayMode::Flat: draw.colour = flatColour(batch.material); break;
             case DisplayMode::Wireframe: draw.colour = options.wireColour; break;
@@ -1224,7 +1226,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.colour = options.mode == DisplayMode::Flat ? flatColour(batch.material) : Vec4(1.0f);
             draw.colour.a = state.shape.opacity;
             if (state.node) {
-                if (options.mode == DisplayMode::Textured) draw.alpha = material.alpha; // Ghosts stay uniformly translucent.
+                if (textured) draw.alpha = material.alpha; // Ghosts stay uniformly translucent.
                 if (m.selected.contains(state.node)) draw.highlight = m.highlight.selectTint;
                 else if (m.highlight.hover == state.node) draw.highlight = m.highlight.hoverTint;
                 const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
@@ -1352,7 +1354,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 if (material != mesh.materials.end() && !material->second.empty()) {
                     const auto& state = m.materials.at(material->second);
                     draw.texture = state.slot;
-                    if (options.mode == DisplayMode::Textured) draw.alpha = state.alpha;
+                    if (textured) draw.alpha = state.alpha;
                     draw.colour = options.mode == DisplayMode::Flat ? flatColour(material->second) : Vec4(1.0f);
                 } else {
                     draw.colour = entity.colour;

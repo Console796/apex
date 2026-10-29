@@ -1,6 +1,7 @@
 #include "render/context.hpp"
 #include "shared_context.hpp"
 #include "render/render_target.hpp"
+#include "render/scene_target.hpp"
 #include "render/renderer.hpp"
 #include "render/texture_heap.hpp"
 #include "render/view_math.hpp"
@@ -9,6 +10,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <iostream>
@@ -815,4 +817,182 @@ TEST_CASE("renderer: overlay draws on top of geometry without depth and leaves o
         for (std::uint32_t x = 0; x < kSize; ++x)
             changed += nearColour(at(image, x, y), at(baseline, x, y), 1) ? 0 : 1;
     CHECK(changed < 600);
+}
+
+namespace {
+
+Rgba8Image drawLitFrame(Fixture& f, const DrawList& list, SceneTarget& scene, RenderTarget* target = nullptr) {
+    RenderTarget& output = target ? *target : f.target;
+    REQUIRE(scene.resize(output.width(), output.height()));
+    auto done = f.context->oneShot([&](VkCommandBuffer commands) {
+        f.renderer->prepare(commands, list, scene, kClear);
+        output.begin(commands, kClear);
+        f.renderer->record(commands, list);
+        output.end(commands);
+    });
+    REQUIRE(done);
+    auto image = output.readback();
+    REQUIRE(image);
+    for (const auto& e : f.context->validation().errors()) MESSAGE(e);
+    CHECK(f.context->validation().errorCount() == 0);
+    return std::move(*image);
+}
+
+void checkLitParity(const Rgba8Image& a, const Rgba8Image& b) {
+    REQUIRE(a.width == b.width);
+    REQUIRE(a.height == b.height);
+    REQUIRE(a.pixels.size() == b.pixels.size());
+    int maxDifference = 0;
+    for (std::size_t i = 0; i < a.pixels.size(); ++i)
+        maxDifference = std::max(maxDifference, std::abs(int(a.pixels[i]) - int(b.pixels[i])));
+    CHECK(maxDifference <= 1);
+}
+
+} // namespace
+
+TEST_CASE("renderer: Lit HDR pass matches the textured cube at exposure one") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube cube = makeCube(*gpu, 32.0f, 0);
+    DrawList list = cubeList(cube, DisplayMode::Textured, gpu->checker);
+    SUBCASE("opaque") {}
+    SUBCASE("alpha test") { list.meshes[0].alpha = AlphaMode::Test; }
+    SUBCASE("translucent") {
+        list.meshes[0].alpha = AlphaMode::Blend;
+        list.meshes[0].colour.a = 0.6f;
+    }
+    SUBCASE("preview and edge overlay") {
+        DMat4 transform(1);
+        transform[3][1] = 8;
+        list.previews.push_back({transform, DVec3(0)});
+        list.meshes[0].previewIndex = 1;
+        list.edgeOverlay = true;
+        list.edgeColour = Vec4(1);
+    }
+    SUBCASE("selection tint") { list.meshes[0].highlight = Vec4(1, 0.5f, 0, 0.4f); }
+    SUBCASE("hover tint on alpha test") {
+        list.meshes[0].alpha = AlphaMode::Test;
+        list.meshes[0].highlight = Vec4(0, 0.5f, 1, 0.3f);
+    }
+    const auto textured = drawFrame(*gpu, list);
+    list.mode = DisplayMode::Lit;
+    checkLitParity(textured, drawLitFrame(*gpu, list, scene));
+}
+
+TEST_CASE("renderer: Lit copies scene depth before boxes and outlines") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube cube = makeCube(*gpu, 32.0f, 0);
+    DrawList list = cubeList(cube, DisplayMode::Textured, gpu->checker);
+    list.mode = DisplayMode::Lit;
+    const auto bare = drawLitFrame(*gpu, list, scene);
+    BoxInstance box{{-16, -16, -16}, {16, 16, 16}, {1, 0, 1, 1}};
+    auto instances = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{&box, 1}),
+                                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    REQUIRE(instances);
+    SUBCASE("solid box") { list.boxes.push_back({&*instances, 1, {64, 0, 0}, true}); }
+    SUBCASE("outline with hidden lines disabled") {
+        list.boxOutlines.push_back({&*instances, 1, {64, 0, 0}});
+        list.boxOutlines.back().tint = Vec4(1, 0, 1, 1);
+        list.occludedAlpha = 0;
+    }
+    CHECK(drawLitFrame(*gpu, list, scene).pixels == bare.pixels);
+    // The helper occupies visible pixels without the occluder; equality above proves depth copying.
+    list.meshes.clear();
+    const auto helper = drawLitFrame(*gpu, list, scene);
+    list.boxes.clear();
+    list.boxOutlines.clear();
+    CHECK(helper.pixels != drawLitFrame(*gpu, list, scene).pixels);
+}
+
+TEST_CASE("renderer: Lit exposure affects meshes before display-space helpers") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube cube = makeCube(*gpu, 32.0f, 0);
+    DrawList list = cubeList(cube, DisplayMode::Textured, gpu->checker);
+    list.mode = DisplayMode::Lit;
+    list.viewportSize = Vec2(kSize);
+    list.overlayTriangles.push_back({{-96, -8, 8}, {-96, 8, 8}, {-96, 0, -8}, {1, 0, 1, 1}});
+    const auto normal = drawLitFrame(*gpu, list, scene);
+    list.exposure = 0;
+    const auto dark = drawLitFrame(*gpu, list, scene);
+    CHECK(nearColour(at(dark, 26, 38), {0, 0, 0}, 0));
+    CHECK(nearColour(at(dark, 32, 32), {255, 0, 255}, 0));
+    CHECK(nearColour(at(normal, 32, 32), at(dark, 32, 32), 0));
+    // The selection tint is display-space: exposure does not reach it.
+    list.meshes[0].highlight = Vec4(1, 0, 0, 0.5f);
+    const auto selected = drawLitFrame(*gpu, list, scene);
+    CHECK(nearColour(at(selected, 26, 38), {128, 0, 0}, 2));
+}
+
+TEST_CASE("renderer: scene target resize retires attachment views and reuses heap slots") {
+    REQUIRE_GPU();
+    auto heap = TextureHeap::create(*gpu->context, {6, 1u << 20});
+    REQUIRE(heap);
+    auto renderer = Renderer::create(*gpu->context, **heap, RenderTarget::kColorFormat, RenderTarget::kDepthFormat);
+    REQUIRE(renderer);
+    {
+        SceneTarget scene(*gpu->context, **heap);
+        DrawList list;
+        list.mode = DisplayMode::Lit;
+        for (std::uint32_t size : {16u, 32u, 24u, 16u, 32u, 24u}) {
+            CAPTURE(size);
+            const auto oldImage = scene.color().handle();
+            const auto oldSlot = scene.colorSlot();
+            gpu->context->waitIdle();
+            REQUIRE(scene.resize(size, size));
+            CHECK(scene.color().handle() != oldImage);
+            CHECK(scene.colorSlot() != oldSlot);
+            CHECK(scene.color().desc().format == SceneTarget::kColorFormat);
+            CHECK(scene.depth().aspect() == VK_IMAGE_ASPECT_DEPTH_BIT);
+            CHECK((*heap)->liveTextures() == 3);
+            CHECK_FALSE((*heap)->registerAttachment(scene.depth(), VK_IMAGE_ASPECT_COLOR_BIT));
+            auto output = RenderTarget::create(*gpu->context, size, size);
+            REQUIRE(output);
+            REQUIRE(gpu->context->oneShot([&](VkCommandBuffer commands) {
+                (*renderer)->prepare(commands, list, scene, kClear);
+                output->begin(commands, kClear);
+                (*renderer)->record(commands, list);
+                output->end(commands);
+            }));
+            auto image = output->readback();
+            REQUIRE(image);
+            CHECK(isBackground(at(*image, size / 2, size / 2)));
+            const auto sameImage = scene.color().handle();
+            REQUIRE(scene.resize(size, size));
+            CHECK(scene.color().handle() == sameImage);
+        }
+
+    }
+    CHECK((*heap)->liveTextures() == 1);
+    for (const auto& e : gpu->context->validation().errors()) MESSAGE(e);
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: thumbnail reservations cannot borrow live attachment slots") {
+    REQUIRE_GPU();
+    auto heap = TextureHeap::create(*gpu->context, {66, 1u << 20});
+    REQUIRE(heap);
+    {
+        SceneTarget scene(*gpu->context, **heap);
+        REQUIRE(scene.resize(16, 16));
+        // 65 usable slots minus the scene's two leaves no 64-slot thumbnail range.
+        CHECK_FALSE((*heap)->reserveThumbnailSlots());
+    }
+    CHECK((*heap)->reserveThumbnailSlots());
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: scene target resizes in a heap with room for exactly one target") {
+    REQUIRE_GPU();
+    auto heap = TextureHeap::create(*gpu->context, {3, 1u << 20}); // checkerboard + colour + depth
+    REQUIRE(heap);
+    SceneTarget scene(*gpu->context, **heap);
+    for (std::uint32_t size : {16u, 32u, 24u}) {
+        CAPTURE(size);
+        gpu->context->waitIdle();
+        REQUIRE(scene.resize(size, size));
+        CHECK(scene.extent().width == size);
+        CHECK((*heap)->liveTextures() == 3);
+    }
 }

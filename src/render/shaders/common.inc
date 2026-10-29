@@ -8,4 +8,5 @@ layout(push_constant) uniform Push {
     vec4 p1;         // Grid: plane rect; sprite: up, address high; brush/box: address low/high, index, brush alpha mode (uint bits).
 } push;
 
+// Tone map reuses offsetSlot.w for scene colour, p0.x for depth (uint bits), p0.y for exposure.
 uint pushSlot() { return floatBitsToUint(push.offsetSlot.w); }

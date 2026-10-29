@@ -6,7 +6,7 @@
 // rotation-only, and each draw carries a double-precision world origin that the recorder rebases
 // against the camera (view_math.hpp).
 //
-// Usage per frame, inside an already begun dynamic-rendering pass (RenderTarget::begin or
+// Lit calls prepare() outside rendering first. Usage for the display pass (RenderTarget::begin or
 // SwapchainDepth::begin):
 //     DrawList list; list.view = ...; list.meshes.push_back(...); renderer.record(commands, list);
 
@@ -25,7 +25,9 @@
 
 namespace apex::render {
 
-enum class DisplayMode { Textured, Flat, Wireframe };
+enum class DisplayMode { Textured, Flat, Wireframe, Lit };
+
+class SceneTarget;
 
 // Brush vertex, 36 bytes: camera-relative (draw-origin-relative) position, normal, uv, material.
 struct BrushVertex {
@@ -60,7 +62,7 @@ inline constexpr std::uint32_t kVertexMaterial = 0xFFFFFFFFu;
 
 // How the textured pass treats the texture's alpha channel. Opaque ignores it. Test discards
 // below 0.5 in the opaque pass ($alphatest). Blend draws in the sorted translucent pass with no
-// depth writes ($translucent); other display modes treat Blend draws as Opaque.
+// depth writes ($translucent). Textured and Lit share these rules; Flat/Wireframe treat Blend as Opaque.
 enum class AlphaMode : std::uint32_t { Opaque = 0, Test = 1, Blend = 2 };
 
 struct MeshDraw {
@@ -71,16 +73,16 @@ struct MeshDraw {
     std::uint32_t edgeIndexCount = 0;
     DVec3 origin{0.0};                 // World position the vertices are relative to.
     TextureSlot texture = kCheckerboardSlot; // Or kVertexMaterial.
-    Vec4 colour{1.0f};                 // Tint (Textured), fill (Flat), line colour (Wireframe).
+    Vec4 colour{1.0f};                 // Tint (Textured/Lit), fill (Flat), line colour (Wireframe).
     Vec4 highlight{0.0f};              // RGB tint blended by alpha, after material shading.
     std::uint32_t firstIndex = 0;
     std::uint32_t firstEdgeIndex = 0;
     bool outlineOnlyWire = false;      // Selected wire edges are emitted by the outline pass.
     std::uint32_t previewIndex = 0;     // 0 = identity; otherwise DrawList::previews[index - 1].
-    AlphaMode alpha = AlphaMode::Opaque; // Textured mode only.
+    AlphaMode alpha = AlphaMode::Opaque; // Textured/Lit modes.
     std::uint32_t instanceCount = 1;
     bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
-    bool edgeOverlay = true;          // False skips this mesh in the Textured/Flat edge overlay pass.
+    bool edgeOverlay = true;          // False skips this mesh in the Textured/Lit/Flat edge overlay pass.
 };
 
 struct BoxDraw {
@@ -161,6 +163,7 @@ struct Label {
 
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
+    float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
     FrameView view;
     std::vector<MeshDraw> meshes;
     std::vector<MeshDraw> ghosts; // Blended material pass, no depth writes.
@@ -173,7 +176,7 @@ struct DrawList {
     std::vector<DrawPreview> previews;
     float occludedAlpha = 0.25f;
     GridSettings grid;
-    bool edgeOverlay = false;           // Textured/Flat: draw edgeIndices lines on top.
+    bool edgeOverlay = false;           // Textured/Lit/Flat: draw edgeIndices lines on top.
     Vec4 edgeColour{0.0f, 0.0f, 0.0f, 1.0f};
     float edgeDepthBias = 2.0f;         // Constant depth-bias factor pulling lines toward the camera.
     // Empty by default, which leaves every other frame untouched.
@@ -205,13 +208,19 @@ static_assert(sizeof(PushConstants) == 128);
 
 class Renderer {
   public:
-    // Pipelines are built for these attachment formats; depthFormat is RenderTarget::kDepthFormat
+    // Caller pipelines use these formats; scene mesh pipelines also use SceneTarget's HDR formats.
+    // The caller's depthFormat is RenderTarget::kDepthFormat
     // for offscreen targets and SwapchainDepth::kFormat for swapchains.
     static Result<std::unique_ptr<Renderer>> create(Context& context, TextureHeap& heap,
                                                     VkFormat colorFormat, VkFormat depthFormat);
     ~Renderer();
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
+
+    // Lit only: records meshes into the HDR target, then makes colour/depth sampleable. Call
+    // outside rendering, after resizing the target and completing this frame slot's prior use.
+    // Pair with record() on the same command buffer and list. Other modes do nothing.
+    void prepare(VkCommandBuffer commands, const DrawList& list, SceneTarget& scene, const float clearColor[4]);
 
     // Records the list into the current rendering pass; viewport and scissor are expected to be
     // set already (RenderTarget::begin does). Each command buffer is a reusable frame slot:
@@ -230,6 +239,7 @@ class Renderer {
     bool wireframeFill() const { return wireFill_; } // fillModeNonSolid pipelines available.
 
   private:
+    void recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass);
     struct Impl;
     explicit Renderer(std::unique_ptr<Impl> impl, bool wireFill);
     std::unique_ptr<Impl> impl_;

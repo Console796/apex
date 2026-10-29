@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 #include "render/render_target.hpp"
+#include "render/scene_target.hpp"
 #include "render/shader_blobs.hpp"
 #include "render/swapchain.hpp"
 #include "render/view_math.hpp"
@@ -24,7 +25,7 @@ namespace {
 enum class Kind : std::uint32_t {
     Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid,
     Outline, OutlineAlways, BoxOutline, BoxOutlineAlways, SpriteOutline, SpriteOutlineAlways,
-    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Count
+    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Tonemap, Highlight, Count
 };
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
@@ -36,7 +37,10 @@ constexpr float kLayerBias = 1e-5f;
 
 enum class Input { Brush, Box, Sprite, None };
 
+enum class Signature : std::uint32_t { Caller = 1, Scene = 2, Both = 3 };
+
 struct Spec {
+    Signature signatures;
     const char* vert;
     const char* frag;
     Input input;
@@ -51,32 +55,34 @@ struct Spec {
 };
 
 constexpr Spec kSpecs[kKindCount] = {
-    {"brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
-    {"brush_vert", "brush_flat_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
-    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_LINE, true, false, true},
-    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, true, false, true},
-    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
-    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
-    {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
-    {"grid_vert", "grid_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
-    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
-    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
-    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
-    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
-    {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
-    {"sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
-    {"brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
-    {"box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
-    {"overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
-    {"overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
-    {"overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, true, true, VK_COMPARE_OP_LESS},
-    {"brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
-    {"brush_vert", "brush_flat_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
-    {"overlay_vert", "label_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {Signature::Both, "brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
+    {Signature::Caller, "brush_vert", "brush_flat_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
+    {Signature::Caller, "brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_LINE, true, false, true},
+    {Signature::Caller, "brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, true, false, true},
+    {Signature::Caller, "box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
+    {Signature::Caller, "box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
+    {Signature::Caller, "sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false},
+    {Signature::Caller, "grid_vert", "grid_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
+    {Signature::Caller, "brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
+    {Signature::Caller, "brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {Signature::Caller, "box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
+    {Signature::Caller, "box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {Signature::Caller, "sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, true},
+    {Signature::Caller, "sprite_vert", "sprite_frag", Input::Sprite, VK_PRIMITIVE_TOPOLOGY_LINE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {Signature::Caller, "brush_vert", "solid_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
+    {Signature::Caller, "box_vert", "vcolor_frag", Input::Box, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, false},
+    {Signature::Caller, "overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {Signature::Caller, "overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {Signature::Caller, "overlay_vert", "vcolor_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, true, true, VK_COMPARE_OP_LESS},
+    {Signature::Both, "brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {Signature::Caller, "brush_vert", "brush_flat_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {Signature::Caller, "overlay_vert", "label_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
+    {Signature::Caller, "fullscreen_vert", "tonemap_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, true, VK_COMPARE_OP_ALWAYS},
+    {Signature::Caller, "brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
-                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag"};
+                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag", "fullscreen_vert", "tonemap_frag"};
 
 struct OverlayVertex {
     Vec4 position;
@@ -199,7 +205,8 @@ struct Renderer::Impl {
     VkFormat colorFormat = VK_FORMAT_UNDEFINED;
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkPipeline pipelines[kKindCount]{};
+    VkPipeline pipelines[2][kKindCount]{}; // Caller signature, then RGBA16F/D32 scene signature.
+    std::map<VkCommandBuffer, std::array<TextureSlot, 2>> preparedScenes;
     std::map<std::string, std::vector<std::uint32_t>> overrides; // Hot-reloaded SPIR-V.
     // Swapchains have one frame in flight and distinct command buffers. A slot is reused only
     // after its fence, so host writes cannot race another viewport or an earlier submission.
@@ -217,7 +224,7 @@ struct Renderer::Impl {
     }
 
     void destroyPipelines() {
-        for (VkPipeline& pipeline : pipelines) {
+        for (auto& pass : pipelines) for (VkPipeline& pipeline : pass) {
             if (pipeline) vkDestroyPipeline(context->device(), pipeline, nullptr);
             pipeline = VK_NULL_HANDLE;
         }
@@ -237,8 +244,11 @@ struct Renderer::Impl {
 
     // Builds one pipeline over dynamic rendering. Returns VK_NULL_HANDLE (not an error) for kinds
     // the device cannot do.
-    Result<VkPipeline> build(Kind kind) const {
+    Result<VkPipeline> build(Kind kind, bool scene) const {
         const Spec& spec = kSpecs[static_cast<std::size_t>(kind)];
+        const auto signature = scene ? Signature::Scene : Signature::Caller;
+        if (!(static_cast<std::uint32_t>(spec.signatures) & static_cast<std::uint32_t>(signature)))
+            return VkPipeline(VK_NULL_HANDLE);
         if (spec.polygon == VK_POLYGON_MODE_LINE && !context->info().fillModeNonSolid) return VkPipeline(VK_NULL_HANDLE);
 
         auto vert = module(spec.vert);
@@ -341,8 +351,9 @@ struct Renderer::Impl {
         dynamic.pDynamicStates = dynamicStates;
         VkPipelineRenderingCreateInfo rendering = vkStruct<VkPipelineRenderingCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
         rendering.colorAttachmentCount = 1;
-        rendering.pColorAttachmentFormats = &colorFormat;
-        rendering.depthAttachmentFormat = depthFormat;
+        const VkFormat color = scene ? SceneTarget::kColorFormat : colorFormat;
+        rendering.pColorAttachmentFormats = &color;
+        rendering.depthAttachmentFormat = scene ? SceneTarget::kDepthFormat : depthFormat;
 
         VkGraphicsPipelineCreateInfo info = vkStruct<VkGraphicsPipelineCreateInfo>(VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
         info.pNext = &rendering;
@@ -364,29 +375,30 @@ struct Renderer::Impl {
     }
 
     Result<void> buildAll() {
-        VkPipeline built[kKindCount]{};
-        for (std::size_t i = 0; i < kKindCount; ++i) {
-            auto pipeline = build(static_cast<Kind>(i));
+        VkPipeline built[2][kKindCount]{};
+        for (std::size_t pass = 0; pass < 2; ++pass) for (std::size_t i = 0; i < kKindCount; ++i) {
+            auto pipeline = build(static_cast<Kind>(i), pass == 1);
             if (!pipeline) {
-                for (VkPipeline p : built) {
+                for (auto& batch : built) for (VkPipeline p : batch) {
                     if (p) vkDestroyPipeline(context->device(), p, nullptr);
                 }
                 return std::unexpected(pipeline.error());
             }
-            built[i] = *pipeline;
+            built[pass][i] = *pipeline;
         }
         destroyPipelines();
-        std::copy(std::begin(built), std::end(built), pipelines);
+        for (std::size_t pass = 0; pass < 2; ++pass)
+            std::copy(std::begin(built[pass]), std::end(built[pass]), pipelines[pass]);
         return {};
     }
 
-    void bind(VkCommandBuffer commands, Kind kind) const {
-        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines[static_cast<std::size_t>(kind)]);
+    void bind(VkCommandBuffer commands, Kind kind, bool scene = false) const {
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines[scene ? 1 : 0][static_cast<std::size_t>(kind)]);
     }
     void pushAll(VkCommandBuffer commands, const PushConstants& push) const {
         vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_ALL, 0, sizeof(PushConstants), &push);
     }
-    bool has(Kind kind) const { return pipelines[static_cast<std::size_t>(kind)] != VK_NULL_HANDLE; }
+    bool has(Kind kind, bool scene = false) const { return pipelines[scene ? 1 : 0][static_cast<std::size_t>(kind)] != VK_NULL_HANDLE; }
 };
 
 Renderer::Renderer(std::unique_ptr<Impl> impl, bool wireFill) : impl_(std::move(impl)), wireFill_(wireFill) {}
@@ -491,7 +503,19 @@ Result<bool> Renderer::reloadChangedShaders() {
 #endif
 }
 
+void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarget& scene, const float clearColor[4]) {
+    if (list.mode != DisplayMode::Lit) return;
+    scene.begin(commands, clearColor);
+    recordPass(commands, list, true);
+    scene.end(commands);
+    impl_->preparedScenes[commands] = {scene.colorSlot(), scene.depthSlot()};
+}
+
 void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
+    recordPass(commands, list, false);
+}
+
+void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass) {
     Impl& s = *impl_;
     VkDeviceAddress previewAddress = 0;
     if (!list.previews.empty()) {
@@ -533,8 +557,8 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     const DVec3 camera = list.view.cameraPosition;
 
     auto drawMeshes = [&](Kind kind, const auto& meshes, auto&& setup, auto&& count, auto&& indices, bool edges) {
-        if (!s.has(kind)) return;
-        s.bind(commands, kind);
+        if (!s.has(kind, scenePass)) return;
+        s.bind(commands, kind, scenePass);
         for (const MeshDraw& mesh : meshes) {
             const std::uint32_t n = count(mesh);
             if (!mesh.vertices || !indices(mesh) || n == 0) continue;
@@ -547,7 +571,8 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
             setup(push, mesh);
             previewPush(push, mesh.previewIndex);
             if (mesh.instancedTransforms) push.p1.z = std::bit_cast<float>(mesh.previewIndex | 0x80000000u);
-            push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha));
+            // Bit 2 asks brush_textured_frag for the tint alone (Lit's post-tone-map highlight pass).
+            push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha) | (kind == Kind::Highlight ? 4u : 0u));
             // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
             const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
             for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;
@@ -559,12 +584,31 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     auto trianglesBuf = [](const MeshDraw& m) { return m.indices; };
     auto edgesOf = [](const MeshDraw& m) { return m.edgeIndexCount; };
     auto edgesBuf = [](const MeshDraw& m) { return m.edgeIndices; };
-    auto brushColour = [](PushConstants& p, const MeshDraw& m) {
+    auto brushColour = [&](PushConstants& p, const MeshDraw& m) {
         p.colour = m.colour;
-        p.p0 = m.highlight;
+        p.p0 = scenePass ? Vec4(0.0f) : m.highlight; // Lit tints after tone mapping (D15).
     };
 
+    if (!scenePass && list.mode == DisplayMode::Lit) {
+        const auto prepared = s.preparedScenes.find(commands);
+        assert(prepared != s.preparedScenes.end());
+        if (prepared == s.preparedScenes.end()) return;
+        PushConstants push{};
+        push.offsetSlot.w = std::bit_cast<float>(prepared->second[0]);
+        push.p0.x = std::bit_cast<float>(prepared->second[1]);
+        push.p0.y = list.exposure;
+        s.bind(commands, Kind::Tonemap);
+        s.pushAll(commands, push);
+        vkCmdDraw(commands, 3, 1, 0, 0);
+        s.preparedScenes.erase(prepared);
+        // Selection and hover tints, depth-tested against the copied scene depth.
+        drawMeshes(Kind::Highlight, list.meshes, brushColour,
+                   [](const MeshDraw& m) { return m.highlight.a > 0.0f ? m.indexCount : 0u; }, trianglesBuf, false);
+    }
     switch (list.mode) {
+    case DisplayMode::Lit:
+        if (!scenePass) break;
+        [[fallthrough]];
     case DisplayMode::Textured: {
         const auto opaqueOf = [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? 0u : m.indexCount; };
         drawMeshes(Kind::Textured, list.meshes, brushColour, opaqueOf, trianglesBuf, false);
@@ -594,8 +638,9 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
         break;
     }
     }
+    if (scenePass) return;
     if (list.mode != DisplayMode::Wireframe)
-        drawMeshes(list.mode == DisplayMode::Textured ? Kind::GhostTextured : Kind::GhostFlat,
+        drawMeshes(list.mode == DisplayMode::Textured || list.mode == DisplayMode::Lit ? Kind::GhostTextured : Kind::GhostFlat,
                    list.ghosts, brushColour, trianglesOf, trianglesBuf, false);
     if (list.edgeOverlay && list.mode != DisplayMode::Wireframe && s.has(Kind::Edges)) {
         vkCmdSetDepthBias(commands, list.edgeDepthBias, 0.0f, 1.0f);

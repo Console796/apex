@@ -72,7 +72,8 @@ render::DisplayMode renderMode(viewport::DisplayMode mode) {
     switch (mode) {
     case viewport::DisplayMode::Wireframe: return render::DisplayMode::Wireframe;
     case viewport::DisplayMode::Flat: return render::DisplayMode::Flat;
-    default: return render::DisplayMode::Textured;  // Lit and Baked arrive in 0.6 / 0.7.
+    case viewport::DisplayMode::Lit: return render::DisplayMode::Lit;
+    default: return render::DisplayMode::Textured;  // Baked arrives in 0.7.
     }
 }
 
@@ -172,7 +173,7 @@ bool handleModelDrop(editor::EditorSession* session, const viewport::Viewport* v
 PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor accessor)
     : host_(host), pane_(pane), accessor_(std::move(accessor)),
       pointerLock_(*this, makePointerLockBackend(*this), [this] { releaseCapture(); }),
-      depth_(*host.context()) {
+      depth_(*host.context()), scene_(*host.context(), *host.heap()) {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(host.vulkanInstance());
     sinceTick_.start();
@@ -604,6 +605,15 @@ double PaneWindow::draw() {
     QElapsedTimer timer;
     timer.start();
     auto status = swapchain_->renderFrame(extent, [&](VkCommandBuffer cb, const render::SwapchainFrame& frame) {
+        if (list.mode == render::DisplayMode::Lit) {
+            // renderFrame has waited for this pane's previous frame before resizing/reusing slots.
+            if (auto sized = scene_.resize(frame.extent.width, frame.extent.height); !sized) {
+                log::error("viewports: scene target: {}", sized.error().what());
+                failed_ = true;
+                return;
+            }
+        }
+        renderer->prepare(cb, list, scene_, clear_);
         if (auto begun = depth_.begin(cb, frame, clear_); !begun) {
             log::error("viewports: depth target: {}", begun.error().what());
             failed_ = true;

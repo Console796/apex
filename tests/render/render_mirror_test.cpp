@@ -4,6 +4,7 @@
 #include "shared_context.hpp"
 #include "render/render_mirror.hpp"
 #include "render/render_target.hpp"
+#include "render/scene_target.hpp"
 #include "render/renderer.hpp"
 #include "render/solid_mesh.hpp"
 #include "render/texture_heap.hpp"
@@ -194,7 +195,10 @@ Rgba8Image drawFrame(Gpu& g, RenderMirror& mirror, DisplayMode mode, bool edges 
     options.view = view ? *view : makeView({-220.0, -170.0, 130.0}, {23.0, 38.0, 0.0});
     options.edgeOverlay = edges;
     const DrawList list = mirror.buildDrawList(options);
+    SceneTarget scene(*g.context, *g.heap);
+    if (mode == DisplayMode::Lit) REQUIRE(scene.resize(kSize, kSize));
     auto done = g.context->oneShot([&](VkCommandBuffer commands) {
+        g.renderer->prepare(commands, list, scene, kClear);
         g.target.begin(commands, kClear);
         g.renderer->record(commands, list);
         g.target.end(commands);
@@ -416,6 +420,19 @@ TEST_CASE("mirror: golden images of the fixture map") {
     golden::check("render_map_textured", drawFrame(*g, scene.mirror, DisplayMode::Textured), *g->context);
     golden::check("render_map_flat", drawFrame(*g, scene.mirror, DisplayMode::Flat, true), *g->context);
     golden::check("render_map_wireframe", drawFrame(*g, scene.mirror, DisplayMode::Wireframe), *g->context);
+}
+
+TEST_CASE("mirror: Lit matches the textured fixture-map golden scene") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto textured = drawFrame(*g, scene.mirror, DisplayMode::Textured);
+    golden::check("render_map_textured", textured, *g->context);
+    const auto lit = drawFrame(*g, scene.mirror, DisplayMode::Lit);
+    REQUIRE(lit.pixels.size() == textured.pixels.size());
+    int maxDifference = 0;
+    for (std::size_t i = 0; i < lit.pixels.size(); ++i)
+        maxDifference = std::max(maxDifference, std::abs(int(lit.pixels[i]) - int(textured.pixels[i])));
+    CHECK(maxDifference <= 1);
 }
 
 TEST_CASE("mirror: grid plane settings pass through to the draw list") {

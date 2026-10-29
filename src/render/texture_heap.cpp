@@ -58,14 +58,17 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
                                          p12.maxDescriptorSetUpdateAfterBindSampledImages);
     heap->capacity_ = std::max<std::uint32_t>(2, std::min(desc.capacity, limit));
 
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < 3; ++i) {
         VkSamplerCreateInfo si = vkStruct<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
         const bool nearest = i == 1;
+        const bool comparison = i == 2;
         si.magFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
         si.minFilter = si.magFilter;
         si.mipmapMode = nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        si.anisotropyEnable = !nearest && context.info().anisotropy ? VK_TRUE : VK_FALSE;
+        si.addressModeU = si.addressModeV = si.addressModeW = comparison ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.compareEnable = comparison ? VK_TRUE : VK_FALSE;
+        si.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+        si.anisotropyEnable = !nearest && !comparison && context.info().anisotropy ? VK_TRUE : VK_FALSE;
         si.maxAnisotropy = 16.0f;
         si.maxLod = VK_LOD_CLAMP_NONE;
         APEX_VK_TRY(vkCreateSampler(context.device(), &si, nullptr, &heap->samplers_[i]), "vkCreateSampler");
@@ -73,7 +76,7 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
 
     std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, heap->capacity_, VK_SHADER_STAGE_ALL, nullptr};
-    bindings[1] = {1, VK_DESCRIPTOR_TYPE_SAMPLER, 2, VK_SHADER_STAGE_ALL, heap->samplers_};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_SAMPLER, 3, VK_SHADER_STAGE_ALL, heap->samplers_};
     const std::array<VkDescriptorBindingFlags, 2> flags{
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, 0};
     VkDescriptorSetLayoutBindingFlagsCreateInfo bf = vkStruct<VkDescriptorSetLayoutBindingFlagsCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO);
@@ -87,7 +90,7 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
     APEX_VK_TRY(vkCreateDescriptorSetLayout(context.device(), &li, nullptr, &heap->layout_), "texture heap layout");
 
     const std::array<VkDescriptorPoolSize, 2> sizes{{{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, heap->capacity_},
-                                                     {VK_DESCRIPTOR_TYPE_SAMPLER, 2}}};
+                                                     {VK_DESCRIPTOR_TYPE_SAMPLER, 3}}};
     VkDescriptorPoolCreateInfo pi = vkStruct<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pi.maxSets = 1;
@@ -105,6 +108,7 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
     heap->ring_ = std::move(*ring);
 
     heap->images_.resize(heap->capacity_);
+    heap->attachments_.resize(heap->capacity_);
     for (TextureSlot slot = heap->capacity_; slot-- > 1;) heap->freeSlots_.push_back(slot);
 
     // Slot 0: checkerboard. Upload it directly into slot 0, then point every slot at it.
@@ -146,6 +150,8 @@ TextureHeap::~TextureHeap() {
     if (!context_) return;
     context_->waitIdle();
     ring_ = UploadRing();
+    for (VkImageView view : attachments_)
+        if (view) vkDestroyImageView(context_->device(), view, nullptr);
     images_.clear();
     garbage_.clear();
     VkDevice device = context_->device();
@@ -166,6 +172,36 @@ void TextureHeap::writeDescriptor(TextureSlot slot, VkImageView view) {
     write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     write.pImageInfo = &info;
     vkUpdateDescriptorSets(context_->device(), 1, &write, 0, nullptr);
+}
+
+Result<TextureSlot> TextureHeap::registerAttachment(const Image& image, VkImageAspectFlags aspect) {
+    if (!image || !(image.desc().usage & VK_IMAGE_USAGE_SAMPLED_BIT) ||
+        (aspect != VK_IMAGE_ASPECT_COLOR_BIT && aspect != VK_IMAGE_ASPECT_DEPTH_BIT) ||
+        !(image.aspect() & aspect) || image.desc().arrayLayers != 1 || image.desc().samples != VK_SAMPLE_COUNT_1_BIT) {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, "invalid sampled attachment"});
+    }
+    if (freeSlots_.empty()) return std::unexpected(Error{ErrorCode::Internal, "texture heap is full"});
+    VkImageViewCreateInfo info = vkStruct<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
+    info.image = image.handle();
+    info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    info.format = image.desc().format;
+    info.subresourceRange = {aspect, 0, 1, 0, 1};
+    VkImageView view = VK_NULL_HANDLE;
+    APEX_VK_TRY(vkCreateImageView(context_->device(), &info, nullptr, &view), "attachment sampled view");
+    const TextureSlot slot = freeSlots_.back();
+    freeSlots_.pop_back();
+    attachments_[slot] = view;
+    writeDescriptor(slot, view);
+    return slot;
+}
+
+void TextureHeap::releaseAttachment(TextureSlot slot) {
+    if (slot >= capacity_ || !attachments_[slot]) return;
+    // Unlike uploaded textures, attachment retirement is the owner's fence/idle responsibility.
+    writeDescriptor(slot, images_[0].view());
+    vkDestroyImageView(context_->device(), attachments_[slot], nullptr);
+    attachments_[slot] = VK_NULL_HANDLE;
+    freeSlots_.push_back(slot);
 }
 
 Result<TextureSlot> TextureHeap::upload(const TextureDesc& desc, std::span<const std::byte> pixels) {
@@ -244,7 +280,7 @@ Result<TextureSlot> TextureHeap::reserveThumbnailSlots() {
         for (TextureSlot first = capacity_ - kThumbnailTextureSlots; first > 0; --first) {
             bool free = true;
             for (auto slot = first; slot < first + kThumbnailTextureSlots; ++slot)
-                if (images_[slot]) { free = false; break; }
+                if (images_[slot] || attachments_[slot]) { free = false; break; }
             if (!free) continue;
             thumbnailFirst_ = first;
             std::erase_if(freeSlots_, [&](TextureSlot slot) { return thumbnailSlot(slot); });
@@ -299,7 +335,8 @@ void TextureHeap::collectGarbage() {
 
 std::uint32_t TextureHeap::liveTextures() const {
     return static_cast<std::uint32_t>(
-        std::ranges::count_if(images_, [](const Image& image) { return static_cast<bool>(image); }));
+        std::ranges::count_if(images_, [](const Image& image) { return static_cast<bool>(image); }) +
+        std::ranges::count_if(attachments_, [](VkImageView view) { return view != VK_NULL_HANDLE; }));
 }
 
 } // namespace apex::render

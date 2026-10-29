@@ -6,7 +6,7 @@
 //
 // Shader side (set number is the caller's choice):
 //   layout(set = N, binding = 0) uniform texture2D textures[];   // textures[nonuniformEXT(slot)]
-//   layout(set = N, binding = 1) uniform sampler samplers[2];    // 0 = linear/aniso repeat, 1 = nearest repeat
+//   layout(set = N, binding = 1) uniform sampler samplers[3];    // 0 = linear/aniso repeat, 1 = nearest repeat, 2 = reversed-Z comparison
 //
 // Slot 0 is a magenta/black checkerboard; every unused or released slot also shows it.
 
@@ -64,6 +64,13 @@ class TextureHeap {
     std::uint32_t thumbnailSlotsLive() const;
     std::uint32_t maxThumbnailSlotsLive() const { return maxThumbnailSlotsLive_; }
 
+    // Borrows an attachment; no upload or layout transition. The owner must keep the image alive
+    // and transition it to SHADER_READ_ONLY_OPTIMAL before sampling. Only colour or depth aspects
+    // are accepted; the heap owns a dedicated view. Release only after all draws using the slot
+    // have completed (the pane's previous-frame fence, or waitIdle in tests/teardown).
+    Result<TextureSlot> registerAttachment(const Image& image, VkImageAspectFlags aspect);
+    void releaseAttachment(TextureSlot slot);
+
     // Uploads a full mip chain (mips[0] is width x height, each following level halves, rounding
     // down to a minimum of 1). Each level is tightly packed in the texture's format; compressed
     // data is uploaded as-is. The image is sampleable only after flush() (also called implicitly
@@ -95,9 +102,10 @@ class TextureHeap {
     VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;
-    VkSampler samplers_[2]{};
+    VkSampler samplers_[3]{};
     std::uint32_t capacity_ = 0;
     std::vector<Image> images_;           // Indexed by slot; empty Image when free.
+    std::vector<VkImageView> attachments_; // Borrowed images, owned sampled views, indexed by slot.
     std::vector<TextureSlot> freeSlots_;
     std::vector<Image> garbage_;
 };

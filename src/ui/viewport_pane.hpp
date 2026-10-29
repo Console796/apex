@@ -10,6 +10,7 @@
 
 #include "editor/editor_session.hpp"
 #include "render/renderer.hpp"
+#include "render/scene_target.hpp"
 #include "render/swapchain.hpp"
 #include "ui/pointer_lock.hpp"
 #include "ui/transform_input.hpp"
@@ -101,6 +102,7 @@ private:
 
     std::unique_ptr<render::Swapchain> swapchain_;
     render::SwapchainDepth depth_;
+    render::SceneTarget scene_;
     float clear_[4] = {0.1f, 0.1f, 0.1f, 1.0f};
     bool resizeDragging_ = false;
     bool dirty_ = true;

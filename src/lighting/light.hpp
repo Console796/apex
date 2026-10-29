@@ -54,8 +54,19 @@ struct Attenuation {
 // VRAD's solve for _fifty_percent_distance / _zero_percent_distance (measured; see the probe document).
 Attenuation fiftyZeroAttenuation(double fifty, double zero);
 
-// Direct irradiance at a point with the given unit normal, before visibility. Provisional for the cone
-// and ambient shapes: 0.6.2's irradiance reference measures them against VRAD.
+// VRAD's response to light arriving at `cosine` to the normal, measured against its -bounce 0 lightmaps
+// (lighting_0_6_2_reference.md): (c + c²)/2, not Lambert's c. Zero at or below the horizon.
+double surfaceResponse(double cosine);
+
+// Sky ambient on a face whose normal has this z, when the whole upper hemisphere is sky: VRAD weights
+// each sky direction by surfaceResponse, normalised so a floor under open sky gets the full intensity
+// (1 up, 0.5 vertical, 0 down). Partly covered skies scale this by visibility (0.6 D16).
+double skyAmbientResponse(double normalZ);
+
+// Direct irradiance at a point with the given unit normal, before visibility, in the units of VRAD's
+// decoded HDR lightmap. Point and spot: intensity · surfaceResponse(cos) / attenuation(d); a spot also
+// multiplies by the cosine to its axis, and between its cones by the linear edge ramp raised to the
+// exponent (0 and 1 both mean linear). Sun: intensity · surfaceResponse. Measured by tools/light_parity.py.
 DVec3 irradiance(const Light& light, DVec3 point, DVec3 normal);
 
 // Distance beyond which the light's brightest channel falls below `threshold` (and within `radius`).
