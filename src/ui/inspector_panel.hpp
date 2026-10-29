@@ -64,7 +64,7 @@ private:
     QTableWidget* inputs_ = nullptr;
     std::vector<document::NodeId> entities_;
     std::uint64_t selectionRevision_ = 0, classesRevision_ = 0;
-    bool queued_ = false, rebuilding_ = false;
+    bool queued_ = false, rebuilding_ = false, colorDialogOpen_ = false;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
     std::function<void(QString, QString, QString, std::function<void(QString)>)> assetBrowser_;
     std::function<bool(document::NodeId)> instanceResolved_;

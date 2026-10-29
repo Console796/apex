@@ -1767,6 +1767,8 @@ TEST_CASE("editable outliner commits names, drops, visibility and persistent fil
 #include "assets/fgd.hpp"
 #include "ui/inspector_panel.hpp"
 #include <QCompleter>
+#include <QColorDialog>
+#include <QDialog>
 #include <QPushButton>
 #include <QFocusEvent>
 #include <QFormLayout>
@@ -1951,6 +1953,102 @@ TEST_CASE("inspector choice combo keeps its popup open instead of rebuilding the
     emit combo->activated(2);
     app().processEvents();
     CHECK(doc.get(*doc.handle(doc.roots()[0]))->block->find("mode")->decodedValue().value_or("") == "2");
+}
+
+TEST_CASE("inspector edits light RGB and brightness without dropping intensity or HDR sentinels") {
+    app();
+    QTemporaryDir dir;
+    const auto path = dir.filePath("light.fgd");
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write(R"(@PointClass = test [
+            _light(color255) : "Brightness" : "255 255 255 200"
+            _lightHDR(color255) : "HDR" : "-1 -1 -1 1"
+            color(color255) : "Colour" : "10 20 30"
+        ]
+)");
+    }
+    auto table = assets::loadEntityClasses(std::filesystem::path(path.toStdString()));
+    REQUIRE(table);
+    REQUIRE(table->find("test"));
+    REQUIRE(table->find("test")->properties.size() == 3);
+    document::Document doc(editor_test::parsed("entity { id 1 classname test }"));
+    const auto id = doc.roots()[0];
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(*table);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(600, 600);
+    panel.show();
+    session.selectNode(id);
+    app().processEvents();
+    const auto input = [&](const QString& name) { return panel.findChild<QLineEdit*>("edit." + name + ".0"); };
+    REQUIRE(input("_light"));
+    CHECK(input("_light")->text() == "255 255 255 200");
+    const auto history = doc.undoCount();
+    typeText(input("_light"), "12 34 56 1500.5");
+    typeText(input("_light"), "12 34 56 2000.5");
+    CHECK(doc.undoCount() == history + 1);
+    CHECK(inspectorValues(doc, id)["_light"] == "12 34 56 2000.5");
+    input("_light")->clearFocus();
+    app().processEvents();
+
+    const auto choose = [&](const QString& name, const std::function<void(QDialog*)>& change) {
+        auto* button = panel.findChild<QPushButton*>("color." + name);
+        REQUIRE(button);
+        QTimer::singleShot(0, &panel, [&] {
+            auto* dialog = panel.findChild<QDialog*>("entityColorDialog");
+            REQUIRE(dialog);
+            change(dialog);
+        });
+        button->click();
+        app().processEvents();
+    };
+    const auto beforePicker = doc.undoCount();
+    choose("_light", [&](QDialog* dialog) {
+        auto* colors = dialog->findChild<QColorDialog*>();
+        auto* brightness = dialog->findChild<QLineEdit*>("lightBrightness");
+        REQUIRE(colors);
+        REQUIRE(brightness);
+        CHECK(colors->currentColor() == QColor(12, 34, 56));
+        CHECK(brightness->text() == "2000.5");
+        colors->setCurrentColor(QColor(90, 80, 70));
+        dialog->accept();
+    });
+    CHECK(inspectorValues(doc, id)["_light"] == "90 80 70 2000.5");
+    CHECK(doc.undoCount() == beforePicker + 1);
+    REQUIRE(session.perform("edit.undo"));
+    app().processEvents();
+    CHECK(inspectorValues(doc, id)["_light"] == "12 34 56 2000.5");
+    choose("_light", [&](QDialog* dialog) {
+        dialog->findChild<QLineEdit*>("lightBrightness")->setText("0");
+        dialog->accept();
+    });
+    CHECK(inspectorValues(doc, id)["_light"] == "12 34 56 0");
+    const auto beforeCancel = *doc.write();
+    choose("_light", [&](QDialog* dialog) {
+        dialog->findChild<QColorDialog*>()->setCurrentColor(Qt::red);
+        dialog->findChild<QLineEdit*>("lightBrightness")->setText("9999");
+        dialog->reject();
+    });
+    CHECK(*doc.write() == beforeCancel);
+    choose("_lightHDR", [&](QDialog* dialog) {
+        auto* brightness = dialog->findChild<QLineEdit*>("lightBrightness");
+        REQUIRE(brightness);
+        CHECK(brightness->text() == "1");
+        brightness->setText("2.5");
+        dialog->accept();
+    });
+    CHECK(inspectorValues(doc, id)["_lightHDR"] == "-1 -1 -1 2.5");
+    choose("color", [&](QDialog* dialog) {
+        CHECK_FALSE(dialog->findChild<QLineEdit*>("lightBrightness"));
+        dialog->findChild<QColorDialog*>()->setCurrentColor(QColor(1, 2, 3));
+        dialog->accept();
+    });
+    CHECK(inspectorValues(doc, id)["color"] == "1 2 3");
 }
 
 TEST_CASE("inspector builds FGD controls and coalesces one field focus") {

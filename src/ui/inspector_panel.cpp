@@ -16,6 +16,7 @@
 #include <QIntValidator>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLocale>
 #include <QPainter>
 #include <QPushButton>
 #include <QPointer>
@@ -26,6 +27,8 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QDialog>
+#include <QDialogButtonBox>
+#include <QScopedValueRollback>
 #include <QPlainTextEdit>
 #include <QKeyEvent>
 #include <QMenu>
@@ -43,6 +46,57 @@ namespace {
 QString text(const std::string& value) { return QString::fromStdString(value); }
 std::atomic<std::uint64_t> nextFocus{1};
 QString token() { return QString::number(nextFocus++); }
+
+// color255 also represents Source lights: RGB followed by an independent brightness value.
+std::optional<QString> pickEntityColor(const QString& value, const QString& defaultValue, QWidget* parent) {
+    const QRegularExpression whitespace(QStringLiteral("\\s+"));
+    const auto parts = value.split(whitespace, Qt::SkipEmptyParts);
+    const auto defaults = defaultValue.split(whitespace, Qt::SkipEmptyParts);
+    const bool light = parts.size() >= 4 || defaults.size() >= 4;
+    QColor initial(Qt::white);
+    if (parts.size() >= 3) {
+        const QColor parsed(parts[0].toInt(), parts[1].toInt(), parts[2].toInt());
+        if (parsed.isValid()) initial = parsed;
+    }
+    QDialog dialog(parent);
+    dialog.setObjectName(QStringLiteral("entityColorDialog"));
+    dialog.setWindowTitle(light ? QObject::tr("Light colour and brightness") : QObject::tr("Entity colour"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* colors = new QColorDialog(initial, &dialog);
+    colors->setWindowFlags(Qt::Widget);
+    colors->setOptions(QColorDialog::DontUseNativeDialog | QColorDialog::NoButtons);
+    layout->addWidget(colors);
+    bool colorChanged = false;
+    QObject::connect(colors, &QColorDialog::currentColorChanged, &dialog, [&] { colorChanged = true; });
+    QLineEdit* brightness = nullptr;
+    if (light) {
+        auto* form = new QFormLayout;
+        brightness = new QLineEdit(parts.value(3, defaults.value(3, QStringLiteral("200"))), &dialog);
+        brightness->setObjectName(QStringLiteral("lightBrightness"));
+        auto* validator = new QDoubleValidator(brightness);
+        validator->setLocale(QLocale::c());
+        brightness->setValidator(validator);
+        brightness->setToolTip(QObject::tr("Light intensity, independent of RGB colour. Values above 255 are allowed."));
+        form->addRow(QObject::tr("Brightness"), brightness);
+        layout->addLayout(form);
+    }
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    const auto acceptable = [brightness] { return !brightness || (!brightness->text().isEmpty() && brightness->hasAcceptableInput()); };
+    buttons->button(QDialogButtonBox::Ok)->setEnabled(acceptable());
+    if (brightness) QObject::connect(brightness, &QLineEdit::textChanged, &dialog, [=] {
+        buttons->button(QDialogButtonBox::Ok)->setEnabled(acceptable());
+    });
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] { if (acceptable()) dialog.accept(); });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    if (dialog.exec() != QDialog::Accepted) return {};
+    const auto color = colors->currentColor();
+    // HDR's -1 -1 -1 sentinel must survive a brightness-only edit.
+    auto rgb = !colorChanged && parts.size() >= 3 ? parts.mid(0, 3).join(' ')
+        : QStringLiteral("%1 %2 %3").arg(color.red()).arg(color.green()).arg(color.blue());
+    if (brightness) rgb += ' ' + brightness->text();
+    return rgb;
+}
 
 class ConnectionTable : public QTableWidget {
 public:
@@ -346,6 +400,7 @@ void InspectorPanel::refresh() {
     auto* focus = QApplication::focusWidget();
     // An open combo popup (a child of the combo) owns the focus: keep its row until it closes.
     if (rows_ && ownsPopup(rows_)) return;
+    if (colorDialogOpen_ && attached && current(entities_)) return;
     if (attached && current(entities_) && focus && rows_ && rows_->isAncestorOf(focus) &&
         rows_->property("raw").toBool() == raw_->isChecked()) return;
     if (attached && focus && ((outputs_->isAncestorOf(focus) && focus != outputs_) ||
@@ -463,18 +518,32 @@ void InspectorPanel::refresh() {
                 });
             }
         } else if (type == "color255") {
-            auto* button = new QPushButton(row.mixed ? tr("(mixed)") : text(row.value), field);
+            auto* edit = new QLineEdit(row.mixed ? QString{} : text(row.value), field);
+            edit->setObjectName(QStringLiteral("edit.%1.%2").arg(text(row.key)).arg(row.occurrence));
+            edit->setPlaceholderText(row.mixed ? tr("(mixed)") : tr("R G B [brightness]"));
+            edit->setToolTip(tr("Enter R G B, or R G B brightness for a light."));
+            watch(edit);
+            horizontal->addWidget(edit);
+            connect(edit, &QLineEdit::textEdited, this, [edit, write](const QString& value) {
+                write(value, edit->property("inspectorFocus").toString());
+            });
+            auto* button = new QPushButton(tr("Choose…"), field);
+            button->setObjectName(QStringLiteral("color.%1").arg(text(row.key)));
             watch(button);
             horizontal->addWidget(button);
-            connect(button, &QPushButton::clicked, this, [this, button = QPointer<QPushButton>(button), write, value = row.value] {
-                const auto parts = text(value).split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
-                const QColor initial = parts.size() == 3 ? QColor(parts[0].toInt(), parts[1].toInt(), parts[2].toInt()) : QColor(Qt::white);
-                const auto color = QColorDialog::getColor(initial, this, tr("Entity colour"));
-                if (color.isValid()) {
-                    const auto valueText = QStringLiteral("%1 %2 %3").arg(color.red()).arg(color.green()).arg(color.blue());
-                    write(valueText, token());
-                    if (button) button->setText(valueText);
+            connect(button, &QPushButton::clicked, this, [this, edit = QPointer<QLineEdit>(edit), write,
+                    defaultValue = text(row.property->defaultValue)] {
+                if (!edit) return;
+                std::optional<QString> chosen;
+                {
+                    const QScopedValueRollback guard(colorDialogOpen_, true);
+                    chosen = pickEntityColor(edit->text(), defaultValue, this);
                 }
+                if (chosen) {
+                    write(*chosen, token());
+                    if (edit) edit->setText(*chosen);
+                }
+                requestRefresh();
             });
         } else {
             const bool vector = type == "origin" || type == "angles" || type == "angle" || row.key == "origin" || row.key == "angles";
