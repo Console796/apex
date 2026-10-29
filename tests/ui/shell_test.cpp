@@ -2902,6 +2902,12 @@ public:
             flush();
             int minimum = 0, maximum = 0;
             splitter->getRange(1, &minimum, &maximum);
+            if (minimum > maximum) {
+                for (auto* widget : splitter->findChildren<QWidget*>())
+                    MESSAGE(widget->metaObject()->className(), " ", widget->objectName().toStdString(),
+                        " min=", widget->minimumSize().width(), "x", widget->minimumSize().height(),
+                        " hint=", widget->minimumSizeHint().width(), "x", widget->minimumSizeHint().height());
+            }
             MESSAGE("drag step=" << step << " pointer=" << at.x() << "," << at.y()
                     << " requested=" << requested << " handle=" << position()
                     << " range=[" << minimum << "," << maximum << "]");

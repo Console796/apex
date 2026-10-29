@@ -22,6 +22,8 @@ public:
     void setDocument(document::Document* document);
     void refresh();
 
+signals:
+    void instanceCreateRequested();
 protected:
     QMimeData* mimeData(const QList<QTreeWidgetItem*>& items) const override;
     bool dropMimeData(QTreeWidgetItem* parent, int index, const QMimeData* data, Qt::DropAction action) override;

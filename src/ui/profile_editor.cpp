@@ -3,6 +3,7 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QFileDialog>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLineEdit>
@@ -54,6 +55,21 @@ ProfileEditor::ProfileEditor(compile::CompileProfile profile, QWidget* parent)
     cordonMaterial_->setObjectName(QStringLiteral("profileCordonMaterial"));
     cordonMaterial_->setToolTip(tr("Material of the six walls added around the cordon in the compiled copy"));
     form->addRow(tr("Cordon wall material"), cordonMaterial_);
+    auto* target = new QHBoxLayout;
+    addonDirectory_ = new QLineEdit(QString::fromStdString(base_.addonDirectory), this);
+    addonDirectory_->setObjectName("profileAddonDirectory");
+    addonDirectory_->setPlaceholderText(tr("Base game"));
+    auto* browse = new QPushButton(tr("Browse…"), this);
+    target->addWidget(addonDirectory_); target->addWidget(browse);
+    connect(browse, &QPushButton::clicked, this, [this] {
+        const auto path = QFileDialog::getExistingDirectory(this, tr("Addon target"), addonDirectory_->text());
+        if (!path.isEmpty()) addonDirectory_->setText(path);
+    });
+    form->addRow(tr("Addon target"), target);
+    campaignId_ = new QLineEdit(QString::fromStdString(base_.campaignId), this);
+    campaignId_->setObjectName("profileCampaignId");
+    campaignId_->setPlaceholderText(tr("Automatic (one campaign)"));
+    form->addRow(tr("Campaign ID"), campaignId_);
     layout->addLayout(form);
     commands_ = new QTableWidget(0, 4, this);
     commands_->setObjectName(QStringLiteral("profileCommands"));
@@ -122,6 +138,8 @@ void ProfileEditor::moveRow(int delta) {
 
 compile::CompileProfile ProfileEditor::profile() const {
     auto result = base_;
+    result.addonDirectory = addonDirectory_->text().trimmed().toStdString();
+    result.campaignId = campaignId_->text().trimmed().toStdString();
     result.name = name_->text().trimmed().toStdString();
     result.copyBspToMaps = copyBsp_->isChecked();
     result.runGameAfter = runGame_->isChecked();

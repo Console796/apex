@@ -124,6 +124,10 @@ def tail(path, n=40, size=65536):
 def log_progress(stage, lines, expect_tests=None):
     """(fraction or None, detail text) read from the tail of a stage's log."""
     for ln in reversed(lines):
+        slices = re.search(r"\[apex_tests\] slice .*\[(\d+)/(\d+) done\]", ln)
+        if slices and int(slices.group(2)):
+            done, total = int(slices.group(1)), int(slices.group(2))
+            return done / total, f"apex_tests slices {done}/{total}"
         m = NINJA.search(ln)
         if m and int(m.group(2)):
             done, total = int(m.group(1)), int(m.group(2))

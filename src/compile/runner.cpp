@@ -83,7 +83,14 @@ Result<void> CompileJob::start() {
                     step.args[arg + 1] = paths_.contentGameDirectory.string();
             }
         }
-        if (command.executable == "$game_exe") step.args = withConsoleLog(std::move(step.args));
+        if (command.executable == "$game_exe") {
+            step.args = withConsoleLog(std::move(step.args));
+            if (const auto campaign = paths_.variables.find("campaign"); campaign != paths_.variables.end() &&
+                !campaign->second.empty() && std::ranges::find(step.args, "-campaign") == step.args.end()) {
+                step.args.emplace_back("-campaign");
+                step.args.push_back(campaign->second);
+            }
+        }
         const auto bsp = paths_.variables.find("bsp_exe");
         if (command.executable == "$bsp_exe" || (bsp != paths_.variables.end() && step.program == bsp->second))
             add("-instancepath", paths_.instanceRoot.string());

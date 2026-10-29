@@ -35,13 +35,11 @@ string puts the suffix last (`0.2.11.42-release`). Git tags mark completed sub-m
 (`v0.1.3`) and releases (`v0.2.11-release`) and carry no build number. 0.1 predates this policy:
 its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 
-**Status:** 0.1 and 0.2 are complete; 0.2 was released as `0.2.11-release`, and the
-post-release sub-milestone 0.2.12 (Preferences, keybinding editor, areas and workspaces) followed
-at the owner's request (see [plans/0.2.md](plans/0.2.md)). 0.3 is complete
-([plans/0.3.md](plans/0.3.md)) and was released as `0.3.10-release`: the tool interface and
-hull/CSG kernel (0.3.1), block, clip, vertex, primitive and carve/hollow/merge tools (0.3.2–0.3.6),
-addon mounting, the material browser and face editing (0.3.7–0.3.9), and the tool pie menu
-(0.3.10). The next landed work is 0.4.1.
+**Status:** 0.1–0.3 are complete (latest release `0.3.10-release`). 0.4.1–0.4.9 and
+0.5.1–0.5.6 have landed on the `0.5` branch. Addon authoring/compile targets (0.5.7) and Create Instance
+from Selection (0.5.8) are implemented in the working tree; final release validation is in progress.
+The owner confirms real playtests on `1f89631`. See [the 0.5 plan](plans/0.5.md) for current evidence
+and remaining gates. No 0.5 release is tagged yet.
 
 ## Principles that hold across every milestone
 
@@ -115,6 +113,8 @@ provides a missing asset; plans/addons.md D2, D6).
 **Exit:** a chamber can be fully dressed with props and wired logic.
 
 ### 0.5: Compile & play
+
+Includes a shared Problems list and Create Instance from Selection.
 Compile profiles (including import of Hammer `.wc` via toolpp), vbsp/vvis/vrad/postcompiler as
 cancellable background jobs using the **native Linux tools** on Linux, log parsing with
 error → object mapping, `.lin` leak and `.prt` portal overlays, cordons, map validation

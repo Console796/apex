@@ -353,6 +353,12 @@ void ModelsPanel::contentReset() {
     if (content_) prefabsConnection_ = connect(content_, &GameContent::prefabsChanged, this, [this] { refreshPrefabs(); });
     if (prefabTree_ && prefabsShown()) refreshPrefabs();
 }
+void ModelsPanel::pickModeChanged(bool enabled) {
+    // Picking chooses a model, never a prefab: leave a remembered Prefabs page at once rather
+    // than on the next thumbnail sync, so the picker opens on the grid and its Recent list.
+    tabs_->setVisible(!enabled);
+    if (enabled && prefabsShown()) showPrefabs(false);
+}
 void ModelsPanel::setThumbnailSink(ThumbnailRequest request) { releaseThumbnails(); request_ = std::move(request); }
 void ModelsPanel::releaseThumbnails() {
     if (request_) for (const auto& path : requested_) request_(path, false);

@@ -2,6 +2,7 @@
 #include "ui/rename_confirmation.hpp"
 
 #include <QString>
+#include <QMenu>
 #include <QLineEdit>
 #include <QStyledItemDelegate>
 #include <QDrag>
@@ -95,6 +96,15 @@ QTreeWidgetItem* section(QTreeWidget* tree, const QString& title, int count) {
 }  // namespace
 
 OutlinerPanel::OutlinerPanel(QWidget* parent) : QTreeWidget(parent) {
+    setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(this, &QWidget::customContextMenuRequested, this, [this](QPoint point) {
+        if (!session_ || editor::selectedNodes(session_->selection()).empty()) return;
+        QMenu menu(this);
+        auto* create = menu.addAction(tr("Create Instance from Selection…"));
+        connect(create, &QAction::triggered, this, &OutlinerPanel::instanceCreateRequested);
+        menu.exec(viewport()->mapToGlobal(point));
+    });
+
     setHeaderHidden(false);
     setEditTriggers(DoubleClicked | EditKeyPressed);
     auto* delegate = new NameDelegate(this);

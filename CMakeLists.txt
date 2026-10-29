@@ -102,13 +102,13 @@ apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
                           src/editor/group_index.cpp src/editor/name_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
                           src/editor/selection_ops.cpp src/editor/selection_undo.cpp src/editor/actions.cpp
-                          src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp src/editor/prefab.cpp src/editor/asset_report.cpp src/editor/map_problems.cpp src/editor/entity_report.cpp src/editor/find_replace.cpp src/editor/instance_collapse_command.cpp src/editor/instance_key_types.cpp
+                          src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp src/editor/prefab.cpp src/editor/asset_report.cpp src/editor/map_problems.cpp src/editor/entity_report.cpp src/editor/find_replace.cpp src/editor/instance_collapse_command.cpp src/editor/instance_create.cpp src/editor/instance_key_types.cpp
                           src/editor/transform.cpp src/editor/preview.cpp src/editor/preset_io.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
                           src/editor/connection_model.cpp src/editor/incoming_connections.cpp src/editor/rename_propagation.cpp src/editor/inspector_model.cpp src/editor/placement.cpp
            DEPS apex_document apex_geometry apex_core apex_compile)
-apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/unmounted_addons.cpp
+apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/addon_authoring.cpp src/assets/unmounted_addons.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp src/assets/model_bake.cpp src/assets/model_pose.cpp
                          src/assets/material_cache.cpp src/assets/model_cache.cpp src/assets/material_index.cpp src/assets/asset_index.cpp src/assets/thumbnail_cache.cpp DEPS apex_core)
 target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
@@ -175,7 +175,7 @@ if(APEX_BUILD_APP)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
     add_executable(apex_ui_tests tests/main.cpp tests/ui/compile_test.cpp tests/ui/shell_test.cpp tests/ui/materials_test.cpp tests/ui/asset_browsers_test.cpp tests/ui/face_properties_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp tests/ui/tool_controls_test.cpp tests/ui/pie_popup_test.cpp tests/ui/instance_test.cpp tests/ui/sound_preview_test.cpp tests/ui/find_test.cpp tests/ui/addons_test.cpp)
-    target_link_libraries(apex_ui_tests PRIVATE apex_ui sourcepp::vtfpp Qt6::Test Qt6::Multimedia apex_warnings doctest::doctest)
+    target_link_libraries(apex_ui_tests PRIVATE apex_ui sourcepp::vtfpp sourcepp::bsppp sourcepp::vpkpp Qt6::Test Qt6::Multimedia apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")
     add_test(NAME apex_ui_tests COMMAND apex_ui_tests)

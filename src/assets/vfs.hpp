@@ -39,7 +39,7 @@ public:
     const AddonList& addons() const;
     // A compile-only gameinfo with this VFS's ordered mounts and original engine metadata.
     // Its write path stays beside the generated gameinfo, never in the installed game.
-    Result<std::string> compileGameInfo() const;
+    Result<std::string> compileGameInfo(const std::filesystem::path& target = {}) const;
     std::optional<std::size_t> provider(std::string_view path) const;
     // Immediate files only, sorted canonical virtual paths, duplicates removed. '*' and '?'
     // match filenames case-insensitively; directories themselves are not returned.

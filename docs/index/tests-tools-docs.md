@@ -74,7 +74,7 @@ marker in their first lines. Never add Valve or Strata content. The
 | [`replane/`](../../tools/replane/) | Writes a re-planed copy of a VMF, used by the manual `vbsp_equivalence.py` gate. |
 | [`pie_probe/`](../../tools/pie_probe/) | Plan 0.3 probe for the pie-menu popup over a native child window. Has its own CMake file. |
 | [`instance_collapse/`](../../tools/instance_collapse/) | Tools-only driver for `instance_collapse_crosscheck.py`. |
-| `srctools_crosscheck.py`, `vbsp_equivalence.py`, `chamber_compile_check.py`, `hammer_wine_check.py` | Cross-checks against other tools. `hammer_wine_check.py` opens and re-saves maps in real Strata Hammer under Wine. |
+| `srctools_crosscheck.py`, `vbsp_equivalence.py`, `chamber_compile_check.py`, `chamber_runner_check.py`, `hammer_wine_check.py` | Cross-checks against other tools. `hammer_wine_check.py` opens and re-saves maps in real Strata Hammer under Wine. |
 | `make_probe_vmfs.py`, `gen_angle_fixture.py` | Generate the probe and angle fixtures. |
 | `embed_spirv.py` | Turns compiled shaders into headers. See [repo-map.md](repo-map.md#where-generated-code-comes-from). |
 | `winvm.sh`, `winvm-lock.sh`, `winvm-unlock.sh`, `winvm_lock.py` | Start, lock and unlock the Windows VM used for the MSVC build and tests. Setup is in [../development.md](../development.md) section 6. |

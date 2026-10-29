@@ -214,6 +214,7 @@ MainWindow::MainWindow(QWidget* parent)
         session_.perform(editor::EditorSession::Tool::Entity);
         statusBar()->showMessage(tr("Placing prefab %1").arg(QFileInfo(file).completeBaseName()), 3000);
     });
+    connect(viewport_, &ViewportArea::instanceCreateRequested, this, &MainWindow::createInstanceFromSelection);
     connect(viewport_, &ViewportArea::prefabCreateRequested, this, [this] { performEditAction("edit.create_prefab"); });
     connect(viewport_, &ViewportArea::modelPlacementFailed, this, [this](const QString& message) {
         statusBar()->showMessage(message, 4000);
@@ -832,6 +833,7 @@ void MainWindow::openPreferences() {
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
         action->setEnabled(session_.document() != nullptr);
+        if (id == "instance.create") action->setEnabled(session_.document() && !editor::selectedNodes(session_.selection()).empty());
         if (id == "instance.collapse_all")
             action->setEnabled(session_.document() && (!session_.instances().contents().empty() || !session_.instances().problems().empty()));
         if (id == "instance.open" || id == "instance.collapse") {
@@ -976,8 +978,8 @@ std::vector<std::filesystem::path> MainWindow::syncInstanceWatches() {
     for (const auto& [path, users] : session_.instances().dependencies()) if (!users.empty()) dependencies.insert(path);
     const auto watches = instanceWatch_.sync(dependencies, session_.instances().missing());
     std::set<QString> files, directories;
-    for (const auto& path : watches.files) files.insert(QString::fromStdU16String(path.u16string()));
-    for (const auto& path : watches.directories) directories.insert(QString::fromStdU16String(path.u16string()));
+    for (const auto& path : watches.files) files.insert(QDir::fromNativeSeparators(QString::fromStdU16String(path.u16string())));
+    for (const auto& path : watches.directories) directories.insert(QDir::fromNativeSeparators(QString::fromStdU16String(path.u16string())));
     for (const auto& path : instanceWatcher_->files()) if (!files.contains(path)) instanceWatcher_->removePath(path);
     for (const auto& path : instanceWatcher_->directories()) if (!directories.contains(path)) instanceWatcher_->removePath(path);
     for (const auto& path : files) if (QFileInfo::exists(path) && !instanceWatcher_->files().contains(path)) instanceWatcher_->addPath(path);
@@ -1178,14 +1180,15 @@ void MainWindow::buildTransformUi() {
     auto* edit = findChild<QMenu*>(QStringLiteral("menuEdit"));
     auto* instancing = menuBar()->addMenu(tr("&Instancing"));
     instancing->setObjectName(QStringLiteral("menuInstancing"));
-    for (const char* id : {"instance.open", "instance.collapse", "instance.collapse_all"}) {
+    for (const char* id : {"instance.create", "instance.open", "instance.collapse", "instance.collapse_all"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = instancing->addAction(fromStd(entry->name));
         action->setObjectName(fromStd(entry->id));
         action->setToolTip(fromStd(entry->description));
         editorActions_.emplace(entry->id, action);
         connect(action, &QAction::triggered, this, [this, id = std::string_view(id)] {
-            if (id == "instance.open") openSelectedInstance();
+            if (id == "instance.create") createInstanceFromSelection();
+            else if (id == "instance.open") openSelectedInstance();
             else if (id == "instance.collapse") collapseSelectedInstances();
             else if (id == "instance.collapse_all") {
                 if (auto result = session_.collapseAllInstances()) reportCollapse(*result);
@@ -1465,6 +1468,30 @@ void MainWindow::openTieDialog() {
     auto* dialog = new TieDialog(session_, solidClasses(), this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
+}
+
+void MainWindow::createInstanceFromSelection() {
+    if (!document_ || !gameContent_->profile()) return;
+    const auto crossings = session_.instanceBoundaryConnections();
+    if (!crossings.empty()) {
+        QStringList lines;
+        for (const auto& crossing : crossings) lines << QString::fromStdString(crossing);
+        if (QMessageBox::warning(this, tr("Connections cross the selection boundary"),
+                tr("These connections will keep their target names:\n%1\n\nCreate the instance?").arg(lines.join('\n')),
+                QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
+    }
+    const auto target = compilePanel_->addonTarget();
+    const auto root = target.empty() ? gameContent_->profile()->instanceSearchRoot() : target / "mapsrc";
+    const auto chosen = QFileDialog::getSaveFileName(this, tr("Create Instance from Selection"),
+        QString::fromStdU16String((root / "instances" / "selection.vmf").u16string()), tr("VMF maps (*.vmf)"));
+    if (chosen.isEmpty()) return;
+    const auto file = std::filesystem::path(chosen.toStdU16String());
+    // A source-relative reference is understood by both vbsp and the editor; unsaved maps use the profile root.
+    const auto base = session_.connectionMapPath().empty() ? root : session_.connectionMapPath().parent_path();
+    const auto reference = file.lexically_relative(base).generic_string();
+    auto result = session_.createInstanceFromSelection(file, reference.empty() ? file.generic_string() : reference, true);
+    statusBar()->showMessage(result ? tr("Created instance %1").arg(chosen) : QString::fromStdString(result.error().what()), 5000);
+    updateEditorActions();
 }
 
 void MainWindow::openPrefabDialog() {
@@ -1818,7 +1845,11 @@ void MainWindow::save() {
 }
 
 void MainWindow::saveAs() {
-    const QString path = QFileDialog::getSaveFileName(this, tr("Save VMF"), path_, tr("Valve Map (*.vmf)"));
+    QString start = path_;
+    if (compilePanel_ && !compilePanel_->addonTarget().empty())
+        start = QString::fromStdU16String((compilePanel_->addonTarget() / "mapsrc" /
+            (path_.isEmpty() ? std::filesystem::path("untitled.vmf") : std::filesystem::path(QFileInfo(path_).fileName().toStdU16String()))).u16string());
+    const QString path = QFileDialog::getSaveFileName(this, tr("Save VMF"), start, tr("Valve Map (*.vmf)"));
     if (!path.isEmpty()) saveFile(path);
 }
 

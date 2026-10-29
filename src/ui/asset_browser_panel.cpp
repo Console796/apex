@@ -86,6 +86,7 @@ void AssetBrowserPanel::setPickMode(bool enabled, const QString& initial, const 
     choose_->setVisible(enabled);
     installEventFilter(this);
     for (auto* widget : findChildren<QWidget*>()) widget->installEventFilter(this);
+    pickModeChanged(enabled);
     nameFilter_->setText(previous);
     invalidate();
     refresh();

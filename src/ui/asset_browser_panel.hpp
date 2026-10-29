@@ -53,6 +53,7 @@ protected:
     virtual void rebuild() = 0;
     virtual void contentReset() {}
     virtual void recentActivated(const QString&) {}
+    virtual void pickModeChanged(bool) {}
     void setCount(std::size_t count);
     template <typename Snapshot> void updateSources(const Snapshot& snapshot) {
         std::set<std::optional<std::size_t>> sources;

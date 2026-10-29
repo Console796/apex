@@ -1,6 +1,12 @@
 #include "ui/addons_panel.hpp"
 
 #include "assets/vfs.hpp"
+#include "assets/addon_authoring.hpp"
+#include <QFileDialog>
+#include <QInputDialog>
+#include <QMessageBox>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include "ui/game_content.hpp"
 
 #include <QHeaderView>
@@ -32,6 +38,48 @@ AddonsPanel::AddonsPanel(QWidget* parent) : QWidget(parent) {
     filter_->setPlaceholderText(tr("Filter addons"));
     auto* reload = new QPushButton(tr("Reload"), this); reload->setObjectName("addonsReload");
     actions->addWidget(filter_, 1); actions->addWidget(reload);
+    auto* create = new QPushButton(tr("New addon…"), this); create->setObjectName("addonsCreate");
+    auto* uploader = new QPushButton(tr("Open in Workshop Uploader"), this); uploader->setObjectName("addonsUploader");
+    actions->addWidget(create); actions->addWidget(uploader);
+    connect(create, &QPushButton::clicked, this, [this] {
+        const auto parent = QFileDialog::getExistingDirectory(this, tr("Parent folder for the new addon"));
+        if (parent.isEmpty()) return;
+        bool ok = false;
+        const auto folder = QInputDialog::getText(this, tr("New addon"), tr("Folder name"), QLineEdit::Normal, {}, &ok).trimmed();
+        if (!ok || folder.isEmpty()) return;
+        if (folder == "." || folder == ".." || folder.contains('/') || folder.contains('\\') || folder.contains(':')) {
+            status_->setText(tr("Choose a plain folder name.")); return;
+        }
+        const auto name = QInputDialog::getText(this, tr("New addon"), tr("Display name"), QLineEdit::Normal, folder, &ok).trimmed();
+        if (!ok || name.isEmpty()) return;
+        const bool campaign = QMessageBox::question(this, tr("Campaign"), tr("Create an empty campaign stub?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No) == QMessageBox::Yes;
+        const auto path = std::filesystem::path(parent.toStdU16String()) / std::filesystem::path(folder.toStdU16String());
+        auto result = assets::createAddon(path, {name.toStdString(), campaign});
+        status_->setText(result ? tr("Created %1. Select this folder as the addon target in your compile profile. Mount it in the game before playing.").arg(QString::fromStdU16String(path.u16string()))
+            : text(result.error().what()));
+    });
+    connect(uploader, &QPushButton::clicked, this, [this] {
+        if (!content_ || !content_->profile()) { status_->setText(tr("Choose a game profile first.")); return; }
+        const auto& game = *content_->profile();
+        const auto executable = game.toolPath("workshopgui");
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(executable, ec)) {
+            status_->setText(tr("Workshop Uploader not found: %1. Set the workshopgui tool path in the game profile.").arg(QString::fromStdU16String(executable.u16string())));
+            return;
+        }
+        // No addon-selection switch has been verified. Launch the uploader without invented arguments.
+        QProcess process;
+        process.setProgram(QString::fromStdU16String(executable.u16string()));
+        process.setWorkingDirectory(QString::fromStdU16String(game.gameDirectory.parent_path().u16string()));
+        auto environment = QProcessEnvironment::systemEnvironment();
+#ifdef __linux__
+        environment.insert("LD_LIBRARY_PATH", QString::fromStdU16String(game.toolDirectory().u16string()));
+#endif
+        process.setProcessEnvironment(environment);
+        if (!process.startDetached())
+            status_->setText(tr("Cannot start Workshop Uploader: %1").arg(QString::fromStdU16String(executable.u16string())));
+    });
     root->addLayout(actions);
     entries_ = new QTreeWidget(this); entries_->setObjectName("addonsEntries");
     entries_->setHeaderLabels({tr("Mounted / Name"), tr("Authors"), tr("Type"), tr("Source"), tr("Workshop ID"), tr("Tags"), tr("Warnings")});

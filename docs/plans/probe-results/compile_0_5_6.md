@@ -40,4 +40,5 @@ Checked on Linux by reading the installed game's strings (`bin/linux64/engine.so
 
 ## Still to do
 
-- Manual playtest by the owner on the 0.4 chamber (Linux), and the Windows launch through `p2ce.exe`.
+- The owner confirmed real playtests on current commit `1f89631` on 2026-10-28. Platforms were not specified; this clears the manual-playtest item without asserting an unreported platform.
+- Native Windows lookup now follows the shipped launcher: `bin/win64/p2ce.exe`.

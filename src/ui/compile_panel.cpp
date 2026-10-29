@@ -1,5 +1,6 @@
 #include "ui/compile_panel.hpp"
 #include "ui/asset_report_builder.hpp"
+#include "assets/addon_authoring.hpp"
 
 #include "compile/wc_import.hpp"
 #include "ui/cordon_editor.hpp"
@@ -25,6 +26,7 @@
 #include <QVBoxLayout>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QSaveFile>
 #include <fstream>
 
 namespace apex::ui {
@@ -123,6 +125,19 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     cancel_ = new QPushButton(tr("Cancel"), this);
     cancel_->setObjectName(QStringLiteral("compileCancel"));
     auto* import = new QPushButton(tr("Import .wc…"), this);
+    auto* exportProfile = new QPushButton(tr("Export .wc…"), this);
+    exportProfile->setObjectName("compileExport");
+    connect(exportProfile, &QPushButton::clicked, this, [this] {
+        const int index = profilesCombo_->currentIndex();
+        if (index < 0) return;
+        const auto path = QFileDialog::getSaveFileName(this, tr("Export compile profile"), {}, tr("Hammer sequences (*.wc)"));
+        if (path.isEmpty()) return;
+        const auto bytes = compile::exportWc(profiles_[static_cast<std::size_t>(index)]);
+        QSaveFile file(path);
+        if (!file.open(QIODevice::WriteOnly) || file.write(bytes.data(), static_cast<qint64>(bytes.size())) != static_cast<qint64>(bytes.size()) || !file.commit()) {
+            error_ = tr("Cannot export profile: %1").arg(file.errorString()); refresh();
+        }
+    });
     auto* edit = new QPushButton(tr("Edit…"), this);
     edit->setObjectName(QStringLiteral("compileEdit"));
     auto* remove = new QPushButton(tr("Delete"), this);
@@ -131,7 +146,7 @@ CompilePanel::CompilePanel(QWidget* parent) : QWidget(parent), profiles_(compile
     compileRun_->setObjectName(QStringLiteral("compileAndRun"));
     runGame_ = new QPushButton(tr("Run Game"), this);
     runGame_->setObjectName(QStringLiteral("compileRunGame"));
-    row->addWidget(run_); row->addWidget(compileRun_); row->addWidget(runGame_); row->addWidget(cancel_); row->addWidget(edit); row->addWidget(remove); row->addWidget(import);
+    row->addWidget(run_); row->addWidget(compileRun_); row->addWidget(runGame_); row->addWidget(cancel_); row->addWidget(edit); row->addWidget(remove); row->addWidget(import); row->addWidget(exportProfile);
     layout->addLayout(row);
     header_ = new QLabel(this);
     header_->setObjectName(QStringLiteral("compileHeader"));
@@ -286,6 +301,11 @@ void CompilePanel::stopJob() {
 }
 void CompilePanel::cancel() { stopJob(); refresh(); }
 
+std::filesystem::path CompilePanel::addonTarget() const {
+    const int index = profilesCombo_->currentIndex();
+    return index < 0 ? std::filesystem::path{} : std::filesystem::path(profiles_[static_cast<std::size_t>(index)].addonDirectory);
+}
+
 void CompilePanel::run() { startCompile(false); }
 void CompilePanel::compileAndRun() { startCompile(true); }
 
@@ -339,11 +359,41 @@ void CompilePanel::startCompile(bool withGame) {
     for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"},
              {"light_exe", "vrad"}, {"postcompiler_exe", "postcompiler"}, {"game_exe", "game"}})
         paths.tools[variable] = game.toolPath(tool).string();
-    if (const auto vfs = content_->vfs(); vfs && std::ranges::any_of(vfs->addons().entries,
-            [](const auto& addon) { return addon.mounted; })) {
-        auto info = vfs->compileGameInfo();
+    if (const auto vfs = content_->vfs(); vfs && (!profile.addonDirectory.empty() || std::ranges::any_of(vfs->addons().entries,
+            [](const auto& addon) { return addon.mounted; }))) {
+        auto info = vfs->compileGameInfo(profile.addonDirectory);
         if (!info) { error_ = QString::fromStdString(info.error().what()); refresh(); return; }
         paths.contentGameInfo = std::move(*info);
+    }
+    addonNotice_.clear();
+    addonsUsed_.clear();
+    if (!profile.addonDirectory.empty()) {
+        paths.addonDirectory = std::filesystem::path(profile.addonDirectory);
+        if (!paths.addonDirectory.is_absolute()) { error_ = tr("Choose an absolute addon target folder."); refresh(); return; }
+        auto campaign = assets::addonCampaign(paths.addonDirectory, profile.campaignId);
+        if (!campaign) { error_ = QString::fromStdString(campaign.error().what()); refresh(); return; }
+        paths.tools["campaign"] = *campaign;
+    }
+    if (const auto vfs = content_->vfs()) {
+        auto gameProfile = game;
+        gameProfile.addons.enabled = true;
+        gameProfile.addons.list = assets::AddonSettings::List::Game;
+        auto gameList = assets::readAddonList(gameProfile);
+        QStringList differences;
+        if (!gameList) differences << QString::fromStdString(gameList.error().what());
+        else {
+            for (const auto& difference : assets::addonMountDifference(vfs->addons(), *gameList))
+                differences << QString::fromStdString(difference);
+            if (!paths.addonDirectory.empty() && std::ranges::none_of(gameList->entries, [&](const auto& entry) {
+                    return entry.mounted && entry.resolved.lexically_normal() == paths.addonDirectory.lexically_normal();
+                })) differences << tr("Addon target is not mounted in the game: %1").arg(QString::fromStdU16String(paths.addonDirectory.u16string()));
+        }
+        if (!differences.isEmpty()) addonNotice_ = tr("Compile uses editor mounts. Game mounts differ:\n%1").arg(differences.join('\n'));
+        auto report = buildAssetReport(*document_, content_, session_);
+        for (const auto& addon : report->addonsUsed()) addonsUsed_ << QString::fromStdString(addon) + tr(" (mounted)");
+        for (const auto& missing : report->missing()) if (missing.addon)
+            addonsUsed_ << QString::fromStdString(*missing.addon) + tr(" (unmounted; missing %1)").arg(QString::fromStdString(missing.path));
+        addonsUsed_.removeDuplicates();
     }
     auto snapshot = editor::writeCompileSnapshot(*document_, source_, cache_, paths,
         profile.cordonOnly ? std::optional(editor::CompileCordon{profile.cordonMaterial}) : std::nullopt);
@@ -378,6 +428,12 @@ void CompilePanel::runGame() {
     request.gameDir = game.gameDirectory;
     request.mapName = source_.stem().string();
     const int index = profilesCombo_->currentIndex();
+    if (index >= 0 && !profiles_[static_cast<std::size_t>(index)].addonDirectory.empty()) {
+        const auto& profile = profiles_[static_cast<std::size_t>(index)];
+        auto campaign = assets::addonCampaign(profile.addonDirectory, profile.campaignId);
+        if (!campaign) { error_ = QString::fromStdString(campaign.error().what()); refresh(); return; }
+        request.campaign = *campaign;
+    }
     if (index >= 0)
         for (const auto& command : profiles_[static_cast<std::size_t>(index)].commands)
             if (command.executable == "$game_exe") request.arguments = command.arguments;
@@ -385,6 +441,8 @@ void CompilePanel::runGame() {
     auto launch = compile::buildGameLaunch(request);
     if (!launch) { error_ = QString::fromStdString(launch.error().what()); refresh(); return; }
     std::error_code ec;
+    const auto target = addonTarget();
+    if (!target.empty()) launch->bspFile = target / "maps" / (request.mapName + ".bsp");
     if (!std::filesystem::exists(launch->bspFile, ec)) {
         error_ = tr("There is no compiled map to run: %1").arg(QString::fromStdU16String(launch->bspFile.u16string()));
         refresh();
@@ -442,6 +500,7 @@ void CompilePanel::refresh() {
         header += tr("Snapshot at revision %1%2").arg(*revision_).arg(
             document_ && document_->historyState() != *revision_ ? tr(" (stale)") : QString());
     }
+    if (!addonNotice_.isEmpty()) header += (header.isEmpty() ? QString() : QStringLiteral("\n")) + addonNotice_;
     header_->setText(header);
     if (!job_) return;
     QStringList batch;
@@ -516,6 +575,8 @@ void CompilePanel::refreshDiagnostics() {
     for (const auto& [tool, counts] : summary.tools)
         parts << tr("%1: %2 errors, %3 warnings").arg(QString::fromStdString(tool)).arg(counts.errors).arg(counts.warnings);
     if (summary.seconds) parts << tr("%1 s in tools").arg(summary.seconds);
+    if (!addonsUsed_.isEmpty()) parts << tr("Addons used: %1").arg(addonsUsed_.join(", "));
+    summary_->setWordWrap(true);
     summary_->setText(parts.isEmpty() ? tr("No problems reported") : parts.join(QStringLiteral(" · ")));
 }
 

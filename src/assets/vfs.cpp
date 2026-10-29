@@ -503,7 +503,7 @@ std::string Vfs::displayPath(std::string_view path) const {
     return key;
 }
 
-Result<std::string> Vfs::compileGameInfo() const {
+Result<std::string> Vfs::compileGameInfo(const fs::path& target) const {
     auto info = impl_->gameInfo;
     auto* root = info.root().find("GameInfo");
     auto* filesystem = root ? root->find("FileSystem") : nullptr;
@@ -522,6 +522,7 @@ Result<std::string> Vfs::compileGameInfo() const {
     };
     auto paths = kv1::Node::block("SearchPaths");
     paths.append(kv1::Node::value("game+mod+default_write_path", "|gameinfo_path|.")).value();
+    if (!target.empty()) paths.append(kv1::Node::value("game", fs::absolute(target).lexically_normal().generic_string())).value();
     for (const auto& mount : impl_->mounts) {
         const auto path = mount.archive ? fs::path(mount.archive->getFilepath()) : mount.directory;
         paths.append(kv1::Node::value("game", fs::absolute(path).lexically_normal().generic_string())).value();

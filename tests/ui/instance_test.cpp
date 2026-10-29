@@ -146,7 +146,10 @@ TEST_CASE("instance watcher reloads changed and atomically replaced templates, p
     REQUIRE(watcher);
     QSignalSpy fileSpy(watcher, &QFileSystemWatcher::fileChanged);
     QSignalSpy directorySpy(watcher, &QFileSystemWatcher::directoryChanged);
-    REQUIRE(waitFor([&] { return watcher->files().contains(leaf); }));
+    // The watcher holds the template's canonical spelling (long names, true case, '/'), which
+    // on Windows can differ from QTemporaryDir's; compare like for like on every platform.
+    const auto watchedLeaf = QFileInfo(leaf).canonicalFilePath();
+    REQUIRE(waitFor([&] { return watcher->files().contains(watchedLeaf); }));
     const auto parentBytes = window.document()->write().value();
     auto prior = window.editorSession().instances().contents().front().templ;
     REQUIRE(writeFile(leaf, relay("after-write").toUtf8()));
@@ -182,7 +185,8 @@ TEST_CASE("instance watcher recovers a template that goes missing across the deb
     REQUIRE(window.openFile(map));
     auto* watcher = window.findChild<QFileSystemWatcher*>(QStringLiteral("instanceWatcher"));
     REQUIRE(watcher);
-    REQUIRE(waitFor([&] { return watcher->files().contains(leaf) && watcher->files().contains(other); }));
+    const auto watchedLeaf = QFileInfo(leaf).canonicalFilePath(), watchedOther = QFileInfo(other).canonicalFilePath();
+    REQUIRE(waitFor([&] { return watcher->files().contains(watchedLeaf) && watcher->files().contains(watchedOther); }));
     const auto templates = [&] {
         std::map<std::string, const document::Document*> result;
         for (const auto& content : window.editorSession().instances().contents()) result[content.path.filename().string()] = content.templ.get();

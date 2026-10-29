@@ -51,6 +51,7 @@ public:
     // The game's console log from the start of the last launch (-condebug), polled while it is watched.
     QString gameLogText() const;
     void pollGameLog();
+    std::filesystem::path addonTarget() const;
     int profileCount() const { return static_cast<int>(profiles_.size()); }
     // Runs the map checks (D8) and fills the Problems list; returns what was found.
     const std::vector<editor::Problem>& checkProblems();
@@ -127,6 +128,8 @@ private:
     std::filesystem::path gameLogFile_;
     std::uintmax_t gameLogOffset_ = 0;
     QString error_;
+    QString addonNotice_;
+    QStringList addonsUsed_;
     bool cancelling_ = false;
 };
 

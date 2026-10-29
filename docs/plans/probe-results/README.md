@@ -47,3 +47,10 @@ D10 and D15 in `../0.3.md`.
   Shift+X, vertex (morph) Shift+V, texture application Shift+A, carve (subtract selection)
   Shift+Ctrl+C, apply current texture Shift+T. Ctrl+H is Quick Hide Unselected. Hollow, merge and a
   measure tool have no entry in the key config, so Strata binds no key to them.
+
+
+0.5 closeout (2026-10-28): [addon targets and authoring](compile_0_5_7.md),
+[Create Instance from Selection](compile_0_5_8.md), [native lighting/mount verification](lighting_compilation.md),
+and [cordon evidence and remaining Hammer assumptions](compile_0_5_4.md). The owner confirmed real
+playtests on `1f89631`; the release plan records this separately from automated verification.
+Release evidence (2026-10-29): [Linux real-tool gate, equivalence and measurements](compile_0_5_release.md).

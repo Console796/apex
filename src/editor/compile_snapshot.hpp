@@ -16,6 +16,7 @@ struct CompileGamePaths {
     const assets::EntityClassTable* classes = nullptr;
     kv1::EscapeMode escapeMode = kv1::EscapeMode::Strata;
     std::optional<std::string> contentGameInfo;
+    std::filesystem::path addonDirectory;
 };
 
 struct CompileSnapshot {

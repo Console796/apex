@@ -6,7 +6,6 @@
 #include <algorithm>
 
 #include <fstream>
-#include <regex>
 #include <iterator>
 #include <set>
 #include <string>
@@ -48,40 +47,64 @@ Result<std::string> lightDefaults(std::string text, const CompileGamePaths& game
 
 // vbsp resolves an instance `file` from the VMF's folder, then from the one -instancepath. The snapshot sits in
 // a cache folder, so instances that exist only beside the source map are copied in, keeping their relative path.
-Result<void> copySourceInstances(const std::string& text, const std::filesystem::path& sourceDirectory,
+Result<void> copySourceInstances(std::string& text, const std::filesystem::path& sourceDirectory,
     const std::filesystem::path& work, const CompileGamePaths& game) {
-    static const std::regex fileKey(R"vmf("file"\s+"([^"]+\.vmf)")vmf", std::regex::icase);
     namespace fs = std::filesystem;
-    std::set<fs::path> copied;
-    // Each entry is a VMF body and the folder (relative to the source map) it was found in.
-    std::vector<std::pair<std::string, fs::path>> pending{{text, fs::path{}}};
-    while (!pending.empty()) {
-        const auto [body, base] = std::move(pending.back());
-        pending.pop_back();
-        for (std::sregex_iterator it(body.begin(), body.end(), fileKey), end; it != end; ++it) {
-            const fs::path reference = std::string((*it)[1]);
-            if (reference.is_absolute()) continue;
-            for (const auto& candidate : {(base / reference).lexically_normal(), reference.lexically_normal()}) {
-                if (candidate.empty() || *candidate.begin() == "..") continue;
-                const auto from = sourceDirectory / candidate;
-                if (!fs::is_regular_file(from)) continue;
-                if (copied.insert(candidate).second) {
-                    const auto to = work / candidate;
-                    fs::create_directories(to.parent_path());
-                    std::ifstream in(from, std::ios::binary);
-                    in.exceptions(std::ios::failbit | std::ios::badbit);
-                    auto instance = lightDefaults(std::string(std::istreambuf_iterator<char>(in), {}), game);
-                    if (!instance) return std::unexpected(instance.error().withContext(from.string()));
-                    std::ofstream out(to, std::ios::binary);
-                    out.exceptions(std::ios::failbit | std::ios::badbit);
-                    out << *instance;
-                    pending.emplace_back(std::move(*instance), candidate.parent_path());
-                }
-                break;
+    std::map<fs::path, fs::path> copied;
+    std::set<fs::path> destinations;
+    const auto rewrite = [&](const auto& self, std::string& body, const fs::path& sourceFolder,
+                             const fs::path& destinationFolder) -> Result<void> {
+        auto parsed = kv1::parse(body, game.escapeMode);
+        if (!parsed) return std::unexpected(parsed.error());
+        bool changed = false;
+        for (auto& entity : parsed->root().children()) {
+            const auto* cls = entity.find("classname");
+            auto* file = entity.find("file");
+            if (!cls || !ciEquals(cls->decodedValue().value_or(""), "func_instance") || !file) continue;
+            std::string spelling = file->decodedValue().value_or("");
+            std::ranges::replace(spelling, '\\', '/');
+            const fs::path reference(spelling);
+            // Preserve SDK references that aren't source-relative. vbsp resolves them through -instancepath.
+            fs::path from;
+            for (const auto& candidate : {sourceFolder / reference, sourceDirectory / reference})
+                if (fs::is_regular_file(candidate)) { from = fs::weakly_canonical(candidate); break; }
+            if (from.empty()) continue;
+            auto existing = copied.find(from);
+            fs::path destination;
+            bool fresh = existing == copied.end();
+            if (!fresh) destination = existing->second;
+            else {
+                auto relative = from.lexically_relative(fs::weakly_canonical(sourceDirectory));
+                if (relative.empty() || *relative.begin() == ".." || destinations.contains(relative))
+                    relative = fs::path("__apex_instances") / std::to_string(copied.size()) / from.filename();
+                destination = work / relative;
+                copied[from] = destination;
+                destinations.insert(relative);
             }
+            if (fresh) {
+                std::ifstream in(from, std::ios::binary);
+                in.exceptions(std::ios::failbit | std::ios::badbit);
+                auto instance = lightDefaults(std::string(std::istreambuf_iterator<char>(in), {}), game);
+                if (!instance) return std::unexpected(instance.error().withContext(from.string()));
+                auto nested = self(self, *instance, from.parent_path(), destination.parent_path());
+                if (!nested) return nested;
+                fs::create_directories(destination.parent_path());
+                std::ofstream out(destination, std::ios::binary);
+                out.exceptions(std::ios::failbit | std::ios::badbit);
+                out << *instance;
+                out.close();
+            }
+            const auto replacement = destination.lexically_relative(destinationFolder).generic_string();
+            if (replacement != spelling) { file->setValue(replacement).value(); changed = true; }
         }
-    }
-    return {};
+        if (changed) {
+            auto written = kv1::write(*parsed);
+            if (!written) return std::unexpected(written.error());
+            body = std::move(*written);
+        }
+        return {};
+    };
+    return rewrite(rewrite, text, sourceDirectory, work);
 }
 
 } // namespace
@@ -120,15 +143,15 @@ Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
         std::filesystem::create_directories(paths.workDirectory);
         for (const auto& entry : std::filesystem::directory_iterator(paths.workDirectory))
             std::filesystem::remove_all(entry.path());
+        if (!source.empty()) {
+            auto copied = copySourceInstances(*text, source.parent_path(), paths.workDirectory, game);
+            if (!copied) return std::unexpected(copied.error());
+        }
         snapshot.path = paths.workDirectory / (name + ".vmf");
         std::ofstream out(snapshot.path, std::ios::binary | std::ios::trunc);
         out.exceptions(std::ios::failbit | std::ios::badbit);
         out.write(text->data(), static_cast<std::streamsize>(text->size()));
         out.close();
-        if (!source.empty()) {
-            auto copied = copySourceInstances(*text, source.parent_path(), paths.workDirectory, game);
-            if (!copied) return std::unexpected(copied.error());
-        }
         if (game.contentGameInfo) {
             paths.contentGameDirectory = paths.workDirectory / "content";
             std::filesystem::create_directories(paths.contentGameDirectory);
@@ -136,7 +159,8 @@ Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
             info.exceptions(std::ios::failbit | std::ios::badbit);
             info << *game.contentGameInfo;
         }
-        paths.bspDirectory = game.gameDirectory / "maps";
+        paths.addonDirectory = game.addonDirectory;
+        paths.bspDirectory = (game.addonDirectory.empty() ? game.gameDirectory : game.addonDirectory) / "maps";
         paths.toolDirectory = game.toolDirectory;
         paths.instanceRoot = game.instanceRoot;
         paths.variables = game.tools;

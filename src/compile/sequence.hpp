@@ -30,6 +30,8 @@ struct CompileProfile {
     bool copyBspToMaps = true;
     bool cordonOnly = false;
     std::string cordonMaterial = "tools/toolsskybox"; // Material of the six walls a cordon compile adds (D7).
+    std::string addonDirectory; // Empty targets the base game.
+    std::string campaignId; // Empty selects the addon's only campaign, when present.
     bool operator==(const CompileProfile&) const = default;
 };
 

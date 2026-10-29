@@ -170,6 +170,17 @@ TEST_CASE("Addons watcher reloads in-place edits and repeated atomic replacement
     finish(content);
     CHECK(content.vfs()->addons().entries.size() == 3);
 }
+TEST_CASE("Addons panel names the missing Workshop Uploader executable") {
+    ui_test::app(); AddonsFixture fixture;
+    ui::GameContent content; content.reload(&fixture.profile); finish(content);
+    ui::AddonsPanel panel; panel.setGameContent(&content);
+    auto* uploader = panel.findChild<QPushButton*>("addonsUploader"); REQUIRE(uploader);
+    auto* status = panel.findChild<QLabel*>("addonsStatus"); REQUIRE(status);
+    const auto expected = QString::fromStdString(fixture.profile.toolPath("workshopgui").string());
+    uploader->click();
+    CHECK(status->text().contains("Workshop Uploader not found"));
+    CHECK(status->text().contains(expected));
+}
 TEST_CASE("Addons panel corpus lists the followed install addons read-only") {
     ui_test::app();
     const auto* install = std::getenv("APEX_P2CE_DIR");

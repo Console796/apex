@@ -147,3 +147,15 @@ Qt. The largest directory after `editor`, and the only one that includes Qt head
 | File | Purpose |
 |---|---|
 | `main.cpp` | `main()`. Starts Qt, logging and themes, creates `MainWindow`, and opens a map if one is given on the command line. |
+
+
+## Compile and play (0.5)
+
+`src/compile/` depends on core only: profiles, command expansion, file operations, the sequence
+state machine, detached game arguments, diagnostics and leak/portal readers. `src/editor/compile_snapshot.*`
+writes isolated snapshots and copies/rebases local instances. `src/editor/instance_create.cpp` owns
+Create Instance from Selection, its crossing-connection warning and the single document transaction.
+
+`src/assets/addon_authoring.*` owns the addon scaffold, campaign lookup and ordered mount comparison;
+`Vfs::compileGameInfo` supplies compile-tool content. `src/ui/compile_panel.*`, `profile_editor.*`,
+`profile_store.*`, `qprocess_runner.*` and `addons_panel.*` provide the Qt controls and native runner.

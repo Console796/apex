@@ -19,4 +19,4 @@
 
 ## Still to do
 
-- A CI-stage test that the walled snapshot compiles with no leak, against the real tools.
+- Completed 2026-10-28: the `compile_chamber` gate cuts the chamber with an active cordon, compiles the filtered/walled snapshot with native VBSP/VVIS/VRAD, and checks no `.lin` is produced. The full CI graph now runs this gate. Hammer parity measurements above remain unverified.

@@ -537,3 +537,20 @@ TEST_CASE("compile content override applies to tools while game launches keep th
     CHECK(gameArgument(f.runner.calls.front().args) == f.paths.contentGameDirectory.string());
     CHECK(gameArgument(f.runner.detached.front().args) == f.paths.variables.at("gamedir"));
 }
+
+TEST_CASE("addon campaign follows the compile target into a detached game launch") {
+    JobFixture f;
+    f.tree.put("bin/game", "fake");
+    f.paths.variables["game_exe"] = (f.tree.root / "bin/game").string();
+    f.paths.variables["campaign"] = "addon:my addon/main";
+    f.profile.commands = {{"$game_exe", "+map chamber"}};
+    f.profile.runGameAfter = true;
+    CompileJob job(f.profile, f.paths, f.runner, f.files);
+    REQUIRE(job.start());
+    REQUIRE(f.runner.detached.size() == 1);
+    const auto& args = f.runner.detached.front().args;
+    auto flag = std::ranges::find(args, "-campaign");
+    REQUIRE(flag != args.end());
+    REQUIRE(flag + 1 != args.end());
+    CHECK(*(flag + 1) == "addon:my addon/main");
+}

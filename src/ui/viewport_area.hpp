@@ -142,6 +142,7 @@ signals:
     void modelPlacementRequested(const QString& path);
     void prefabPlacementRequested(const QString& file);
     void prefabCreateRequested();
+    void instanceCreateRequested();
     void modelPlacementFailed(const QString& message);
     void materialStatusMessage(const QString& message);
 

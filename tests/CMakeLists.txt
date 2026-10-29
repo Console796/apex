@@ -5,14 +5,14 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp core/kv3_test.cpp
                document/instance_test.cpp document/connection_codec_test.cpp document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
                document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp
-               assets/vfs_test.cpp assets/addons_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
+               assets/vfs_test.cpp assets/addons_test.cpp assets/addon_authoring_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
-editor/cordon_test.cpp editor/compile_snapshot_test.cpp editor/diagnostic_lookup_test.cpp editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/placement_item_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/measure_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
+editor/cordon_test.cpp editor/compile_snapshot_test.cpp editor/diagnostic_lookup_test.cpp editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/instance_create_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/placement_item_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/measure_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
                editor/pie_menu_test.cpp
                editor/snapper_test.cpp editor/pick_index_test.cpp editor/pick_model_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp editor/preset_io_test.cpp
                editor/group_index_test.cpp editor/name_index_test.cpp editor/connection_model_test.cpp editor/incoming_connections_test.cpp editor/rename_propagation_test.cpp editor/connection_validation_test.cpp editor/instance_templates_test.cpp editor/instance_expansion_test.cpp editor/instance_watch_state_test.cpp assets/connection_corpus_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
@@ -27,7 +27,7 @@ target_link_libraries(apex_tests PRIVATE apex_compile apex_viewport apex_render 
                                          apex_editor apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
 doctest_discover_tests(apex_tests
-                      PROPERTIES ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
+                      PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
 add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp)

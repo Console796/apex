@@ -17,6 +17,9 @@
 #include <QSignalSpy>
 #include "../editor/corpus.hpp"
 #include "editor/compile_snapshot.hpp"
+#include "compile/map_files.hpp"
+#include "document/cordon.hpp"
+#include "assets/addon_authoring.hpp"
 
 #include <QElapsedTimer>
 #include <QLabel>
@@ -24,8 +27,16 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTest>
+#include <algorithm>
 #include <fstream>
 #include <cstdlib>
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#endif
+#ifdef __linux__
+#include <bsppp/bsppp.h>
+#endif
 #ifdef __linux__
 #include <csignal>
 #include <unistd.h>
@@ -42,7 +53,7 @@ bool until(const std::function<bool()>& condition, int timeout = 5000) {
 }
 
 #ifdef __linux__
-TEST_CASE("compile_chamber Fast profile through real QProcessRunner" *
+TEST_CASE("compile_chamber profiles through real QProcessRunner" *
           doctest::skip([] {
               const auto* install = std::getenv("APEX_P2CE_DIR");
               const auto* chamber = std::getenv("APEX_CHAMBER_VMF");
@@ -67,23 +78,74 @@ TEST_CASE("compile_chamber Fast profile through real QProcessRunner" *
     };
     REQUIRE(outsideInstall(root));
     document::Document document(editor_test::readCorpus(source));
-    auto snapshot = editor::writeCompileSnapshot(document, source, root, paths);
+    std::optional<editor::CompileCordon> cordon;
+    std::string variant = "baseline";
+    std::string profileName = "Fast";
+    SUBCASE("baseline") {}
+    SUBCASE("Final profile") {
+        variant = "final";
+        profileName = "Final";
+    }
+    SUBCASE("an entity in the void leaks and leaves a path") {
+        variant = "leak";
+        editor_test::addBlock(document, "entity { id 990001 classname info_target origin \"8192 8192 8192\" }");
+    }
+    SUBCASE("cordon snapshot seals a cut through the chamber") {
+        variant = "cordon";
+        document::addCordon(document, "Cut", AABB{{0, 0, -16}, {320, 350, 256}});
+        cordon = editor::CompileCordon{};
+    }
+    SUBCASE("created instance compiles into an addon target") {
+        variant = "instance-addon";
+        paths.addonDirectory = root / "addon";
+        REQUIRE(assets::createAddon(paths.addonDirectory, {"Compile fixture", true}));
+        editor::EditorSession session;
+        session.attach(document);
+        session.setConnectionContext(source, game.instanceSearchRoot());
+        for (auto h : editor_test::nodes(document)) {
+            const auto* node = document.get(h);
+            const auto* cls = node->block ? node->block->find("classname") : nullptr;
+            if (cls && cls->decodedValue().value_or("") == "light") session.selection().add(node->id);
+        }
+        REQUIRE(session.createInstanceFromSelection(paths.addonDirectory / "mapsrc/instances/light.vmf",
+            (paths.addonDirectory / "mapsrc/instances/light.vmf").generic_string()));
+    }
+    QElapsedTimer snapshotTimer; snapshotTimer.start();
+    auto snapshot = editor::writeCompileSnapshot(document, source, root, paths, cordon);
+    const double snapshotMs = static_cast<double>(snapshotTimer.nsecsElapsed()) / 1e6;
     REQUIRE_MESSAGE(snapshot, (snapshot ? "" : snapshot.error().what()));
     REQUIRE(outsideInstall(snapshot->paths.workDirectory));
-    snapshot->paths.bspDirectory = root / "maps";
+    snapshot->paths.bspDirectory = paths.addonDirectory.empty() ? root / "maps" : paths.addonDirectory / "maps";
     REQUIRE(outsideInstall(snapshot->paths.bspDirectory));
-    std::filesystem::create_directory(snapshot->paths.bspDirectory);
+    std::filesystem::create_directories(snapshot->paths.bspDirectory);
     snapshot->paths.variables["bspdir"] = snapshot->paths.bspDirectory.string();
     auto profiles = compile::builtinProfiles();
-    auto profile = profiles.front();
-    REQUIRE(profile.name == "Fast");
+    const auto chosen = std::ranges::find(profiles, profileName, &compile::CompileProfile::name);
+    REQUIRE(chosen != profiles.end());
+    auto profile = *chosen;
     profile.runGameAfter = false;
     ui::QProcessRunner runner;
     compile::FilesystemFileOps files;
     compile::CompileJob job(profile, snapshot->paths, runner, files);
+    QElapsedTimer compileTimer; compileTimer.start();
     auto started = job.start();
     REQUIRE_MESSAGE(started, (started ? "" : started.error().what()));
     REQUIRE(until([&] { return job.status() != compile::Status::Running; }, 600000));
+    const auto stem = source.stem().string();
+    if (variant == "leak") {
+        // vbsp still succeeds and writes the path; the leak is reported, not hidden behind later steps.
+        REQUIRE_FALSE(job.steps().empty());
+        CHECK(job.steps().front().status == compile::Status::Ok);
+        CHECK(job.status() == compile::Status::Failed); // vvis has no portal file to read
+        const auto path = compile::readLeakFile(snapshot->paths.workDirectory, stem);
+        REQUIRE(path);
+        CHECK(path->size() >= 2);
+        const auto diagnostics = compile::collectDiagnostics(job.steps());
+        CHECK(std::ranges::any_of(diagnostics, [](const auto& d) { return d.rule == "vbsp.leak"; }));
+        MESSAGE("compile gate leak: ", path->size(), " path points; job ", static_cast<int>(job.status()),
+            " after ", compileTimer.elapsed(), " ms");
+        return;
+    }
     for (std::size_t i = 0; i < job.steps().size(); ++i) {
         const auto& step = job.steps()[i];
         CAPTURE(i);
@@ -99,6 +161,8 @@ TEST_CASE("compile_chamber Fast profile through real QProcessRunner" *
             CHECK(step.status == compile::Status::Ok);
     }
     CHECK(job.status() == compile::Status::Ok);
+    const auto compileMs = compileTimer.elapsed();
+    MESSAGE("compile gate ", variant, ": snapshot ", snapshotMs, " ms; ", profile.name, " ", compileMs, " ms");
     const auto bsp = source.stem().string() + ".bsp";
     REQUIRE(std::filesystem::is_regular_file(snapshot->paths.workDirectory / bsp));
     REQUIRE(std::filesystem::is_regular_file(snapshot->paths.bspDirectory / bsp));
@@ -106,6 +170,41 @@ TEST_CASE("compile_chamber Fast profile through real QProcessRunner" *
           std::filesystem::file_size(snapshot->paths.bspDirectory / bsp));
     for (const auto& entry : std::filesystem::recursive_directory_iterator(root))
         CHECK(entry.path().extension() != ".lin");
+    if (variant == "baseline") {
+        const auto reference = root / "reference";
+        std::filesystem::create_directory(reference);
+        std::filesystem::copy_file(source, reference / source.filename());
+        const std::vector<std::string> arguments{"-game", game.gameDirectory.string(), "-instancepath",
+            game.instanceSearchRoot().string(), (reference / source.filename()).string()};
+        QElapsedTimer referenceTimer; referenceTimer.start();
+        auto process = runner.start(game.toolPath("vbsp").string(), arguments, reference,
+            {{"LD_LIBRARY_PATH", game.toolDirectory().string()}});
+        REQUIRE(process);
+        std::string referenceLog;
+        std::optional<int> code;
+        (*process)->setCallbacks([&](std::string line) { referenceLog += line + '\n'; }, [&](int value) { code = value; });
+        REQUIRE(until([&] { return code.has_value(); }, 120000));
+        REQUIRE_MESSAGE(*code == 0, referenceLog);
+        MESSAGE("compile gate baseline: vbsp alone ", referenceTimer.elapsed(), " ms");
+        const auto entities = [](const std::filesystem::path& path) {
+            bsppp::BSP compiled(path.string());
+            REQUIRE(static_cast<bool>(compiled));
+            std::vector<std::vector<std::pair<std::string, std::string>>> result;
+            for (const auto& entity : compiled.getLumpData<bsppp::BSPLump::ENTITIES>()) {
+                std::vector<std::pair<std::string, std::string>> values;
+                for (const auto& pair : entity.getKeyValues()) values.emplace_back(pair.getKey(), pair.getValue());
+                result.push_back(std::move(values));
+            }
+            return result;
+        };
+        CHECK(entities(reference / bsp) == entities(snapshot->paths.workDirectory / bsp));
+    }
+    if (const auto* output = std::getenv("APEX_COMPILE_GATE_OUT"); output && *output) {
+        const auto destination = std::filesystem::path(output) / variant;
+        std::filesystem::create_directories(destination);
+        std::filesystem::copy(root, destination, std::filesystem::copy_options::recursive |
+            std::filesystem::copy_options::overwrite_existing);
+    }
 }
 #endif
 
@@ -185,6 +284,35 @@ TEST_CASE("compile QProcess runner terminates grandchildren including SIGTERM re
 }
 #endif
 
+#ifdef _WIN32
+TEST_CASE("compile QProcess runner terminates its Windows job descendants") {
+    ui_test::app();
+    QTemporaryDir directory;
+    ui::QProcessRunner runner;
+    const std::string program = "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe";
+    const std::string script = "$child = Start-Process -FilePath ($env:SystemRoot + '/System32/ping.exe') "
+        "-ArgumentList '-n','300','127.0.0.1' -PassThru -WindowStyle Hidden; "
+        "Write-Output $child.Id; while ($true) { Start-Sleep -Seconds 1 }";
+    auto process = runner.start(program, {"-NoProfile", "-NonInteractive", "-Command", script},
+        std::filesystem::path(directory.path().toStdU16String()), {});
+    REQUIRE(process);
+    DWORD child = 0;
+    (*process)->setCallbacks([&](std::string line) {
+        bool ok = false;
+        const auto pid = QString::fromStdString(line).trimmed().toULong(&ok);
+        if (ok) child = pid;
+    }, {});
+    REQUIRE(until([&] { return child != 0; }));
+    HANDLE handle = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, child);
+    REQUIRE(handle != nullptr);
+    (*process)->terminate();
+    const bool stopped = WaitForSingleObject(handle, 5000) == WAIT_OBJECT_0;
+    if (!stopped) TerminateProcess(handle, 1);
+    CloseHandle(handle);
+    CHECK(stopped);
+}
+#endif
+
 TEST_CASE("compile panel runs Fast with an injected runner, batches logs and marks stale results") {
     ui_test::app();
     QTemporaryDir dir;
@@ -237,7 +365,17 @@ TEST_CASE("compile panel runs Fast with an injected runner, batches logs and mar
     CHECK(runner.calls[0].cwd == root / "cache/compile/untitled");
     CHECK(std::filesystem::exists(root / "game/maps/untitled.bsp"));
     CHECK(header->text().contains("revision"));
-    REQUIRE(until([&] { return log->toPlainText().contains("compile line 9999"); }));
+    QElapsedTimer streamTimer; streamTimer.start();
+    qint64 worstRefreshNs = 0;
+    while (!log->toPlainText().contains("compile line 9999") && streamTimer.elapsed() < 5000) {
+        QElapsedTimer refreshTimer; refreshTimer.start();
+        panel.refresh();
+        worstRefreshNs = std::max(worstRefreshNs, refreshTimer.nsecsElapsed());
+        QTest::qWait(1);
+    }
+    REQUIRE(log->toPlainText().contains("compile line 9999"));
+    MESSAGE("compile panel drains 10,000 lines in ", streamTimer.elapsed(), " ms; worst 500-line refresh ",
+        static_cast<double>(worstRefreshNs) / 1e6, " ms");
     CHECK(log->document()->blockCount() <= 10000);
     editor_test::addBlock(doc, "entity { classname info_target }");
     panel.refresh();
@@ -451,6 +589,8 @@ TEST_CASE("compile profiles round-trip through the store and the editor") {
     ui_test::app();
     auto profiles = compile::builtinProfiles();
     profiles[1].name = "Mine \"quoted\"";
+    profiles[1].addonDirectory = "/tmp/addon with spaces";
+    profiles[1].campaignId = "main";
     profiles[1].cordonOnly = true;
     profiles[1].commands[2].enabled = false;
     profiles[1].commands[5].wait = false;

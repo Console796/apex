@@ -60,6 +60,7 @@ protected:
     void rebuild() override;
     void contentReset() override;
     void recentActivated(const QString& name) override;
+    void pickModeChanged(bool enabled) override;
 
 private:
     void updateGridSize();

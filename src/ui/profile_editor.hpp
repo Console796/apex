@@ -21,6 +21,8 @@ private:
     void moveRow(int delta);
     compile::CompileProfile base_;
     QLineEdit* name_;
+    QLineEdit* addonDirectory_;
+    QLineEdit* campaignId_;
     QCheckBox* copyBsp_;
     QCheckBox* runGame_;
     QCheckBox* cordonOnly_;

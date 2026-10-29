@@ -10,6 +10,8 @@ Result<void> result(const std::error_code& ec) {
 
 Result<void> FilesystemFileOps::copy(const std::filesystem::path& from, const std::filesystem::path& to) {
     std::error_code ec;
+    if (!to.parent_path().empty()) std::filesystem::create_directories(to.parent_path(), ec);
+    if (ec) return result(ec);
     std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing, ec);
     return result(ec);
 }

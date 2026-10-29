@@ -1,6 +1,7 @@
 #include "render/vk.hpp"  // volk before Qt's Vulkan header.
 
 #include "ui/viewport_area.hpp"
+#include "ui/outliner_panel.hpp"
 
 #include <QApplication>
 #include <QElapsedTimer>
@@ -237,6 +238,8 @@ void ViewportArea::setOpenInstanceHandler(std::function<bool(document::NodeId)> 
     for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
 }
 void ViewportArea::configurePanel(QWidget* panel) {
+    if (auto* outliner = qobject_cast<OutlinerPanel*>(panel))
+        connect(outliner, &OutlinerPanel::instanceCreateRequested, this, &ViewportArea::instanceCreateRequested, Qt::UniqueConnection);
     if (auto* find = qobject_cast<FindPanel*>(panel); find && !find->property("frameConnected").toBool()) {
         find->setProperty("frameConnected", true);
         connect(find, &FindPanel::frameRequested, this, [this] {

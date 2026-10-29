@@ -58,10 +58,10 @@ TEST_CASE("compile snapshot clears outputs and preserves document and source") {
     CHECK(paths.bspDirectory == game.gameDirectory / "maps");
     CHECK(paths.toolDirectory == game.toolDirectory);
     CHECK(paths.instanceRoot == game.instanceRoot);
-    CHECK(paths.variables.at("path") == work.string());
+    CHECK(fs::path(paths.variables.at("path")) == work);
     CHECK(paths.variables.at("file") == "source map");
     CHECK(paths.variables.at("mapname") == "source map");
-    CHECK(paths.variables.at("work") == work.string());
+    CHECK(fs::path(paths.variables.at("work")) == work);
     CHECK(paths.variables.at("addon").empty());
     CHECK(paths.variables.at("bspdir") == (game.gameDirectory / "maps").string());
     CHECK(paths.variables.at("gamedir") == game.gameDirectory.string());
@@ -89,18 +89,18 @@ TEST_CASE("compile snapshot copies instances that exist only beside the source")
     CompileDir dir;
     fs::create_directories(dir.path / "src/inst/deep");
     std::ofstream(dir.path / "src/inst/a.vmf") << "entity { \"classname\" \"func_instance\" \"file\" \"deep/b.vmf\" }";
-    std::ofstream(dir.path / "src/inst/deep/b.vmf") << "leaf";
+    std::ofstream(dir.path / "src/inst/deep/b.vmf") << "world { id 1 classname worldspawn }";
     std::ofstream(dir.path / "src/outside.vmf") << "not referenced";
     document::Document doc(editor_test::parsed("world { id 1 classname worldspawn }"));
     editor_test::addBlock(doc, "entity { id 2 classname func_instance file \"inst/a.vmf\" }");
     editor_test::addBlock(doc, "entity { id 3 classname func_instance file \"../escape.vmf\" }");
     editor_test::addBlock(doc, "entity { id 4 classname func_instance file \"missing/c.vmf\" }");
-    std::ofstream(dir.path / "escape.vmf") << "must not be copied";
+    // Missing parent-relative references stay for vbsp to diagnose.
     auto snapshot = editor::writeCompileSnapshot(doc, dir.path / "src/map.vmf", dir.path / "cache", {});
     REQUIRE(snapshot);
     const auto work = snapshot->paths.workDirectory;
     CHECK(fs::is_regular_file(work / "inst/a.vmf"));
-    CHECK(read(work / "inst/deep/b.vmf") == "leaf");
+    CHECK(read(work / "inst/deep/b.vmf") == "world { id 1 classname worldspawn }");
     CHECK_FALSE(fs::exists(work / "outside.vmf"));
     CHECK_FALSE(fs::exists(work / "../escape.vmf"));
     CHECK_FALSE(fs::exists(work / "missing"));
@@ -168,8 +168,8 @@ TEST_CASE("compile snapshots restore missing light defaults in maps and copied i
     const auto source = dir.path / "src/map.vmf";
     const auto instance = dir.path / "src/inst/lights.vmf";
     const std::string instanceBefore = R"(entity { "id" "10" "classname" "light_rt" "origin" "1 2 3" })";
-    std::ofstream(source) << original;
-    std::ofstream(instance) << instanceBefore;
+    std::ofstream(source, std::ios::binary) << original;
+    std::ofstream(instance, std::ios::binary) << instanceBefore;
     editor::CompileGamePaths game;
     game.classes = &classes;
     const auto snapshot = editor::writeCompileSnapshot(doc, source, dir.path / "cache", game);

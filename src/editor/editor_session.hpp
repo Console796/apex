@@ -257,6 +257,9 @@ public:
     Result<std::string> cutText();
     Result<void> pasteText(std::string_view text, PasteOptions options = {});
     Result<void> duplicateSelection();
+    std::vector<std::string> instanceBoundaryConnections() const;
+    Result<void> createInstanceFromSelection(const std::filesystem::path& file, std::string reference,
+                                             bool allowCrossingConnections = false);
     Result<InstanceCollapseReport> collapseInstances(std::span<const NodeId> selection);
     Result<InstanceCollapseReport> collapseAllInstances();
     Result<void> deleteSelection();

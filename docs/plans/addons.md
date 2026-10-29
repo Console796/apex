@@ -119,7 +119,7 @@ cover addons: they're a separate mount layer.
 
 | # | Question | How | Settles |
 |---|---|---|---|
-| P1 (0.5) | Which list does each compile tool read? Does `-mountmod` add an addon? | Build a map that uses a material found only in an unmounted addon, compile it with the game list toggled each way, and read the result with `vbspinfo` or the vbsp log. | D8 |
+| P1 (0.5, Linux compile parity verified: D8) | Which list does each compile tool read? Does `-mountmod` add an addon? | Build a map that uses a material found only in an unmounted addon, compile it with the game list toggled each way, and read the result with `vbspinfo` or the vbsp log. | D8 |
 | P2 (0.3.7 P0, **done**: D3) | Where do mounted addons sit in the search order relative to `custom/*`, the mod, `hammer`, and `mounts.kv` heads? Do they mount in list order or reverse? | Use two test addons and a `custom/` folder, each overriding the same VMT with a different `$basetexture`. Check what game (`path`, `mat_texture_list`) and Hammer show. | D3 |
 | P3 (0.4) | Does Hammer rewrite its list completely or edit it in place? Does it pick up an external edit while running, or only on Reload? | Toggle in Apex while Hammer runs, then Reload. Toggle in Hammer, then diff. | D2 |
 | P4 (0.5) | What syntax does a `dependencies` entry use? | `workshopcli` with a dependency set, or the uploader GUI. | D5 |
@@ -244,3 +244,17 @@ Spec amendments (applied 2026-10-22):
   to 0.5; rename the item in 0.9.
 - research.md: add an "Addons" row to the format table (1.1–1.4 condensed).
 - 0.3.md: add the new sub-milestone, and widen D14's index to include addon mounts.
+
+
+### 0.5.7 as built (2026-10-28)
+
+P1 is answered for this host: native VBSP rejected `-mountmod`; the temporary-gameinfo mount
+strategy in D8 is verified in `probe-results/lighting_compilation.md`. Compile targets prepend the
+selected addon to that compile configuration. The game still reads its own mount list; the compile
+panel names differences and an unmounted target instead of silently rewriting the list.
+
+The profile stores the target and campaign ID. Save As defaults to `mapsrc`, BSP installation
+goes to `maps`, and detached launches add `-campaign addon:<folder>/<id>` read from
+`scripts/campaigns.kv3` (including the headerless form shipped by P2CE). The scaffold creates an
+empty campaign only on request and never writes nonempty dependencies, so P4 remains deferred.
+Uploader hand-off starts the native executable without an unverified selection argument.

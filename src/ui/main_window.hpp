@@ -150,6 +150,7 @@ private:
     void openPasteSpecial();
     void openTieDialog();
     void openPrefabDialog();
+    void createInstanceFromSelection();
     QStringList solidClasses();
     void refreshClipboardState();
     void updateEditorActions();

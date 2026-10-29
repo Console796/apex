@@ -221,7 +221,31 @@ def build_stage(preset, jobs, report):
 
 
 def test_stage(preset, jobs, report):
-    return run(["ctest", "--preset", preset, "-j", str(jobs)], report, f"{preset}:test")
+    """Use apex_tests' balanced process slices, then cover the remaining CTest entries once."""
+    name = f"{preset}:test"
+    log = report.dir / f"{name}.log"
+    env = os.environ.copy()
+    # These stages are Linux-only; the POSIX harness owns child isolation and merged progress.
+    env.pop("APEX_TEST_JOBS", None)
+    env["APEX_TEST_PROGRESS_DIR"] = str(report.dir / preset / "test-progress")
+    suppression = f"suppressions={ROOT / 'tests/lsan.supp'}"
+    env["LSAN_OPTIONS"] = env.get("LSAN_OPTIONS", "") + (":" if env.get("LSAN_OPTIONS") else "") + suppression
+    commands = [
+        [str(ROOT / "build" / preset / "tests/apex_tests"), f"--jobs={jobs}"],
+        ["ctest", "--preset", preset, "-LE", "^apex-tests$", "-j", str(jobs)],
+    ]
+    started = time.time()
+    failures = []
+    with open(log, "w", encoding="utf-8") as output:
+        for command in commands:
+            output.write("$ " + shlex.join(command) + "\n")
+            output.flush()
+            result = subprocess.run(command, cwd=ROOT, env=env, stdout=output, stderr=subprocess.STDOUT)
+            if result.returncode:
+                failures.append(f"{Path(command[0]).name} exited {result.returncode}")
+    report.add(name, "FAIL" if failures else "ok", time.time() - started,
+               "; ".join(failures) + f"; see {log}" if failures else f"apex_tests --jobs={jobs}; remaining CTest entries")
+    return not failures
 
 
 def corpus_stage(corpus, fixtures_only, report):
@@ -236,6 +260,7 @@ def corpus_stage(corpus, fixtures_only, report):
     executable = ROOT / "build" / "linux-gcc-release" / "tests" / "apex_tests"
     env = os.environ.copy()
     env["APEX_P2CE_DIR"] = corpus
+    env.pop("APEX_TEST_JOBS", None)
     cmd = [str(executable), "-tc=*corpus*"]
     try:
         with open(log, "w", encoding="utf-8") as f:
@@ -376,6 +401,7 @@ def gpu_stage(name, device_filter, report):
         return
     env = os.environ.copy()
     env["APEX_VK_DEVICE"] = device_filter
+    env.pop("APEX_TEST_JOBS", None)
     env["APEX_VK_VALIDATION"] = "1"
     required = device_filter == "llvmpipe"
     cmd = [str(executable), "-sf=*/tests/render/*"]
@@ -394,7 +420,7 @@ def gpu_stage(name, device_filter, report):
     run(cmd, report, name, classify=classify, env=env)
 
 
-def windows_stage(build, report):
+def windows_stage(build, report, test_jobs=1):
     ssh = os.environ.get("APEX_WIN_SSH")
     if not ssh:
         report.add("windows-msvc", "FAIL", 0, "APEX_WIN_SSH unset (VM not set up, D23); use --skip-windows")
@@ -453,7 +479,7 @@ def windows_stage(build, report):
             'set "APEX_VK_DEVICE=apex-ci-no-gpu"',
             f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}",
             "cmake --build --preset windows-msvc-release",
-            "ctest --preset windows-msvc-release",
+            f"ctest --preset windows-msvc-release -j {test_jobs}",
         ]
         log = tmp / "windows-msvc.log"
         with open(log, "w", encoding="utf-8") as f:
@@ -576,7 +602,7 @@ def main():
                     help="concurrent builds (default: 2, or 1 while the Windows VM runs); each gets -j"
                          " from the cores and the free memory")
     ap.add_argument("--test-jobs", type=int, default=0,
-                    help="concurrent ctest tests (default: half the cores)")
+                    help="apex_tests worker processes and CTest parallelism (default: half the cores, memory capped)")
     ap.add_argument("--serial", action="store_true", help="run one stage at a time")
     a = ap.parse_args()
     if a.fuzz_seconds < 0:
@@ -608,7 +634,7 @@ def main():
         jobs = min(jobs, share)
         if not a.test_jobs:
             test_jobs = min(test_jobs, share)
-    print(f"ci: {slots} build slot(s) x -j{jobs}, ctest -j{test_jobs}"
+    print(f"ci: {slots} build slot(s) x -j{jobs}, apex_tests --jobs={test_jobs} / ctest -j{test_jobs}"
           + (f" (memory allows {budget} jobs)" if budget is not None else ""), flush=True)
     g = Graph(rep, {"build": slots, "configure": 1})
 
@@ -619,13 +645,16 @@ def main():
 
     # Longest chains first so they win a contended slot: the VM, then the gcc-release fan-out.
     if run_win:
-        g.add("windows-msvc", lambda: windows_stage(build, rep))
+        g.add("windows-msvc", lambda: windows_stage(build, rep, test_jobs))
     for preset in ([a.tests] if a.tests else FAST_PRESETS if a.fast else LINUX_PRESETS):
         add_preset(preset)
     if a.fast:
         rep.add("fuzz", "skipped", 0, "--fast")
     elif not a.tests:
         gcc_build = "linux-gcc-release:build"
+        if not a.fixtures_only:
+            g.add("compile-chamber", lambda: run([sys.executable, str(ROOT / "tools/chamber_runner_check.py")],
+                  rep, "compile-chamber"), ["linux-asan:build"])
         g.add("corpus", lambda: corpus_stage(corpus, a.fixtures_only, rep), [gcc_build])
         g.add("srctools-crosscheck", lambda: crosscheck_stage(corpus, a.fixtures_only, rep), [gcc_build])
         g.add("gpu-lavapipe", lambda: gpu_stage("gpu-lavapipe", "llvmpipe", rep), [gcc_build])

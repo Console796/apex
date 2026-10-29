@@ -31,6 +31,8 @@ QByteArray profilesToJson(const std::vector<compile::CompileProfile>& profiles) 
         array.append(QJsonObject{{"name", QString::fromStdString(profile.name)}, {"commands", commands},
             {"runGameAfter", profile.runGameAfter}, {"copyBspToMaps", profile.copyBspToMaps},
             {"cordonOnly", profile.cordonOnly},
+            {"addonDirectory", QString::fromStdString(profile.addonDirectory)},
+            {"campaignId", QString::fromStdString(profile.campaignId)},
             {"cordonMaterial", QString::fromStdString(profile.cordonMaterial)}});
     }
     return QJsonDocument(array).toJson(QJsonDocument::Compact);
@@ -45,6 +47,8 @@ std::vector<compile::CompileProfile> profilesFromJson(const QByteArray& json) {
         profile.name = object["name"].toString().toStdString();
         profile.runGameAfter = object["runGameAfter"].toBool(true);
         profile.copyBspToMaps = object["copyBspToMaps"].toBool(true);
+        profile.addonDirectory = object["addonDirectory"].toString().toStdString();
+        profile.campaignId = object["campaignId"].toString().toStdString();
         profile.cordonOnly = object["cordonOnly"].toBool(false);
         if (const auto material = object["cordonMaterial"].toString(); !material.isEmpty())
             profile.cordonMaterial = material.toStdString();
