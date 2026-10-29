@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <span>
+#include <set>
 #include <string_view>
 #include <unordered_map>
 
@@ -26,6 +27,8 @@ struct EntityPickShape {
     std::shared_ptr<const PickModel> model;
     std::uint32_t body = 0;
     LocalBox fallback;
+    // Editor model helpers may use light pitch and target direction instead of entity angles.
+    std::optional<document::EntityPose> pose = {};
 };
 using EntityBoundsProvider = std::function<std::optional<EntityPickShape>(const kv1::Node& entity)>;
 
@@ -116,6 +119,7 @@ private:
     std::unordered_map<std::uint32_t, NodeId> leaves_;
     std::map<document::NodeHandle, NodeId> handles_;
     std::unordered_set<NodeId> failed_;
+    std::set<NodeId> aimed_;
     std::uint32_t nextLeaf_ = 0;
     document::Document* observed_ = nullptr;
     std::size_t observer_ = 0;

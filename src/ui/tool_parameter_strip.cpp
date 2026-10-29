@@ -4,13 +4,27 @@
 #include <QDoubleSpinBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QScrollArea>
 #include <QSignalBlocker>
 
 namespace apex::ui {
-ToolParameterStrip::ToolParameterStrip(QWidget* parent) : QWidget(parent), row_(new QHBoxLayout(this)) {
+ToolParameterStrip::ToolParameterStrip(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("ToolParameterStrip"));
+    auto* outer = new QHBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    auto* scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    scroll->setFixedHeight(fontMetrics().height() + 38);
+    auto* content = new QWidget(scroll);
+    row_ = new QHBoxLayout(content);
     row_->setContentsMargins(4, 2, 4, 2);
     row_->setSpacing(4);
+    row_->setSizeConstraint(QLayout::SetMinimumSize);
+    scroll->setWidget(content);
+    outer->addWidget(scroll);
     hide();
 }
 void ToolParameterStrip::update(editor::Tool& tool) {

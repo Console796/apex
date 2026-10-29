@@ -403,3 +403,125 @@ TEST_CASE("pie dispatch swallows a held trigger release after digit click escape
         CHECK_FALSE(session.input(release, viewFor()));
     }
 }
+
+namespace {
+assets::EntityClassTable lightClasses() {
+    assets::EntityClassTable table;
+    auto& cls = table.classes["light_rt_spot"];
+    cls.name = "light_rt_spot";
+    cls.type = "PointClass";
+    cls.helpers = {{"lightprop", "\"models/editor/spot.mdl\""}, {"lightcone", ""},
+        {"sphere", "_fifty_percent_distance"}, {"sphere", "_zero_percent_distance"}};
+    for (const auto& [key, value] : {std::pair{"_light", "255 255 255 200"}, {"_fifty_percent_distance", "128"},
+             {"_zero_percent_distance", "256"}, {"_distance", "0"}, {"_inner_cone", "30"}, {"_cone", "45"}, {"pitch", "0"}})
+        cls.properties.push_back({.name = key, .type = "float", .defaultValue = value});
+    return table;
+}
+}
+TEST_CASE("light handles preview falloff with one undoable commit and cancel without changes") {
+    Document doc(parsed(R"(entity { id 1 classname light_rt_spot origin "0 0 0" })"));
+    EditorSession session;
+    session.attach(doc);
+    session.setGridSize(8);
+    session.setEntityClasses(lightClasses());
+    session.selectNode(doc.roots()[0]);
+    const auto initial = *doc.write();
+    const auto history = doc.undoCount();
+    const auto at = [&](InputKind kind, DVec3 point, bool shift = false) {
+        auto view = viewFor({point + DVec3{0, 0, 1000}, {0, 0, -1}});
+        auto e = pointer(kind, *worldToPixel(view, point));
+        e.shift = shift;
+        return session.input(e, view);
+    };
+    CHECK(at(InputKind::Press, {128, 0, 0}));
+    CHECK(session.transformActive());
+    CHECK(session.activeToolObject().owns(1));
+    CHECK(at(InputKind::Move, {160, 0, 0}));
+    REQUIRE(session.preview().entityKeys().contains(doc.roots()[0]));
+    CHECK(session.preview().entityKeys().at(doc.roots()[0]).at("_fifty_percent_distance") == "160");
+    CHECK(*doc.write() == initial);
+    CHECK(doc.undoCount() == history);
+    CHECK(at(InputKind::Release, {160, 0, 0}));
+    CHECK_FALSE(session.transformActive());
+    CHECK(session.preview().empty());
+    CHECK(doc.undoCount() == history + 1);
+    const auto& block = *doc.get(*doc.handle(doc.roots()[0]))->block;
+    CHECK(block.find("_fifty_percent_distance")->asDouble().value() == 160);
+    REQUIRE(session.perform("edit.undo"));
+    CHECK(*doc.write() == initial);
+    CHECK(at(InputKind::Press, {128, 0, 0}));
+    CHECK(at(InputKind::Move, {158, 0, 0}, true));
+    CHECK(session.preview().entityKeys().at(doc.roots()[0]).at("_fifty_percent_distance") == "131");
+    auto escape = pointer(InputKind::KeyDown);
+    escape.key = "Escape";
+    CHECK(session.input(escape, viewFor()));
+    CHECK_FALSE(session.transformActive());
+    CHECK(session.preview().empty());
+    CHECK(*doc.write() == initial);
+    // Clicking a handle must not materialize defaults or snap a value without a drag.
+    CHECK(at(InputKind::Press, {128, 0, 0}));
+    CHECK(at(InputKind::Release, {128, 0, 0}));
+    CHECK(*doc.write() == initial);
+    CHECK_FALSE(session.transformActive());
+    CHECK(at(InputKind::Press, {128, 0, 0}));
+    CHECK(at(InputKind::Move, {160, 0, 0}));
+    session.selection().clear();
+    CHECK_FALSE(session.transformActive());
+    CHECK(session.preview().empty());
+    CHECK(*doc.write() == initial);
+}
+TEST_CASE("light fine controls preserve valid falloff and cone bounds") {
+    Document doc(parsed(R"(entity { id 1 classname light_rt_spot origin "0 0 0" })"));
+    EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(lightClasses());
+    session.selectNode(doc.roots()[0]);
+    auto& tool = session.activeToolObject();
+    REQUIRE(tool.readout().parameters.size() == 5);
+    const auto history = doc.undoCount();
+    REQUIRE(tool.setParameter("_fifty_percent_distance", 300.25));
+    CHECK(doc.undoCount() == history + 1);
+    const auto block = [&]() { return doc.get(*doc.handle(doc.roots()[0]))->block; };
+    CHECK(block()->find("_fifty_percent_distance")->asDouble().value() == 300.25);
+    CHECK(block()->find("_zero_percent_distance")->asDouble().value() == 600.5);
+    REQUIRE(tool.setParameter("_inner_cone", 60));
+    CHECK(block()->find("_inner_cone")->asDouble().value() == 60);
+    CHECK(block()->find("_cone")->asDouble().value() == 60);
+    REQUIRE(tool.setParameter("_distance", 0));
+    CHECK(block()->find("_distance")->asDouble().value() == 0);
+    const auto view = viewFor();
+    CHECK_FALSE(tool.overlay(view, 1).worldPoints.empty());
+}
+TEST_CASE("light cone handles change both bounds when dragged inside the bright cone") {
+    Document doc(parsed(R"(entity { id 1 classname light_rt_spot origin "0 0 0" })"));
+    EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(lightClasses());
+    session.selectNode(doc.roots()[0]);
+    const auto initial = *doc.write();
+    const auto dragAt = [&](InputKind kind, DVec3 point) {
+        auto view = viewFor({point + DVec3{0, 0, 1000}, {0, 0, -1}});
+        return session.input(pointer(kind, *worldToPixel(view, point)), view);
+    };
+    REQUIRE(dragAt(InputKind::Press, {256, 256, 0}));
+    REQUIRE(dragAt(InputKind::Move, {256, 128, 0}));
+    REQUIRE(session.preview().entityKeys().contains(doc.roots()[0]));
+    CHECK(session.preview().entityKeys().at(doc.roots()[0]).at("_cone") == "27");
+    CHECK(session.preview().entityKeys().at(doc.roots()[0]).at("_inner_cone") == "27");
+    CHECK(*doc.write() == initial);
+    REQUIRE(dragAt(InputKind::Release, {256, 128, 0}));
+    CHECK(doc.undoCount() == 1);
+    const auto* block = doc.get(*doc.handle(doc.roots()[0]))->block.get();
+    CHECK(block->find("_cone")->asDouble().value() == 27);
+    CHECK(block->find("_inner_cone")->asDouble().value() == 27);
+}
+TEST_CASE("spotlight rotations update the separate pitch override used by compiled lights") {
+    Document doc(parsed(R"(entity { id 1 classname light_rt_spot origin "0 0 0" angles "0 0 0" pitch "-30" })"));
+    const auto classes = lightClasses();
+    const auto rotated = applyToEntity(doc, doc.roots()[0], Transform::rotate({0, 1, 0}, 30), true, &classes);
+    REQUIRE(rotated);
+    REQUIRE(rotated->angles);
+    REQUIRE(rotated->keys.contains("pitch"));
+    CHECK(rotated->angles->x == doctest::Approx(60));
+    CHECK(std::stod(rotated->keys.at("pitch")) == doctest::Approx(-60));
+}

@@ -30,7 +30,7 @@ struct HelperSegment {
     std::optional<document::NodeId> peer;
     std::optional<document::NodeId> anchor;
 };
-struct HelperLabel { DVec3 position; std::string text; Vec4 colour; };
+struct HelperLabel { DVec3 position; std::string text; Vec4 colour; HelperVisibility visibility = HelperVisibility::Always; };
 struct HelperShapes {
     std::vector<HelperSegment> segments;
     std::vector<HelperLabel> labels;

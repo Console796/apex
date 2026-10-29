@@ -1,3 +1,4 @@
+#include "document/entity_helpers.hpp"
 #include "render/helper_shapes.hpp"
 
 #include "core/entity_helpers.hpp"
@@ -146,7 +147,12 @@ struct Builder {
     void draw(const assets::SphereHelper& h) {
         const auto radius = number(c.block, h.radiusKey);
         if (!radius || *radius <= 0) return;
-        const auto col = colour(h.colour, c.defaultColour);
+        auto col = colour(h.colour, c.defaultColour);
+        std::string label;
+        if (ciEquals(h.radiusKey, "_fifty_percent_distance")) { col = {0.3f, 0.85f, 1, 1}; label = "50% falloff"; }
+        else if (ciEquals(h.radiusKey, "_zero_percent_distance")) { col = {1, 0.65f, 0.2f, 1}; label = "Negligible falloff (1/256)"; }
+        else if (ciEquals(h.radiusKey, "_distance")) { col = {0.7f, 1, 0.4f, 1}; label = "Maximum distance"; }
+        if (!label.empty()) shapes.labels.push_back({c.pose.origin + DVec3{*radius, 0, 0}, label, col, selected});
         ring(c.pose.origin, {1, 0, 0}, {0, 1, 0}, *radius, 48, col, selected);
         ring(c.pose.origin, {1, 0, 0}, {0, 0, 1}, *radius, 48, col, selected);
         ring(c.pose.origin, {0, 1, 0}, {0, 0, 1}, *radius, 48, col, selected);
@@ -202,19 +208,33 @@ struct Builder {
         });
     }
     void draw(const assets::LightconeHelper&) {
-        // BaseSpotLight's _cone is the outer half-angle; light_dynamic uses distance.
         const auto angle = number(c.block, "_cone");
         if (!angle || *angle <= 0 || *angle >= 90) return;
-        std::string_view distanceKey = "_distance";
-        if (property(c.cls, "distance")) distanceKey = "distance";
-        else if (!c.block.find(distanceKey) && c.block.find("_zero_percent_distance")) distanceKey = "_zero_percent_distance";
-        const auto distance = c.block.find(distanceKey) ? number(c.block, distanceKey) : std::optional<double>{256};
-        if (!distance || *distance <= 0) return;
-        const double radius = *distance * std::tan(glm::radians(*angle));
-        const auto center = world({*distance, 0, 0});
-        const auto u = c.pose.basis[1], v = c.pose.basis[2];
-        ring(center, u, v, radius, 24, c.defaultColour, selected);
-        for (const auto offset : {u, v, -u, -v}) segment(c.pose.origin, center + radius * offset, c.defaultColour, selected);
+        double distance = 256;
+        for (const auto key : {"distance", "_distance", "_zero_percent_distance", "_hard_radius_override"}) {
+            if (const auto value = number(c.block, key); value && *value > 0) { distance = *value; break; }
+        }
+        std::optional<DVec3> target;
+        const auto peers = named("target");
+        if (!peers.empty()) target = peers.front().position;
+        auto base = c.pose;
+        base.anglesDeg = document::entityPose(c.block).anglesDeg;
+        const auto pose = document::spotlightPose(c.block, base, target);
+        const auto center = pose.origin + pose.basis[0] * distance;
+        const auto u = pose.basis[1], v = pose.basis[2];
+        const auto cone = [&](double halfAngle, Vec4 col) {
+            if (!(halfAngle > 0 && halfAngle < 90)) return;
+            const double radius = distance * std::tan(glm::radians(halfAngle));
+            ring(center, u, v, radius, 24, col, selected);
+            for (const auto offset : {u, v, -u, -v}) segment(pose.origin, center + radius * offset, col, selected);
+        };
+        cone(*angle, {1, 0.65f, 0.2f, 1});
+        if (const auto inner = number(c.block, "_inner_cone"); inner && *inner < *angle)
+            cone(*inner, {0.3f, 0.85f, 1, 1});
+        const auto tip = pose.origin + pose.basis[0] * 32.0;
+        segment(pose.origin, tip, c.defaultColour, selected);
+        segment(tip, tip - pose.basis[0] * 8.0 + u * 4.0, c.defaultColour, selected);
+        segment(tip, tip - pose.basis[0] * 8.0 - u * 4.0, c.defaultColour, selected);
     }
     void draw(const assets::OrientedWidthHeightHelper& h) {
         const auto w = number(c.block, h.widthKey), height = number(c.block, h.heightKey);
@@ -315,7 +335,9 @@ struct Builder {
 
 } // namespace
 
-HelperShapes buildHelperShapes(const HelperContext& context) {
+HelperShapes buildHelperShapes(const HelperContext& input) {
+    const auto block = document::entityHelperValues(input.block, input.cls);
+    const HelperContext context{block, input.cls, input.pose, input.defaultColour, input.peersNamed};
     Builder builder{context, {}};
     for (const auto& helper : context.cls.helpers) {
         const auto before = builder.shapes.segments.size();

@@ -38,13 +38,20 @@ bool equal(const std::vector<GhostSolid>& a, const std::vector<GhostSolid>& b) {
 } // namespace
 
 Preview& Preview::operator=(const Preview& other) {
-    if (transforms_ == other.transforms_ && equal(replacements_, other.replacements_) && equal(ghosts_, other.ghosts_))
+    if (entityKeys_ == other.entityKeys_ && transforms_ == other.transforms_ && equal(replacements_, other.replacements_) && equal(ghosts_, other.ghosts_))
         return *this;
+    entityKeys_ = other.entityKeys_;
     transforms_ = other.transforms_;
     replacements_ = other.replacements_;
     ghosts_ = other.ghosts_;
     ++revision_;
     return *this;
+}
+
+void Preview::setEntityKeys(const EntityKeys& keys) {
+    if (entityKeys_ == keys) return;
+    entityKeys_ = keys;
+    ++revision_;
 }
 
 void Preview::set(NodeId node, const Transform& transform) {
@@ -81,12 +88,13 @@ void Preview::setGhosts(const std::vector<GhostSolid>& ghosts) {
 }
 
 void Preview::clear(NodeId node) {
-    const auto count = transforms_.erase(node) + replacements_.erase(node);
+    const auto count = entityKeys_.erase(node) + transforms_.erase(node) + replacements_.erase(node);
     if (count) ++revision_;
 }
 
 void Preview::clear() {
     if (empty()) return;
+    entityKeys_.clear();
     transforms_.clear();
     replacements_.clear();
     ghosts_.clear();

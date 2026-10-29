@@ -42,7 +42,10 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Apply, std::make_unique<ApplyTool>(*this));
     tools_.emplace(Tool::Measure, std::make_unique<MeasureTool>(*this));
     activeToolObject().activate();
-    selection_.observe([this](const Selection&) { notify(); });
+    selection_.observe([this](const Selection&) {
+        if (activeTool_ == "tool.select" && selectTool().lightEdit_.active()) selectTool().endTransform();
+        notify();
+    });
 }
 EditorSession::~EditorSession() { detach(); }
 

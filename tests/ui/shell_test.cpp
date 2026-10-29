@@ -1,3 +1,6 @@
+#include "ui/tool_parameter_strip.hpp"
+#include <QScrollArea>
+#include <QScrollBar>
 // Headless shell tests; run with QT_QPA_PLATFORM=offscreen (set by CTest).
 #include "test_app.hpp"
 #include <doctest/doctest.h>
@@ -1768,6 +1771,7 @@ TEST_CASE("editable outliner commits names, drops, visibility and persistent fil
 #include "ui/inspector_panel.hpp"
 #include <QCompleter>
 #include <QColorDialog>
+#include <QDoubleSpinBox>
 #include <QDialog>
 #include <QPushButton>
 #include <QFocusEvent>
@@ -3484,4 +3488,51 @@ TEST_CASE("viewport model drop places on a wall without changing the armed tool 
     auto plain = drop();
     CHECK_FALSE(ui::handleModelDrop(&session, &view, kPane, plain, report));
     CHECK_FALSE(plain.isAccepted());
+}
+
+TEST_CASE("inspector light falloff controls accept precise numbers and ignore wheel scrolling") {
+    app();
+    assets::EntityClassTable classes;
+    auto& cls = classes.classes["light"];
+    cls.name = "light";
+    cls.type = "PointClass";
+    cls.properties = {{.name = "_light", .type = "color255", .defaultValue = "255 255 255 200"},
+        {.name = "_fifty_percent_distance", .type = "string", .defaultValue = "128"},
+        {.name = "_zero_percent_distance", .type = "string", .defaultValue = "256"},
+        {.name = "_distance", .type = "integer", .defaultValue = "0"}};
+    document::Document doc(editor_test::parsed("entity { id 1 classname light }"));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.setEntityClasses(classes);
+    ui::InspectorPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.resize(320, 500);
+    panel.show();
+    session.selectNode(doc.roots()[0]);
+    app().processEvents();
+    auto* half = panel.findChild<QDoubleSpinBox*>("light._fifty_percent_distance");
+    REQUIRE(half);
+    CHECK(half->value() == 128);
+    half->setFocus();
+    half->setValue(512.125);
+    CHECK(inspectorValues(doc, doc.roots()[0])["_fifty_percent_distance"] == "512.125");
+    QWheelEvent wheel(QPointF(5, 5), half->mapToGlobal(QPointF(5, 5)), {}, QPoint(0, 120), Qt::NoButton,
+                      Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(half, &wheel);
+    CHECK(half->value() == 512.125);
+    CHECK(doc.undoCount() == 1);
+    CHECK(half->mapTo(&panel, QPoint(half->width(), 0)).x() <= panel.width());
+    REQUIRE(session.perform("edit.undo"));
+    app().processEvents();
+    CHECK_FALSE(inspectorValues(doc, doc.roots()[0]).contains("_fifty_percent_distance"));
+    ui::ToolParameterStrip strip;
+    strip.update(session.activeToolObject());
+    strip.resize(200, strip.sizeHint().height());
+    strip.show();
+    app().processEvents();
+    CHECK(strip.width() == 200);
+    REQUIRE(strip.findChild<QScrollArea*>());
+    CHECK(strip.findChild<QScrollArea*>()->horizontalScrollBar()->maximum() > 0);
+    if (const auto* image = std::getenv("APEX_LIGHT_CONTROLS_IMAGE")) CHECK(panel.grab().save(QString::fromUtf8(image)));
 }

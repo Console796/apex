@@ -164,8 +164,8 @@ void ViewportArea::setDocument(document::Document* document, const assets::GameP
     compilePanel_->setDocument(document);
     host_->setDocument(document, gameContent_ ? gameContent_->vfs() : nullptr, profile);
     if (session_) {
-        session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
-            return host->modelPicks() ? host->modelPicks()->shape(entity) : std::nullopt;
+        session_->setEntityBoundsProvider([host = host_, session = session_](const kv1::Node& entity) {
+            return host->modelPicks() ? host->modelPicks()->shape(entity, &session->entityClasses(), session->document()) : std::nullopt;
         });
     }
     previewRevision_ = kNoPreview;  // The mirror may be new.
@@ -186,8 +186,8 @@ void ViewportArea::setEditorSession(editor::EditorSession* session) {
     session_ = session;
     compilePanel_->setEditorSession(session);
     previewRevision_ = kNoPreview;
-    if (session_) session_->setEntityBoundsProvider([host = host_](const kv1::Node& entity) {
-        return host->modelPicks() ? host->modelPicks()->shape(entity) : std::nullopt;
+    if (session_) session_->setEntityBoundsProvider([host = host_, session = session_](const kv1::Node& entity) {
+        return host->modelPicks() ? host->modelPicks()->shape(entity, &session->entityClasses(), session->document()) : std::nullopt;
     });
     if (session_) sessionObserver_ = session_->observe([this] {
         updateHighlight();
@@ -391,6 +391,7 @@ void ViewportArea::syncPreview(render::RenderMirror& mirror) {
     if (preview.empty()) mirror.clearPreview();
     else {
         render::PreviewGeometry geometry;
+        geometry.entityKeys = preview.entityKeys();
         geometry.replacements = preview.replacements();
         for (const auto& ghost : preview.ghosts())
             geometry.ghosts.push_back({ghost.poly, ghost.material, ghost.opacity, ghost.outline});

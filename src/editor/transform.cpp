@@ -1,3 +1,4 @@
+#include "document/entity_helpers.hpp"
 #include "editor/transform.hpp"
 
 #include "core/strings.hpp"
@@ -241,16 +242,23 @@ Result<EntityTransform> applyToEntity(const document::Document& doc, NodeId enti
         if (!origin) return std::unexpected(origin.error());
         result.origin = transform.point(*origin);
     }
+    const auto* classname = node->block->find("classname");
+    const auto* cls = classes && classname ? classes->find(classname->decodedValue().value_or("")) : nullptr;
     if (point) {
         const auto angles = vectorKey(*node->block, "angles");
         if (!angles) return std::unexpected(angles.error());
-        const auto basis = basisFromAngles(*angles);
+        auto basis = basisFromAngles(*angles);
+        const bool spotlight = cls && document::hasEntityHelper(*cls, "lightcone");
+        if (spotlight) {
+            const auto effective = document::entityHelperValues(*node->block, *cls);
+            const auto pose = document::spotlightPose(effective, document::entityPose(effective));
+            basis = DMat3{pose.basis[0], -pose.basis[1], pose.basis[2]};
+        }
         const auto forward = transform.linear() * basis[0], up = transform.linear() * basis[2];
         if (!finite(forward) || !finite(up)) return std::unexpected(invalid("invalid entity basis"));
         result.angles = anglesFromForward(forward, up);
+        if (spotlight) result.keys["pitch"] = std::to_string(-result.angles->x);
     }
-    const auto* classname = node->block->find("classname");
-    const auto* cls = classes && classname ? classes->find(classname->decodedValue().value_or("")) : nullptr;
     if (cls) {
         for (const auto& property : cls->properties) {
             const auto* value = node->block->find(property.name);

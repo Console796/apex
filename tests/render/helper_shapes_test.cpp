@@ -220,7 +220,7 @@ TEST_CASE("helper shapes cylinder and lightcone rings have checkable corners") {
 
     f.helper("lightcone"); f.set("_cone", "45"); f.set("_inner_cone", "10"); f.set("_distance", "8");
     shapes = f.build();
-    REQUIRE(shapes.segments.size() == 28);
+    REQUIRE(shapes.segments.size() == 59);
     point(shapes.segments[0].a, {2, 28, 30});
     point(shapes.segments[24].a, {10, 20, 30});
     point(shapes.segments[24].b, {2, 28, 30});
@@ -232,7 +232,7 @@ TEST_CASE("helper shapes cylinder and lightcone rings have checkable corners") {
     Fixture absentDistance;
     absentDistance.helper("lightcone"); absentDistance.set("_cone", "45");
     shapes = absentDistance.build();
-    REQUIRE(shapes.segments.size() == 28);
+    REQUIRE(shapes.segments.size() == 31);
     point(shapes.segments[0].a, {256, 256, 0});
 }
 
@@ -384,4 +384,36 @@ TEST_CASE("helper shapes empty-block P2CE FGD corpus remains finite") {
         REQUIRE_NOTHROW(shapes = buildHelperShapes({block, cls, {}, {1, 1, 1, 1}, {}}));
         finite(shapes);
     }
+}
+
+TEST_CASE("spotlight helpers use FGD defaults zero distance pitch and both cone angles") {
+    Fixture f;
+    f.helper("lightcone");
+    f.cls.properties = {{.name = "_inner_cone", .defaultValue = "30"}, {.name = "_cone", .defaultValue = "45"},
+        {.name = "_distance", .defaultValue = "0"}, {.name = "pitch", .defaultValue = "-90"}};
+    auto shapes = f.build();
+    REQUIRE(shapes.segments.size() == 59);
+    CHECK(shapes.segments[0].a.z == doctest::Approx(-256));
+    CHECK(shapes.segments[28].a.z == doctest::Approx(-256));
+    CHECK(glm::length(shapes.segments[28].a - DVec3{0, 0, -256}) < 256);
+    f.set("_zero_percent_distance", "512");
+    shapes = f.build();
+    CHECK(shapes.segments[0].a.z == doctest::Approx(-512));
+    // A target overrides pitch and yaw, as in the compiled light.
+    f.set("target", "destination");
+    auto context = f.context();
+    context.peersNamed = [](std::string_view) { return std::vector<HelperPeer>{{1, {0, 512, 0}}}; };
+    shapes = buildHelperShapes(context);
+    CHECK(shapes.segments[0].a.y == doctest::Approx(512));
+    CHECK_FALSE(f.block.find("_cone")); // Defaults never leak back into the VMF.
+}
+
+TEST_CASE("spotlight pitch from angles follows compiled Source elevation when the pitch override is zero") {
+    Fixture f;
+    f.helper("lightcone");
+    f.set("_cone", "45"); f.set("pitch", "0"); f.set("angles", "30 0 0");
+    const auto shapes = f.build();
+    REQUIRE(shapes.segments.size() == 31);
+    // The first ring point has no up-axis displacement: z is the cone centre's height.
+    CHECK(shapes.segments[0].a.z == doctest::Approx(128));
 }

@@ -1,3 +1,4 @@
+#include "assets/fgd.hpp"
 #include <limits>
 #include "../assets/fixture.hpp"
 #include "golden_image.hpp"
@@ -487,4 +488,97 @@ TEST_CASE("model thumbnail scheduler uses the asynchronous ModelCache without dr
     CHECK_FALSE(scheduler.tick(false));
     CHECK(thumbnails.state(assets::ThumbnailKind::Model, "models/missing.mdl", 128) == assets::ThumbnailState::Failed);
     CHECK(scheduler.pending() == 0);
+}
+
+TEST_CASE("model helpers load declared spotlight meshes without a serialized model key") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    Fixture fixture;
+    assets::EntityClassTable classes;
+    auto& cls = classes.classes["light_rt_spot"];
+    cls.name = "light_rt_spot";
+    cls.helpers = {{"lightprop", "\"models/fixture.mdl\""}, {"lightcone", ""}};
+    cls.properties = {{.name = "_cone", .defaultValue = "45"}, {.name = "_inner_cone", .defaultValue = "30"},
+        {.name = "_distance", .defaultValue = "0"}, {.name = "pitch", .defaultValue = "-30"}};
+    auto parsed = vmf::parse(R"(entity { id 1 classname light_rt_spot origin "0 0 0" body 1 })");
+    REQUIRE(parsed);
+    document::Document doc(*parsed);
+    const auto original = *doc.write();
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, &classes, fixture.models.get());
+    mirror.rebuild(doc);
+    REQUIRE(mirror.settle());
+    auto list = mirror.buildDrawList(view());
+    CHECK(list.boxes.empty());
+    REQUIRE(list.meshes.size() == 1);
+    ui::ModelPickCache picks(*fixture.models);
+    auto shape = picks.shape(*doc.get(*doc.handle(doc.roots()[0]))->block, &classes, &doc);
+    REQUIRE(shape);
+    REQUIRE(shape->model);
+    REQUIRE(shape->pose);
+    CHECK(shape->pose->basis[0].z == doctest::Approx(-0.5));
+    Highlight highlight; highlight.selected = {doc.roots()[0]}; mirror.setHighlight(highlight);
+    list = mirror.buildDrawList(view());
+    REQUIRE(list.worldSegments.size() == 59);
+    const auto originalCone = list.worldSegments[0].a;
+    PreviewGeometry preview;
+    preview.entityKeys[doc.roots()[0]] = {{"_cone", "20"}, {"_inner_cone", "10"}};
+    mirror.setPreview({}, preview, 1);
+    CHECK(mirror.buildDrawList(view()).worldSegments[0].a != originalCone);
+    mirror.clearPreview();
+    CHECK(mirror.buildDrawList(view()).worldSegments[0].a == originalCone);
+    CHECK(*doc.write() == original);
+}
+
+TEST_CASE("installed spotlight helper model renders and is pickable with P2CE FGD defaults") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    auto* context = testing::sharedContext();
+    if (!install || !context) { MESSAGE("Skipped: installed P2CE and Vulkan required"); return; }
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    JobPool jobs(2);
+    auto vfs = assets::Vfs::load(profile, jobs); REQUIRE(vfs);
+    auto classes = assets::loadEntityClasses(profile.gameDirectory / "p2ce.fgd"); REQUIRE(classes);
+    auto parsed = vmf::parse(R"(entity { id 1 classname light_rt_spot origin "0 0 0" angles "0 0 0"
+        pitch "-30" _fifty_percent_distance 32 _zero_percent_distance 64 })"); REQUIRE(parsed);
+    document::Document doc(*parsed);
+    assets::ModelCache models(*vfs, jobs);
+    assets::MaterialCache materials(*vfs, jobs);
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    RenderMirror mirror(*context, **heap, jobs, materials, &*classes, &models);
+    mirror.rebuild(doc);
+    REQUIRE(mirror.settle());
+    CHECK(models.state("models/editor/spot.mdl") == assets::ModelState::Ready);
+    const auto model = models.request("models/editor/spot.mdl"); REQUIRE(model);
+    CHECK(glm::length(model->bounds.max - model->bounds.min) > 1);
+    MESSAGE("Spotlight helper model size: " << model->bounds.max.x - model->bounds.min.x << ", "
+        << model->bounds.max.y - model->bounds.min.y << ", " << model->bounds.max.z - model->bounds.min.z);
+    Highlight highlight; highlight.selected = {doc.roots()[0]}; mirror.setHighlight(highlight);
+    auto options = view();
+    options.view.cameraPosition = {0, 0, 200};
+    options.view.viewProjection = reversedZOrtho(256, 256, 1, 1000) * rotationOnlyView({0, 0, -1}, {1, 0, 0}, {0, 1, 0});
+    auto list = mirror.buildDrawList(options);
+    REQUIRE_FALSE(list.meshes.empty());
+    CHECK(list.boxes.empty());
+    CHECK(list.worldSegments.size() >= 59);
+    ui::ModelPickCache picks(models);
+    auto shape = picks.shape(*doc.get(*doc.handle(doc.roots()[0]))->block, &*classes, &doc);
+    REQUIRE(shape);
+    REQUIRE(shape->pose);
+    CHECK(shape->pose->basis[0].z == doctest::Approx(-0.5));
+    list.viewportSize = Vec2(128);
+    if (const auto* path = std::getenv("APEX_LIGHT_HELPER_IMAGE")) {
+        const auto image = draw(*context, **heap, list);
+        const auto png = golden::encodePng(image);
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+        CHECK(out.good());
+        options.view.viewProjection = reversedZOrtho(48, 48, 1, 1000) * rotationOnlyView({0, 0, -1}, {1, 0, 0}, {0, 1, 0});
+        auto closeup = mirror.buildDrawList(options);
+        closeup.worldSegments.clear(); closeup.labels.clear();
+        const auto closePng = golden::encodePng(draw(*context, **heap, closeup));
+        std::ofstream detail(std::string(path) + ".model.png", std::ios::binary);
+        detail.write(reinterpret_cast<const char*>(closePng.data()), static_cast<std::streamsize>(closePng.size()));
+        CHECK(detail.good());
+    }
 }

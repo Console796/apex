@@ -74,7 +74,16 @@ std::optional<GizmoContext> SelectTool::gizmoContext() const {
                 return DVec3{(*parsed)[0], (*parsed)[1], (*parsed)[2]};
             };
             if (const auto origin = vector("origin")) activeOrigin = *origin;
-            if (const auto angles = vector("angles")) {
+            const auto* name = block.find("classname");
+            const auto* cls = name ? session_.entityClasses().find(name->decodedValue().value_or("")) : nullptr;
+            if (cls && document::hasEntityHelper(*cls, "lightcone")) {
+                const auto values = document::entityHelperValues(block, *cls);
+                const auto pose = document::spotlightPose(values, document::entityPose(values),
+                    document::spotlightTarget(*session_.document(), values));
+                local = pose.basis;
+                activeAngles = pose.anglesDeg;
+                activeEntity = true;
+            } else if (const auto angles = vector("angles")) {
                 const auto basis = basisFromAngles(*angles);
                 local = DMat3{basis[0], -basis[1], basis[2]}; // Source's right-axis is -Y.
                 activeAngles = *angles;
@@ -102,6 +111,7 @@ void SelectTool::publishPreview(const Transform& transform) {
     session_.notify();
 }
 void SelectTool::endTransform() {
+    lightEdit_.cancel(preview_);
     drag_.cancel();
     modal_.cancel();
     dragging_ = modalActive_ = false;
@@ -178,7 +188,7 @@ void SelectTool::forget(InputSource source) {
     selectionGesture_.forget(source);
     panes_.erase(source);
 }
-bool SelectTool::owns(InputSource source) const { return owner_ == source && transformActive(); }
+bool SelectTool::owns(InputSource source) const { return lightEdit_.owns(source) || (owner_ == source && transformActive()); }
 std::optional<GizmoHandle> SelectTool::hovered(InputSource source) const {
     const auto it = panes_.find(source);
     return it == panes_.end() ? std::nullopt : it->second.hovered;
@@ -188,6 +198,11 @@ std::optional<GizmoHandle> SelectTool::dragged(InputSource source) const {
     return it == panes_.end() ? std::nullopt : it->second.dragged;
 }
 Handled SelectTool::input(const InputEvent& event, const ToolView& view) {
+    if (!dragging_ && !modalActive_ && lightEdit_.input(session_, preview_, event, view)) {
+        selectionGesture_.cancel(event.source);
+        return true;
+    }
+    if (lightEdit_.active()) return true;
     if (transformInput(event, view)) {
         if (event.kind == InputKind::Press || event.kind == InputKind::Release || event.kind == InputKind::Move)
             selectionGesture_.cancel(event.source);
@@ -283,6 +298,9 @@ bool SelectTool::transformInput(const InputEvent& e, const ToolView& camera) {
     }
     return false;
 }
+bool SelectTool::setParameter(std::string_view key, double value) {
+    return !transformActive() && lightEdit_.setParameter(session_, key, value);
+}
 ToolReadout SelectTool::readout() const {
     const char* selection = "";
     switch (session_.selection().mode()) {
@@ -297,13 +315,18 @@ ToolReadout SelectTool::readout() const {
     case GizmoMode::Rotate: gizmo = "Rotate"; break;
     case GizmoMode::Scale: gizmo = "Scale"; break;
     }
-    return {{"Select", selection, gizmo}, {}, transformActive() ? activeReadout().text : "", false};
+    ToolReadout result{{"Select", selection, gizmo}, {}, lightEdit_.active() ? lightEdit_.status() :
+        transformActive() ? activeReadout().text : "", false};
+    if (!dragging_ && !modalActive_) result.parameters = lightEdit_.parameters(session_);
+    return result;
 }
 
 ToolOverlay SelectTool::overlay(const ToolView& camera, InputSource source) const {
     ToolOverlay list;
     list.rectangle = selectionGesture_.rectangle(source);
     if (!session_.document() || camera.size.x <= 0 || camera.size.y <= 0) return list;
+    if (!dragging_ && !modalActive_) lightEdit_.overlay(session_, list, camera);
+    if (lightEdit_.active()) return list;
     if (session_.modal().active()) return list;
     auto context = session_.gizmoContext();
     if (!context) return list;

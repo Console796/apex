@@ -13,7 +13,8 @@ std::shared_ptr<const editor::PickModel> makePickModel(const assets::ModelData& 
 class ModelPickCache {
 public:
     explicit ModelPickCache(assets::ModelCache& models) : models_(models) {}
-    std::optional<editor::EntityPickShape> shape(const kv1::Node& entity);
+    std::optional<editor::EntityPickShape> shape(const kv1::Node& entity, const assets::EntityClassTable* classes = nullptr,
+                                                  const document::Document* document = nullptr);
     bool pump();
     // Pair with an index rebuild after ModelCache::clear().
     void clear() { entries_.clear(); }

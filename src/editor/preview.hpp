@@ -22,6 +22,7 @@ struct GhostSolid {
 class Preview {
 public:
     using Transforms = std::map<NodeId, DMat4>;
+    using EntityKeys = std::map<NodeId, std::map<std::string, std::string>>;
     using Replacements = std::map<NodeId, geometry::ConvexPolyhedron>;
 
     Preview() = default;
@@ -29,11 +30,13 @@ public:
     // Replacing an existing channel (including fromTransform()) preserves its revision clock.
     Preview& operator=(const Preview& other);
 
+    const EntityKeys& entityKeys() const { return entityKeys_; }
+    void setEntityKeys(const EntityKeys& keys);
     const Transforms& transforms() const { return transforms_; }
     const Replacements& replacements() const { return replacements_; }
     const std::vector<GhostSolid>& ghosts() const { return ghosts_; }
     std::uint64_t revision() const { return revision_; }
-    bool empty() const { return transforms_.empty() && replacements_.empty() && ghosts_.empty(); }
+    bool empty() const { return entityKeys_.empty() && transforms_.empty() && replacements_.empty() && ghosts_.empty(); }
     void set(NodeId node, const Transform& transform);
     void set(const Transforms& transforms);
     void setReplacement(NodeId node, const geometry::ConvexPolyhedron& poly);
@@ -43,6 +46,7 @@ public:
     void clear();
 
 private:
+    EntityKeys entityKeys_;
     Transforms transforms_;
     Replacements replacements_;
     std::vector<GhostSolid> ghosts_;

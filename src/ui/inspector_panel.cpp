@@ -1,3 +1,4 @@
+#include "editor/light_edit.hpp"
 #include "ui/inspector_panel.hpp"
 #include "editor/connection_completion.hpp"
 #include "editor/incoming_connections.hpp"
@@ -8,6 +9,7 @@
 #include <QComboBox>
 #include <QCompleter>
 #include <QDoubleValidator>
+#include <QDoubleSpinBox>
 #include <QEvent>
 #include <QFontMetrics>
 #include <QFormLayout>
@@ -138,6 +140,13 @@ bool isSpacerLabel(const QString& label) {
 
 // The inspector sits in a scroll area the user scrolls often; a wheel over a combo must scroll the
 // panel, never step the value.
+class LightSpinBox : public QDoubleSpinBox {
+public:
+    using QDoubleSpinBox::QDoubleSpinBox;
+protected:
+    void wheelEvent(QWheelEvent* event) override { event->ignore(); }
+};
+
 class NoWheelComboBox : public QComboBox {
 public:
     using QComboBox::QComboBox;
@@ -517,6 +526,27 @@ void InspectorPanel::refresh() {
                                                     check->property("inspectorFocus").toString().toStdString());
                 });
             }
+        } else if (const auto control = editor::lightControl(row.key); control && !raw) {
+            auto* spin = new LightSpinBox(field);
+            spin->setObjectName(QStringLiteral("light.%1").arg(text(row.key)));
+            spin->setLocale(QLocale::c());
+            spin->setDecimals(3);
+            spin->setRange(row.mixed ? control->minimum - 1 : control->minimum, control->maximum);
+            spin->setSingleStep(control->step);
+            spin->setKeyboardTracking(false);
+            if (row.mixed) { spin->setSpecialValueText(tr("(mixed)")); spin->setValue(spin->minimum()); }
+            else spin->setValue(text(row.value).toDouble());
+            if (control->key == "_cone" || control->key == "_inner_cone") spin->setSuffix(tr("°"));
+            if (control->key == "_distance" || control->key == "_hard_radius_override")
+                spin->setSpecialValueText(control->key == "_distance" ? tr("0 (no limit)") : tr("0 (auto)"));
+            watch(spin);
+            if (auto* line = spin->findChild<QLineEdit*>()) watch(line);
+            horizontal->addWidget(spin);
+            connect(spin, &QDoubleSpinBox::valueChanged, this, [spin, write, control](double value) {
+                if (value >= control->minimum)
+                    write(QString::number(value, 'g', 12),
+                        spin->findChild<QLineEdit*>()->property("inspectorFocus").toString());
+            });
         } else if (type == "color255") {
             auto* edit = new QLineEdit(row.mixed ? QString{} : text(row.value), field);
             edit->setObjectName(QStringLiteral("edit.%1.%2").arg(text(row.key)).arg(row.occurrence));

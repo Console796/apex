@@ -45,6 +45,7 @@ struct PreviewGhost {
     Vec4 outline{1.0f, 0.65f, 0.15f, 1.0f};
 };
 struct PreviewGeometry {
+    std::map<document::NodeId, std::map<std::string, std::string>> entityKeys;
     std::map<document::NodeId, geometry::ConvexPolyhedron> replacements;
     std::vector<PreviewGhost> ghosts;
 };

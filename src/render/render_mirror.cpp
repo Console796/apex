@@ -1,3 +1,4 @@
+#include "document/entity_helpers.hpp"
 #include "render/render_mirror.hpp"
 
 #include "core/log.hpp"
@@ -154,6 +155,7 @@ struct RenderMirror::Impl {
     std::map<std::string, std::set<NodeId>, std::less<>> watchers;
     std::set<std::string> touchedNames;
     std::set<NodeId> helperDirty;
+    std::map<NodeId, std::map<std::string, std::string>> helperPreview;
     std::map<NodeId, NodeId> brushOwner; // Solid -> brush entity.
     std::set<NodeId> brushDirty;         // Brush entities whose solids meshed or went away.
     bool redraw = true;
@@ -503,16 +505,6 @@ struct RenderMirror::Impl {
         }
         const auto pose = document::entityPose(*entity->block);
         state.transform = document::entityTransform(pose);
-        if (modelCache) {
-            if (const auto* key = entity->block->find("model")) {
-                const auto name = key->decodedValue().value_or("");
-                if (!name.empty() && name.front() != '*') {
-                    state.model = assets::modelPath(name);
-                    models.try_emplace(state.model);
-                    modelCache->request(state.model);
-                }
-            }
-        }
         state.skin = entityUint(*entity->block, "skin");
         state.body = entityUint(*entity->block, "body");
         state.position = pose.origin;
@@ -540,6 +532,14 @@ struct RenderMirror::Impl {
                                     static_cast<float>((*cls->color)[1]) / 255.0f,
                                     static_cast<float>((*cls->color)[2]) / 255.0f, 1.0f};
                 }
+            }
+        }
+        if (modelCache) {
+            const auto name = document::entityDisplayModel(*entity->block, state.cls);
+            if (!name.empty()) {
+                state.model = assets::modelPath(name);
+                models.try_emplace(state.model);
+                modelCache->request(state.model);
             }
         }
         if (!state.nameKey.empty()) {
@@ -627,7 +627,13 @@ struct RenderMirror::Impl {
         state.watching.clear();
         state.helpers = {};
         if (!state.cls || state.cls->helpers.empty() || !state.block) return;
-        HelperContext context{*state.block, *state.cls, state.pose, state.colour, {}};
+        auto block = document::entityHelperValues(*state.block, *state.cls);
+        if (const auto preview = helperPreview.find(id); preview != helperPreview.end())
+            for (const auto& [key, value] : preview->second) {
+                if (auto* entry = block.find(key)) *entry = kv1::Node::value(key, value);
+                else block.append(kv1::Node::value(key, value)).value();
+            }
+        HelperContext context{block, *state.cls, state.pose, state.colour, {}};
         context.peersNamed = [&](std::string_view name) {
             std::vector<HelperPeer> peers;
             const std::string key = lower(name);
@@ -641,6 +647,19 @@ struct RenderMirror::Impl {
             }
             return peers;
         };
+        if (document::hasEntityHelper(*state.cls, "lightprop") &&
+            (document::hasEntityHelper(*state.cls, "lightcone") || block.find("pitch"))) {
+            std::optional<DVec3> target;
+            if (const auto* name = block.find("target")) {
+                const auto peers = context.peersNamed(name->decodedValue().value_or(""));
+                if (!peers.empty()) target = peers.front().position;
+            }
+            state.pose = document::spotlightPose(block, document::entityPose(block), target);
+            state.transform = document::entityTransform(state.pose);
+            state.basis = state.pose.basis;
+            entitiesDirty = true;
+            context.pose = state.pose;
+        }
         state.helpers = buildHelperShapes(context);
     }
 
@@ -1030,8 +1049,11 @@ void RenderMirror::setHighlight(const Highlight& highlight) {
 }
 
 void RenderMirror::setPreview(const PreviewTransforms& preview) {
-    if (impl_->preview == preview && impl_->previewGeometry.empty()) return;
+    if (impl_->preview == preview && impl_->previewGeometry.empty() && impl_->helperPreview.empty()) return;
     impl_->clearGeometry();
+    for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
+    impl_->helperPreview.clear();
+    impl_->refreshHelpers();
     impl_->preview = preview;
     impl_->previewDirty = true;
     impl_->redraw = true;
@@ -1041,6 +1063,10 @@ void RenderMirror::setPreview(const PreviewTransforms& transforms, const Preview
     if (impl_->previewRevision == revision) return;
     impl_->clearGeometry();
     impl_->previewRevision = revision;
+    for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
+    impl_->helperPreview = geometry.entityKeys;
+    for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
+    impl_->refreshHelpers();
     impl_->preview = transforms;
     impl_->previewDirty = true;
     impl_->redraw = true;
@@ -1288,7 +1314,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                                               segment.colour, 1.0f});
             }
             for (const HelperLabel& label : entity.helpers.labels)
-                list.labels.push_back({moved(id, label.position), label.text, Vec2(0.0f), label.colour});
+                if (self || label.visibility == HelperVisibility::Always) list.labels.push_back({moved(id, label.position), label.text, Vec2(0.0f), label.colour});
             if (options.showEntityNames && !entity.targetname.empty())
                 list.labels.push_back({moved(id, entity.position), entity.targetname, Vec2(8.0f, -8.0f), options.wireColour});
             // The path is noise on every placed instance; show it for the one being inspected, and

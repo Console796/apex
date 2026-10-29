@@ -160,6 +160,7 @@ void PickIndex::setInstanceContents(std::span<const document::InstanceContent> c
 }
 
 void PickIndex::remove(NodeId id) {
+    aimed_.erase(id);
     failed_.erase(id);
     if (const auto it = items_.find(id); it != items_.end()) {
         tree_.remove(it->second.leaf);
@@ -213,6 +214,9 @@ void PickIndex::refresh(NodeId id, bool building) {
         }
         pose = document::entityPose(*node->block);
         if (bounds_) shape = bounds_(*node->block).value_or(shape);
+        if (shape.pose) pose = *shape.pose;
+        if (shape.pose && node->block->find("target")) aimed_.insert(id);
+        else aimed_.erase(id);
         LocalBox local = shape.fallback;
         if (shape.model) {
             auto bounds = shape.model->bounds(shape.body);
@@ -274,6 +278,7 @@ void PickIndex::rebuild() {
     leaves_.clear();
     handles_.clear();
     failed_.clear();
+    aimed_.clear();
     nextLeaf_ = 0;
     const auto walk = [&](const auto& self, NodeId id) -> void {
         const auto handle = doc_.handle(id);
@@ -296,7 +301,8 @@ void PickIndex::apply(const document::ChangeSet& changes) {
         rebuild();
         return;
     }
-    std::set<NodeId> affected;
+    // A target move/rename can rotate a light helper whose own keys did not change.
+    std::set<NodeId> affected(aimed_.begin(), aimed_.end());
     std::unordered_set<NodeId> visited;
     const auto walk = [&](const auto& self, NodeId id) -> void {
         if (!visited.insert(id).second) return;

@@ -1,3 +1,4 @@
+#include "document/entity_helpers.hpp"
 #include "ui/model_pick.hpp"
 
 #include "core/log.hpp"
@@ -46,9 +47,10 @@ std::shared_ptr<const editor::PickModel> buildPickModel(const assets::ModelData&
 }
 }
 
-std::optional<editor::EntityPickShape> ModelPickCache::shape(const kv1::Node& entity) {
-    const auto* key = entity.find("model");
-    const auto name = key ? key->decodedValue().value_or("") : "";
+std::optional<editor::EntityPickShape> ModelPickCache::shape(const kv1::Node& entity, const assets::EntityClassTable* classes, const document::Document* doc) {
+    const auto* classname = entity.find("classname");
+    const auto* cls = classes && classname ? classes->find(classname->decodedValue().value_or("")) : nullptr;
+    const auto name = document::entityDisplayModel(entity, cls);
     if (name.empty() || name.front() == '*') return {};
     auto& entry = entries_[assets::modelPath(name)];
     auto source = entry.source ? entry.source : models_.request(name);
@@ -61,7 +63,13 @@ std::optional<editor::EntityPickShape> ModelPickCache::shape(const kv1::Node& en
     const auto bodyText = bodyKey ? bodyKey->decodedValue().value_or("") : "";
     std::uint32_t body = 0;
     std::from_chars(bodyText.data(), bodyText.data() + bodyText.size(), body);
-    return editor::EntityPickShape{entry.pick, body, {}};
+    editor::EntityPickShape shape{entry.pick, body, {}};
+    if (cls && document::hasEntityHelper(*cls, "lightprop")) {
+        const auto values = document::entityHelperValues(entity, *cls);
+        if (document::hasEntityHelper(*cls, "lightcone") || values.find("pitch"))
+            shape.pose = document::spotlightPose(values, document::entityPose(values), doc ? document::spotlightTarget(*doc, values) : std::nullopt);
+    }
+    return shape;
 }
 
 bool ModelPickCache::pump() {

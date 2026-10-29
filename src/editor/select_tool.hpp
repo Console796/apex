@@ -2,6 +2,7 @@
 
 #include "editor/tool.hpp"
 #include "editor/modal_transform.hpp"
+#include "editor/light_edit.hpp"
 
 namespace apex::editor {
 
@@ -14,6 +15,7 @@ public:
     ToolOverlay overlay(const ToolView& view, InputSource source) const override;
     ToolReadout readout() const override;
     void cancel() override;
+    bool setParameter(std::string_view key, double value) override;
     void pointerHover(Ray ray) override;
     void pointerClick(Ray ray, Modifiers modifiers, bool sameSpot) override;
     void marquee(std::span<const Plane> planes, Modifiers modifiers) override;
@@ -23,7 +25,7 @@ public:
     std::optional<GizmoHandle> dragged(InputSource source) const override;
 
     std::optional<GizmoContext> gizmoContext() const;
-    bool transformActive() const override { return dragging_ || modalActive_; }
+    bool transformActive() const override { return dragging_ || modalActive_ || lightEdit_.active(); }
     bool beginGizmoDrag(GizmoHandle handle, const GizmoView& view, Ray ray);
     bool updateGizmoDrag(Ray ray, TransformModifiers modifiers);
     bool endGizmoDrag();
@@ -40,6 +42,7 @@ private:
     EditorSession& session_;
     SelectionGesture selectionGesture_;
     Preview preview_;
+    LightEdit lightEdit_;
     GizmoDrag drag_;
     ModalTransform modal_;
     bool dragging_ = false, modalActive_ = false;
