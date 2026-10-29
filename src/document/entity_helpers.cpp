@@ -21,6 +21,16 @@ std::optional<DVec3> spotlightTarget(const Document& doc, const kv1::Node& block
     for (const auto root : doc.roots()) visit(visit, root);
     return target;
 }
+std::vector<std::pair<std::string, std::string>> missingEntityDefaults(
+    const kv1::Node& block, const assets::EntityClass& cls) {
+    std::vector<std::pair<std::string, std::string>> result;
+    for (const auto& property : cls.properties) {
+        if (property.readOnly || property.defaultValue.empty() || property.name.empty() ||
+            ciEquals(property.name, "id") || ciEquals(property.name, "classname") || block.find(property.name)) continue;
+        result.emplace_back(property.name, property.defaultValue);
+    }
+    return result;
+}
 kv1::Node entityHelperValues(const kv1::Node& block, const assets::EntityClass& cls) {
     auto effective = block;
     for (const auto& p : cls.properties)

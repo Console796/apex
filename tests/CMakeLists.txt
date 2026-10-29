@@ -9,6 +9,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
+               lighting/light_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
@@ -24,7 +25,7 @@ editor/cordon_test.cpp editor/compile_snapshot_test.cpp editor/diagnostic_lookup
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
 target_link_libraries(apex_tests PRIVATE apex_compile apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
                                          sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp
-                                         apex_editor apex_document apex_geometry apex_core apex_warnings
+                                         apex_editor apex_lighting apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
 doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
