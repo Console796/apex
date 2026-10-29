@@ -98,7 +98,7 @@ apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.c
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp
                             src/document/instance_fixup.cpp src/document/instance_collapse.cpp src/document/cordon.cpp
            DEPS apex_geometry apex_core)
-apex_layer(lighting SOURCES src/lighting/light.cpp DEPS apex_document apex_core)
+apex_layer(lighting SOURCES src/lighting/light.cpp src/lighting/sky_visibility.cpp DEPS apex_geometry apex_document apex_core)
 apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_lookup.cpp src/editor/compile_overlay.cpp src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/light_edit.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp src/editor/pick_model.cpp
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
                           src/editor/group_index.cpp src/editor/name_index.cpp src/editor/selection.cpp src/editor/selection_expand.cpp
@@ -119,7 +119,7 @@ apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp sr
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
                          src/render/render_target.cpp src/render/scene_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/model_inspector.cpp src/render/swapchain.cpp
                          src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
-           DEPS apex_document apex_assets volk::volk GPUOpen::VulkanMemoryAllocator
+           DEPS apex_document apex_assets apex_lighting volk::volk GPUOpen::VulkanMemoryAllocator
                 Vulkan::Headers)
 # GLSL in src/render/shaders is compiled to SPIR-V and embedded in gen/render/shaders_spv.hpp (D14).
 apex_compile_shaders(TARGET apex_render DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/render/shaders

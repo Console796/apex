@@ -8,7 +8,7 @@
 #
 # Stage comes from the second-to-last extension: flat.vert.glsl is a vertex shader.
 function(apex_compile_shaders)
-  cmake_parse_arguments(S "" "TARGET;DIR;HEADER" "" ${ARGN})
+  cmake_parse_arguments(S "" "TARGET;DIR;HEADER" "INCLUDES" ${ARGN})
   if(NOT S_TARGET OR NOT S_DIR OR NOT S_HEADER)
     message(FATAL_ERROR "apex_compile_shaders needs TARGET, DIR and HEADER")
   endif()
@@ -21,6 +21,7 @@ function(apex_compile_shaders)
 
   file(GLOB shader_sources CONFIGURE_DEPENDS "${S_DIR}/*.glsl")
   file(GLOB shader_includes CONFIGURE_DEPENDS "${S_DIR}/*.inc")
+  list(APPEND shader_includes ${S_INCLUDES})
   set(gen_dir "${CMAKE_BINARY_DIR}/gen")
   set(spv_dir "${gen_dir}/spv")
   set(header "${gen_dir}/${S_HEADER}")

@@ -86,7 +86,7 @@ struct Cube {
 
 // Axis-aligned cube of half-extent h around the origin; uv (0,0) is the top-left of each face as
 // seen from outside for the -X face (the one the test camera sees).
-Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transform = DMat4(1.0)) {
+Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transform = DMat4(1.0), bool interior = false) {
     struct Face {
         float n[3];
         float c[4][3];
@@ -115,6 +115,7 @@ Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transfor
                 std::memcpy(v.position, &p.x, sizeof v.position);
                 std::memcpy(v.normal, &n.x, sizeof v.normal);
             }
+            if (interior) for (float& n : v.normal) n = -n;
             std::memcpy(v.uv, uvs[i], sizeof v.uv);
             v.material = material;
             vertices.push_back(v);
@@ -850,17 +851,13 @@ void checkLitParity(const Rgba8Image& a, const Rgba8Image& b) {
 
 } // namespace
 
-TEST_CASE("renderer: Lit HDR pass matches the textured cube at exposure one") {
+TEST_CASE("renderer: Lit fullbright reproduces albedo without textured fake shading") {
     REQUIRE_GPU();
     SceneTarget scene(*gpu->context, *gpu->heap);
     const Cube cube = makeCube(*gpu, 32.0f, 0);
     DrawList list = cubeList(cube, DisplayMode::Textured, gpu->checker);
     SUBCASE("opaque") {}
     SUBCASE("alpha test") { list.meshes[0].alpha = AlphaMode::Test; }
-    SUBCASE("translucent") {
-        list.meshes[0].alpha = AlphaMode::Blend;
-        list.meshes[0].colour.a = 0.6f;
-    }
     SUBCASE("preview and edge overlay") {
         DMat4 transform(1);
         transform[3][1] = 8;
@@ -874,9 +871,15 @@ TEST_CASE("renderer: Lit HDR pass matches the textured cube at exposure one") {
         list.meshes[0].alpha = AlphaMode::Test;
         list.meshes[0].highlight = Vec4(0, 0.5f, 1, 0.3f);
     }
-    const auto textured = drawFrame(*gpu, list);
+    // The camera sees only -X. Cancel Textured's constant fake shade on that face to get
+    // an albedo reference, including its existing alpha-test, highlight and edge behavior.
+    const float shade = 0.65f + 0.35f * std::abs(glm::dot(Vec3(-1, 0, 0), glm::normalize(Vec3(0.3f, 0.5f, 0.8f))));
+    list.meshes[0].colour = Vec4(Vec3(1.0f / shade), 1);
+    const auto albedo = drawFrame(*gpu, list);
+    list.meshes[0].colour = Vec4(1);
     list.mode = DisplayMode::Lit;
-    checkLitParity(textured, drawLitFrame(*gpu, list, scene));
+    list.fullbright = true;
+    checkLitParity(albedo, drawLitFrame(*gpu, list, scene));
 }
 
 TEST_CASE("renderer: Lit copies scene depth before boxes and outlines") {
@@ -885,6 +888,7 @@ TEST_CASE("renderer: Lit copies scene depth before boxes and outlines") {
     const Cube cube = makeCube(*gpu, 32.0f, 0);
     DrawList list = cubeList(cube, DisplayMode::Textured, gpu->checker);
     list.mode = DisplayMode::Lit;
+    list.fullbright = true;
     const auto bare = drawLitFrame(*gpu, list, scene);
     BoxInstance box{{-16, -16, -16}, {16, 16, 16}, {1, 0, 1, 1}};
     auto instances = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{&box, 1}),
@@ -911,6 +915,7 @@ TEST_CASE("renderer: Lit exposure affects meshes before display-space helpers") 
     const Cube cube = makeCube(*gpu, 32.0f, 0);
     DrawList list = cubeList(cube, DisplayMode::Textured, gpu->checker);
     list.mode = DisplayMode::Lit;
+    list.fullbright = true;
     list.viewportSize = Vec2(kSize);
     list.overlayTriangles.push_back({{-96, -8, 8}, {-96, 8, 8}, {-96, 0, -8}, {1, 0, 1, 1}});
     const auto normal = drawLitFrame(*gpu, list, scene);
@@ -995,4 +1000,297 @@ TEST_CASE("renderer: scene target resizes in a heap with room for exactly one ta
         CHECK(scene.extent().width == size);
         CHECK((*heap)->liveTextures() == 3);
     }
+}
+
+TEST_CASE("renderer: Lit box room evaluates point spot and sun in linear space") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube room = makeCube(*gpu, 48, 0, DMat4(1), true);
+    const std::array<std::byte, 4> texel{std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}};
+    const auto slot = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel);
+    REQUIRE(slot); REQUIRE(gpu->heap->flush());
+    auto list = cubeList(room, DisplayMode::Lit, *slot);
+    list.meshes[0].colour = Vec4(1);
+    list.view = makeView({-24, 0, 0}, {0, 0, 0});
+    lighting::Light point;
+    point.origin = {-16, -20, 8}; point.intensity = {1, 0, 0}; point.constant = 1; point.quadratic = 0.0005;
+    auto spot = point;
+    spot.kind = lighting::LightKind::Spot; spot.origin = {-24, 0, 0}; spot.direction = {1, 0, 0};
+    spot.intensity = {0, 1, 0}; spot.stopdot = std::cos(glm::radians(20.0)); spot.stopdot2 = std::cos(glm::radians(45.0));
+    spot.exponent = 2;
+    lighting::Light sun;
+    sun.kind = lighting::LightKind::Sun; sun.direction = {0, 0, -1}; sun.intensity = {0, 0, 0.5};
+    const auto black = drawLitFrame(*gpu, list, scene);
+    for (unsigned y = 0; y < kSize; y += 4)
+        for (unsigned x = 0; x < kSize; x += 4) CHECK(nearColour(at(black, x, y), {0, 0, 0}, 0));
+    list.lights = {point, spot, sun};
+    const auto image = drawLitFrame(*gpu, list, scene);
+    golden::check("lit_room", image, *gpu->context);
+    list.exposure = 0.25f;
+    const auto dim = drawLitFrame(*gpu, list, scene);
+    const auto inverse = glm::inverse(DMat4(list.view.viewProjection));
+    int checked = 0, spotInside = 0, spotOutside = 0, sunFacing = 0, sunAway = 0;
+    int minPoint = 255, maxPoint = 0;
+    for (unsigned y = 2; y < kSize; y += 3) {
+        for (unsigned x = 2; x < kSize; x += 3) {
+            auto ray4 = inverse * DVec4(2.0 * (x + 0.5) / kSize - 1, 2.0 * (y + 0.5) / kSize - 1, 1, 1);
+            const DVec3 ray = glm::normalize(DVec3(ray4) / ray4.w);
+            double distance = 1e30;
+            double secondDistance = 1e30;
+            DVec3 normal(0);
+            for (int axis = 0; axis < 3; ++axis) {
+                if (std::abs(ray[axis]) < 1e-10) continue;
+                const double sign = ray[axis] > 0 ? 1 : -1;
+                const double t = (sign * 48 - list.view.cameraPosition[axis]) / ray[axis];
+                if (t <= 0) continue;
+                if (t < distance) {
+                    secondDistance = distance;
+                    distance = t;
+                    normal = DVec3(0);
+                    normal[axis] = -sign;
+                } else secondDistance = std::min(secondDistance, t);
+            }
+            // A pixel exactly on a room edge has two valid face normals; raster ownership wins.
+            if (secondDistance - distance < 1e-5) continue;
+            const auto position = list.view.cameraPosition + ray * distance;
+            DVec3 irradiance(0);
+            for (const auto& light : list.lights) irradiance += lighting::irradiance(light, position, normal);
+            const auto expected = [&](double exposure) {
+                const auto encode = [&](double value) {
+                    return static_cast<int>(std::lround(255 * std::pow(std::clamp(std::pow(128.0 / 255, 2.2) * value * exposure, 0.0, 1.0), 1 / 2.2)));
+                };
+                return Px{encode(irradiance.x), encode(irradiance.y), encode(irradiance.z)};
+            };
+            CAPTURE(x);
+            CAPTURE(y);
+            CHECK(nearColour(at(image, x, y), expected(1), 1));
+            CHECK(nearColour(at(dim, x, y), expected(0.25), 1));
+            minPoint = std::min(minPoint, at(image, x, y).r); maxPoint = std::max(maxPoint, at(image, x, y).r);
+            spotInside += irradiance.y > 0.1; spotOutside += irradiance.y == 0;
+            sunFacing += irradiance.z > 0; sunAway += irradiance.z == 0;
+            ++checked;
+        }
+    }
+    CHECK(checked > 400); CHECK(maxPoint - minPoint > 30);
+    CHECK(spotInside > 5); CHECK(spotOutside > 5); CHECK(sunFacing > 5); CHECK(sunAway > 5);
+    // Rebasing in double preserves the same scene far from the world origin.
+    const DVec3 shift(1e10, -2e10, 3e10);
+    list.exposure = 1;
+    list.meshes[0].origin += shift; list.view.cameraPosition += shift;
+    for (auto& light : list.lights) light.origin += shift;
+    checkLitParity(image, drawLitFrame(*gpu, list, scene));
+    gpu->heap->release(*slot);
+}
+
+TEST_CASE("renderer: Lit fullbright translucent albedo blends before gamma") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube cube = makeCube(*gpu, 32, 0);
+    const std::array<std::byte, 4> texel{std::byte{128}, std::byte{64}, std::byte{192}, std::byte{255}};
+    auto slot = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel);
+    REQUIRE(slot); REQUIRE(gpu->heap->flush());
+    auto list = cubeList(cube, DisplayMode::Lit, *slot);
+    list.fullbright = true;
+    list.meshes[0].indexCount = 6; // Only the front face, so exactly one alpha blend.
+    list.meshes[0].colour = Vec4(0.5f, 0.75f, 0.25f, 0.6f);
+    list.meshes[0].alpha = AlphaMode::Blend;
+    for (float exposure : {1.0f, 0.25f}) {
+        list.exposure = exposure;
+        const auto image = drawLitFrame(*gpu, list, scene);
+        const auto encode = [&](double colour) {
+            const double linear = 0.6 * std::pow(colour, 2.2) + 0.4 * std::pow(0.1, 2.2);
+            return static_cast<int>(std::lround(255 * std::pow(linear * exposure, 1 / 2.2)));
+        };
+        CHECK(nearColour(at(image, 26, 38), {encode(128.0 / 255 * 0.5), encode(64.0 / 255 * 0.75),
+                                           encode(192.0 / 255 * 0.25)}, 1));
+    }
+    gpu->heap->release(*slot);
+}
+
+TEST_CASE("renderer: Lit helpers ghosts and overlays stay display-space") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube room = makeCube(*gpu, 48, 0, DMat4(1), true);
+    const Cube ghost = makeCube(*gpu, 4, 0);
+    auto list = cubeList(room, DisplayMode::Lit, gpu->checker);
+    list.view = makeView({-24, 0, 0}, {0, 0, 0});
+    const auto bare = drawLitFrame(*gpu, list, scene); // Black room covers the whole display.
+    MeshDraw ghostDraw;
+    ghostDraw.vertices = &ghost.vertices; ghostDraw.indices = &ghost.indices; ghostDraw.indexCount = 36;
+    ghostDraw.texture = gpu->checker; ghostDraw.colour = Vec4(1, 1, 1, 0.5f);
+    ghostDraw.origin = {-8, 0, 0}; list.ghosts.push_back(ghostDraw);
+    BoxInstance box{{-2, -2, -2}, {2, 2, 2}, {1, 0, 1, 1}};
+    auto boxes = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{&box, 1}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    REQUIRE(boxes);
+    list.boxes.push_back({&*boxes, 1, {-8, -10, 6}, true});
+    SpriteInstance sprite{{-8, 10, 6}, 2, {1, 1, 1, 1}, gpu->checker};
+    auto sprites = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{&sprite, 1}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    REQUIRE(sprites);
+    list.sprites.push_back({&*sprites, 1});
+    list.viewportSize = Vec2(kSize);
+    list.overlaySegments.push_back({{-8, -5, -6}, {-8, 5, -6}, {0, 1, 1, 1}, 2});
+    const auto normal = drawLitFrame(*gpu, list, scene);
+    list.exposure = 8;
+    const auto bright = drawLitFrame(*gpu, list, scene);
+    CHECK(normal.pixels == bright.pixels);
+    int visible = 0;
+    for (std::size_t i = 0; i < normal.pixels.size(); i += 4)
+        visible += normal.pixels[i] != bare.pixels[i] || normal.pixels[i + 1] != bare.pixels[i + 1] ||
+                   normal.pixels[i + 2] != bare.pixels[i + 2];
+    CHECK(visible > 100);
+}
+
+TEST_CASE("renderer: Lit frame slots keep lights and previews independent") {
+    REQUIRE_GPU();
+    const Cube cube = makeCube(*gpu, 16, 0);
+    std::array<DrawList, 2> lists;
+    std::array<Rgba8Image, 2> expected;
+    std::array<RenderTarget, 2> targets;
+    std::array<std::unique_ptr<SceneTarget>, 2> scenes;
+    for (std::size_t i = 0; i < lists.size(); ++i) {
+        scenes[i] = std::make_unique<SceneTarget>(*gpu->context, *gpu->heap);
+        auto target = RenderTarget::create(*gpu->context, kSize, kSize);
+        REQUIRE(target); targets[i] = std::move(*target);
+        lists[i] = cubeList(cube, DisplayMode::Lit, gpu->checker);
+        lists[i].meshes[0].colour = Vec4(1);
+        lists[i].meshes[0].previewIndex = 1;
+        DMat4 matrix(1); matrix[3][1] = i == 0 ? 12 : -12;
+        lists[i].previews.push_back({matrix, DVec3(0)});
+        lighting::Light sun;
+        sun.kind = lighting::LightKind::Sun; sun.direction = {1, 0, 0};
+        sun.intensity = i == 0 ? DVec3(0.5, 0, 0) : DVec3(0, 0, 0.25);
+        lists[i].lights.push_back(sun);
+        expected[i] = drawLitFrame(*gpu, lists[i], *scenes[i]);
+    }
+    VkCommandBuffer commands[2]{};
+    auto alloc = vkStruct<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
+    alloc.commandPool = gpu->context->commandPool(); alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; alloc.commandBufferCount = 2;
+    REQUIRE(vkAllocateCommandBuffers(gpu->context->device(), &alloc, commands) == VK_SUCCESS);
+    for (std::size_t i = 0; i < lists.size(); ++i) {
+        const auto begin = vkStruct<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+        REQUIRE(vkBeginCommandBuffer(commands[i], &begin) == VK_SUCCESS);
+        gpu->renderer->prepare(commands[i], lists[i], *scenes[i], kClear);
+        targets[i].begin(commands[i], kClear);
+        gpu->renderer->record(commands[i], lists[i]);
+        targets[i].end(commands[i]);
+        REQUIRE(vkEndCommandBuffer(commands[i]) == VK_SUCCESS);
+    }
+    for (const std::size_t i : {1u, 0u}) {
+        REQUIRE(gpu->context->submitAndWait(commands[i]));
+        auto image = targets[i].readback(); REQUIRE(image);
+        CHECK(image->pixels == expected[i].pixels);
+    }
+    vkFreeCommandBuffers(gpu->context->device(), gpu->context->commandPool(), 2, commands);
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: Lit fullbright matches UNORM and SRGB attachment encoding") {
+    REQUIRE_GPU();
+    Fixture srgb;
+    srgb.context = gpu->context;
+    auto renderer = Renderer::create(*gpu->context, *gpu->heap, VK_FORMAT_R8G8B8A8_SRGB, RenderTarget::kDepthFormat);
+    REQUIRE(renderer);
+    srgb.renderer = std::move(*renderer);
+    auto target = RenderTarget::create(*gpu->context, kSize, kSize, VK_FORMAT_R8G8B8A8_SRGB);
+    REQUIRE(target);
+    srgb.target = std::move(*target);
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube cube = makeCube(*gpu, 32, 0);
+    auto list = cubeList(cube, DisplayMode::Lit, gpu->checker);
+    list.fullbright = true;
+    for (const Vec3 colour : {Vec3(0.01f, 0.08f, 0.2f), Vec3(0.25f, 0.5f, 0.75f), Vec3(1, 0.9f, 0.8f)}) {
+        list.meshes[0].colour = Vec4(colour, 1);
+        for (float exposure : {0.25f, 1.0f, 2.0f}) {
+            CAPTURE(colour.x);
+            CAPTURE(exposure);
+            list.exposure = exposure;
+            const auto unormImage = drawLitFrame(*gpu, list, scene);
+            const auto srgbImage = drawLitFrame(srgb, list, scene);
+            // Both store the same placeholder display curve; hardware SRGB conversion may
+            // round to the neighbouring UNORM8 code compared with the shader's UNORM output.
+            checkLitParity(unormImage, srgbImage);
+        }
+    }
+}
+
+TEST_CASE("renderer: Lit transformed preview matches point and spot CPU irradiance") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    GridSettings face;
+    face.normal = glm::normalize(DVec3(-1, 0.2, 0.3));
+    face.uAxis = glm::normalize(glm::cross(DVec3(0, 0, 1), face.normal));
+    face.vAxis = glm::cross(face.normal, face.uAxis);
+    face.bounds = GridRect{-40, 40, -40, 40};
+    const Cube quad = makeGridFace(*gpu, face);
+    const DVec3 origin(10000, 20000, -30000);
+    const auto preview = (editor::Transform::translate({8, -5, 7}) *
+                          editor::Transform::rotate({1, 2, 3}, 32, origin) *
+                          editor::Transform::scale({1.2, 0.7, 1.6}, DMat3(1), origin)).matrix();
+    const DVec3 centre(preview * DVec4(origin, 1));
+    const DVec3 normal = glm::normalize(glm::transpose(glm::inverse(DMat3(preview))) * face.normal);
+    const DVec3 u = glm::normalize(DMat3(preview) * face.uAxis);
+    const DVec3 v = glm::normalize(DMat3(preview) * face.vAxis);
+    const std::array<std::byte, 4> texel{std::byte{128}, std::byte{180}, std::byte{220}, std::byte{255}};
+    const auto slot = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel);
+    REQUIRE(slot);
+    REQUIRE(gpu->heap->flush());
+    auto list = cubeList(quad, DisplayMode::Lit, *slot);
+    list.view = makeView(centre + normal * 96.0, anglesFromForward(-normal, {0, 0, 1}));
+    list.exposure = 0.75f;
+    auto& mesh = list.meshes[0];
+    mesh.indexCount = 6;
+    mesh.origin = origin;
+    mesh.colour = Vec4(0.8f, 0.6f, 0.9f, 1);
+    mesh.previewIndex = 1;
+    list.previews.push_back({preview, origin});
+    lighting::Light point;
+    point.origin = centre + normal * 48.0 + u * 12.0;
+    point.intensity = {0.8, 0.2, 0.1};
+    point.constant = 1;
+    point.linear = 0.002;
+    point.quadratic = 0.0002;
+    lighting::Light spot;
+    spot.kind = lighting::LightKind::Spot;
+    spot.origin = centre + normal * 70.0 - u * 12.0 + v * 12.0;
+    spot.direction = glm::normalize(centre - spot.origin);
+    spot.intensity = {0.05, 0.7, 0.6};
+    spot.constant = 1;
+    spot.quadratic = 0.0001;
+    spot.stopdot = std::cos(glm::radians(20.0));
+    spot.stopdot2 = std::cos(glm::radians(45.0));
+    spot.exponent = 2;
+    list.lights = {point, spot};
+    SUBCASE("point") { list.lights = {point}; }
+    SUBCASE("spot") { list.lights = {spot}; }
+    SUBCASE("point and spot") {}
+    const auto image = drawLitFrame(*gpu, list, scene);
+    const auto inverseView = glm::inverse(DMat4(list.view.viewProjection));
+    const auto inversePreview = glm::inverse(preview);
+    const DVec3 albedo = glm::pow(DVec3(128, 180, 220) / 255.0 * DVec3(mesh.colour), DVec3(2.2));
+    for (unsigned y : {29u, 32u, 35u}) {
+        for (unsigned x : {29u, 32u, 35u}) {
+            CAPTURE(x);
+            CAPTURE(y);
+            const auto ray4 = inverseView * DVec4(2.0 * (x + 0.5) / kSize - 1,
+                                                 2.0 * (y + 0.5) / kSize - 1, 1, 1);
+            const auto ray = glm::normalize(DVec3(ray4) / ray4.w);
+            const double distance = glm::dot(centre - list.view.cameraPosition, normal) / glm::dot(ray, normal);
+            REQUIRE(distance > 0);
+            const auto position = list.view.cameraPosition + ray * distance;
+            const auto local = DVec3(inversePreview * DVec4(position, 1)) - origin;
+            // Independently intersect the transformed plane and stay clear of rasterized edges.
+            REQUIRE(std::abs(glm::dot(local, face.uAxis)) < 38);
+            REQUIRE(std::abs(glm::dot(local, face.vAxis)) < 38);
+            DVec3 irradiance(0);
+            for (const auto& light : list.lights) irradiance += lighting::irradiance(light, position, normal);
+            const DVec3 display = glm::pow(glm::clamp(albedo * irradiance * double(list.exposure), DVec3(0), DVec3(1)),
+                                          DVec3(1 / 2.2));
+            const Px expected{int(std::lround(display.r * 255)), int(std::lround(display.g * 255)),
+                              int(std::lround(display.b * 255))};
+            // Uniform albedo avoids filtering error. Float32 math and RGBA16F storage contribute
+            // less than one UNORM8 code here, including the final half-code rounding error.
+            CHECK(nearColour(at(image, x, y), expected, 1));
+        }
+    }
+    gpu->heap->release(*slot);
 }

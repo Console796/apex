@@ -4,10 +4,12 @@
 
 namespace apex::render {
 
-Result<RenderTarget> RenderTarget::create(Context& context, std::uint32_t width, std::uint32_t height) {
+Result<RenderTarget> RenderTarget::create(Context& context, std::uint32_t width, std::uint32_t height, VkFormat colorFormat) {
+    if (colorFormat != kColorFormat && colorFormat != VK_FORMAT_R8G8B8A8_SRGB)
+        return std::unexpected(Error{ErrorCode::Unsupported, "render target colour must be RGBA8 UNORM or SRGB"});
     RenderTarget target;
     target.context_ = &context;
-    auto color = Image::create(context, {kColorFormat, width, height, 1, 1,
+    auto color = Image::create(context, {colorFormat, width, height, 1, 1,
                                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                              VK_IMAGE_USAGE_SAMPLED_BIT});
     if (!color) return std::unexpected(color.error().withContext("render target colour"));

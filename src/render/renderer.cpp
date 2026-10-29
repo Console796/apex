@@ -2,6 +2,7 @@
 
 #include "core/log.hpp"
 #include "render/render_target.hpp"
+#include "render/gpu_lighting.hpp"
 #include "render/scene_target.hpp"
 #include "render/shader_blobs.hpp"
 #include "render/swapchain.hpp"
@@ -34,6 +35,19 @@ constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 // clip-z scale like the grid's surface bias: dynamic depth-bias units are implementation-defined.
 // Well above D32 resolution (~6e-8) and far below the grid's 2e-4.
 constexpr float kLayerBias = 1e-5f;
+
+bool srgbAttachment(VkFormat format) {
+    switch (format) {
+    case VK_FORMAT_R8_SRGB:
+    case VK_FORMAT_R8G8_SRGB:
+    case VK_FORMAT_R8G8B8_SRGB:
+    case VK_FORMAT_B8G8R8_SRGB:
+    case VK_FORMAT_R8G8B8A8_SRGB:
+    case VK_FORMAT_B8G8R8A8_SRGB:
+    case VK_FORMAT_A8B8G8R8_SRGB_PACK32: return true;
+    default: return false;
+    }
+}
 
 enum class Input { Brush, Box, Sprite, None };
 
@@ -210,15 +224,15 @@ struct Renderer::Impl {
     std::map<std::string, std::vector<std::uint32_t>> overrides; // Hot-reloaded SPIR-V.
     // Swapchains have one frame in flight and distinct command buffers. A slot is reused only
     // after its fence, so host writes cannot race another viewport or an earlier submission.
-    std::map<VkCommandBuffer, Buffer> previewBuffers;
+    std::map<VkCommandBuffer, Buffer> frameBuffers;
     std::shared_ptr<const GlyphAtlas> atlas;
-    std::map<VkCommandBuffer, Buffer> overlayBuffers; // Same slot discipline as previewBuffers.
+    std::map<VkCommandBuffer, Buffer> overlayBuffers; // Same slot discipline as frameBuffers.
 #ifdef APEX_SHADER_DIR
     std::map<std::string, std::filesystem::file_time_type> stamps;
 #endif
 
     ~Impl() {
-        if (!previewBuffers.empty() || !overlayBuffers.empty()) context->waitIdle();
+        if (!frameBuffers.empty() || !overlayBuffers.empty()) context->waitIdle();
         destroyPipelines();
         if (layout) vkDestroyPipelineLayout(context->device(), layout, nullptr);
     }
@@ -505,47 +519,69 @@ Result<bool> Renderer::reloadChangedShaders() {
 
 void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarget& scene, const float clearColor[4]) {
     if (list.mode != DisplayMode::Lit) return;
-    scene.begin(commands, clearColor);
+    if (!uploadFrame(commands, list)) return;
+    // The clear colour is display-space, like the caller's clear (D15).
+    const float linearClear[4] = {std::pow(clearColor[0], 2.2f), std::pow(clearColor[1], 2.2f),
+                                  std::pow(clearColor[2], 2.2f), clearColor[3]};
+    scene.begin(commands, linearClear);
     recordPass(commands, list, true);
     scene.end(commands);
     impl_->preparedScenes[commands] = {scene.colorSlot(), scene.depthSlot()};
 }
 
 void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
+    if (list.mode != DisplayMode::Lit && !uploadFrame(commands, list)) return;
     recordPass(commands, list, false);
+}
+
+bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
+    Impl& s = *impl_;
+    const VkDeviceSize lightOffset = sizeof(FrameBlock);
+    const VkDeviceSize previewOffset = lightOffset + list.lights.size() * sizeof(GpuLight);
+    const VkDeviceSize size = previewOffset + list.previews.size() * sizeof(PreviewTransform);
+    Buffer& buffer = s.frameBuffers[commands];
+    if (buffer.size() < size) {
+        auto created = Buffer::create(*s.context, {std::max(size, buffer.size() * 2),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+        if (!created) {
+            log::error("frame buffer: {}", created.error().what());
+            return false;
+        }
+        buffer = std::move(*created);
+    }
+    auto* bytes = static_cast<std::byte*>(buffer.mapped());
+    FrameBlock frame;
+    frame.previews = buffer.deviceAddress() + previewOffset;
+    frame.lights = buffer.deviceAddress() + lightOffset;
+    frame.lightCount = static_cast<std::uint32_t>(list.lights.size());
+    frame.flags = list.fullbright ? 1u : 0u;
+    frame.cameraRight = Vec4(list.view.cameraRight, 0);
+    frame.cameraUp = Vec4(list.view.cameraUp, 0);
+    std::memcpy(bytes, &frame, sizeof(frame));
+    for (std::size_t i = 0; i < list.lights.size(); ++i) {
+        const auto light = packLight(list.lights[i], list.view.cameraPosition);
+        std::memcpy(bytes + lightOffset + i * sizeof(GpuLight), &light, sizeof(light));
+    }
+    for (std::size_t i = 0; i < list.previews.size(); ++i) {
+        const auto& preview = list.previews[i];
+        const auto packed = cameraRelativePreview(preview.matrix, preview.origin, list.view.cameraPosition);
+        std::memcpy(bytes + previewOffset + i * sizeof(PreviewTransform), &packed, sizeof(packed));
+    }
+    buffer.flush(0, size);
+    return true;
 }
 
 void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass) {
     Impl& s = *impl_;
-    VkDeviceAddress previewAddress = 0;
-    if (!list.previews.empty()) {
-        const VkDeviceSize size = list.previews.size() * sizeof(PreviewTransform);
-        Buffer& buffer = s.previewBuffers[commands];
-        if (buffer.size() < size) {
-            auto created = Buffer::create(*s.context, {std::max(size, buffer.size() * 2),
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
-            if (!created) {
-                log::error("preview transform buffer: {}", created.error().what());
-                return;
-            }
-            buffer = std::move(*created);
-        }
-        auto* packed = static_cast<PreviewTransform*>(buffer.mapped());
-        for (std::size_t i = 0; i < list.previews.size(); ++i) {
-            const auto& preview = list.previews[i];
-            packed[i] = cameraRelativePreview(preview.matrix, preview.origin, list.view.cameraPosition);
-        }
-        buffer.flush(0, size);
-        previewAddress = buffer.deviceAddress();
-    }
+    const VkDeviceAddress frameAddress = s.frameBuffers.at(commands).deviceAddress();
     const auto previewPush = [&](PushConstants& push, std::uint32_t index, bool sprite = false, bool outline = false) {
         assert(index <= list.previews.size());
-        const float low = std::bit_cast<float>(static_cast<std::uint32_t>(previewAddress));
-        const float high = std::bit_cast<float>(static_cast<std::uint32_t>(previewAddress >> 32));
+        const float low = std::bit_cast<float>(static_cast<std::uint32_t>(frameAddress));
+        const float high = std::bit_cast<float>(static_cast<std::uint32_t>(frameAddress >> 32));
         if (sprite) {
             assert(index <= 0x7FFFFFFFu);
-            push.offsetSlot.w = low;
-            push.p1.w = high;
+            push.p1.x = low;
+            push.p1.y = high;
             push.p0.w = std::bit_cast<float>((index << 1) | (outline ? 1u : 0u));
         } else {
             push.p1 = Vec4(low, high, std::bit_cast<float>(index), 0.0f);
@@ -572,7 +608,8 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             previewPush(push, mesh.previewIndex);
             if (mesh.instancedTransforms) push.p1.z = std::bit_cast<float>(mesh.previewIndex | 0x80000000u);
             // Bit 2 asks brush_textured_frag for the tint alone (Lit's post-tone-map highlight pass).
-            push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha) | (kind == Kind::Highlight ? 4u : 0u));
+            push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha) |
+                                            (kind == Kind::Highlight ? 4u : 0u) | (scenePass ? 8u : 0u));
             // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
             const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
             for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;
@@ -597,6 +634,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
         push.offsetSlot.w = std::bit_cast<float>(prepared->second[0]);
         push.p0.x = std::bit_cast<float>(prepared->second[1]);
         push.p0.y = list.exposure;
+        push.p0.z = std::bit_cast<float>(srgbAttachment(s.colorFormat) ? 1u : 0u);
         s.bind(commands, Kind::Tonemap);
         s.pushAll(commands, push);
         vkCmdDraw(commands, 3, 1, 0, 0);
@@ -675,8 +713,6 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             PushConstants push = basePush(list);
             push.offsetSlot = slotVec(toCameraRelative(sprite.origin, camera), 0);
             push.colour = sprite.tint;
-            push.p0 = Vec4(list.view.cameraRight, 0.0f);
-            push.p1 = Vec4(list.view.cameraUp, 0.0f);
             previewPush(push, sprite.previewIndex, true);
             s.pushAll(commands, push);
             vkCmdDraw(commands, 6, sprite.count, 0, sprite.firstInstance);
@@ -774,8 +810,6 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             vkCmdBindVertexBuffers(commands, 0, 1, &vb, &zero);
             PushConstants push = basePush(list);
             push.offsetSlot = slotVec(toCameraRelative(sprite.origin, camera), 0);
-            push.p0 = Vec4(list.view.cameraRight, 1.0f);
-            push.p1 = Vec4(list.view.cameraUp, 1.0f);
             push.colour = sprite.tint;
             push.colour.a *= alpha;
             previewPush(push, sprite.previewIndex, true, true);

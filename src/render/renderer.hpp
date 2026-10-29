@@ -12,6 +12,7 @@
 
 #include "core/math.hpp"
 #include "core/result.hpp"
+#include "lighting/light.hpp"
 #include "render/resources.hpp"
 #include "render/glyph_atlas.hpp"
 #include "render/texture_heap.hpp"
@@ -164,6 +165,8 @@ struct Label {
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
+    bool fullbright = false; // Lit: unit irradiance, useful for inspecting albedo.
+    std::vector<lighting::Light> lights; // World-space doubles; rebased at upload.
     FrameView view;
     std::vector<MeshDraw> meshes;
     std::vector<MeshDraw> ghosts; // Blended material pass, no depth writes.
@@ -191,12 +194,11 @@ struct DrawList {
 };
 
 // Push constants shared by all pipelines (mirrors shaders/common.inc).
-// Preview ABI, without growing the block:
-//   brush/box: p1.xy = address low/high uint bits, p1.z = index uint bits;
-//   instanced models: p1.z high bit selects consecutive transforms by gl_InstanceIndex.
-//   sprite: offsetSlot.w / p1.w = address low/high, p0.w = (index << 1) | outline.
-// Sprite outline used to occupy both p0.w and p1.w; packing it frees the third word.
-// Grid retains every word of its existing layout. Index 0 skips all buffer reads.
+// Mesh/box/sprite: p1.xy = frame-block address low/high uint bits.
+// Mesh/box: p1.z = preview index; high bit selects consecutive instance transforms.
+// Mesh: p1.w = alpha mode, bit 2 tint-only, bit 3 Lit scene shading.
+// Sprite: p0.w = (preview index << 1) | outline; camera basis lives in the frame block.
+// Grid and overlay retain their pass-specific layouts. Index 0 skips preview reads.
 struct PushConstants {
     Mat4 viewProjection;
     Vec4 colour;
@@ -225,7 +227,7 @@ class Renderer {
     // Records the list into the current rendering pass; viewport and scissor are expected to be
     // set already (RenderTarget::begin does). Each command buffer is a reusable frame slot:
     // record once per recording, and finish its previous submission before reusing it (as
-    // Swapchain does). Preview buffers are retained per slot, including across preview clears.
+    // Swapchain does). Frame buffers are retained per slot, including across preview clears.
     void record(VkCommandBuffer commands, const DrawList& list);
     // The atlas may be shared by renderers with different attachment formats.
     void setGlyphAtlas(std::shared_ptr<const GlyphAtlas> atlas);
@@ -239,6 +241,7 @@ class Renderer {
     bool wireframeFill() const { return wireFill_; } // fillModeNonSolid pipelines available.
 
   private:
+    bool uploadFrame(VkCommandBuffer commands, const DrawList& list);
     void recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass);
     struct Impl;
     explicit Renderer(std::unique_ptr<Impl> impl, bool wireFill);

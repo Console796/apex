@@ -12,9 +12,11 @@ layout(location = 3) in uint inMaterial;
 layout(location = 0) out vec3 vNormal;
 layout(location = 1) out vec2 vUv;
 layout(location = 2) flat out uint vMaterial;
+layout(location = 3) out vec3 vPosition;
 
 void main() {
-    gl_Position = push.viewProj * vec4(previewPosition(inPosition), 1.0);
+    vPosition = previewPosition(inPosition);
+    gl_Position = push.viewProj * vec4(vPosition, 1.0);
     vNormal = previewNormal(inNormal);
     vUv = inUv;
     vMaterial = inMaterial;

@@ -139,6 +139,8 @@ struct RenderMirror::Impl {
     std::map<Handle<document::Solid>, NodeId> solidIds;
     std::map<Handle<document::Entity>, NodeId> entityIds;
     std::map<NodeId, EntityState> entities;
+    std::vector<lighting::Light> lights;
+    bool lightsDirty = true;
     std::map<std::string, MaterialState, std::less<>> materials;
     TextureSize placeholderSize;
 
@@ -483,6 +485,7 @@ struct RenderMirror::Impl {
     }
 
     void updateEntity(const Document& doc, Handle<document::Entity> handle) {
+        lightsDirty = true;
         const document::Entity* entity = doc.get(handle);
         if (!entity) return;
         entityIds[handle] = entity->id;
@@ -590,6 +593,7 @@ struct RenderMirror::Impl {
 
     // Drops an entity's mirror state and marks the names it carried or watched as changed.
     void eraseEntity(NodeId id) {
+        lightsDirty = true;
         const auto found = entities.find(id);
         if (found == entities.end()) return;
         const EntityState& state = found->second;
@@ -612,6 +616,47 @@ struct RenderMirror::Impl {
             if (const auto it = brushOwner.find(solid); it != brushOwner.end() && it->second == id) brushOwner.erase(it);
         }
         entities.erase(found);
+    }
+
+    void rebuildLights() {
+        if (!lightsDirty) return;
+        lightsDirty = false;
+        lights.clear();
+        std::map<NodeId, kv1::Node> blocks;
+        std::map<std::string, DVec3> targets;
+        const auto transform = [&](NodeId id) {
+            const auto it = effectivePreview.find(id);
+            return it == effectivePreview.end() ? DMat4(1) : it->second;
+        };
+        for (const auto& [id, entity] : entities) {
+            auto block = *entity.block;
+            if (const auto it = helperPreview.find(id); it != helperPreview.end())
+                for (const auto& [key, value] : it->second) {
+                    if (auto* entry = block.find(key)) *entry = kv1::Node::value(key, value);
+                    else block.append(kv1::Node::value(key, value)).value();
+                }
+            if (const auto* name = block.find("targetname")) {
+                const auto key = lower(name->decodedValue().value_or(""));
+                // Duplicate names resolve to the first visible entity in stable NodeId order.
+                if (!key.empty()) targets.try_emplace(key, DVec3(transform(id) * DVec4(document::entityPose(block).origin, 1)));
+            }
+            blocks.emplace(id, std::move(block));
+        }
+        for (const auto& [id, block] : blocks) {
+            const auto matrix = transform(id);
+            std::optional<DVec3> target;
+            if (const auto* name = block.find("target")) {
+                if (const auto it = targets.find(lower(name->decodedValue().value_or(""))); it != targets.end())
+                    target = DVec3(glm::inverse(matrix) * DVec4(it->second, 1));
+            }
+            const auto* cls = entities.at(id).cls;
+            auto built = cls ? lighting::lightsFromEntity(block, *cls, target) : lighting::lightsFromEntity(block, target);
+            for (auto& light : built) {
+                light.origin = DVec3(matrix * DVec4(light.origin, 1));
+                if (glm::length(light.direction) > 0) light.direction = glm::normalize(DMat3(matrix) * light.direction);
+                lights.push_back(std::move(light));
+            }
+        }
     }
 
     void evaluateHelpers(NodeId id) {
@@ -1050,6 +1095,7 @@ void RenderMirror::setHighlight(const Highlight& highlight) {
 
 void RenderMirror::setPreview(const PreviewTransforms& preview) {
     if (impl_->preview == preview && impl_->previewGeometry.empty() && impl_->helperPreview.empty()) return;
+    if (impl_->preview != preview || !impl_->helperPreview.empty()) impl_->lightsDirty = true;
     impl_->clearGeometry();
     for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
     impl_->helperPreview.clear();
@@ -1061,6 +1107,7 @@ void RenderMirror::setPreview(const PreviewTransforms& preview) {
 
 void RenderMirror::setPreview(const PreviewTransforms& transforms, const PreviewGeometry& geometry, std::uint64_t revision) {
     if (impl_->previewRevision == revision) return;
+    if (impl_->preview != transforms || impl_->helperPreview != geometry.entityKeys) impl_->lightsDirty = true;
     impl_->clearGeometry();
     impl_->previewRevision = revision;
     for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
@@ -1111,6 +1158,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     list.edgeColour = options.edgeColour;
     list.occludedAlpha = m.highlight.occludedAlpha;
     m.resolvePreview();
+    m.rebuildLights();
+    list.lights = m.lights;
     const auto previewIndex = [&](NodeId id, DVec3 origin) -> std::uint32_t {
         const auto found = m.effectivePreview.find(id);
         if (found == m.effectivePreview.end()) return 0;
@@ -1410,6 +1459,11 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             DMat4 transform = content.transform;
             if (const auto it = m.effectivePreview.find(content.instance); it != m.effectivePreview.end()) transform = it->second * transform;
             const auto point = [&](DVec3 p) { return DVec3(transform * DVec4(p, 1.0)); };
+            for (auto light : child.lights) {
+                light.origin = point(light.origin);
+                if (glm::length(light.direction) > 0) light.direction = glm::normalize(DMat3(transform) * light.direction);
+                list.lights.push_back(std::move(light));
+            }
             const auto preview = [&](std::uint32_t index, DVec3 origin, std::uint32_t count = 1) {
                 const auto first = static_cast<std::uint32_t>(list.previews.size() + 1);
                 if (index) {

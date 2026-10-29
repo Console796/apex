@@ -9,7 +9,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
-               lighting/light_test.cpp
+               lighting/light_test.cpp lighting/sky_visibility_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
@@ -28,7 +28,8 @@ target_link_libraries(apex_tests PRIVATE apex_compile apex_viewport apex_render 
                                          apex_editor apex_lighting apex_document apex_geometry apex_core apex_warnings
                                          doctest::doctest)
 apex_compile_shaders(TARGET apex_tests DIR "${CMAKE_CURRENT_SOURCE_DIR}/render/shaders"
-                     HEADER render/test_shaders_spv.hpp)
+                     HEADER render/test_shaders_spv.hpp
+                     INCLUDES "${PROJECT_SOURCE_DIR}/src/render/shaders/lighting.inc")
 doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 

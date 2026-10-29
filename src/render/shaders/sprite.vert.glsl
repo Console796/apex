@@ -3,8 +3,8 @@
 #include "common.inc"
 #define PREVIEW_SPRITE
 #include "preview.inc"
-// Camera-facing billboards, one instance per sprite, 6 vertices each. p0.xyz / p1.xyz are the
-// camera's right and up vectors in world space.
+// Camera-facing billboards, one instance per sprite, 6 vertices each; the frame block carries
+// the camera basis.
 
 layout(location = 0) in vec4 inPositionSize; // xyz relative to the draw origin, w half-size
 layout(location = 1) in vec4 inColour;
@@ -19,7 +19,7 @@ const vec2 kCorners[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1,
 void main() {
     const int lineCorners[8] = int[8](0, 1, 1, 2, 2, 5, 5, 0);
     vec2 c = kCorners[(floatBitsToUint(push.p0.w) & 1u) != 0 ? lineCorners[gl_VertexIndex % 8] : gl_VertexIndex % 6];
-    vec3 corner = (push.p0.xyz * c.x + push.p1.xyz * c.y) * inPositionSize.w;
+    vec3 corner = (frameBlock().cameraRight.xyz * c.x + frameBlock().cameraUp.xyz * c.y) * inPositionSize.w;
     // Keep the identity path's original addition order (including existing golden images).
     vec3 p = previewIndex() == 0 ? inPositionSize.xyz + push.offsetSlot.xyz + corner
                                 : previewPosition(inPositionSize.xyz + corner);

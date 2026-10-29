@@ -189,12 +189,13 @@ FrameView makeView(DVec3 position, DVec3 anglesDeg) {
 }
 
 Rgba8Image drawFrame(Gpu& g, RenderMirror& mirror, DisplayMode mode, bool edges = false,
-                     std::optional<FrameView> view = std::nullopt) {
+                     std::optional<FrameView> view = std::nullopt, bool fullbright = false) {
     MirrorViewOptions options;
     options.mode = mode;
     options.view = view ? *view : makeView({-220.0, -170.0, 130.0}, {23.0, 38.0, 0.0});
     options.edgeOverlay = edges;
-    const DrawList list = mirror.buildDrawList(options);
+    DrawList list = mirror.buildDrawList(options);
+    list.fullbright = fullbright;
     SceneTarget scene(*g.context, *g.heap);
     if (mode == DisplayMode::Lit) REQUIRE(scene.resize(kSize, kSize));
     auto done = g.context->oneShot([&](VkCommandBuffer commands) {
@@ -422,17 +423,19 @@ TEST_CASE("mirror: golden images of the fixture map") {
     golden::check("render_map_wireframe", drawFrame(*g, scene.mirror, DisplayMode::Wireframe), *g->context);
 }
 
-TEST_CASE("mirror: Lit matches the textured fixture-map golden scene") {
+TEST_CASE("mirror: Lit fullbright fixture map preserves helpers and albedo") {
     REQUIRE_GPU();
     Scene scene(*g);
     const auto textured = drawFrame(*g, scene.mirror, DisplayMode::Textured);
     golden::check("render_map_textured", textured, *g->context);
-    const auto lit = drawFrame(*g, scene.mirror, DisplayMode::Lit);
-    REQUIRE(lit.pixels.size() == textured.pixels.size());
-    int maxDifference = 0;
-    for (std::size_t i = 0; i < lit.pixels.size(); ++i)
-        maxDifference = std::max(maxDifference, std::abs(int(lit.pixels[i]) - int(textured.pixels[i])));
-    CHECK(maxDifference <= 1);
+    const auto lit = drawFrame(*g, scene.mirror, DisplayMode::Lit, false, std::nullopt, true);
+    golden::check("render_map_fullbright", lit, *g->context);
+    // Fullbright removes fake directional shading; this scene has surfaces in several directions.
+    int brighter = 0;
+    for (std::size_t i = 0; i < lit.pixels.size(); i += 4)
+        brighter += int(lit.pixels[i]) + lit.pixels[i + 1] + lit.pixels[i + 2] >
+                    int(textured.pixels[i]) + textured.pixels[i + 1] + textured.pixels[i + 2] + 5;
+    CHECK(brighter > 100);
 }
 
 TEST_CASE("mirror: grid plane settings pass through to the draw list") {
@@ -1712,4 +1715,57 @@ TEST_CASE("mirror: PBR material scaling matches equivalent VMF face scaling") {
     REQUIRE(scene.mirror.settle());
     const auto materialScaled = drawFrame(*g, scene.mirror, DisplayMode::Textured);
     CHECK(materialScaled.pixels == faceScaled.pixels);
+}
+
+TEST_CASE("mirror: light entities use class defaults live keys and named targets") {
+    REQUIRE_GPU();
+    auto cls = helperClass("light", {});
+    assets::EntityProperty colour;
+    colour.name = "_light"; colour.type = "color255"; colour.defaultValue = "255 128 64 200";
+    cls.properties.push_back(colour);
+    assets::EntityProperty attenuation;
+    attenuation.name = "_constant_attn"; attenuation.type = "float"; attenuation.defaultValue = "1";
+    cls.properties.push_back(attenuation);
+    const auto classes = tableOf({cls});
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname light origin "10 20 30" }
+        entity { id 2 classname light_spot origin "0 0 0" target dest _light "255 255 255 255" _constant_attn 1 }
+        entity { id 3 classname info_target origin "0 100 0" targetname Dest }
+        entity { id 4 classname light_environment angles "0 0 0" _light "255 255 255 255" _ambient "255 255 255 255" })"), &classes);
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    const auto lightId = idOf(*scene.doc, "light");
+    const auto targetId = idOf(*scene.doc, "info_target");
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.lights.size() == 4);
+    const auto expected = lighting::lightsFromEntity(*scene.doc->get(*findEntity(*scene.doc, "light"))->block, cls);
+    REQUIRE(expected.size() == 1);
+    CHECK(list.lights[0].origin == DVec3(10, 20, 30));
+    CHECK(list.lights[0].intensity == expected[0].intensity);
+    CHECK(glm::length(list.lights[1].direction - DVec3(0, 1, 0)) < 1e-12);
+    CHECK(list.lights[2].kind == lighting::LightKind::Sun);
+    CHECK(list.lights[3].kind == lighting::LightKind::Ambient);
+    PreviewGeometry geometry;
+    geometry.entityKeys[lightId] = {{"origin", "40 50 60"}, {"_light", "64 128 255 255"},
+                                  {"_fifty_percent_distance", "64"}, {"_zero_percent_distance", "256"}};
+    geometry.entityKeys[targetId] = {{"origin", "100 0 0"}};
+    scene.mirror.setPreview({}, geometry, 1);
+    list = scene.mirror.buildDrawList(options);
+    CHECK(list.lights[0].origin == DVec3(40, 50, 60));
+    CHECK(list.lights[0].intensity.z > list.lights[0].intensity.x);
+    CHECK(list.lights[0].quadratic == lighting::fiftyZeroAttenuation(64, 256).quadratic);
+    CHECK(glm::length(list.lights[1].direction - DVec3(1, 0, 0)) < 1e-12);
+    CHECK(scene.mirror.buildDrawList(options).lights[0].origin == list.lights[0].origin);
+    scene.mirror.clearPreview();
+    list = scene.mirror.buildDrawList(options);
+    CHECK(list.lights[0].origin == DVec3(10, 20, 30));
+    CHECK(glm::length(list.lights[1].direction - DVec3(0, 1, 0)) < 1e-12);
+    DMat4 move(1); move[3] = DVec4(5, 6, 7, 1);
+    scene.mirror.setPreview({{lightId, move}});
+    CHECK(scene.mirror.buildDrawList(options).lights[0].origin == DVec3(15, 26, 37));
+    scene.mirror.clearPreview();
+    auto tx = scene.doc->begin("move light");
+    tx.setKeyValue(*findEntity(*scene.doc, "light"), "origin", "70 80 90");
+    tx.commit();
+    CHECK(scene.mirror.buildDrawList(options).lights[0].origin == DVec3(70, 80, 90));
 }
