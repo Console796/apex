@@ -217,6 +217,7 @@ TEST_CASE("VMT envmap probe mask selectors and self-illumination mask are typed"
     const auto material = parseMaterial([](std::string_view) -> Result<std::string> {
         return R"(LightmappedGeneric {
             $basetexture base $envmap ENV_CubeMap $basealphaenvmapmask 1 $envmaplightscale 0.25
+            $envmapcontrast 1 $envmapsaturation 0.2
             $selfillum 1 $selfillummask masks/glow
         })";
     }, "test");
@@ -225,6 +226,8 @@ TEST_CASE("VMT envmap probe mask selectors and self-illumination mask are typed"
     CHECK(material->baseAlphaEnvmapMask());
     CHECK_FALSE(material->normalMapAlphaEnvmapMask());
     CHECK(material->envmapLightScale() == 0.25);
+    CHECK(material->envmapContrast() == 1);
+    CHECK(material->envmapSaturation() == doctest::Approx(0.2));
     CHECK(material->selfIllumMask() == "masks/glow");
     Material named;
     named.params["$envmap"] = "env_cubemap_hdr";
@@ -235,5 +238,7 @@ TEST_CASE("VMT envmap probe mask selectors and self-illumination mask are typed"
     CHECK_FALSE(defaults.envmapProbe());
     CHECK_FALSE(defaults.baseAlphaEnvmapMask());
     CHECK(defaults.envmapLightScale() == 0);
+    CHECK(defaults.envmapContrast() == 0);
+    CHECK(defaults.envmapSaturation() == 1);
     CHECK(defaults.selfIllumMask().empty());
 }

@@ -19,6 +19,8 @@ struct Material {
     bool normalMapAlphaEnvmapMask() const;
     bool baseAlphaEnvmapMask() const;
     double envmapLightScale() const; // Default 0.
+    double envmapContrast() const;   // Default 0.
+    double envmapSaturation() const; // Default 1.
     // $envmap env_cubemap (any case): the nearest env_cubemap probe, not a texture.
     bool envmapProbe() const;
     bool selfIllum() const;

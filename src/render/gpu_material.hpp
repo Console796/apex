@@ -38,8 +38,9 @@ struct alignas(16) GpuMaterial {
     Vec4 phongTint{1, 1, 1, 0};
     Vec4 envmapTint{1, 1, 1, 0}; // w = $envmaplightscale
     Vec4 selfIllumTint{1, 1, 1, 0};
+    Vec4 envmapParams{0, 1, 0, 0}; // $envmapcontrast, $envmapsaturation; zw reserved
 };
-static_assert(sizeof(GpuMaterial) == 128);
+static_assert(sizeof(GpuMaterial) == 144);
 static_assert(alignof(GpuMaterial) == 16);
 static_assert(offsetof(GpuMaterial, mraoSlot) == 16);
 static_assert(offsetof(GpuMaterial, phongExponentSlot) == 20);
@@ -53,5 +54,6 @@ static_assert(offsetof(GpuMaterial, envmapSlot) == 24);
 static_assert(offsetof(GpuMaterial, envmapMaskSlot) == 28);
 static_assert(offsetof(GpuMaterial, envmapTint) == 96);
 static_assert(offsetof(GpuMaterial, selfIllumTint) == 112);
+static_assert(offsetof(GpuMaterial, envmapParams) == 128);
 
 } // namespace apex::render

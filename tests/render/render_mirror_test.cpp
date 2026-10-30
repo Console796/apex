@@ -139,7 +139,7 @@ Gpu* gpu() {
         // Environment maps: a probe material with both masks and self-illumination, and a named cube.
         g->tree.put("materials/test/env_probe.vmt", R"(LightmappedGeneric {
             $basetexture test/floor $envmap ENV_CubeMap $envmaptint "[0.5 0.25 1]" $envmapmask test/green
-            $selfillum 1 $selfillumtint "[2 1 0.5]" $selfillummask test/blue
+            $envmapcontrast 1 $envmapsaturation 0.2 $selfillum 1 $selfillumtint "[2 1 0.5]" $selfillummask test/blue
         })");
         g->tree.put("materials/test/env_named.vmt", R"(VertexLitGeneric {
             $basetexture test/floor $envmap test/cube $basealphaenvmapmask 1
@@ -2136,12 +2136,17 @@ TEST_CASE("mirror: envmap and self-illumination records own their cube and mask 
                 CHECK(record.envmapMaskSlot == kNoTexture);
                 CHECK((record.flags & kMaterialSelfIllum) == 0);
                 CHECK(record.envmapTint == Vec4(1, 1, 1, 0));
+                CHECK(record.envmapParams == Vec4(0, 1, 0, 0));
                 CHECK(g->heap->liveCubes() == liveCubes + 1);
             } else {
                 CHECK((record.flags & kMaterialEnvmapProbe) != 0);
                 CHECK(record.envmapSlot == kDefaultEnvmapCube);
                 CHECK(record.envmapMaskSlot != kNoTexture);
-                CHECK(record.envmapTint == Vec4(0.5f, 0.25f, 1, 0));
+                CHECK(record.envmapTint.x == doctest::Approx(std::pow(0.5, 2.2))); // Gamma-space tint, decoded.
+                CHECK(record.envmapTint.y == doctest::Approx(std::pow(0.25, 2.2)));
+                CHECK(record.envmapTint.z == 1);
+                CHECK(record.envmapTint.w == 0);
+                CHECK(record.envmapParams == Vec4(1, 0.2f, 0, 0));
                 CHECK((record.flags & kMaterialSelfIllum) != 0);
                 CHECK(record.selfIllumMaskSlot != kNoTexture);
                 CHECK(record.selfIllumTint == Vec4(2, 1, 0.5f, 0));

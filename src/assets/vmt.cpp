@@ -189,6 +189,8 @@ std::string_view Material::envmapMask() const { return parameter("$envmapmask");
 bool Material::normalMapAlphaEnvmapMask() const { return scalar("$normalmapalphaenvmapmask") != 0; }
 bool Material::baseAlphaEnvmapMask() const { return scalar("$basealphaenvmapmask") != 0; }
 double Material::envmapLightScale() const { return scalar("$envmaplightscale"); }
+double Material::envmapContrast() const { return scalar("$envmapcontrast"); }
+double Material::envmapSaturation() const { return scalar("$envmapsaturation", 1); }
 bool Material::envmapProbe() const {
     const auto name = envmap();
     return std::ranges::equal(name, std::string_view("env_cubemap"),

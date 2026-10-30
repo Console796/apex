@@ -78,6 +78,12 @@ inline double luminance(DVec3 rgb) { return glm::dot(rgb, DVec3(0.2126, 0.7152, 
 inline double envmapLightScale(DVec3 diffuseIrradiance, double scale) {
     return std::lerp(1.0, luminance(diffuseIrradiance), scale);
 }
+// $envmapcontrast and $envmapsaturation, inferred from their names (provisional): contrast blends the
+// reflection toward its square (1 = squared), saturation blends from its luminance (0 = grey) to itself.
+inline DVec3 envmapContrastSaturation(DVec3 env, double contrast, double saturation) {
+    const DVec3 contrasted = glm::mix(env, env * env, contrast);
+    return glm::mix(DVec3(luminance(contrasted)), contrasted, saturation);
+}
 // Non-PBR envmap mask: $envmapmask RGB, else bump alpha with $normalmapalphaenvmapmask,
 // else base alpha with $basealphaenvmapmask, else 1. Read directly, never inverted (unverified).
 inline DVec3 envmapMask(bool hasMaskTexture, DVec3 maskTexel, bool normalAlpha, double bumpAlpha,

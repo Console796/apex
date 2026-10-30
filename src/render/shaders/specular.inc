@@ -59,6 +59,10 @@ float luminance(vec3 rgb) { return dot(rgb, vec3(0.2126, 0.7152, 0.0722)); }
 float envmapLightScale(vec3 diffuseIrradiance, float scale) {
     return mix(1.0, luminance(diffuseIrradiance), scale);
 }
+vec3 envmapContrastSaturation(vec3 env, float contrast, float saturation) {
+    vec3 contrasted = mix(env, env * env, contrast);
+    return mix(vec3(luminance(contrasted)), contrasted, saturation);
+}
 vec3 envmapMask(bool hasMaskTexture, vec3 maskTexel, bool normalAlpha, float bumpAlpha,
                 bool baseAlpha, float baseAlphaValue) {
     if (hasMaskTexture) return maskTexel;

@@ -442,7 +442,11 @@ struct RenderMirror::Impl {
                 }
             }
             if ((record.flags & kMaterialEnvmap) != 0u) {
-                record.envmapTint = Vec4(Vec3(vmt.envmapTint()), float(vmt.envmapLightScale()));
+                // $envmaptint is a gamma-space colour, decoded by 2.2 like base textures (fitted to captures:
+                // the linear reading left black_floor_metal_001a's reflection about 6x too bright).
+                const DVec3 tint = glm::pow(glm::max(vmt.envmapTint(), DVec3(0)), DVec3(2.2));
+                record.envmapTint = Vec4(Vec3(tint), float(vmt.envmapLightScale()));
+                record.envmapParams = Vec4(float(vmt.envmapContrast()), float(vmt.envmapSaturation()), 0, 0);
                 // PBR masks by its own roughness and AO; the mask sources belong to the other shaders.
                 if (shader != "pbr") {
                     if (material.envmapMaskTexture) {

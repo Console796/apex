@@ -15,7 +15,7 @@ const uint MATERIAL_BASE_ALPHA_ENVMAP_MASK = 512u;
 const uint MATERIAL_NORMAL_ALPHA_ENVMAP_MASK = 1024u;
 const uint MATERIAL_SELFILLUM = 2048u;
 const uint NO_TEXTURE = 0xFFFFFFFFu;
-// GpuMaterial in gpu_material.hpp; std430, 128-byte stride.
+// GpuMaterial in gpu_material.hpp; std430, 144-byte stride.
 struct Material {
     uint baseSlot; uint bumpSlot; uint flags; uint selfIllumMaskSlot;
     uint mraoSlot; uint phongExponentSlot; uint envmapSlot; uint envmapMaskSlot;
@@ -25,6 +25,7 @@ struct Material {
     vec4 phongTint;
     vec4 envmapTint; // w = $envmaplightscale
     vec4 selfIllumTint;
+    vec4 envmapParams; // x = $envmapcontrast, y = $envmapsaturation
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MaterialBuffer {
     Material records[];
@@ -34,7 +35,8 @@ Material materialRecord(FrameBlock frame, uint slot) {
     return Material(0u, NO_TEXTURE, 0u, NO_TEXTURE, NO_TEXTURE, NO_TEXTURE, 0u, NO_TEXTURE,
                     vec4(1.0, 1.0, 1.0, 0.0), vec4(5.0, 1.0, 0.0, 0.0),
                     vec4(0.0, 0.5, 1.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0),
-                    vec4(1.0, 1.0, 1.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0));
+                    vec4(1.0, 1.0, 1.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0),
+                    vec4(0.0, 1.0, 0.0, 0.0));
 }
 
 // GpuCubemapProbe in gpu_lighting.hpp; std430, 16-byte stride. Camera-relative positions.

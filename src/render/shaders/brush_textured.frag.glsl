@@ -97,7 +97,7 @@ void main() {
                 float levels = float(textureQueryLevels(samplerCube(cubes[nonuniformEXT(cube)], samplers[0])));
                 vec3 radiance = textureLod(samplerCube(cubes[nonuniformEXT(cube)], samplers[0]),
                                            reflected, mrao.g * (levels - 1.0)).rgb;
-                colour += radiance * envBrdf(specularF0(albedo, mrao.r), mrao.g, dot(normal, view)) *
+                colour += envmapContrastSaturation(radiance, material.envmapParams.x, material.envmapParams.y) * envBrdf(specularF0(albedo, mrao.r), mrao.g, dot(normal, view)) *
                           mrao.b * max(material.envmapTint.rgb, vec3(0.0)) *
                           envmapLightScale(diffuse, material.envmapTint.w);
             } else {
@@ -105,8 +105,9 @@ void main() {
                 vec3 maskTexel = hasMask ? textureGrad(sampler2D(textures[nonuniformEXT(material.envmapMaskSlot)],
                                                                  samplers[0]), vUv, duvdx, duvdy).rgb : vec3(1.0);
                 // Base mip: these reflections are sharp, and the derivative LOD is not uniform here.
-                colour += textureLod(samplerCube(cubes[nonuniformEXT(cube)], samplers[0]), reflected, 0.0).rgb *
-                          max(material.envmapTint.rgb, vec3(0.0)) *
+                vec3 radiance = textureLod(samplerCube(cubes[nonuniformEXT(cube)], samplers[0]), reflected, 0.0).rgb;
+                colour += envmapContrastSaturation(radiance, material.envmapParams.x, material.envmapParams.y) *
+                          max(material.envmapTint.rgb, vec3(0.0)) * envmapLightScale(diffuse, material.envmapTint.w) *
                           envmapMask(hasMask, maskTexel, (material.flags & MATERIAL_NORMAL_ALPHA_ENVMAP_MASK) != 0u,
                                      bumpAlpha, (material.flags & MATERIAL_BASE_ALPHA_ENVMAP_MASK) != 0u, texel.a);
             }
