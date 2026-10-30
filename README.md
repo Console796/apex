@@ -62,6 +62,11 @@ maps you have no backup of.
 - Material fidelity from VMT parameters: normal maps, specular, envmaps and Portal 2 refractive
   light covers.
 
+## Game support
+
+Apex is tested only with Portal 2: Community Edition. Every other Source game is untested, including
+Portal 2 itself. See [docs/source-game-support.md](docs/source-game-support.md) for the list.
+
 ## What is not here yet
 
 Clustered lights and `light_rt` dynamic lights, shadows, and sky, fog and cubemap previews

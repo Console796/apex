@@ -31,6 +31,7 @@ design documents in [docs/](../); they point at them.
 | Why was it designed this way? | [../research.md](../research.md) (background and options), [../plans/](../plans/) (per-milestone decisions) |
 | What did we decide about one specific thing? | Search the plans for its decision number, for example `grep -rn "D13" docs/plans` |
 | How does Strata/Hammer behave, and what did we verify? | [../plans/addons.md](../plans/addons.md), [../plans/probe-results/README.md](../plans/probe-results/README.md) |
+| Which Source games has Apex been tested against? | [../source-game-support.md](../source-game-support.md) (only P2CE is tested) |
 | Which third-party code is used and under what licence? | [../../THIRD_PARTY.md](../../THIRD_PARTY.md) |
 
 ## Conventions you will see everywhere
