@@ -67,6 +67,10 @@ vec2 localRefractUv(vec2 uv, vec3 tangentNormal, vec3 tangentView, float amount,
     vec2 parallax = tangentView.xy / max(tangentView.z, 0.05);
     return uv + tangentNormal.xy * amount - parallax * depth;
 }
+float localRefractTransmission(float bumpedNdotV, float flatNdotV) {
+    float ratio = clamp(bumpedNdotV / max(flatNdotV, 1e-3), 0.0, 1.0);
+    return ratio * ratio;
+}
 vec3 envmapMask(bool hasMaskTexture, vec3 maskTexel, bool normalAlpha, float bumpAlpha,
                 bool baseAlpha, float baseAlphaValue) {
     if (hasMaskTexture) return maskTexel;

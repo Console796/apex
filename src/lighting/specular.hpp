@@ -86,11 +86,19 @@ inline DVec3 envmapContrastSaturation(DVec3 env, double contrast, double saturat
 }
 // Refract with $localrefract (Portal 2's light covers), provisional: the base texture is read where the view
 // ray, bent by the tangent-space normal times $refractamount, meets a plane $localrefractdepth (UV units)
-// behind the surface. tangentView points from the surface to the eye; its z is clamped to keep grazing
+// behind the surface. tangentView points from the surface to the eye, its z taken against the bumped
+// normal so each rib shifts the read (the captures' scalloped strip edges); z is clamped to keep grazing
 // views finite.
 inline DVec2 localRefractUv(DVec2 uv, DVec3 tangentNormal, DVec3 tangentView, double amount, double depth) {
     const DVec2 parallax = DVec2(tangentView) / std::max(tangentView.z, 0.05);
     return uv + DVec2(tangentNormal) * amount - parallax * depth;
+}
+// Light-cover rib shading, fitted to test1's captures (provisional): rib flanks turned away from the eye
+// darken by the squared ratio of bumped to flat N.V, clamped to 1, so crests keep the tinted base. The
+// square matches the captured groove depth (about 0.63 of the crest at pose 02).
+inline double localRefractTransmission(double bumpedNdotV, double flatNdotV) {
+    const double ratio = std::clamp(bumpedNdotV / std::max(flatNdotV, 1e-3), 0.0, 1.0);
+    return ratio * ratio;
 }
 // Non-PBR envmap mask: $envmapmask RGB, else bump alpha with $normalmapalphaenvmapmask,
 // else base alpha with $basealphaenvmapmask, else 1. Read directly, never inverted (unverified).

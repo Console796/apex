@@ -19,7 +19,8 @@ void main() {
         // Envmap and self-illumination terms; the material fields check the record ABI too.
         Material m = s.material;
         vec3 value = s.pad.y == 5u ? envBrdf(s.texel.rgb, s.uv.x, s.uv.y) * envmapLightScale(s.dpdx.xyz, m.envmapTint.w) :
-            s.pad.y == 9u ? vec3(localRefractUv(s.uv.xy, s.texel.xyz, s.dpdx.xyz, m.refractParams.x, m.refractParams.y), 0.0) :
+            s.pad.y == 9u ? vec3(localRefractUv(s.uv.xy, s.texel.xyz, s.dpdx.xyz, m.refractParams.x, m.refractParams.y),
+                                 localRefractTransmission(s.uv.z, s.uv.w)) :
             s.pad.y == 8u ? envmapContrastSaturation(s.texel.rgb, m.envmapParams.x, m.envmapParams.y) :
             s.pad.y == 6u ? m.envmapTint.rgb * envmapMask(m.envmapMaskSlot != NO_TEXTURE, s.dpdx.xyz,
                 (m.flags & MATERIAL_NORMAL_ALPHA_ENVMAP_MASK) != 0u, s.uv.x,

@@ -54,7 +54,7 @@ void main() {
             vec3 t, b;
             tangentFrame(geometricNormal, dpdx, dpdy, duvdx, duvdy, t, b);
             vec3 eye = dot(vPosition, vPosition) > 1e-12 ? normalize(-vPosition) : geometricNormal;
-            vec2 uv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, geometricNormal)),
+            vec2 uv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, normal)),
                                      material.refractParams.x, material.refractParams.y);
             texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), uv, duvdx, duvdy);
         }
@@ -100,7 +100,8 @@ void main() {
             colour = albedo * (1.0 - mrao.r) * diffuse + specular;
         }
         // Unlit: the cover shows its base texture through the tint; lighting still drives $envmaplightscale.
-        if (localRefract) colour = albedo * max(material.refractTint.rgb, vec3(0.0));
+        if (localRefract) colour = albedo * max(material.refractTint.rgb, vec3(0.0)) *
+            localRefractTransmission(dot(normal, view), dot(geometricNormal, view));
         // Unlit terms, kept in fullbright: environment reflection and self-illumination.
         if ((material.flags & MATERIAL_ENVMAP) != 0u) {
             uint cube = (material.flags & MATERIAL_ENVMAP_PROBE) != 0u ?
