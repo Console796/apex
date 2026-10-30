@@ -100,6 +100,33 @@ inline double localRefractTransmission(double bumpedNdotV, double flatNdotV) {
     const double ratio = std::clamp(bumpedNdotV / std::max(flatNdotV, 1e-3), 0.0, 1.0);
     return ratio * ratio;
 }
+// PBR $parallax (Strata), provisional: parallax occlusion mapping (Brawley and Tatarchuk, ShaderX3), a
+// layered march down the view ray with a linear refinement between the last two layers. Height is the bump
+// alpha (1 = high); $parallaxcenter is the height left flush with the face (the test map's author set it
+// to the height map's mean), $parallaxdepth the full height range in UV units, and $parallaxscale multiplies
+// the layer count (the pack's base material calls 2 "the highest quality"). tangentView points to the eye.
+inline int parallaxLayers(double viewZ, double scale) {
+    const double layers = glm::mix(32.0, 8.0, std::clamp(viewZ, 0.0, 1.0)) * std::clamp(scale, 1.0, 4.0);
+    return static_cast<int>(std::ceil(layers));
+}
+template <class Height>
+DVec2 parallaxOcclusionUv(DVec2 uv, DVec3 tangentView, double depth, double center, double scale, Height height) {
+    // UV shift per unit of height above the face; z is clamped like $localrefract's.
+    const DVec2 shift = DVec2(tangentView) / std::max(tangentView.z, 0.05) * depth;
+    const int layers = parallaxLayers(tangentView.z, scale);
+    DVec2 previous = uv + shift * (1.0 - center);
+    double previousGap = height(previous) - 1.0;
+    if (previousGap >= 0.0) return previous;
+    for (int i = 1; i <= layers; ++i) {
+        const double level = 1.0 - double(i) / layers;
+        const DVec2 at = uv + shift * (level - center);
+        const double gap = height(at) - level;
+        if (gap >= 0.0) return glm::mix(at, previous, gap / (gap - previousGap));
+        previous = at;
+        previousGap = gap;
+    }
+    return previous; // Unreachable for heights in [0, 1]: the last level is 0.
+}
 // Non-PBR envmap mask: $envmapmask RGB, else bump alpha with $normalmapalphaenvmapmask,
 // else base alpha with $basealphaenvmapmask, else 1. Read directly, never inverted (unverified).
 inline DVec3 envmapMask(bool hasMaskTexture, DVec3 maskTexel, bool normalAlpha, double bumpAlpha,

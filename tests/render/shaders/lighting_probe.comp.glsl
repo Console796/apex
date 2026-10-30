@@ -5,6 +5,7 @@
 #include "../../../src/render/shaders/normal_map.inc"
 #include "../../../src/render/shaders/specular.inc"
 #include "../../../src/render/shaders/material.inc"
+#include "../../../src/render/shaders/parallax.inc"
 
 layout(local_size_x = 1) in;
 struct Sample { Light light; vec4 point; vec4 normal; uvec2 frame; uvec2 pad; vec4 texel; vec4 dpdx; vec4 dpdy; vec4 uv; Material material; };
@@ -15,6 +16,12 @@ layout(push_constant) uniform Probe { uvec2 inputAddress; uvec2 outputAddress; }
 void main() {
     uint i = gl_GlobalInvocationID.x;
     Sample s = Samples(probe.inputAddress).samples[i];
+    if (s.pad.y == 10u) { // PBR parallax over the analytic height field the CPU test uses.
+        vec4 p = s.material.parallaxParams;
+        Output(probe.outputAddress).values[i] =
+            vec4(parallaxOcclusionUv(s.uv.xy, s.dpdx.xyz, p.x, p.y, p.z, 0u, vec2(0.0), vec2(0.0)), 0.0, 0.0);
+        return;
+    }
     if (s.pad.y >= 5u) {
         // Envmap and self-illumination terms; the material fields check the record ABI too.
         Material m = s.material;
@@ -48,4 +55,8 @@ void main() {
         return;
     }
     Output(probe.outputAddress).values[i] = vec4(irradiance(s.light, s.point.xyz, s.normal.xyz, FrameBlock(s.frame)), 0.0);
+}
+
+float parallaxHeight(vec2 uv, uint slot, vec2 duvdx, vec2 duvdy) {
+    return 0.5 + 0.45 * sin(uv.x * 7.0) * cos(uv.y * 5.0);
 }

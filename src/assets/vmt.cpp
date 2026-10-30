@@ -216,6 +216,10 @@ bool Material::localRefract() const { return scalar("$localrefract") != 0; }
 double Material::localRefractDepth() const { return scalar("$localrefractdepth"); }
 double Material::refractAmount() const { return scalar("$refractamount"); }
 DVec3 Material::refractTint() const { return vector("$refracttint", DVec3(1)); }
+bool Material::parallax() const { return scalar("$parallax") != 0; }
+double Material::parallaxDepth() const { return scalar("$parallaxdepth", 0.05); }
+double Material::parallaxCenter() const { return scalar("$parallaxcenter"); }
+double Material::parallaxScale() const { return scalar("$parallaxscale", 1); }
 Result<Material> loadMaterial(const Vfs& vfs, std::string_view name) {
     return parseMaterial([&](std::string_view path) { return read(vfs, path); }, name);
 }

@@ -116,7 +116,7 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         Vec4 texel{}, dpdx{}, dpdy{}, uv{};
         GpuMaterial material{};
     };
-    static_assert(sizeof(Sample) == 368);
+    static_assert(sizeof(Sample) == 384);
     static_assert(offsetof(Sample, material) == 192);
     const auto grid = testing::skyRoomGrid();
     REQUIRE(grid.validCount() > 0);
@@ -309,6 +309,24 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         samples.push_back(s);
         expected.push_back(value);
     }
+    // PBR parallax occlusion (10) over an analytic height field, including grazing and flush-top views.
+    const auto height = [](DVec2 uv) { return 0.5 + 0.45 * std::sin(uv.x * 7.0) * std::cos(uv.y * 5.0); };
+    for (int i = 0; i < 400; ++i) {
+        Sample s{};
+        s.pad[1] = 10u;
+        s.uv = Vec4(float(1 + unit(random) * 0.5), float(1 + unit(random) * 0.5), 0, 0); // Away from 0: relative check.
+        DVec3 view{unit(random), unit(random), positive(random)};
+        if (i % 4 == 1) view.z *= 0.05; // Grazing: z clamps.
+        view = glm::normalize(view);
+        s.dpdx = Vec4(Vec3(view), 0);
+        auto& m = s.material;
+        m.parallaxParams = Vec4(float(positive(random) * 0.1), float(positive(random)), float(i % 4 == 2 ? 0.5 : 1 + positive(random) * 4), 0);
+        if (i % 8 == 3) m.parallaxParams.y = 0; // Center at the bottom: the whole field stands proud.
+        const DVec2 uv = lighting::parallaxOcclusionUv(DVec2(s.uv), DVec3(s.dpdx), m.parallaxParams.x,
+                                                      m.parallaxParams.y, m.parallaxParams.z, height);
+        samples.push_back(s);
+        expected.push_back(DVec3(uv, 0));
+    }
     auto input = Buffer::create(*context, {samples.size() * sizeof(Sample),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
     auto output = Buffer::create(*context, {samples.size() * sizeof(Vec4),
@@ -354,6 +372,27 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
     }
     for (const auto& error : context->validation().errors()) MESSAGE(error);
     CHECK(context->validation().errorCount() == 0);
+}
+
+TEST_CASE("PBR parallax keeps the center height flush and shifts higher and lower heights along the view") {
+    const DVec3 view = glm::normalize(DVec3(0.6, -0.3, 0.5));
+    const DVec2 shift = DVec2(view) / view.z * 0.04;
+    const DVec2 uv{0.25, 0.75};
+    const auto flat = [](double level) { return [level](DVec2) { return level; }; };
+    // A flat field at the center height reads in place; above it toward the eye, below it away.
+    CHECK(glm::length(lighting::parallaxOcclusionUv(uv, view, 0.04, 0.5, 1, flat(0.5)) - uv) < 1e-9);
+    CHECK(glm::length(lighting::parallaxOcclusionUv(uv, view, 0.04, 0.5, 1, flat(1.0)) - (uv + shift * 0.5)) < 1e-9);
+    CHECK(glm::length(lighting::parallaxOcclusionUv(uv, view, 0.04, 0.5, 1, flat(0.0)) - (uv - shift * 0.5)) < 1e-9);
+    CHECK(glm::length(lighting::parallaxOcclusionUv(uv, view, 0.04, 0.0, 1, flat(0.3)) - (uv + shift * 0.3)) < 1e-9);
+    // Head-on views never shift; zero depth never shifts.
+    CHECK(lighting::parallaxOcclusionUv(uv, {0, 0, 1}, 0.04, 0.5, 1, flat(0.9)) == uv);
+    CHECK(lighting::parallaxOcclusionUv(uv, view, 0, 0.5, 1, flat(0.9)) == uv);
+    // Layers: 8 head-on, 32 grazing, scaled by $parallaxscale within [1, 4].
+    CHECK(lighting::parallaxLayers(1, 1) == 8);
+    CHECK(lighting::parallaxLayers(0, 1) == 32);
+    CHECK(lighting::parallaxLayers(1, 2) == 16);
+    CHECK(lighting::parallaxLayers(1, 0.5) == 8);
+    CHECK(lighting::parallaxLayers(0, 10) == 128);
 }
 
 TEST_CASE("material normal model preserves flat normals slopes and mirrored texture axes") {

@@ -417,6 +417,11 @@ struct RenderMirror::Impl {
             }
             record.mraoSlot = state.mraoSlot;
             record.mraoScale = Vec4(Vec3(vmt.mraoScale()), 0);
+            if (vmt.parallax() && (flags & kMaterialHasBump) != 0u) {
+                record.flags |= kMaterialParallax;
+                record.parallaxParams = Vec4(float(vmt.parallaxDepth()), float(vmt.parallaxCenter()),
+                                             float(vmt.parallaxScale()), 0);
+            }
         }
         if (shader == "vertexlitgeneric" && vmt.phong()) {
             record.flags |= kMaterialPhong | (vmt.baseMapAlphaPhongMask() ? kMaterialBaseAlphaPhongMask : 0u);

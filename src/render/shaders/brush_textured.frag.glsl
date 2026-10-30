@@ -7,6 +7,7 @@
 #include "material.inc"
 #include "normal_map.inc"
 #include "specular.inc"
+#include "parallax.inc"
 
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUv;
@@ -41,10 +42,21 @@ void main() {
         bool fullbright = (frame.flags & 1u) != 0u;
         bool localRefract = (material.flags & MATERIAL_LOCAL_REFRACT) != 0u;
         vec3 mapped = vec3(0.0, 0.0, 1.0);
+        // PBR parallax moves every material read, so it is part of the surface's look and kept in fullbright.
+        vec2 uv = vUv;
+        if ((material.flags & MATERIAL_PARALLAX) != 0u) {
+            vec3 t, b;
+            tangentFrame(geometricNormal, dpdx, dpdy, duvdx, duvdy, t, b);
+            vec3 eye = dot(vPosition, vPosition) > 1e-12 ? normalize(-vPosition) : geometricNormal;
+            uv = parallaxOcclusionUv(vUv, vec3(dot(eye, t), dot(eye, b), dot(eye, geometricNormal)),
+                                     material.parallaxParams.x, material.parallaxParams.y,
+                                     material.parallaxParams.z, material.bumpSlot, duvdx, duvdy);
+            texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), uv, duvdx, duvdy);
+        }
         // The light-cover offset is part of the surface's look, so it is kept in fullbright.
         if ((!fullbright || localRefract) && (material.flags & MATERIAL_HAS_BUMP) != 0u) {
             vec4 bump = textureGrad(sampler2D(textures[nonuniformEXT(material.bumpSlot)], samplers[0]),
-                                    vUv, duvdx, duvdy);
+                                    uv, duvdx, duvdy);
             bumpAlpha = bump.a;
             mapped = decodeNormal(bump.rgb, (material.flags & MATERIAL_SSBUMP) != 0u,
                                   (material.flags & MATERIAL_TWO_CHANNEL_NORMAL) != 0u);
@@ -54,9 +66,9 @@ void main() {
             vec3 t, b;
             tangentFrame(geometricNormal, dpdx, dpdy, duvdx, duvdy, t, b);
             vec3 eye = dot(vPosition, vPosition) > 1e-12 ? normalize(-vPosition) : geometricNormal;
-            vec2 uv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, normal)),
-                                     material.refractParams.x, material.refractParams.y);
-            texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), uv, duvdx, duvdy);
+            vec2 refractUv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, normal)),
+                                            material.refractParams.x, material.refractParams.y);
+            texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), refractUv, duvdx, duvdy);
         }
         vec3 albedo = max(texel.rgb * push.colour.rgb, vec3(0.0));
         if ((material.flags & MATERIAL_LINEAR_BASE) == 0u) albedo = pow(albedo, vec3(2.2));
@@ -66,7 +78,7 @@ void main() {
         if (pbr) {
             if (material.mraoSlot != NO_TEXTURE)
                 mrao = textureGrad(sampler2D(textures[nonuniformEXT(material.mraoSlot)], samplers[0]),
-                                   vUv, duvdx, duvdy).rgb;
+                                   uv, duvdx, duvdy).rgb;
             mrao = clamp(mrao * material.mraoScale.xyz, vec3(0.0), vec3(1.0));
             // MRAO alpha is a blend-tint mask, reserved for step (f), never opacity/AO.
         }
@@ -79,7 +91,7 @@ void main() {
             if (phong && material.phongExponentSlot != NO_TEXTURE)
                 exponent = phongTextureExponent(textureGrad(
                     sampler2D(textures[nonuniformEXT(material.phongExponentSlot)], samplers[0]),
-                    vUv, duvdx, duvdy).r);
+                    uv, duvdx, duvdy).r);
             float mask = (material.flags & MATERIAL_BASE_ALPHA_PHONG_MASK) != 0u ? texel.a : bumpAlpha;
             vec3 specular = vec3(0.0);
             diffuse = vec3(0.0);
@@ -117,7 +129,7 @@ void main() {
             } else {
                 bool hasMask = material.envmapMaskSlot != NO_TEXTURE;
                 vec3 maskTexel = hasMask ? textureGrad(sampler2D(textures[nonuniformEXT(material.envmapMaskSlot)],
-                                                                 samplers[0]), vUv, duvdx, duvdy).rgb : vec3(1.0);
+                                                                 samplers[0]), uv, duvdx, duvdy).rgb : vec3(1.0);
                 // Base mip: these reflections are sharp, and the derivative LOD is not uniform here.
                 vec3 radiance = textureLod(samplerCube(cubes[nonuniformEXT(cube)], samplers[0]), reflected, 0.0).rgb;
                 colour += envmapContrastSaturation(radiance, material.envmapParams.x, material.envmapParams.y) *
@@ -129,11 +141,15 @@ void main() {
         if ((material.flags & MATERIAL_SELFILLUM) != 0u) {
             bool hasMask = material.selfIllumMaskSlot != NO_TEXTURE;
             float maskRed = hasMask ? textureGrad(sampler2D(textures[nonuniformEXT(material.selfIllumMaskSlot)],
-                                                            samplers[0]), vUv, duvdx, duvdy).r : 1.0;
+                                                            samplers[0]), uv, duvdx, duvdy).r : 1.0;
             colour += albedo * max(material.selfIllumTint.rgb, vec3(0.0)) * selfIllumMask(hasMask, maskRed, texel.a);
         }
         outColor = vec4(colour, alpha);
     }
     outColor.rgb = mix(outColor.rgb, push.p0.rgb, push.p0.a);
     if (tintOnly) outColor = vec4(push.p0.rgb, push.p0.a * alpha);
+}
+
+float parallaxHeight(vec2 uv, uint slot, vec2 duvdx, vec2 duvdy) {
+    return textureGrad(sampler2D(textures[nonuniformEXT(slot)], samplers[0]), uv, duvdx, duvdy).a;
 }

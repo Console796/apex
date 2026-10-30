@@ -40,6 +40,10 @@ struct Material {
     double localRefractDepth() const; // Default 0.
     double refractAmount() const;     // Default 0.
     DVec3 refractTint() const;        // Default white.
+    bool parallax() const;
+    double parallaxDepth() const;  // Default 0.05 (provisional).
+    double parallaxCenter() const; // Default 0.
+    double parallaxScale() const;  // Default 1.
     std::string_view parameter(std::string_view key) const;
     double scalar(std::string_view key, double fallback = 0) const;
     DVec3 vector(std::string_view key, DVec3 fallback) const;

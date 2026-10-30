@@ -166,7 +166,7 @@ TEST_CASE("VMT PBR resolves EverythingPBR shaped three-level patch parameters") 
         {"materials/pbr/metal/black_tile_32.vmt", R"(patch {
             include dev/l2_default_pbr
             insert { $basetexture pbr/black_tile_color $bumpmap pbr/black_tile_normal
-                     $mraotexture pbr/black_tile_mrao }
+                     $mraotexture pbr/black_tile_mrao $parallax 1 $parallaxcenter 0.55 $parallaxdepth 0.025 }
         })"}
     };
     const auto material = parseMaterial([&](std::string_view path) -> Result<std::string> {
@@ -186,6 +186,10 @@ TEST_CASE("VMT PBR resolves EverythingPBR shaped three-level patch parameters") 
     CHECK(material->envmapLightScale() == 0.5);
     CHECK(material->envmapProbe());
     CHECK(material->scalar("$parallaxscale") == 2);
+    CHECK(material->parallax());
+    CHECK(material->parallaxCenter() == doctest::Approx(0.55));
+    CHECK(material->parallaxDepth() == doctest::Approx(0.025));
+    CHECK(material->parallaxScale() == 2);
     CHECK(material->scalar("$blendtintbymraoalpha") == 1);
     CHECK(material->envmap() == "env_cubemap");
     const Material defaults;
@@ -194,6 +198,10 @@ TEST_CASE("VMT PBR resolves EverythingPBR shaped three-level patch parameters") 
     CHECK_FALSE(defaults.model());
     CHECK(defaults.phongTint() == DVec3(1));
     CHECK_FALSE(defaults.baseMapAlphaPhongMask());
+    CHECK_FALSE(defaults.parallax());
+    CHECK(defaults.parallaxDepth() == 0.05);
+    CHECK(defaults.parallaxCenter() == 0);
+    CHECK(defaults.parallaxScale() == 1);
 }
 
 TEST_CASE("VMT phong tint mask and PBR model scalars are typed") {

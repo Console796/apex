@@ -131,6 +131,10 @@ Gpu* gpu() {
                 $basetexture test/floor $bumpmap test/normal $mraotexture test/floor
             }
         })");
+        g->tree.put("materials/test/parallax_pbr.vmt", R"(patch {
+            include test/specular_pbr insert { $parallax 1 $parallaxcenter 0.55 $parallaxdepth 0.025 $parallaxscale 2 }
+        })");
+        g->tree.put("materials/test/parallax_flat.vmt", "PBR { $basetexture test/floor $parallax 1 }");
         g->tree.put("materials/test/specular_phong.vmt", R"(VertexLitGeneric {
             $basetexture test/floor $bumpmap test/normal $phong 1 $phongexponent 42 $phongboost 2
             $phongexponenttexture test/normal $phongfresnelranges "[0.1 0.3 0.9]"
@@ -2085,6 +2089,35 @@ TEST_CASE("mirror: local Refract records take the normal map, tint, offsets and 
         CHECK(record.refractParams == Vec4(0.025f, 0.05f, 0, 0));
     }
     CHECK((localRecords > 0) == local);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: PBR $parallax records need the bump map that holds the height") {
+    REQUIRE_GPU();
+    bool bumped = false;
+    SUBCASE("bumped") { bumped = true; }
+    SUBCASE("no bump map") {}
+    auto text = readFixture("render_map.vmf");
+    const std::string name = bumped ? "test/parallax_pbr" : "test/parallax_flat";
+    for (std::size_t at = 0; (at = text.find("test/red", at)) != std::string::npos; at += name.size())
+        text.replace(at, 8, name);
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    Scene scene(*g, std::make_unique<document::Document>(*parsed));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    std::size_t pbrRecords = 0, parallaxRecords = 0;
+    for (const auto& mesh : scene.mirror.buildDrawList(options).meshes) {
+        const auto record = g->heap->materials()[mesh.texture];
+        if ((record.flags & kMaterialPbr) == 0) continue;
+        ++pbrRecords;
+        if ((record.flags & kMaterialParallax) == 0) continue;
+        ++parallaxRecords;
+        CHECK((record.flags & kMaterialHasBump) != 0);
+        CHECK(record.parallaxParams == Vec4(0.025f, 0.55f, 2, 0));
+    }
+    CHECK(pbrRecords > 0);
+    CHECK((parallaxRecords > 0) == bumped);
     CHECK(g->context->validation().errorCount() == 0);
 }
 
