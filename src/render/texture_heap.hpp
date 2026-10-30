@@ -7,12 +7,18 @@
 // Shader side (set number is the caller's choice):
 //   layout(set = N, binding = 0) uniform texture2D textures[];   // textures[nonuniformEXT(slot)]
 //   layout(set = N, binding = 1) uniform sampler samplers[3];    // 0 = linear/aniso repeat, 1 = nearest repeat, 2 = reversed-Z comparison
+//   layout(set = N, binding = 2) uniform textureCube cubes[];    // cubes[nonuniformEXT(cubeSlot)]
 //
 // Slot 0 is a magenta/black checkerboard; every unused or released slot also shows it.
+// Cube maps (plan 0.6.5 d) have their own slots and free list. Cube slot 0 is the default cube
+// (engine/defaultcubemap once setDefaultCube() succeeds, a mid-grey 1x1 cube until then); every
+// unused or released cube slot shows it. Layers are VTF face order, used as Vulkan's
+// +X,-X,+Y,-Y,+Z,-Z: shaders look up world (Z-up) directions directly. Provisional (D2).
 
 #include "assets/vtf.hpp"
 #include "core/result.hpp"
 #include "render/resources.hpp"
+#include "render/gpu_material.hpp"
 #include "render/upload_ring.hpp"
 
 #include <cstddef>
@@ -24,16 +30,18 @@
 
 namespace apex::render {
 
-// The Vulkan format a decoded texture uploads as; none for formats the heap cannot hold (float RGBA).
+// The Vulkan format of decoded texture data.
 std::optional<VkFormat> vulkanFormat(assets::TextureFormat format);
 
 using TextureSlot = std::uint32_t;
 inline constexpr TextureSlot kCheckerboardSlot = 0;
 inline constexpr std::uint32_t kThumbnailTextureSlots = 64;
+inline constexpr TextureSlot kDefaultCubeSlot = 0;
 
 struct TextureHeapDesc {
     std::uint32_t capacity = 4096;      // Slots, clamped to the device update-after-bind limit.
     VkDeviceSize stagingBytes = 64u << 20;
+    std::uint32_t cubeCapacity = 256;   // Cube slots, including the default.
 };
 
 struct TextureDesc {
@@ -76,8 +84,28 @@ class TextureHeap {
     // data is uploaded as-is. The image is sampleable only after flush() (also called implicitly
     // whenever the staging ring fills up).
     Result<TextureSlot> upload(const TextureDesc& desc, std::span<const std::span<const std::byte>> mips);
+    // First frame/face, all mips; float RGBA is packed to RGBA16F without colour decoding.
+    Result<TextureSlot> upload(const assets::Texture& texture);
+    void setMaterial(TextureSlot slot, GpuMaterial material);
+    std::span<const GpuMaterial> materials() const { return materials_; }
+    std::uint64_t materialRevision() const { return materialRevision_; }
     // Single-level convenience.
     Result<TextureSlot> upload(const TextureDesc& desc, std::span<const std::byte> pixels);
+
+    // Cube maps: desc is one square face; each mip holds its six faces tightly packed, in layer
+    // order. Fails with "cube heap is full" when no cube slot is free.
+    Result<TextureSlot> uploadCube(const TextureDesc& desc, std::span<const std::span<const std::byte>> mips);
+    // First frame, six faces (a seventh sphere-map face is ignored), all mips. Float RGBA is packed
+    // to RGBA16F; 8-bit and BC colour data is gamma-encoded, so it is viewed through the _SRGB
+    // format and samples linear (the sRGB curve approximates the base textures' 2.2; provisional).
+    Result<TextureSlot> uploadCube(const assets::Texture& texture);
+    // Replaces cube slot 0. Waits for the device, since every free cube slot shows slot 0 too.
+    Result<void> setDefaultCube(const assets::Texture& texture);
+    bool defaultCubeLoaded() const { return defaultCubeLoaded_; }
+    // Like release(); cube slot 0 is not releasable.
+    void releaseCube(TextureSlot slot);
+    std::uint32_t cubeCapacity() const { return cubeCapacity_; }
+    std::uint32_t liveCubes() const; // Including the default cube.
     // Submits pending uploads and waits.
     Result<void> flush();
 
@@ -92,11 +120,16 @@ class TextureHeap {
     TextureHeap() = default;
     Result<TextureSlot> uploadAt(TextureSlot slot, const TextureDesc& desc,
                                  std::span<const std::span<const std::byte>> mips);
+    Result<Image> createImage(const TextureDesc& desc, std::span<const std::span<const std::byte>> mips, bool cube);
+    Result<Image> createCube(const assets::Texture& texture);
+    void writeCubeDescriptor(TextureSlot slot, VkImageView view);
     bool thumbnailSlot(TextureSlot slot) const;
     TextureSlot thumbnailFirst_ = 0;
     std::uint32_t maxThumbnailSlotsLive_ = 0;
     void writeDescriptor(TextureSlot slot, VkImageView view);
 
+    std::vector<GpuMaterial> materials_;
+    std::uint64_t materialRevision_ = 0;
     Context* context_ = nullptr;
     UploadRing ring_;
     VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
@@ -108,6 +141,10 @@ class TextureHeap {
     std::vector<VkImageView> attachments_; // Borrowed images, owned sampled views, indexed by slot.
     std::vector<TextureSlot> freeSlots_;
     std::vector<Image> garbage_;
+    std::uint32_t cubeCapacity_ = 0;
+    std::vector<Image> cubes_;            // Indexed by cube slot; empty Image when free.
+    std::vector<TextureSlot> freeCubes_;
+    bool defaultCubeLoaded_ = false;
 };
 
 } // namespace apex::render

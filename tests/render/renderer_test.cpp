@@ -1,3 +1,6 @@
+#include "sky_fixture.hpp"
+#include "assets/vtf.hpp"
+#include "lighting/normal_map.hpp"
 #include "render/context.hpp"
 #include "shared_context.hpp"
 #include "render/render_target.hpp"
@@ -12,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -1293,4 +1297,520 @@ TEST_CASE("renderer: Lit transformed preview matches point and spot CPU irradian
         }
     }
     gpu->heap->release(*slot);
+}
+
+TEST_CASE("renderer: Lit sky ambient lights a hole and leaves a sealed annex dark") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto triangles = testing::skyRoomTriangles();
+    std::vector<BrushVertex> vertices;
+    std::vector<std::uint32_t> indices;
+    for (const auto& tri : triangles) {
+        if (tri.sky) continue;
+        const Vec3 normal(glm::normalize(glm::cross(tri.b - tri.a, tri.c - tri.a)));
+        for (const auto& point : {tri.a, tri.b, tri.c}) {
+            BrushVertex vertex{};
+            const Vec3 position(point);
+            std::memcpy(vertex.position, &position.x, sizeof(vertex.position));
+            std::memcpy(vertex.normal, &normal.x, sizeof(vertex.normal));
+            indices.push_back(static_cast<std::uint32_t>(vertices.size()));
+            vertices.push_back(vertex);
+        }
+    }
+    auto vb = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{vertices}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    auto ib = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{indices}), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    REQUIRE(vb); REQUIRE(ib);
+    const Cube room{std::move(*vb), std::move(*ib), {}};
+    auto list = cubeList(room, DisplayMode::Lit, gpu->checker);
+    list.meshes[0].indexCount = static_cast<std::uint32_t>(indices.size());
+    list.meshes[0].edgeIndexCount = 0;
+    list.meshes[0].colour = Vec4(1);
+    list.view = makeView({0, 0, 256}, {90, 0, 0});
+    lighting::Light ambient;
+    ambient.kind = lighting::LightKind::Ambient;
+    ambient.intensity = DVec3(1);
+    list.lights = {ambient};
+    const auto absent = drawLitFrame(*gpu, list, scene);
+    CHECK(nearColour(at(absent, kSize / 2, kSize / 2), {0, 0, 0}, 0));
+    list.skyVisibility = std::make_shared<lighting::SkyVisibilityGrid>(testing::skyRoomGrid());
+    const auto lit = drawLitFrame(*gpu, list, scene);
+    const auto under = at(lit, kSize / 2, kSize / 2);
+    CHECK(under.r > 30);
+    list.view.cameraPosition.x = 1024;
+    const auto dark = drawLitFrame(*gpu, list, scene);
+    for (unsigned y = 4; y < kSize - 4; y += 4)
+        for (unsigned x = 4; x < kSize - 4; x += 4)
+            CHECK(nearColour(at(dark, x, y), {0, 0, 0}, 0));
+    const DVec3 shift{1e10, -2e10, 3e10};
+    auto shiftedTriangles = triangles;
+    for (auto& tri : shiftedTriangles) { tri.a += shift; tri.b += shift; tri.c += shift; }
+    list.skyVisibility = std::make_shared<lighting::SkyVisibilityGrid>(lighting::buildSkyVisibility(
+        shiftedTriangles, {DVec3(-256, -256, 0) + shift, DVec3(1280, 256, 512) + shift}));
+    list.meshes[0].origin = shift;
+    list.view.cameraPosition = DVec3(0, 0, 256) + shift;
+    checkLitParity(lit, drawLitFrame(*gpu, list, scene));
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: Lit normal material slopes face a grazing light and Textured stays identical") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const std::array<std::byte, 4> white{std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    const auto base = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, white);
+    REQUIRE(base);
+    bool ssbump = false, vertexMaterial = false, ambient = false;
+    SUBCASE("RGB normal push slot") {}
+    SUBCASE("RGB normal per-vertex slot") { vertexMaterial = true; }
+    SUBCASE("ssbump push slot") { ssbump = true; }
+    SUBCASE("ssbump per-vertex slot") { ssbump = true; vertexMaterial = true; }
+    SUBCASE("RGB normal sky ambient") { ambient = true; }
+    SUBCASE("ssbump sky ambient") { ambient = true; ssbump = true; }
+    std::vector<std::byte> pixels(8 * 8 * 4);
+    for (unsigned y = 0; y < 8; ++y)
+        for (unsigned x = 0; x < 8; ++x) {
+            // +V on the left, -V on the right. ssbump green/blue carry these directions.
+            const std::array<unsigned char, 4> rgb = ssbump ?
+                (x < 4 ? std::array<unsigned char, 4>{0, 255, 0, 255} : std::array<unsigned char, 4>{0, 0, 255, 255}) :
+                std::array<unsigned char, 4>{128, static_cast<unsigned char>(x < 4 ? 230 : 25), 200, 255};
+            for (unsigned c = 0; c < 4; ++c) pixels[(y * 8 + x) * 4 + c] = std::byte(rgb[c]);
+        }
+    const auto bump = gpu->heap->upload({8, 8, VK_FORMAT_R8G8B8A8_UNORM}, pixels);
+    REQUIRE(bump);
+    REQUIRE(gpu->heap->flush());
+    const Cube quad = makeCube(*gpu, 40, *base);
+    auto list = cubeList(quad, DisplayMode::Textured, vertexMaterial ? kVertexMaterial : *base);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].edgeOverlay = false;
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    constexpr std::array modes{DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe};
+    std::array<Rgba8Image, 3> unbumped;
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        list.mode = modes[i];
+        unbumped[i] = drawFrame(*gpu, list);
+    }
+    gpu->heap->setMaterial(*base, {*base, *bump, kMaterialHasBump | (ssbump ? kMaterialSsbump : 0u), 0});
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        list.mode = modes[i];
+        CHECK(drawFrame(*gpu, list).pixels == unbumped[i].pixels);
+    }
+    list.mode = DisplayMode::Lit;
+    lighting::Light light;
+    light.kind = lighting::LightKind::Sun;
+    light.direction = glm::normalize(DVec3(0.2, 0, 1));
+    light.intensity = DVec3(0.5);
+    list.lights = {light};
+    if (ambient) {
+        list.meshes[0].origin.z = 256;
+        list.view.cameraPosition.z = 256;
+        list.skyVisibility = std::make_shared<lighting::SkyVisibilityGrid>(testing::skyRoomGrid());
+        list.lights[0].kind = lighting::LightKind::Ambient;
+        list.lights[0].intensity = DVec3(1);
+    }
+    const auto lit = drawLitFrame(*gpu, list, scene);
+    if (ambient) {
+        CHECK(at(lit, 44, 32).r > at(lit, 20, 32).r + 25);
+    } else {
+        CHECK(at(lit, 20, 32).r > 120);
+        CHECK(at(lit, 44, 32).r < 4);
+        const auto tangent = lighting::decodeNormal(ssbump ? DVec3(0, 1, 0) : DVec3(128, 230, 200) / 255.0, ssbump);
+        const DVec3 normal(-tangent.z, -tangent.x, -tangent.y);
+        const auto energy = lighting::irradiance(light, {0, 0, 0}, normal);
+        const int expected = int(std::lround(std::pow(energy.r, 1 / 2.2) * 255));
+        CHECK(std::abs(at(lit, 20, 32).r - expected) <= 1);
+    }
+    list.fullbright = true;
+    const auto fullbright = drawLitFrame(*gpu, list, scene);
+    gpu->heap->setMaterial(*base, {});
+    CHECK(drawLitFrame(*gpu, list, scene).pixels == fullbright.pixels);
+    const auto revision = gpu->heap->materialRevision();
+    gpu->heap->release(*base);
+    CHECK(gpu->heap->materialRevision() > revision);
+    CHECK(gpu->heap->materials()[*base].flags == 0);
+    gpu->heap->release(*bump);
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: Lit float material preserves HDR energy without colour decoding") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    assets::Texture texture;
+    texture.format = assets::TextureFormat::Rgba32Float;
+    const std::array<float, 4> hdr{2.0f, 0.5f, 0.125f, 1.0f};
+    const auto data = std::as_bytes(std::span{hdr});
+    texture.mips.push_back({1, 1, 1, {data.begin(), data.end()}});
+    const auto slot = gpu->heap->upload(texture);
+    REQUIRE(slot);
+    REQUIRE(gpu->heap->flush());
+    gpu->heap->setMaterial(*slot, {*slot, kNoTexture, kMaterialLinearBase, 0});
+    const Cube quad = makeCube(*gpu, 40, *slot);
+    auto list = cubeList(quad, DisplayMode::Lit, *slot);
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    list.meshes[0].colour = Vec4(1);
+    list.fullbright = true;
+    list.exposure = 0.25f;
+    const auto image = drawLitFrame(*gpu, list, scene);
+    const Px expected{int(std::lround(std::pow(0.5, 1 / 2.2) * 255)),
+                      int(std::lround(std::pow(0.125, 1 / 2.2) * 255)),
+                      int(std::lround(std::pow(0.03125, 1 / 2.2) * 255))};
+    CHECK(nearColour(at(image, 32, 32), expected, 1));
+    gpu->heap->release(*slot);
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: Lit PBR spotlight mirror highlight follows camera and roughness widens it") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const std::array<std::byte, 4> white{std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    const auto base = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, white);
+    REQUIRE(base);
+    const std::array<std::byte, 4> packed{std::byte{255}, std::byte{51}, std::byte{255}, std::byte{0}};
+    const auto mrao = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, packed);
+    REQUIRE(mrao);
+    REQUIRE(gpu->heap->flush());
+    const Cube quad = makeCube(*gpu, 40, *base);
+    auto list = cubeList(quad, DisplayMode::Lit, kVertexMaterial);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].colour = Vec4(1);
+    list.meshes[0].edgeOverlay = false;
+    list.view = makeView({-136, 0, 0}, {0, 0, 0});
+    lighting::Light spot;
+    spot.kind = lighting::LightKind::Spot;
+    spot.origin = {-136, 0, 0};
+    spot.direction = {1, 0, 0};
+    spot.intensity = DVec3(0.02);
+    spot.constant = 1;
+    spot.stopdot = 0.95;
+    spot.stopdot2 = 0.5;
+    spot.exponent = 1;
+    list.lights = {spot};
+    GpuMaterial material{*base, kNoTexture, kMaterialPbr, 0};
+    material.mraoSlot = *mrao;
+    gpu->heap->setMaterial(*base, material);
+    const auto sharp = drawLitFrame(*gpu, list, scene);
+    // Compare half-maximum widths on the same scanline, independent of peak amplitude.
+    const auto halfWidth = [](const Rgba8Image& image) {
+        int peak = 0, count = 0;
+        for (unsigned x = 19; x < 45; ++x) peak = std::max(peak, at(image, x, 32).r);
+        for (unsigned x = 19; x < 45; ++x) if (at(image, x, 32).r >= peak / 2) ++count;
+        return count;
+    };
+    material.mraoScale.y = 5; // 0.2 * 5 = roughness 1.
+    gpu->heap->setMaterial(*base, material);
+    const auto rough = drawLitFrame(*gpu, list, scene);
+    CHECK(at(sharp, 32, 32).r > at(rough, 32, 32).r + 60);
+    CHECK(halfWidth(rough) > halfWidth(sharp) + 4);
+    material.mraoScale.y = 1;
+    gpu->heap->setMaterial(*base, material);
+    std::array<int, 2> peaks{};
+    for (int i = 0; i < 2; ++i) {
+        const double cameraY = i == 0 ? -36 : 36;
+        list.view = makeView({-136, cameraY, 0}, {0, 0, 0});
+        const auto image = drawLitFrame(*gpu, list, scene);
+        // Reflect the camera across x=-40; the light-to-reflected-camera ray hits y=cameraY/2.
+        const auto clip = DMat4(list.view.viewProjection) * DVec4(DVec3(-40, cameraY / 2, 0) - list.view.cameraPosition, 1);
+        const double expectedX = (clip.x / clip.w + 1) * kSize / 2 - 0.5;
+        int peak = -1;
+        for (int x = 16; x < 48; ++x) {
+            if (at(image, x, 32).r > peak) { peak = at(image, x, 32).r; peaks[i] = x; }
+        }
+        CHECK(std::abs(peaks[i] - expectedX) <= 1.5);
+        CHECK(peak > 100);
+    }
+    CHECK(std::abs(peaks[0] - peaks[1]) >= 8);
+    // MRAO alpha is zero throughout: it never becomes opacity or the specular mask.
+    CHECK(at(sharp, 32, 32).r > 100);
+    list.view = makeView({-136, 0, 0}, {0, 0, 0});
+    material.mraoScale.z = 0;
+    gpu->heap->setMaterial(*base, material);
+    CHECK(drawLitFrame(*gpu, list, scene).pixels == sharp.pixels); // AO never dims direct light.
+    // Ambient has no specular: metals are black; dielectric diffuse is visible and AO suppresses it.
+    list.meshes[0].origin.z = 256;
+    list.view.cameraPosition.z = 256;
+    list.skyVisibility = std::make_shared<lighting::SkyVisibilityGrid>(testing::skyRoomGrid());
+    list.lights[0].kind = lighting::LightKind::Ambient;
+    list.lights[0].intensity = DVec3(1);
+    material.mraoScale.z = 1;
+    gpu->heap->setMaterial(*base, material);
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r == 0);
+    material.mraoScale.x = 0;
+    gpu->heap->setMaterial(*base, material);
+    const auto dielectric = drawLitFrame(*gpu, list, scene);
+    CHECK(at(dielectric, 32, 32).r > 0);
+    material.flags = 0;
+    gpu->heap->setMaterial(*base, material);
+    CHECK(drawLitFrame(*gpu, list, scene).pixels == dielectric.pixels);
+    material.flags = kMaterialPbr;
+    material.mraoScale.z = 0;
+    gpu->heap->setMaterial(*base, material);
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r == 0);
+    gpu->heap->release(*base);
+    gpu->heap->release(*mrao);
+}
+
+TEST_CASE("renderer: Lit phong masks exponent texture and display modes") {
+    REQUIRE_GPU();
+    bool baseMask = false;
+    SUBCASE("normal alpha mask") {}
+    SUBCASE("base alpha mask") { baseMask = true; }
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    std::vector<std::byte> pixels(8 * 8 * 4);
+    for (unsigned y = 0; y < 8; ++y)
+        for (unsigned x = 0; x < 8; ++x) {
+            const auto offset = (y * 8 + x) * 4;
+            pixels[offset] = pixels[offset + 1] = std::byte{128};
+            pixels[offset + 2] = std::byte{255};
+            pixels[offset + 3] = x < 4 ? std::byte{0} : std::byte{255};
+        }
+    const auto bump = gpu->heap->upload({8, 8, VK_FORMAT_R8G8B8A8_UNORM}, pixels);
+    REQUIRE(bump);
+    for (std::size_t i = 0; i < pixels.size(); i += 4) {
+        pixels[i] = pixels[i + 1] = pixels[i + 2] = std::byte{0};
+        if (!baseMask) pixels[i + 3] = std::byte{255};
+    }
+    const auto base = gpu->heap->upload({8, 8, VK_FORMAT_R8G8B8A8_UNORM}, pixels);
+    REQUIRE(base);
+    const std::array<std::byte, 4> white{std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    const auto exponent = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, white);
+    REQUIRE(exponent);
+    REQUIRE(gpu->heap->flush());
+    const Cube quad = makeCube(*gpu, 40, *base);
+    auto list = cubeList(quad, DisplayMode::Lit, *base);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].colour = Vec4(1);
+    list.meshes[0].edgeOverlay = false;
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    lighting::Light light;
+    light.kind = lighting::LightKind::Sun;
+    light.direction = {1, 0, 0};
+    light.intensity = DVec3(0.5);
+    list.lights = {light};
+    constexpr std::array modes{DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe, DisplayMode::Lit};
+    std::array<Rgba8Image, 4> before;
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        list.mode = modes[i];
+        list.fullbright = i == 3;
+        before[i] = i == 3 ? drawLitFrame(*gpu, list, scene) : drawFrame(*gpu, list);
+    }
+    GpuMaterial material{*base, *bump, kMaterialHasBump | kMaterialPhong |
+        (baseMask ? kMaterialBaseAlphaPhongMask : 0u), 0};
+    material.phongParams = Vec4(1, 1, 0, 0);
+    material.phongFresnel = Vec4(1);
+    material.phongTint = Vec4(1, 0.5f, 0.25f, 0);
+    gpu->heap->setMaterial(*base, material);
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        list.mode = modes[i];
+        list.fullbright = i == 3;
+        const auto image = i == 3 ? drawLitFrame(*gpu, list, scene) : drawFrame(*gpu, list);
+        CHECK(image.pixels == before[i].pixels);
+    }
+    list.mode = DisplayMode::Lit;
+    list.fullbright = false;
+    const auto broad = drawLitFrame(*gpu, list, scene);
+    CHECK(at(broad, 20, 32).r == 0);
+    CHECK(at(broad, 44, 32).r > 150);
+    CHECK(at(broad, 44, 32).r > at(broad, 44, 32).b + 50);
+    material.phongExponentSlot = *exponent;
+    gpu->heap->setMaterial(*base, material);
+    const auto narrow = drawLitFrame(*gpu, list, scene);
+    CHECK(at(narrow, 44, 32).r + 70 < at(broad, 44, 32).r);
+    CHECK(at(narrow, 20, 32).r == 0);
+    gpu->heap->release(*base);
+    gpu->heap->release(*bump);
+    gpu->heap->release(*exponent);
+}
+
+namespace {
+
+// Float cube with 8x8 faces of one linear colour each, in layer (+X,-X,+Y,-Y,+Z,-Z) order.
+assets::Texture colourCube(std::array<Vec3, 6> colours) {
+    assets::Texture texture;
+    texture.format = assets::TextureFormat::Rgba32Float;
+    texture.faces = 6;
+    assets::TextureMip mip{8, 8, 1, {}};
+    for (const Vec3& colour : colours)
+        for (int texel = 0; texel < 64; ++texel) {
+            const std::array<float, 4> rgba{colour.r, colour.g, colour.b, 1};
+            const auto* raw = reinterpret_cast<const std::byte*>(rgba.data());
+            mip.data.insert(mip.data.end(), raw, raw + sizeof(rgba));
+        }
+    texture.mips.push_back(std::move(mip));
+    return texture;
+}
+
+TextureSlot solidTexture(Fixture& f, std::array<std::uint8_t, 4> rgba) {
+    const std::array<std::byte, 4> pixel{std::byte{rgba[0]}, std::byte{rgba[1]}, std::byte{rgba[2]}, std::byte{rgba[3]}};
+    auto slot = f.heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, pixel);
+    REQUIRE(slot);
+    return *slot;
+}
+
+bool dominant(Px p, int channel) {
+    const int values[3] = {p.r, p.g, p.b};
+    for (int c = 0; c < 3; ++c)
+        if (c != channel && values[channel] < values[c] + 100) return false;
+    return true;
+}
+
+} // namespace
+
+TEST_CASE("renderer: Lit envmap mirror reflects the cube by view direction, masks and keeps other modes") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto cube = gpu->heap->uploadCube(colourCube({Vec3(1, 0, 0), Vec3(0, 1, 0), Vec3(0, 0, 1),
+                                                        Vec3(1, 1, 0), Vec3(1, 0, 1), Vec3(0, 1, 1)}));
+    REQUIRE(cube);
+    const auto base = solidTexture(*gpu, {255, 255, 255, 255});
+    const auto black = solidTexture(*gpu, {0, 0, 0, 255});
+    REQUIRE(gpu->heap->flush());
+    const Cube quad = makeCube(*gpu, 40, base);
+    auto list = cubeList(quad, DisplayMode::Lit, base);
+    list.meshes[0].indexCount = 6; // The -X face at x = -40.
+    list.meshes[0].colour = Vec4(1);
+    list.meshes[0].edgeOverlay = false;
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    constexpr std::array modes{DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe};
+    std::array<Rgba8Image, 3> before;
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        list.mode = modes[i];
+        before[i] = drawFrame(*gpu, list);
+    }
+    // A smooth metal: F0 = albedo, so the reflection is the cube itself (EnvBRDF ~ 1).
+    GpuMaterial material{base, kNoTexture, kMaterialPbr | kMaterialEnvmap, kNoTexture};
+    material.envmapSlot = *cube;
+    material.mraoSlot = base; // White: metalness 1, roughness scaled to 0, AO 1.
+    material.mraoScale = Vec4(1, 0, 1, 0);
+    gpu->heap->setMaterial(base, material);
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        list.mode = modes[i];
+        CHECK(drawFrame(*gpu, list).pixels == before[i].pixels);
+    }
+    list.mode = DisplayMode::Lit;
+    // Head-on, the reflection looks back along -X; from (-70, -100) it leaves along +Y.
+    CHECK(dominant(at(drawLitFrame(*gpu, list, scene), 32, 32), 1));
+    list.view = makeView({-70, -100, 0}, {0, glm::degrees(std::atan2(100.0, 30.0)), 0});
+    const auto oblique = drawLitFrame(*gpu, list, scene);
+    CHECK(dominant(at(oblique, 32, 32), 2));
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    // Non-PBR: added unlit; a zero $envmapmask removes it, a white one keeps it.
+    material.flags = kMaterialEnvmap;
+    material.envmapMaskSlot = black;
+    gpu->heap->setMaterial(base, material);
+    const auto masked = drawLitFrame(*gpu, list, scene);
+    CHECK(at(masked, 32, 32).r == 0);
+    CHECK(at(masked, 32, 32).g == 0);
+    material.envmapMaskSlot = base;
+    material.envmapTint = Vec4(0.5f, 0.5f, 0.5f, 0);
+    gpu->heap->setMaterial(base, material);
+    const auto tinted = drawLitFrame(*gpu, list, scene);
+    CHECK(dominant(at(tinted, 32, 32), 1));
+    material.envmapTint = Vec4(1, 1, 1, 0);
+    gpu->heap->setMaterial(base, material);
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).g > at(tinted, 32, 32).g + 20);
+    // Fullbright keeps the envmap term over a black albedo.
+    list.meshes[0].colour = Vec4(0, 0, 0, 1);
+    list.fullbright = true;
+    CHECK(dominant(at(drawLitFrame(*gpu, list, scene), 32, 32), 1));
+    material.flags = 0;
+    gpu->heap->setMaterial(base, material);
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).g == 0);
+    gpu->heap->release(base);
+    gpu->heap->release(black);
+    gpu->heap->releaseCube(*cube);
+    gpu->heap->collectGarbage();
+}
+
+TEST_CASE("renderer: Lit env_cubemap materials sample the nearest probe or the default cube") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto red = gpu->heap->uploadCube(colourCube({Vec3(1, 0, 0), Vec3(1, 0, 0), Vec3(1, 0, 0),
+                                                       Vec3(1, 0, 0), Vec3(1, 0, 0), Vec3(1, 0, 0)}));
+    const auto blue = gpu->heap->uploadCube(colourCube({Vec3(0, 0, 1), Vec3(0, 0, 1), Vec3(0, 0, 1),
+                                                        Vec3(0, 0, 1), Vec3(0, 0, 1), Vec3(0, 0, 1)}));
+    REQUIRE(red);
+    REQUIRE(blue);
+    const auto base = solidTexture(*gpu, {255, 255, 255, 255});
+    REQUIRE(gpu->heap->flush());
+    const Cube quad = makeCube(*gpu, 40, base);
+    auto list = cubeList(quad, DisplayMode::Lit, base);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].colour = Vec4(1);
+    list.meshes[0].edgeOverlay = false;
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    GpuMaterial material{base, kNoTexture, kMaterialPbr | kMaterialEnvmap | kMaterialEnvmapProbe, kNoTexture};
+    material.envmapSlot = *red; // Ignored: probes win.
+    material.mraoSlot = base; // White: metalness 1, roughness scaled to 0, AO 1.
+    material.mraoScale = Vec4(1, 0, 1, 0);
+    gpu->heap->setMaterial(base, material);
+    // The camera looks along +X, so screen left is +Y.
+    list.cubemaps = {{{-40, -100, 0}, *red}, {{-40, 100, 0}, *blue}};
+    const auto split = drawLitFrame(*gpu, list, scene);
+    CHECK(dominant(at(split, 16, 32), 2));
+    CHECK(dominant(at(split, 48, 32), 0));
+    list.cubemaps = {{{-40, 100, 0}, *red}, {{-40, -100, 0}, *blue}};
+    const auto swapped = drawLitFrame(*gpu, list, scene);
+    CHECK(dominant(at(swapped, 16, 32), 0));
+    CHECK(dominant(at(swapped, 48, 32), 2));
+    // Without probes: the default cube, uniform on both sides.
+    list.cubemaps.clear();
+    const auto fallback = drawLitFrame(*gpu, list, scene);
+    CHECK(nearColour(at(fallback, 16, 32), at(fallback, 48, 32), 2));
+    CHECK(at(fallback, 16, 32).r > 40);
+    CHECK(nearColour(at(fallback, 16, 32), {at(fallback, 16, 32).r, at(fallback, 16, 32).r, at(fallback, 16, 32).r}, 2));
+    material.flags = 0;
+    gpu->heap->setMaterial(base, material);
+    gpu->heap->release(base);
+    gpu->heap->releaseCube(*red);
+    gpu->heap->releaseCube(*blue);
+    gpu->heap->collectGarbage();
+}
+
+TEST_CASE("renderer: Lit $selfillum adds base colour by alpha or mask without lights") {
+    REQUIRE_GPU();
+    bool maskTexture = false;
+    SUBCASE("base alpha") {}
+    SUBCASE("selfillummask red") { maskTexture = true; }
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    std::vector<std::byte> pixels(8 * 8 * 4);
+    for (unsigned y = 0; y < 8; ++y)
+        for (unsigned x = 0; x < 8; ++x) {
+            const auto offset = (y * 8 + x) * 4;
+            pixels[offset] = std::byte{255};
+            pixels[offset + 1] = std::byte{128};
+            pixels[offset + 2] = std::byte{0};
+            pixels[offset + 3] = x < 4 ? std::byte{0} : std::byte{255};
+        }
+    const auto base = gpu->heap->upload({8, 8, VK_FORMAT_R8G8B8A8_UNORM}, pixels);
+    REQUIRE(base);
+    // The mask texture is the inverse of base alpha in its red channel, so the halves swap.
+    for (unsigned i = 0; i < 64; ++i) {
+        pixels[i * 4] = pixels[i * 4 + 3] == std::byte{0} ? std::byte{255} : std::byte{0};
+        pixels[i * 4 + 3] = std::byte{255};
+    }
+    const auto mask = gpu->heap->upload({8, 8, VK_FORMAT_R8G8B8A8_UNORM}, pixels);
+    REQUIRE(mask);
+    REQUIRE(gpu->heap->flush());
+    const Cube quad = makeCube(*gpu, 40, *base);
+    auto list = cubeList(quad, DisplayMode::Lit, *base);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].colour = Vec4(1);
+    list.meshes[0].edgeOverlay = false;
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    const auto dark = drawLitFrame(*gpu, list, scene);
+    CHECK(at(dark, 20, 32).r == 0);
+    CHECK(at(dark, 44, 32).r == 0);
+    GpuMaterial material{*base, kNoTexture, kMaterialSelfIllum, maskTexture ? *mask : kNoTexture};
+    gpu->heap->setMaterial(*base, material);
+    const auto glow = drawLitFrame(*gpu, list, scene);
+    const unsigned lit = maskTexture ? 20 : 44, unlit = maskTexture ? 44 : 20;
+    CHECK(at(glow, unlit, 32).r == 0);
+    CHECK(at(glow, lit, 32).r > 150);
+    CHECK(at(glow, lit, 32).r > at(glow, lit, 32).g + 40);
+    CHECK(at(glow, lit, 32).b < 10);
+    material.selfIllumTint = Vec4(0.25f, 0.25f, 0.25f, 0);
+    gpu->heap->setMaterial(*base, material);
+    CHECK(at(drawLitFrame(*gpu, list, scene), lit, 32).r < at(glow, lit, 32).r);
+    material.flags = 0;
+    gpu->heap->setMaterial(*base, material);
+    gpu->heap->release(*base);
+    gpu->heap->release(*mask);
 }

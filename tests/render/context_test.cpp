@@ -5,6 +5,7 @@
 #include "shared_context.hpp"
 #include "render/swapchain.hpp"
 #include "render/texture_heap.hpp"
+#include "assets/vtf.hpp"
 
 #include <doctest/doctest.h>
 
@@ -193,6 +194,90 @@ TEST_CASE("texture heap staging ring grows and flushes for large uploads") {
     REQUIRE(heap.upload({256, 256, VK_FORMAT_R8G8B8A8_UNORM}, bytes(256 * 256 * 4, 9)));
     REQUIRE(heap.flush());
     CHECK(gpu->validation().errorCount() == 0);
+}
+
+namespace {
+// Six faces per mip, tightly packed; 8-bit faces hold their face index, float faces 0.25 * index.
+assets::Texture cubeTexture(std::uint16_t size, std::uint8_t mips, bool floats) {
+    assets::Texture texture;
+    texture.format = floats ? assets::TextureFormat::Rgba32Float : assets::TextureFormat::Rgba8;
+    texture.faces = 6;
+    for (std::uint8_t level = 0; level < mips; ++level) {
+        const auto edge = static_cast<std::uint16_t>(std::max(size >> level, 1));
+        assets::TextureMip mip{edge, edge, 1, {}};
+        for (int face = 0; face < 6; ++face)
+            for (int texel = 0; texel < edge * edge * 4; ++texel) {
+                if (floats) {
+                    const float value = 0.25f * float(face);
+                    const auto* raw = reinterpret_cast<const std::byte*>(&value);
+                    mip.data.insert(mip.data.end(), raw, raw + sizeof(value));
+                } else {
+                    mip.data.push_back(std::byte(static_cast<std::uint8_t>(face * 40)));
+                }
+            }
+        texture.mips.push_back(std::move(mip));
+    }
+    return texture;
+}
+} // namespace
+
+TEST_CASE("texture heap: cube maps upload 8-bit and RGBA16F mips with a default slot, reuse and exhaustion") {
+    REQUIRE_GPU();
+    auto created = TextureHeap::create(*gpu, {64, 4u << 20, 4});
+    REQUIRE(created);
+    auto& heap = **created;
+    CHECK(heap.cubeCapacity() == 4);
+    CHECK(heap.liveCubes() == 1); // The mid-grey default.
+    CHECK_FALSE(heap.defaultCubeLoaded());
+    const auto liveTextures = heap.liveTextures();
+
+    auto ldr = heap.uploadCube(cubeTexture(8, 4, false));
+    REQUIRE(ldr);
+    CHECK(*ldr != kDefaultCubeSlot);
+    auto hdr = heap.uploadCube(cubeTexture(4, 3, true));
+    REQUIRE(hdr);
+    // Raw faces in a caller-chosen format.
+    const auto raw0 = bytes(2 * 2 * 4 * 6, 9), raw1 = bytes(4 * 6, 9);
+    const std::array<std::span<const std::byte>, 2> rawMips{raw0, raw1};
+    auto raw = heap.uploadCube({2, 2, VK_FORMAT_R8G8B8A8_UNORM}, rawMips);
+    REQUIRE(raw);
+    CHECK(heap.liveCubes() == 4);
+    CHECK(heap.liveTextures() == liveTextures); // Cube slots never take 2D slots.
+    std::array<TextureSlot, 3> slots{*ldr, *hdr, *raw};
+    std::ranges::sort(slots);
+    CHECK(std::ranges::adjacent_find(slots) == slots.end());
+
+    // Exhaustion, then invalid cubes: not six faces, not square, wrong sizes.
+    auto full = heap.uploadCube(cubeTexture(1, 1, false));
+    REQUIRE_FALSE(full);
+    CHECK(full.error().message == "cube heap is full");
+    heap.releaseCube(*hdr);
+    heap.collectGarbage();
+    CHECK(heap.liveCubes() == 3);
+    auto flat = cubeTexture(4, 1, false);
+    flat.faces = 1;
+    CHECK_FALSE(heap.uploadCube(flat));
+    auto wide = cubeTexture(4, 1, false);
+    wide.mips[0].width = 8;
+    CHECK_FALSE(heap.uploadCube(wide));
+    const std::array<std::span<const std::byte>, 1> shortMip{raw1};
+    CHECK_FALSE(heap.uploadCube({2, 2, VK_FORMAT_R8G8B8A8_UNORM}, shortMip));
+    auto again = heap.uploadCube(cubeTexture(1, 1, true));
+    REQUIRE(again);
+    CHECK(*again == *hdr); // The released slot is reused.
+
+    // The default slot is replaceable but never releasable.
+    heap.releaseCube(kDefaultCubeSlot);
+    CHECK(heap.liveCubes() == 4);
+    REQUIRE(heap.setDefaultCube(cubeTexture(16, 5, true)));
+    CHECK(heap.defaultCubeLoaded());
+    CHECK(heap.liveCubes() == 4);
+    CHECK_FALSE(heap.setDefaultCube(flat));
+    heap.releaseCube(*ldr);
+    heap.collectGarbage();
+    REQUIRE(heap.flush());
+    CHECK(gpu->validation().errorCount() == 0);
+    for (const auto& e : gpu->validation().errors()) MESSAGE(e);
 }
 
 TEST_CASE("swapchain on a headless surface recreates on resize") {

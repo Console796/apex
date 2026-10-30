@@ -20,13 +20,14 @@ void finish(JobPool& jobs, MaterialCache& cache, std::string_view name) {
 TEST_CASE("MaterialCache async completion placeholder failures and decoded LRU") {
     GameTree tree;
     tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
-    tree.put("materials/a.vmt", "UnlitGeneric { $basetexture white $basetexture2 white }");
+    tree.put("materials/a.vmt", "UnlitGeneric { $basetexture white $basetexture2 white $bumpmap white }");
     tree.put("materials/b.vmt", "UnlitGeneric { $basetexture white }");
     tree.put("materials/bad.vmt", "UnlitGeneric { $basetexture bad }");
     tree.put("materials/bad.vtf", "invalid");
     tree.put("materials/empty.vtf", "");
     tree.put("materials/secondary.vmt", "UnlitGeneric { $basetexture white $basetexture2 empty }");
     auto vtf = whiteVtf();
+    vtf.setSRGB(true);
     REQUIRE(vtf.bake(tree.root / "materials/white.vtf"));
     JobPool jobs(1);
     GameProfile profile;
@@ -42,12 +43,15 @@ TEST_CASE("MaterialCache async completion placeholder failures and decoded LRU")
     REQUIRE(cache.state("a") == MaterialState::Ready);
     auto held = cache.request("a");
     REQUIRE(held->texture2);
+    CHECK(held->texture.srgb);
+    REQUIRE(held->bumpTexture);
+    CHECK_FALSE(held->bumpTexture->srgb);
     const auto single = held->texture.byteSize();
-    CHECK(cache.residentBytes() == single * 2);
+    CHECK(cache.residentBytes() == single * 3);
     cache.request("b");
     finish(jobs, cache, "b");
     cache.request("a"); // a is most recently used
-    cache.setBudget(single * 2);
+    cache.setBudget(single * 3);
     CHECK(cache.state("b") == MaterialState::Unloaded);
     CHECK(cache.state("a") == MaterialState::Ready);
     cache.setBudget(0);
@@ -90,4 +94,40 @@ TEST_CASE("MaterialCache preserves Windows texture paths through VMT patches") {
     REQUIRE_MESSAGE(cache.state("door") == MaterialState::Ready,
                     (cache.error("door") ? cache.error("door")->what() : ""));
     CHECK(cache.request("door")->material.baseTexture == R"(models\pbr\test_chambers\testchmb_door_Color)");
+}
+
+TEST_CASE("MaterialCache specular textures are optional linear data and count towards eviction") {
+    GameTree tree;
+    tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    tree.put("materials/pbr.vmt", R"(PBR { $basetexture white $mraotexture white $phongexponenttexture white })");
+    tree.put("materials/missing.vmt", R"(PBR { $basetexture white $mraotexture absent $phongexponenttexture bad })");
+    tree.put("materials/bad.vtf", "invalid");
+    auto texture = whiteVtf();
+    texture.setSRGB(true);
+    REQUIRE(texture.bake(tree.root / "materials/white.vtf"));
+    JobPool jobs(1);
+    GameProfile profile;
+    profile.gameDirectory = tree.root;
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    MaterialCache cache(*vfs, jobs);
+    cache.request("pbr");
+    finish(jobs, cache, "pbr");
+    const auto held = cache.request("pbr");
+    REQUIRE(held->mraoTexture);
+    REQUIRE(held->phongExponentTexture);
+    CHECK(held->texture.srgb);
+    CHECK_FALSE(held->mraoTexture->srgb);
+    CHECK_FALSE(held->phongExponentTexture->srgb);
+    const auto bytes = held->texture.byteSize() * 3;
+    CHECK(cache.residentBytes() == bytes);
+    cache.setBudget(bytes - 1);
+    CHECK(cache.state("pbr") == MaterialState::Unloaded);
+    CHECK(cache.residentBytes() == 0);
+    cache.setBudget(bytes);
+    cache.request("missing");
+    finish(jobs, cache, "missing");
+    REQUIRE(cache.state("missing") == MaterialState::Ready);
+    CHECK_FALSE(cache.request("missing")->mraoTexture);
+    CHECK_FALSE(cache.request("missing")->phongExponentTexture);
 }

@@ -90,14 +90,29 @@ struct MirrorViewOptions {
     Vec4 edgeColour{0.0f, 0.0f, 0.0f, 1.0f};
     Vec4 wireColour{0.85f, 0.9f, 1.0f, 1.0f}; // Wireframe mode line colour.
     bool showEntities = true;
+    bool showEntityHelpers = true; // Disable icons, boxes and labels while retaining models.
     // False omits tools/toolsnodraw (and %compilenodraw) faces from Textured and Flat fills.
     // Wireframe ignores it so brush edges stay complete; selection outlines are kept.
     bool showNodraw = true;
+    // False also omits every other tools/* face except sky (trigger, clip, hint, skip...), as
+    // the game draws them: for captures compared against in-game screenshots. Same Wireframe rule.
+    bool showToolFaces = true;
     // Labels each point entity with its targetname (entities without one are skipped).
     bool showEntityNames = false;
     // Samples entity icon sprites with nearest filtering instead of linear.
     bool iconNearest = false;
 };
+
+struct SkyVisibilityState {
+    std::uint64_t revision = 0; // Last finished grid; 0 until the first completion.
+    std::uint64_t requestedRevision = 0;
+    bool building = false; // Submitted/running, excludes the debounce interval.
+};
+
+// Supplies the cube texture for an env_cubemap at a world origin, or nothing for the default
+// cube. Called on the main thread while building a Lit draw list, once per rounded origin.
+// 0.6.8 provides editor-built cubemaps through it; apex_render_pose loads a BSP's own.
+using CubemapSource = std::function<std::optional<assets::Texture>(DVec3 origin)>;
 
 class RenderMirror {
   public:
@@ -115,13 +130,17 @@ class RenderMirror {
     void refreshModels();
     // Applies a committed ChangeSet; call after the commit/undo/redo that produced it.
     void apply(const document::Document& document, const document::ChangeSet& changes);
+    // Replaces the probe cube source and releases the cubes it supplied. Without one, every
+    // probe reflects the heap's default cube. rebuild() also loads engine/defaultcubemap into
+    // that default slot (through the MaterialCache's Vfs) until it succeeds once.
+    void setCubemapSource(CubemapSource source);
     void setInstanceContents(std::span<const document::InstanceContent> contents,
                              document::InstanceVisibility visibility = document::InstanceVisibility::Normal);
 
     // Delivers completed jobs and finished material loads, uploads results, and releases retired
     // buffers. Returns true when something visible changed.
     bool pump();
-    // Pumps until no mesh job or material load is pending or the timeout passes. Returns true
+    // Pumps until no mesh job, material load or requested sky grid is pending, or timeout. Returns true
     // when idle. (Tests and headless tools; an interactive app calls pump() per tick.)
     bool settle(std::chrono::milliseconds timeout = std::chrono::seconds(30));
 
@@ -138,6 +157,7 @@ class RenderMirror {
     std::size_t pendingPreviewCount() const;
     void clearPreview();
     bool pending() const;
+    SkyVisibilityState skyVisibilityState() const;
 
     // The returned list borrows the mirror's buffers: draw it before the next pump()/apply().
     DrawList buildDrawList(const MirrorViewOptions& options);

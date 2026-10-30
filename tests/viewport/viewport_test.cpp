@@ -255,3 +255,31 @@ TEST_CASE("camera matrices are finite") {
     const auto o = makePreset(Preset::Top).camera.projectionMatrix(2.0);
     CHECK(o[0][0] == doctest::Approx(1.0 / (512.0 * 2.0)));
 }
+
+TEST_CASE("Source capture FOV and pose use cl_showpos conventions") {
+    Camera camera;
+    camera.fovYDegrees = sourceFovYDegrees(90);
+    CHECK(camera.fovYDegrees == doctest::Approx(73.73979529));
+    const auto half = camera.halfExtents(1920.0 / 1080.0);
+    CHECK(glm::degrees(2 * std::atan(half.x)) == doctest::Approx(106.26020471));
+    CHECK(sourceFovYDegrees(60) == doctest::Approx(46.82644889));
+    camera.position = {-1135.97, -1071.97, 64.03};
+    for (const auto angles : {DVec3(0, 90, 0), DVec3(-90, 0, 0), DVec3(-9.55, 34.85, 0)}) {
+        camera.angles = angles;
+        const auto basis = camera.basis();
+        const auto view = camera.viewMatrix();
+        checkVec(DVec3(view * Vec4(Vec3(basis.forward), 0)), {0, 0, 1}, 1e-6);
+        checkVec(DVec3(view * Vec4(Vec3(basis.right), 0)), {1, 0, 0}, 1e-6);
+        checkVec(DVec3(view * Vec4(Vec3(basis.up), 0)), {0, -1, 0}, 1e-6);
+    }
+    camera.angles = {0, 0, 0};
+    checkVec(camera.forward(), {1, 0, 0});
+    camera.angles = {0, 90, 0};
+    checkVec(camera.forward(), {0, 1, 0});
+    checkVec(DVec3(camera.viewMatrix() * Vec4(1, 0, 0, 0)), {1, 0, 0});
+    checkVec(DVec3(camera.viewMatrix() * Vec4(0, 0, 1, 0)), {0, -1, 0});
+    camera.angles = {-90, 0, 0};
+    checkVec(camera.forward(), {0, 0, 1});
+    checkVec(DVec3(camera.viewMatrix() * Vec4(0, 0, 1, 0)), {0, 0, 1});
+    checkVec(DVec3(camera.viewMatrix() * Vec4(1, 0, 0, 0)), {0, 1, 0});
+}

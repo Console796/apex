@@ -81,9 +81,27 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
         }
         bytes2 = std::move(*second);
     }
+    Blob bumpBytes;
+    if (!material->bumpMap().empty()) {
+        auto bump = impl_->vfs.open(texturePath(material->bumpMap()));
+        if (bump) bumpBytes = std::move(*bump);
+    }
+    const auto optionalBytes = [&](std::string_view textureName) -> Blob {
+        if (textureName.empty()) return {};
+        auto data = impl_->vfs.open(texturePath(textureName));
+        return data ? std::move(*data) : Blob{};
+    };
+    auto mraoBytes = optionalBytes(material->mraoTexture());
+    auto exponentBytes = optionalBytes(material->phongExponentTexture());
+    auto envmapBytes = material->envmapProbe() ? Blob{} : optionalBytes(material->envmap());
+    auto envmapMaskBytes = optionalBytes(material->envmapMask());
+    auto selfIllumMaskBytes = optionalBytes(material->selfIllumMask());
     entry.state = MaterialState::Loading;
     entry.job = impl_->jobs.submit(Priority::Normal,
-        [material = std::move(*material), bytes = std::move(*bytes), bytes2 = std::move(bytes2)]
+        [material = std::move(*material), bytes = std::move(*bytes), bytes2 = std::move(bytes2), bumpBytes = std::move(bumpBytes),
+         mraoBytes = std::move(mraoBytes), exponentBytes = std::move(exponentBytes),
+         envmapBytes = std::move(envmapBytes), envmapMaskBytes = std::move(envmapMaskBytes),
+         selfIllumMaskBytes = std::move(selfIllumMaskBytes)]
         (CancelToken token) mutable -> Result<CachedMaterial> {
             try {
                 if (token.cancelled()) {
@@ -93,13 +111,31 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
                 if (!texture) {
                     return std::unexpected(texture.error());
                 }
-                CachedMaterial result{std::move(material), std::move(*texture), {}};
+                CachedMaterial result{std::move(material), std::move(*texture), {}, {}, {}, {}, {}, {}, {}};
                 if (!result.material.baseTexture2.empty()) {
                     auto second = decodeTexture(bytes2);
                     if (!second) {
                         return std::unexpected(second.error());
                     }
                     result.texture2 = std::move(*second);
+                }
+                // Missing/invalid optional data textures keep the base material usable.
+                const auto decodeLinear = [](const Blob& data) -> std::optional<Texture> {
+                    if (data.empty()) return {};
+                    auto decoded = decodeTexture(data);
+                    if (!decoded) return {};
+                    decoded->srgb = false;
+                    return std::move(*decoded);
+                };
+                result.bumpTexture = decodeLinear(bumpBytes);
+                result.mraoTexture = decodeLinear(mraoBytes);
+                result.phongExponentTexture = decodeLinear(exponentBytes);
+                result.envmapMaskTexture = decodeLinear(envmapMaskBytes);
+                result.selfIllumMaskTexture = decodeLinear(selfIllumMaskBytes);
+                // Colour data: keeps the VTF's own encoding. Anything but a cube is unusable.
+                if (!envmapBytes.empty()) {
+                    auto envmap = decodeTexture(envmapBytes);
+                    if (envmap && envmap->faces >= 6) result.envmapTexture = std::move(*envmap);
                 }
                 return result;
             } catch (const std::exception& e) {
@@ -117,7 +153,13 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
                 loaded.error = result.error().withContext(key);
                 return;
             }
-            loaded.bytes = result->texture.byteSize() + (result->texture2 ? result->texture2->byteSize() : 0);
+            loaded.bytes = result->texture.byteSize() + (result->texture2 ? result->texture2->byteSize() : 0) +
+                           (result->bumpTexture ? result->bumpTexture->byteSize() : 0) +
+                           (result->mraoTexture ? result->mraoTexture->byteSize() : 0) +
+                           (result->phongExponentTexture ? result->phongExponentTexture->byteSize() : 0) +
+                           (result->envmapTexture ? result->envmapTexture->byteSize() : 0) +
+                           (result->envmapMaskTexture ? result->envmapMaskTexture->byteSize() : 0) +
+                           (result->selfIllumMaskTexture ? result->selfIllumMaskTexture->byteSize() : 0);
             impl->resident += loaded.bytes;
             loaded.data = std::make_shared<CachedMaterial>(std::move(*result));
             loaded.state = MaterialState::Ready;
@@ -139,4 +181,11 @@ void MaterialCache::setBudget(std::size_t bytes) {
 }
 std::size_t MaterialCache::residentBytes() const { return impl_->resident; }
 std::shared_ptr<const CachedMaterial> MaterialCache::placeholder() const { return impl_->placeholder; }
+Result<Texture> MaterialCache::loadTexture(std::string_view name) const { return assets::loadTexture(impl_->vfs, name); }
+std::vector<std::string> MaterialCache::requestedNames() const {
+    std::vector<std::string> names;
+    for (const auto& [name, entry] : impl_->entries) names.push_back(name);
+    return names;
+}
+
 } // namespace apex::assets

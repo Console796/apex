@@ -143,14 +143,15 @@ TEST_CASE("sky visibility: buried probes are skipped") {
     const auto grid = buildSkyVisibility(t, {{-256, -256, -256}, {256, 256, 256}});
     CHECK(grid.validCount() == 0);
     CHECK(grid.sample({0, 0, 0}, {0, 0, 1}) == 0.0);
-    // Mixed: probes outside are valid, and a sample in the buried zone borrows the nearest valid one.
+    // Mixed: neighbours in air are renormalised; entirely buried neighbourhoods stay dark.
     Tris ground; // solid from z=-256 up to z=-100, open air above
     quad(ground, {0, 0, -100}, {0, 0, 1}, 1e5);
     quad(ground, {0, 0, -256}, {0, 0, -1}, 1e5);
     const auto open = buildSkyVisibility(ground, {{-256, -256, -256}, {256, 256, 256}});
     CHECK(open.validCount() > 0);
     CHECK(open.validCount() < open.probeCount());
-    CHECK(open.sample({0, 0, -200}, {0, 0, 1}) == doctest::Approx(1.0).epsilon(1e-6));
+    CHECK(open.sample({0, 0, -200}, {0, 0, 1}) == 0.0);
+    CHECK(open.sample({0, 0, -100}, {0, 0, 1}) == doctest::Approx(1.0).epsilon(1e-6));
 }
 
 TEST_CASE("sky visibility: the grid fits the probe cap and results are deterministic") {
@@ -191,4 +192,14 @@ TEST_CASE("sky visibility: the minimum ray count keeps an open sky exact on ever
     const auto grid = buildSkyVisibility(t, {{-512, -512, 0}, {512, 512, 512}}, options);
     for (const DVec3 n : {DVec3{1, 0, 0}, DVec3{-1, 0, 0}, DVec3{0, 1, 0}, DVec3{0, -1, 0}, DVec3{0, 0, 1}})
         CHECK(grid.sample({0, 0, 256}, n) == doctest::Approx(groundTruth(n)).epsilon(1e-6));
+}
+
+TEST_CASE("sky visibility: a cancelled build stops early and returns an empty grid") {
+    SkyVisibilityOptions options;
+    int polls = 0;
+    options.cancelled = [&polls] { return ++polls > 3; };
+    const auto grid = buildSkyVisibility(room(512), box(512), options);
+    CHECK(grid.probeCount() == 0);
+    CHECK(polls == 4);
+    CHECK(grid.sample({0, 0, 0}, {0, 0, 1}) == 0.0);
 }

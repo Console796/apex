@@ -11,6 +11,12 @@ struct CachedMaterial {
     Material material;
     Texture texture; // editor preview (viewport override, tool texture, or base texture)
     std::optional<Texture> texture2;
+    std::optional<Texture> bumpTexture; // Linear data, independently of the VTF colour flag.
+    std::optional<Texture> mraoTexture;
+    std::optional<Texture> phongExponentTexture;
+    std::optional<Texture> envmapTexture;        // Named $envmap cube; never for env_cubemap.
+    std::optional<Texture> envmapMaskTexture;    // Linear data.
+    std::optional<Texture> selfIllumMaskTexture; // Linear data.
 };
 enum class MaterialState { Unloaded, Loading, Ready, Failed };
 
@@ -35,7 +41,12 @@ public:
     std::optional<Error> error(std::string_view name) const;
     void setBudget(std::size_t bytes);
     std::size_t residentBytes() const;
+    // Canonical requested paths, including failed loads, for diagnostics.
+    std::vector<std::string> requestedNames() const;
     std::shared_ptr<const CachedMaterial> placeholder() const;
+    // Synchronous, uncached load and decode of one VTF through the cache's Vfs (owner thread),
+    // for small engine textures such as engine/defaultcubemap.
+    Result<Texture> loadTexture(std::string_view name) const;
 
 private:
     struct Impl;

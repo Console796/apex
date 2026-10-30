@@ -10,6 +10,9 @@
 
 namespace apex::viewport {
 
+// Assumes Source fov is horizontal at 4:3, widened horizontally on wider screens.
+double sourceFovYDegrees(double fovDegrees);
+
 enum class ProjectionKind { Perspective, Orthographic };
 
 // Direction the camera looks along when axis-locked. Free leaves the orientation unconstrained.

@@ -32,6 +32,8 @@ public:
     void clear();
     void setBudget(std::size_t bytes);
     std::size_t residentBytes() const;
+    // Canonical requested paths, including failed loads, for diagnostics.
+    std::vector<std::string> requestedNames() const;
     // A small cube, one submesh with material -1 (no material); the draw tints it with the entity's colour.
     std::shared_ptr<const ModelData> errorModel() const;
 

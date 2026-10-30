@@ -14,6 +14,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -38,6 +39,8 @@ struct SkyVisibilityOptions {
     int rays = 256;                 // sky directions per probe; rounded up to an even count, at least 32
     // A probe is buried in solid space when more than this fraction of its rays first hit a back face.
     double solidFraction = 0.5;
+    // Polled once per probe; when it returns true the build stops and returns an empty grid.
+    std::function<bool()> cancelled;
 };
 
 // The fixed stratified direction set: unit vectors, equal solid angle per ray, symmetric about the
@@ -68,7 +71,7 @@ public:
     // Gated sky ambient response for a surface at `point` facing the unit `normal`:
     // skyAmbientResponse(normal.z) times the visibility ratio, trilinear between the eight surrounding
     // probes, each blended by ambientCubeResponse. Invalid probes are skipped and the weights
-    // renormalised; if all eight are invalid the nearest valid probe is used, and 0 if there is none.
+    // renormalised; if all eight are invalid the response is 0 (also on the GPU).
     // Multiply the ambient light's intensity by this. Exact for every normal under a fully open sky.
     double sample(DVec3 point, DVec3 normal) const;
 

@@ -225,6 +225,17 @@ struct Renderer::Impl {
     // Swapchains have one frame in flight and distinct command buffers. A slot is reused only
     // after its fence, so host writes cannot race another viewport or an earlier submission.
     std::map<VkCommandBuffer, Buffer> frameBuffers;
+    // The sky grid is immutable per revision: each slot re-uploads only when a different grid arrives.
+    struct SkySlot {
+        Buffer buffer;
+        std::shared_ptr<const lighting::SkyVisibilityGrid> grid;
+    };
+    std::map<VkCommandBuffer, SkySlot> skyBuffers; // Same slot discipline as frameBuffers.
+    struct MaterialSlot {
+        Buffer buffer;
+        std::uint64_t revision = ~std::uint64_t{0};
+    };
+    std::map<VkCommandBuffer, MaterialSlot> materialBuffers;
     std::shared_ptr<const GlyphAtlas> atlas;
     std::map<VkCommandBuffer, Buffer> overlayBuffers; // Same slot discipline as frameBuffers.
 #ifdef APEX_SHADER_DIR
@@ -232,7 +243,7 @@ struct Renderer::Impl {
 #endif
 
     ~Impl() {
-        if (!frameBuffers.empty() || !overlayBuffers.empty()) context->waitIdle();
+        if (!frameBuffers.empty() || !overlayBuffers.empty() || !skyBuffers.empty()) context->waitIdle();
         destroyPipelines();
         if (layout) vkDestroyPipelineLayout(context->device(), layout, nullptr);
     }
@@ -538,7 +549,58 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
     Impl& s = *impl_;
     const VkDeviceSize lightOffset = sizeof(FrameBlock);
     const VkDeviceSize previewOffset = lightOffset + list.lights.size() * sizeof(GpuLight);
-    const VkDeviceSize size = previewOffset + list.previews.size() * sizeof(PreviewTransform);
+    const VkDeviceSize cubemapOffset = previewOffset + list.previews.size() * sizeof(PreviewTransform);
+    const VkDeviceSize size = cubemapOffset + list.cubemaps.size() * sizeof(GpuCubemapProbe);
+    const auto* sky = list.skyVisibility.get();
+    VkDeviceAddress skyAddress = 0;
+    if (sky && sky->probeCount() > 0) {
+        Impl::SkySlot& slot = s.skyBuffers[commands];
+        if (slot.grid != list.skyVisibility) {
+            const VkDeviceSize skySize = sky->probeCount() * sizeof(GpuSkyProbe);
+            if (slot.buffer.size() < skySize) {
+                auto created = Buffer::create(*s.context, {skySize,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+                if (!created) {
+                    log::error("sky buffer: {}", created.error().what());
+                    return false;
+                }
+                slot.buffer = std::move(*created);
+            }
+            auto* probes = static_cast<std::byte*>(slot.buffer.mapped());
+            const auto dims = sky->dims();
+            std::size_t index = 0;
+            for (int z = 0; z < dims.z; ++z)
+                for (int y = 0; y < dims.y; ++y)
+                    for (int x = 0; x < dims.x; ++x) {
+                        const auto packed = packSkyProbe(sky->probe(x, y, z));
+                        std::memcpy(probes + index++ * sizeof(GpuSkyProbe), &packed, sizeof(packed));
+                    }
+            slot.buffer.flush(0, skySize);
+            slot.grid = list.skyVisibility;
+        }
+        skyAddress = slot.buffer.deviceAddress();
+    }
+    VkDeviceAddress materialAddress = 0;
+    const auto materials = s.heap->materials();
+    if (list.mode == DisplayMode::Lit && !materials.empty()) {
+        auto& slot = s.materialBuffers[commands];
+        if (slot.revision != s.heap->materialRevision()) {
+            const auto bytes = materials.size_bytes();
+            if (slot.buffer.size() < bytes) {
+                auto created = Buffer::create(*s.context, {bytes,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+                if (!created) {
+                    log::error("material buffer: {}", created.error().what());
+                    return false;
+                }
+                slot.buffer = std::move(*created);
+            }
+            std::memcpy(slot.buffer.mapped(), materials.data(), bytes);
+            slot.buffer.flush(0, bytes);
+            slot.revision = s.heap->materialRevision();
+        }
+        materialAddress = slot.buffer.deviceAddress();
+    }
     Buffer& buffer = s.frameBuffers[commands];
     if (buffer.size() < size) {
         auto created = Buffer::create(*s.context, {std::max(size, buffer.size() * 2),
@@ -555,8 +617,13 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
     frame.lights = buffer.deviceAddress() + lightOffset;
     frame.lightCount = static_cast<std::uint32_t>(list.lights.size());
     frame.flags = list.fullbright ? 1u : 0u;
+    frame.materials = materialAddress;
+    frame.materialCount = materialAddress ? static_cast<std::uint32_t>(materials.size()) : 0;
+    frame.cubemaps = list.cubemaps.empty() ? 0 : buffer.deviceAddress() + cubemapOffset;
+    frame.cubemapCount = static_cast<std::uint32_t>(list.cubemaps.size());
     frame.cameraRight = Vec4(list.view.cameraRight, 0);
     frame.cameraUp = Vec4(list.view.cameraUp, 0);
+    if (skyAddress) packSkyGrid(frame, *sky, skyAddress, list.view.cameraPosition);
     std::memcpy(bytes, &frame, sizeof(frame));
     for (std::size_t i = 0; i < list.lights.size(); ++i) {
         const auto light = packLight(list.lights[i], list.view.cameraPosition);
@@ -566,6 +633,11 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
         const auto& preview = list.previews[i];
         const auto packed = cameraRelativePreview(preview.matrix, preview.origin, list.view.cameraPosition);
         std::memcpy(bytes + previewOffset + i * sizeof(PreviewTransform), &packed, sizeof(packed));
+    }
+    for (std::size_t i = 0; i < list.cubemaps.size(); ++i) {
+        const Vec3 position(list.cubemaps[i].position - list.view.cameraPosition);
+        const GpuCubemapProbe probe{{position.x, position.y, position.z}, list.cubemaps[i].cube};
+        std::memcpy(bytes + cubemapOffset + i * sizeof(GpuCubemapProbe), &probe, sizeof(probe));
     }
     buffer.flush(0, size);
     return true;

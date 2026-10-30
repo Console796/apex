@@ -73,9 +73,10 @@ struct ImageDesc {
     std::uint32_t arrayLayers = 1; // > 1 creates a 2D array view.
     VkImageUsageFlags usage = 0;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    bool cube = false; // Cube-compatible with a cube view; needs six square layers.
 };
 
-// Device-local 2D image with a full-range view (aspect from the format). Layout tracking is the
+// Device-local 2D (or cube) image with a full-range view (aspect from the format). Layout tracking is the
 // caller's job; the image starts in VK_IMAGE_LAYOUT_UNDEFINED.
 class Image {
   public:

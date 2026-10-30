@@ -2,6 +2,9 @@
 #include "render/gpu_lighting.hpp"
 #include "render/test_shaders_spv.hpp"
 #include "shared_context.hpp"
+#include "sky_fixture.hpp"
+#include "lighting/normal_map.hpp"
+#include "lighting/specular.hpp"
 
 #include <doctest/doctest.h>
 
@@ -103,23 +106,51 @@ TEST_CASE("render: sampled depth comparison uses reversed-Z and compute floats r
     CHECK(context->validation().errorCount() == 0);
 }
 
-TEST_CASE("render: light GLSL transcription matches CPU irradiance") {
+TEST_CASE("render: light normal and specular material GLSL transcription matches CPU model") {
     Context* context = testing::sharedContext();
     if (!context) { MESSAGE("Skipped: no Vulkan 1.3 device"); return; }
     context->validation().clear();
-    struct alignas(16) Sample { GpuLight light; Vec4 point; Vec4 normal; };
-    static_assert(sizeof(Sample) == 112);
+    struct alignas(16) Sample {
+        GpuLight light; Vec4 point; Vec4 normal;
+        VkDeviceAddress frame; std::uint32_t pad[2]{};
+        Vec4 texel{}, dpdx{}, dpdy{}, uv{};
+        GpuMaterial material{};
+    };
+    static_assert(sizeof(Sample) == 320);
+    static_assert(offsetof(Sample, material) == 192);
+    const auto grid = testing::skyRoomGrid();
+    REQUIRE(grid.validCount() > 0);
+    REQUIRE(grid.validCount() < grid.probeCount());
+    std::vector<GpuSkyProbe> packed;
+    const auto dims = grid.dims();
+    for (int z = 0; z < dims.z; ++z)
+        for (int y = 0; y < dims.y; ++y)
+            for (int x = 0; x < dims.x; ++x) packed.push_back(packSkyProbe(grid.probe(x, y, z)));
+    auto probes = Buffer::create(*context, {packed.size() * sizeof(GpuSkyProbe),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+    auto frames = Buffer::create(*context, {2 * sizeof(FrameBlock),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
+    REQUIRE(probes); REQUIRE(frames);
+    std::memcpy(probes->mapped(), packed.data(), packed.size() * sizeof(GpuSkyProbe));
+    probes->flush();
+    const DVec3 camera{31, -73, 19};
+    std::array<FrameBlock, 2> frameData{};
+    packSkyGrid(frameData[1], grid, probes->deviceAddress(), camera);
+    std::memcpy(frames->mapped(), frameData.data(), sizeof(frameData));
+    frames->flush();
     std::vector<Sample> samples;
     std::vector<DVec3> expected;
     std::mt19937 random(0x644);
     std::uniform_real_distribution<double> unit(-1, 1), positive(0.1, 1);
     const auto direction = [&]() { return glm::normalize(DVec3(unit(random), unit(random), unit(random))); };
-    const auto add = [&](lighting::Light light, DVec3 point, DVec3 normal) {
+    const auto add = [&](lighting::Light light, DVec3 point, DVec3 normal, bool sky = false) {
         // Probe positions/normals are explicitly float inputs; the model still evaluates in double.
         point = DVec3(Vec3(point));
         normal = DVec3(Vec3(normal));
-        samples.push_back({packLight(light, DVec3(0)), Vec4(Vec3(point), 0), Vec4(Vec3(normal), 0)});
-        expected.push_back(light.directMode == 0 || light.kind == lighting::LightKind::Ambient ? DVec3(0) :
+        samples.push_back({packLight(light, camera), Vec4(Vec3(point - camera), 0), Vec4(Vec3(normal), 0),
+                           frames->deviceAddress() + (sky ? sizeof(FrameBlock) : 0), {}});
+        expected.push_back(light.directMode == 0 ? DVec3(0) : light.kind == lighting::LightKind::Ambient ?
+                           light.intensity * (sky ? grid.sample(point, normal) : 0.0) :
                            lighting::irradiance(light, point, normal));
     };
     for (int i = 0; i < 600; ++i) {
@@ -171,8 +202,100 @@ TEST_CASE("render: light GLSL transcription matches CPU irradiance") {
     for (const DVec3 normal : {DVec3(0, 0, 1), DVec3(1, 0, 0), DVec3(0, 0, -1)})
         add(edge, {0, 0, 0}, normal);
     edge.kind = lighting::LightKind::Ambient;
-    add(edge, {0, 0, 0}, {0, 0, 1}); // Ambient waits for D16; no accidental fill.
+    add(edge, {0, 0, 0}, {0, 0, 1}); // No grid: no accidental fill.
+    for (int i = 0; i < 1000; ++i)
+        add(edge, {512 + unit(random) * 1000, unit(random) * 400, 256 + unit(random) * 400}, direction(), true);
+    for (const DVec3 point : {DVec3(0, 0, 0), DVec3(1024, 0, 0), DVec3(512, 0, 256)})
+        for (const DVec3 normal : {DVec3(0, 0, 1), DVec3(1, 0, 0), DVec3(0, 0, -1)})
+            add(edge, point, normal, true);
+    edge.directMode = 0;
+    add(edge, {0, 0, 0}, {0, 0, 1}, true);
 
+    for (int i = 0; i < 400; ++i) {
+        Sample sample{};
+        sample.pad[0] = i % 3 == 0 ? 1u : 0u;
+        sample.texel = Vec4(Vec3(positive(random), positive(random), positive(random)), float(1 + i % 4));
+        sample.normal = Vec4(Vec3(direction()), 0);
+        sample.dpdx = Vec4(Vec3(direction() * 4.0), 0);
+        sample.dpdy = Vec4(Vec3(direction() * 3.0), 0);
+        sample.uv = Vec4(float(unit(random)), float(unit(random)), float(unit(random)), float(unit(random)));
+        if (i % 11 == 0) sample.uv = Vec4(0); // Collapsed UVs.
+        if (i % 13 == 0) sample.texel = Vec4(i % 2 == 0 ? Vec3(0) : Vec3(0.5f), sample.texel.w);
+        auto normal = lighting::decodeNormal(DVec3(sample.texel), sample.texel.w == 2 || sample.texel.w == 4, sample.pad[0] != 0);
+        if (sample.texel.w >= 3) normal = lighting::perturbNormal(DVec3(sample.normal), DVec3(sample.dpdx),
+            DVec3(sample.dpdy), DVec2(sample.uv), DVec2(sample.uv.z, sample.uv.w), normal);
+        samples.push_back(sample);
+        expected.push_back(normal);
+    }
+    for (int i = 0; i < 640; ++i) {
+        Sample s{};
+        s.pad[1] = 1u + i % 4; // GGX, phong; then each with measured light irradiance.
+        s.normal = Vec4(Vec3(direction()), 0);
+        s.dpdx = Vec4(Vec3(direction()), 0); // view
+        s.dpdy = Vec4(Vec3(direction()), 0); // to light
+        s.texel = Vec4(float(positive(random)), float(positive(random)), float(positive(random)), float(positive(random)));
+        s.material.mraoScale = Vec4(float(positive(random)), float(positive(random)), 1, 0);
+        s.material.phongParams = Vec4(float(positive(random) * 150), float(positive(random) * 4), 0, 0);
+        s.material.phongFresnel = Vec4(0.1f, 0.3f, 0.9f, 0);
+        s.material.phongTint = Vec4(0.2f, 0.5f, 0.9f, 0);
+        s.material.phongExponentSlot = (i / 4) % 2 == 0 ? kNoTexture : 0u;
+        s.uv.x = float(positive(random)); // Synthetic exponent-texture R.
+        if (i < 16) {
+            s.normal = s.dpdx = s.dpdy = Vec4(0, 0, 1, 0);
+            s.material.mraoScale = Vec4(float(i % 2), i < 8 ? 0.0f : 1.0f, 1, 0);
+            s.uv.x = float(i % 2);
+        }
+        lighting::Light light;
+        light.kind = static_cast<lighting::LightKind>(i % 5 == 4 ? 5 : 1 + i % 3);
+        light.intensity = DVec3(0.5, 0.7, 1);
+        light.origin = DVec3(Vec3(s.dpdy)) * 40.0;
+        light.direction = -DVec3(Vec3(s.dpdy));
+        light.constant = 1;
+        light.stopdot = 0.9;
+        light.stopdot2 = 0.5;
+        light.exponent = 2;
+        light.directMode = i % 7 == 0 ? 0 : 1;
+        s.light = packLight(light, DVec3(0));
+        s.frame = frames->deviceAddress(); // Ambient without a grid contributes zero.
+        const DVec3 n(s.normal), v(s.dpdx), l(s.dpdy);
+        const auto& m = s.material;
+        DVec3 brdf = s.pad[1] % 2 == 1 ?
+            lighting::ggxBrdf(n, v, l, DVec3(s.texel), m.mraoScale.x, m.mraoScale.y) :
+            lighting::phongBrdf(n, v, l, m.phongExponentSlot == kNoTexture ? m.phongParams.x :
+                lighting::phongTextureExponent(s.uv.x), m.phongParams.y, DVec3(m.phongFresnel),
+                DVec3(m.phongTint), s.texel.w);
+        if (s.pad[1] > 2) {
+            const auto energy = light.directMode == 0 || light.kind == lighting::LightKind::Ambient ? DVec3(0) :
+                lighting::irradiance(light, DVec3(0), n);
+            brdf = lighting::specularIrradiance(energy, glm::dot(n, l), brdf);
+        }
+        samples.push_back(s);
+        expected.push_back(brdf);
+    }
+    // Envmap BRDF fit with light scale (5), non-PBR mask selection (6) and self-illumination (7).
+    for (int i = 0; i < 600; ++i) {
+        Sample s{};
+        s.pad[1] = 5u + i % 3;
+        s.texel = Vec4(float(positive(random)), float(positive(random)), float(positive(random)), float(positive(random)));
+        s.dpdx = Vec4(float(positive(random) * 3), float(positive(random)), float(positive(random)), 0);
+        s.uv = Vec4(float(unit(random) * 0.6 + 0.5), float(unit(random) * 0.6 + 0.5), 0, 0); // Includes out-of-range.
+        if (i < 30) s.uv = Vec4(float(i % 3) * 0.5f, float((i / 3) % 5) * 0.25f, 0, 0); // Endpoints and knots.
+        auto& m = s.material;
+        m.flags = (i / 3) % 4 == 1 ? kMaterialNormalAlphaEnvmapMask : (i / 3) % 4 == 2 ? kMaterialBaseAlphaEnvmapMask :
+                  (i / 3) % 4 == 3 ? kMaterialNormalAlphaEnvmapMask | kMaterialBaseAlphaEnvmapMask : 0u;
+        m.envmapMaskSlot = (i / 12) % 2 == 0 ? kNoTexture : 3u;
+        m.selfIllumMaskSlot = (i / 6) % 2 == 0 ? kNoTexture : 4u;
+        m.envmapTint = Vec4(float(positive(random)), float(positive(random)), float(positive(random)), float(positive(random)));
+        m.selfIllumTint = Vec4(float(positive(random)), float(positive(random)), float(positive(random)), 0);
+        const DVec3 texel(s.texel), maskTexel(s.dpdx), envTint(m.envmapTint);
+        DVec3 value = s.pad[1] == 5 ?
+            lighting::envBrdf(texel, s.uv.x, s.uv.y) * lighting::envmapLightScale(maskTexel, m.envmapTint.w) :
+            s.pad[1] == 6 ? envTint * lighting::envmapMask(m.envmapMaskSlot != kNoTexture, maskTexel,
+                (m.flags & kMaterialNormalAlphaEnvmapMask) != 0, s.uv.x, (m.flags & kMaterialBaseAlphaEnvmapMask) != 0, s.texel.w) :
+            DVec3(m.selfIllumTint) * lighting::selfIllumMask(m.selfIllumMaskSlot != kNoTexture, s.uv.y, s.texel.w);
+        samples.push_back(s);
+        expected.push_back(value);
+    }
     auto input = Buffer::create(*context, {samples.size() * sizeof(Sample),
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::Upload});
     auto output = Buffer::create(*context, {samples.size() * sizeof(Vec4),
@@ -213,9 +336,23 @@ TEST_CASE("render: light GLSL transcription matches CPU irradiance") {
         for (int c = 0; c < 3; ++c) {
             CAPTURE(c);
             // The 1e-3 floor allows 1e-7 absolute error at float cone/horizon boundaries.
-            CHECK(std::abs(values[i][c] - expected[i][c]) <= 1e-4 * std::max(expected[i][c], 1e-3));
+            CHECK(std::abs(values[i][c] - expected[i][c]) <= 1e-4 * std::max(std::abs(expected[i][c]), 1e-3));
         }
     }
     for (const auto& error : context->validation().errors()) MESSAGE(error);
     CHECK(context->validation().errorCount() == 0);
+}
+
+TEST_CASE("material normal model preserves flat normals slopes and mirrored texture axes") {
+    CHECK(lighting::decodeNormal({0.5, 0.5, 1}, false) == DVec3(0, 0, 1));
+    CHECK(lighting::decodeNormal({0, 0, 0}, true) == DVec3(0, 0, 1));
+    CHECK(glm::length(lighting::decodeNormal({1, 1, 1}, true) - DVec3(0, 0, 1)) < 1e-12);
+    CHECK(lighting::decodeNormal({0.5, 0.5, 0}, false, true) == DVec3(0, 0, 1));
+    CHECK(lighting::decodeNormal({0.5, 1, 0.5}, false) == DVec3(0, 1, 0));
+    for (double mirror : {-1.0, 1.0}) {
+        const DVec3 slope = glm::normalize(DVec3(0.3, 0.7, 1));
+        const auto normal = lighting::perturbNormal({0, 0, 1}, {2, 0, 0}, {0, 3, 0},
+            {mirror * 0.25, 0}, {0, 2}, slope);
+        CHECK(glm::length(normal - DVec3(mirror * slope.x, slope.y, slope.z)) < 1e-12);
+    }
 }

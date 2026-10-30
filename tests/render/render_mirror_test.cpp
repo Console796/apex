@@ -65,6 +65,19 @@ void writeVtf(const std::filesystem::path& path, bool checker, std::array<std::u
     REQUIRE(vtf.bake(path));
 }
 
+void writeCubeVtf(const std::filesystem::path& path) {
+    std::vector<std::byte> pixels(8 * 8 * 4, std::byte{200});
+    vtfpp::VTF::CreationOptions options;
+    options.version = 6;
+    options.outputFormat = vtfpp::ImageFormat::RGBA8888;
+    options.isCubeMap = true;
+    options.computeThumbnail = false;
+    options.computeReflectivity = false;
+    auto vtf = vtfpp::VTF::create(pixels, vtfpp::ImageFormat::RGBA8888, 8, 8, options);
+    REQUIRE(vtf.getFaceCount() == 6);
+    REQUIRE(vtf.bake(path));
+}
+
 struct Gpu {
     GameTree tree;
     JobPool jobs{2};
@@ -97,10 +110,43 @@ Gpu* gpu() {
         // two nodraw spellings (by name, and by %compilenodraw alone).
         g->tree.put("materials/test/glass.vmt", "UnlitGeneric { $basetexture test/glass $translucent 1 }");
         g->tree.put("materials/test/cutout.vmt", "UnlitGeneric { $basetexture test/cutout $alphatest 1 }");
+        g->tree.put("materials/test/sky.vmt", "UnlitGeneric { $basetexture test/blue %compilesky 1 }");
         g->tree.put("materials/test/skipped.vmt", "UnlitGeneric { $basetexture test/blue %compilenodraw 1 }");
         g->tree.put("materials/tools/toolsnodraw.vmt", "UnlitGeneric { $basetexture test/blue }");
         writeVtf(g->tree.root / "materials/test/glass.vtf", false, {0, 255, 0}, 128);
         writeVtf(g->tree.root / "materials/test/cutout.vtf", false, {0, 255, 0}, 0);
+        for (const auto& [name, shader] : {std::pair{"lmg", "LightmappedGeneric"},
+                {"vlg", "VertexLitGeneric"}, {"wvt", "WorldVertexTransition"}, {"unlit", "UnlitGeneric"}})
+            g->tree.put(std::string("materials/test/bumped_") + name + ".vmt",
+                std::string(shader) + " { $basetexture test/floor $bumpmap test/normal $ssbump 1 }");
+        writeVtf(g->tree.root / "materials/test/normal.vtf", false, {128, 230, 200});
+        g->tree.put("materials/test/specular_model.vmt", R"(PBR {
+            $model 1 $mraoscale "[0.9 1 1]" $envmaptint 0.5 $envmap env_cubemap
+        })");
+        g->tree.put("materials/test/specular_default.vmt", R"(patch {
+            include test/specular_model replace { $model 0 }
+        })");
+        g->tree.put("materials/test/specular_pbr.vmt", R"(patch {
+            include test/specular_default insert {
+                $basetexture test/floor $bumpmap test/normal $mraotexture test/floor
+            }
+        })");
+        g->tree.put("materials/test/specular_phong.vmt", R"(VertexLitGeneric {
+            $basetexture test/floor $bumpmap test/normal $phong 1 $phongexponent 42 $phongboost 2
+            $phongexponenttexture test/normal $phongfresnelranges "[0.1 0.3 0.9]"
+            $phongtint "[0.2 0.4 0.6]" $basemapalphaphongmask 1
+        })");
+        // Environment maps: a probe material with both masks and self-illumination, and a named cube.
+        g->tree.put("materials/test/env_probe.vmt", R"(LightmappedGeneric {
+            $basetexture test/floor $envmap ENV_CubeMap $envmaptint "[0.5 0.25 1]" $envmapmask test/green
+            $selfillum 1 $selfillumtint "[2 1 0.5]" $selfillummask test/blue
+        })");
+        g->tree.put("materials/test/env_named.vmt", R"(VertexLitGeneric {
+            $basetexture test/floor $envmap test/cube $basealphaenvmapmask 1
+        })");
+        writeCubeVtf(g->tree.root / "materials/test/cube.vtf");
+        g->tree.put("materials/test/env_lmg.vmt", "LightmappedGeneric { $basetexture test/floor $envmap env_cubemap }");
+        g->tree.put("materials/test/plain_lmg.vmt", "LightmappedGeneric { $basetexture test/floor }");
         assets::GameProfile profile;
         profile.gameDirectory = g->tree.root;
         auto vfs = assets::Vfs::load(profile, g->jobs);
@@ -958,6 +1004,22 @@ TEST_CASE("mirror: showNodraw filters nodraw fills by name or %compilenodraw") {
     CHECK(list.outlines.size() == 1);
 }
 
+TEST_CASE("mirror: showToolFaces hides tools fills except sky") {
+    REQUIRE_GPU();
+    Scene scene(*g, boxesDocument({{"test/red", {0, 0, 0, 32, 32, 32}},
+                                   {"tools/toolstrigger", {64, 0, 0, 96, 32, 32}},
+                                   {"TOOLS/ToolsClip", {128, 0, 0, 160, 32, 32}},
+                                   {"tools/toolsskybox", {192, 0, 0, 224, 32, 32}}}));
+    MirrorViewOptions options;
+    for (const auto mode : {DisplayMode::Lit, DisplayMode::Textured, DisplayMode::Wireframe}) {
+        options.mode = mode;
+        options.showToolFaces = true;
+        CHECK(scene.mirror.buildDrawList(options).meshes.size() == 4);
+        options.showToolFaces = false;
+        CHECK(scene.mirror.buildDrawList(options).meshes.size() == (mode == DisplayMode::Wireframe ? 4u : 2u));
+    }
+}
+
 TEST_CASE("mirror: translucent and alpha-tested textures render through the pass") {
     REQUIRE_GPU();
     // Camera at x = -100 looking down +x; the red wall is behind a front box in the middle.
@@ -1521,6 +1583,41 @@ TEST_CASE("Instance mirror opened hidden does not request frames forever") {
     CHECK(mirror.needsRedraw());
 }
 
+TEST_CASE("mirror: model entities draw in their defaultanim sequence's first frame") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    REQUIRE_GPU();
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    profile.addons.list = assets::AddonSettings::List::Game;
+    auto loadedVfs = assets::Vfs::load(profile, g->jobs); REQUIRE(loadedVfs);
+    constexpr auto model = "models/pbr/test_chambers/l2_testchmb_door.mdl";
+    if (!loadedVfs->exists(model)) { MESSAGE("Skipped: EverythingPBR is not mounted"); return; }
+    assets::MaterialCache materials(*loadedVfs, g->jobs);
+    assets::ModelCache models(*loadedVfs, g->jobs);
+    const auto render = [&](std::string_view anim) {
+        auto file = vmf::parse(std::string(R"(entity { classname prop_testchamber_door model ")") + model +
+                               "\" defaultanim \"" + std::string(anim) + "\" }");
+        REQUIRE(file);
+        document::Document doc(std::move(*file));
+        RenderMirror mirror(*g->context, *g->heap, g->jobs, materials, nullptr, &models,
+                            [&](const std::string& path) { return loadedVfs->exists(path); });
+        mirror.rebuild(doc);
+        REQUIRE(mirror.settle());
+        // The door's leaves span y = -64..64 in its own frame; view its face from +x and from -x.
+        auto front = drawFrame(*g, mirror, DisplayMode::Textured, false, makeView({200.0, 0.0, 64.0}, {0.0, 180.0, 0.0}));
+        auto back = drawFrame(*g, mirror, DisplayMode::Textured, false, makeView({-200.0, 0.0, 64.0}, {0.0, 0.0, 0.0}));
+        front.pixels.insert(front.pixels.end(), back.pixels.begin(), back.pixels.end());
+        return front.pixels;
+    };
+    const auto bind = render("");
+    const auto closed = render("idleclose");
+    CHECK(closed != bind);
+    // Sequence names match case-insensitively; an unknown name keeps the static pose.
+    CHECK(render("IdleClose") == closed);
+    CHECK(render("no_such_sequence") == bind);
+}
+
 TEST_CASE("Instance corpus draws every resolvable nested template and reports largest map cost") {
     const auto paths = editor_test::corpusPaths();
     if (paths.empty()) { MESSAGE("APEX_P2CE_DIR unset; skipping instance drawing corpus"); return; }
@@ -1768,4 +1865,383 @@ TEST_CASE("mirror: light entities use class defaults live keys and named targets
     tx.setKeyValue(*findEntity(*scene.doc, "light"), "origin", "70 80 90");
     tx.commit();
     CHECK(scene.mirror.buildDrawList(options).lights[0].origin == DVec3(70, 80, 90));
+}
+
+namespace {
+std::string skyBrushRoom(const std::string& ceiling, const std::string& owner = {}) {
+    std::string text = "world { id 1 classname worldspawn\n";
+    text += boxSolid(2, {-272, -272, -16}, {272, 272, 0}, "tools/toolsnodraw");
+    text += boxSolid(3, {-272, -272, 0}, {-256, 272, 512}, "test/red");
+    text += boxSolid(4, {256, -272, 0}, {272, 272, 512}, "test/red");
+    text += boxSolid(5, {-256, -272, 0}, {256, -256, 512}, "test/red");
+    text += boxSolid(6, {-256, 256, 0}, {256, 272, 512}, "test/red");
+    const auto roof = boxSolid(7, {-272, -272, 512}, {272, 272, 528}, ceiling);
+    if (owner.empty()) text += roof;
+    text += "}\n";
+    if (!owner.empty()) text += "entity { id 8 classname " + owner + "\n" + roof + "}\n";
+    return text;
+}
+const char* skyEnvironment = R"(entity { id 9 classname light_environment _light "0 0 0 0" _ambient "255 255 255 255" })";
+} // namespace
+
+TEST_CASE("mirror: sky visibility stays lazy and a sealed ambient room rebuilds after edits") {
+    REQUIRE_GPU();
+    Scene scene(*g, documentOf(skyBrushRoom("tools/toolsnodraw") + skyEnvironment));
+    CHECK(scene.mirror.skyVisibilityState().revision == 0);
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Textured;
+    CHECK_FALSE(scene.mirror.buildDrawList(options).skyVisibility);
+    REQUIRE(scene.mirror.settle());
+    CHECK(scene.mirror.skyVisibilityState().revision == 0);
+    options.mode = DisplayMode::Lit;
+    CHECK_FALSE(scene.mirror.buildDrawList(options).skyVisibility);
+    auto ortho = options;
+    ortho.mode = DisplayMode::Flat;
+    scene.mirror.buildDrawList(ortho); // A later non-Lit view must preserve pending Lit demand.
+    REQUIRE(scene.mirror.settle());
+    const auto sealed = scene.mirror.buildDrawList(options).skyVisibility;
+    REQUIRE(sealed);
+    REQUIRE(sealed->validCount() > 0);
+    CHECK_FALSE(scene.mirror.buildDrawList(ortho).skyVisibility); // Only Lit uploads the grid.
+    for (int z = 0; z < sealed->dims().z; ++z)
+        for (int y = 0; y < sealed->dims().y; ++y)
+            for (int x = 0; x < sealed->dims().x; ++x)
+                for (float value : sealed->probe(x, y, z).cube.value) CHECK(value == 0);
+    const auto revision = scene.mirror.skyVisibilityState().revision;
+    // Remove just the roof. The last finished grid stays available through debounce and work.
+    const auto roof = findSolid(*scene.doc, "tools/toolsnodraw");
+    REQUIRE(roof);
+    auto tx = scene.doc->begin("open sky");
+    tx.destroy(*roof);
+    tx.commit();
+    CHECK(scene.mirror.skyVisibilityState().requestedRevision > revision);
+    CHECK(scene.mirror.buildDrawList(options).skyVisibility == sealed);
+    REQUIRE(scene.mirror.settle());
+    const auto open = scene.mirror.buildDrawList(options).skyVisibility;
+    REQUIRE(open);
+    CHECK(open != sealed);
+    CHECK(scene.mirror.skyVisibilityState().revision > revision);
+    CHECK_FALSE(scene.mirror.skyVisibilityState().building);
+    CHECK(open->sample({0, 0, 32}, {0, 0, 1}) > 0.1);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: sky material and brush entity choices match light visibility") {
+    REQUIRE_GPU();
+    std::string material = "test/red", owner;
+    bool dark = false;
+    SUBCASE("named sky") { material = "TOOLS/TOOLSSKYBOX2D"; }
+    SUBCASE("compile sky") { material = "test/sky"; }
+    SUBCASE("trigger") { material = "tools/toolstrigger"; }
+    SUBCASE("clip") { material = "tools/toolsplayerclip"; }
+    SUBCASE("nodraw blocks") { material = "tools/toolsnodraw"; dark = true; }
+    SUBCASE("compile nodraw blocks") { material = "test/skipped"; dark = true; }
+    SUBCASE("unknown tools block") { material = "tools/toolsblack"; dark = true; }
+    SUBCASE("detail blocks") { owner = "func_detail"; dark = true; }
+    SUBCASE("brush omitted") { owner = "func_brush"; }
+    Scene scene(*g, documentOf(skyBrushRoom(material, owner) + skyEnvironment));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    scene.mirror.buildDrawList(options);
+    REQUIRE(scene.mirror.settle());
+    const auto grid = scene.mirror.buildDrawList(options).skyVisibility;
+    REQUIRE(grid);
+    const double response = grid->sample({0, 0, 32}, {0, 0, 1});
+    if (dark) CHECK(response == 0);
+    else CHECK(response > 0.1);
+}
+
+TEST_CASE("mirror: Lit without ambient does not build sky visibility") {
+    REQUIRE_GPU();
+    Scene scene(*g, documentOf(skyBrushRoom("test/red")));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    CHECK_FALSE(scene.mirror.buildDrawList(options).skyVisibility);
+    REQUIRE(scene.mirror.settle());
+    CHECK(scene.mirror.skyVisibilityState().revision == 0);
+    CHECK_FALSE(scene.mirror.skyVisibilityState().building);
+}
+
+TEST_CASE("mirror: material normal records share base slots and retire with their textures") {
+    REQUIRE_GPU();
+    std::string family = "lmg";
+    SUBCASE("LightmappedGeneric") {}
+    SUBCASE("VertexLitGeneric") { family = "vlg"; }
+    SUBCASE("WorldVertexTransition first layer") { family = "wvt"; }
+    SUBCASE("unsupported shader stays base only") { family = "unlit"; }
+    auto text = readFixture("render_map.vmf");
+    const std::string name = "test/bumped_" + family;
+    for (std::size_t at = 0; (at = text.find("test/red", at)) != std::string::npos; at += name.size())
+        text.replace(at, 8, name);
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    std::vector<TextureSlot> slots;
+    const auto live = g->heap->liveTextures();
+    {
+        Scene scene(*g, std::make_unique<document::Document>(*parsed));
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Lit;
+        const auto list = scene.mirror.buildDrawList(options);
+        bool found = false;
+        for (const auto& mesh : list.meshes) {
+            REQUIRE(mesh.texture < g->heap->materials().size());
+            const auto record = g->heap->materials()[mesh.texture];
+            CHECK(record.baseSlot == mesh.texture);
+            slots.push_back(mesh.texture);
+            if ((record.flags & kMaterialHasBump) != 0u) {
+                found = true;
+                CHECK(record.bumpSlot != kNoTexture);
+                CHECK(record.bumpSlot != mesh.texture);
+                CHECK((record.flags & kMaterialSsbump) != 0u);
+            }
+        }
+        CHECK(found == (family != "unlit"));
+        const auto revision = g->heap->materialRevision();
+        scene.mirror.buildDrawList(options);
+        CHECK(g->heap->materialRevision() == revision);
+    }
+    for (const auto slot : slots) CHECK(g->heap->materials()[slot].flags == 0);
+    CHECK(g->heap->liveTextures() == live);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: specular material records resolve patches and retire optional texture slots") {
+    REQUIRE_GPU();
+    bool phong = false;
+    SUBCASE("PBR") {}
+    SUBCASE("VertexLitGeneric phong") { phong = true; }
+    auto text = readFixture("render_map.vmf");
+    const std::string name = phong ? "test/specular_phong" : "test/specular_pbr";
+    for (std::size_t at = 0; (at = text.find("test/red", at)) != std::string::npos; at += name.size())
+        text.replace(at, 8, name);
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    const auto live = g->heap->liveTextures();
+    std::vector<TextureSlot> slots;
+    {
+        Scene scene(*g, std::make_unique<document::Document>(*parsed));
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Lit;
+        bool found = false;
+        for (const auto& mesh : scene.mirror.buildDrawList(options).meshes) {
+            const auto record = g->heap->materials()[mesh.texture];
+            if ((record.flags & (kMaterialPbr | kMaterialPhong)) == 0) continue;
+            found = true;
+            CHECK((record.flags & kMaterialHasBump) != 0);
+            CHECK(record.bumpSlot != kNoTexture);
+            slots.push_back(mesh.texture);
+            if (phong) {
+                CHECK((record.flags & kMaterialPhong) != 0);
+                CHECK((record.flags & kMaterialBaseAlphaPhongMask) != 0);
+                CHECK(record.phongExponentSlot != kNoTexture);
+                CHECK(record.mraoSlot == kNoTexture);
+                CHECK(record.phongParams == Vec4(42, 2, 0, 0));
+                CHECK(record.phongFresnel == Vec4(0.1f, 0.3f, 0.9f, 0));
+                CHECK(record.phongTint == Vec4(0.2f, 0.4f, 0.6f, 0));
+            } else {
+                CHECK((record.flags & kMaterialPbr) != 0);
+                CHECK(record.mraoSlot != kNoTexture);
+                CHECK(record.phongExponentSlot == kNoTexture);
+                CHECK(record.mraoScale == Vec4(0.9f, 1, 1, 0));
+            }
+        }
+        CHECK(found);
+    }
+    for (const auto slot : slots) CHECK(g->heap->materials()[slot].flags == 0);
+    CHECK(g->heap->liveTextures() == live);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: env_cubemap probes reach Lit lists with instance transforms and resolve through the source") {
+    REQUIRE_GPU();
+    g->tree.put("cubemap-inner.vmf", R"(entity { classname env_cubemap origin "10 20 30" })");
+    auto file = vmf::parse(readFixture("render_map.vmf") + R"(
+        entity { classname env_cubemap origin "100 -50 25.4" }
+        entity { classname func_instance file cubemap-inner.vmf origin "1000 0 0" angles "0 90 0" }
+    )");
+    REQUIRE(file);
+    document::Document doc(*file);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(doc, g->tree.root / "map.vmf");
+    REQUIRE(expansion.problems().empty());
+    const auto live = g->heap->liveCubes();
+    {
+        RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+        mirror.rebuild(doc);
+        mirror.setInstanceContents(expansion.contents());
+        REQUIRE(mirror.settle());
+        MirrorViewOptions options;
+        CHECK(mirror.buildDrawList(options).cubemaps.empty());
+        options.mode = DisplayMode::Lit;
+        auto list = mirror.buildDrawList(options);
+        REQUIRE(list.cubemaps.size() == 2);
+        std::ranges::sort(list.cubemaps, {}, [](const CubemapProbe& p) { return p.position.x; });
+        CHECK(glm::distance(list.cubemaps[0].position, DVec3(100, -50, 25.4)) < 1e-6);
+        CHECK(glm::distance(list.cubemaps[1].position, DVec3(980, 10, 30)) < 1e-6);
+        for (const auto& probe : list.cubemaps) CHECK(probe.cube == kDefaultCubeSlot);
+        // The source runs once per rounded origin; a probe it declines keeps the default cube.
+        std::vector<DVec3> asked;
+        mirror.setCubemapSource([&](DVec3 origin) -> std::optional<assets::Texture> {
+            asked.push_back(origin);
+            if (origin.x > 500) return std::nullopt;
+            assets::Texture cube;
+            cube.faces = 6;
+            cube.mips.push_back({1, 1, 1, assets::Blob(6 * 4, std::byte{255})});
+            return cube;
+        });
+        for (int pass = 0; pass < 2; ++pass) {
+            list = mirror.buildDrawList(options);
+            std::ranges::sort(list.cubemaps, {}, [](const CubemapProbe& p) { return p.position.x; });
+            REQUIRE(list.cubemaps.size() == 2);
+            CHECK(list.cubemaps[0].cube != kDefaultCubeSlot);
+            CHECK(list.cubemaps[1].cube == kDefaultCubeSlot);
+        }
+        CHECK(asked.size() == 2);
+        CHECK(g->heap->liveCubes() == live + 1);
+        drawFrame(*g, mirror, DisplayMode::Lit);
+    }
+    CHECK(g->heap->liveCubes() == live);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: envmap and self-illumination records own their cube and mask slots") {
+    REQUIRE_GPU();
+    bool named = false;
+    SUBCASE("env_cubemap probe with masks and self-illumination") {}
+    SUBCASE("named cube with base alpha mask") { named = true; }
+    auto text = readFixture("render_map.vmf");
+    const std::string name = named ? "test/env_named" : "test/env_probe";
+    for (std::size_t at = 0; (at = text.find("test/red", at)) != std::string::npos; at += name.size())
+        text.replace(at, 8, name);
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    const auto live = g->heap->liveTextures();
+    const auto liveCubes = g->heap->liveCubes();
+    std::vector<TextureSlot> slots;
+    {
+        Scene scene(*g, std::make_unique<document::Document>(*parsed));
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Lit;
+        bool found = false;
+        for (const auto& mesh : scene.mirror.buildDrawList(options).meshes) {
+            const auto record = g->heap->materials()[mesh.texture];
+            if ((record.flags & kMaterialEnvmap) == 0) continue;
+            found = true;
+            slots.push_back(mesh.texture);
+            if (named) {
+                CHECK((record.flags & kMaterialEnvmapProbe) == 0);
+                CHECK((record.flags & kMaterialBaseAlphaEnvmapMask) != 0);
+                CHECK(record.envmapSlot != kDefaultEnvmapCube);
+                CHECK(record.envmapMaskSlot == kNoTexture);
+                CHECK((record.flags & kMaterialSelfIllum) == 0);
+                CHECK(record.envmapTint == Vec4(1, 1, 1, 0));
+                CHECK(g->heap->liveCubes() == liveCubes + 1);
+            } else {
+                CHECK((record.flags & kMaterialEnvmapProbe) != 0);
+                CHECK(record.envmapSlot == kDefaultEnvmapCube);
+                CHECK(record.envmapMaskSlot != kNoTexture);
+                CHECK(record.envmapTint == Vec4(0.5f, 0.25f, 1, 0));
+                CHECK((record.flags & kMaterialSelfIllum) != 0);
+                CHECK(record.selfIllumMaskSlot != kNoTexture);
+                CHECK(record.selfIllumTint == Vec4(2, 1, 0.5f, 0));
+            }
+        }
+        CHECK(found);
+        drawFrame(*g, scene.mirror, DisplayMode::Lit);
+    }
+    for (const auto slot : slots) CHECK(g->heap->materials()[slot].flags == 0);
+    CHECK(g->heap->liveTextures() == live);
+    CHECK(g->heap->liveCubes() == liveCubes);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: engine/defaultcubemap loads into cube slot 0 from the mounted game") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    if (!install || !*install) { MESSAGE("Skipped: APEX_P2CE_DIR is unset"); return; }
+    REQUIRE_GPU();
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    auto loadedVfs = assets::Vfs::load(profile, g->jobs);
+    REQUIRE(loadedVfs);
+    if (!loadedVfs->exists("materials/engine/defaultcubemap.vtf")) { MESSAGE("Skipped: no engine/defaultcubemap"); return; }
+    // A private heap: the shared one's slot 0 must stay the grey fallback for the other cases.
+    auto heap = TextureHeap::create(*g->context, {64, 1u << 20});
+    REQUIRE(heap);
+    CHECK_FALSE((*heap)->defaultCubeLoaded());
+    assets::MaterialCache materials(*loadedVfs, g->jobs);
+    auto file = vmf::parse(R"(entity { classname env_cubemap origin "0 0 0" })");
+    REQUIRE(file);
+    document::Document doc(std::move(*file));
+    {
+        RenderMirror mirror(*g->context, **heap, g->jobs, materials);
+        mirror.rebuild(doc);
+        REQUIRE(mirror.settle());
+        CHECK((*heap)->defaultCubeLoaded());
+        CHECK((*heap)->liveCubes() == 1); // The default alone.
+    }
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: env_cubemap brushes, top level and inside an instance, reflect only their probe's cube") {
+    REQUIRE_GPU();
+    const auto withMaterial = [](std::string text, std::string_view name) {
+        for (std::size_t at = 0; (at = text.find("test/red", at)) != std::string::npos; at += name.size())
+            text.replace(at, 8, name);
+        return text;
+    };
+    // The instance places a second copy of the fixture in view; only the copies named here use the
+    // probe material, so each path is checked on its own. Both copies carry an env_cubemap.
+    g->tree.put("probe-env.vmf", withMaterial(readFixture("render_map.vmf"), "test/env_lmg") +
+                R"(entity { classname env_cubemap origin "0 0 48" })");
+    g->tree.put("probe-plain.vmf", withMaterial(readFixture("render_map.vmf"), "test/plain_lmg") +
+                R"(entity { classname env_cubemap origin "0 0 48" })");
+    const auto render = [&](std::string_view outer, std::string_view inner, bool blackSource) {
+        auto file = vmf::parse(withMaterial(readFixture("render_map.vmf"), outer) +
+            R"(entity { classname env_cubemap origin "-40 0 48" }
+               entity { classname func_instance file )" + std::string(inner) +
+            R"( origin "-60 120 0" angles "0 30 0" })");
+        REQUIRE(file);
+        document::Document doc(*file);
+        editor::InstanceTemplates templates;
+        editor::InstanceExpansion expansion(templates);
+        expansion.update(doc, g->tree.root / "map.vmf");
+        REQUIRE(expansion.problems().empty());
+        RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+        if (blackSource)
+            mirror.setCubemapSource([](DVec3) -> std::optional<assets::Texture> {
+                assets::Texture cube;
+                cube.faces = 6;
+                cube.mips.push_back({1, 1, 1, assets::Blob(6 * 4, std::byte{0})});
+                for (std::size_t face = 0; face < 6; ++face) cube.mips[0].data[face * 4 + 3] = std::byte{255};
+                return cube;
+            });
+        mirror.rebuild(doc);
+        mirror.setInstanceContents(expansion.contents());
+        REQUIRE(mirror.settle());
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Lit;
+        CHECK(mirror.buildDrawList(options).cubemaps.size() == 2);
+        return drawFrame(*g, mirror, DisplayMode::Lit);
+    };
+    const auto plain = render("test/plain_lmg", "probe-plain.vmf", true);
+    const auto brighter = [&](const Rgba8Image& image) {
+        std::size_t n = 0;
+        for (std::uint32_t y = 0; y < kSize; ++y)
+            for (std::uint32_t x = 0; x < kSize; ++x) {
+                const Px a = at(image, x, y), b = at(plain, x, y);
+                n += a.r + a.g + a.b > b.r + b.g + b.b + 30 ? 1 : 0;
+            }
+        return n;
+    };
+    // Slot 0 (the grey fallback here) shows wherever no probe cube replaces it...
+    const auto outerDefault = render("test/env_lmg", "probe-plain.vmf", false);
+    const auto innerDefault = render("test/plain_lmg", "probe-env.vmf", false);
+    CHECK(brighter(outerDefault) > 50);
+    CHECK(brighter(innerDefault) > 50);
+    // ...and black probe cubes leave both paths exactly as unreflective as the plain material.
+    CHECK(render("test/env_lmg", "probe-plain.vmf", true).pixels == plain.pixels);
+    CHECK(render("test/plain_lmg", "probe-env.vmf", true).pixels == plain.pixels);
+    CHECK(render("test/env_lmg", "probe-env.vmf", true).pixels == plain.pixels);
+    CHECK(g->context->validation().errorCount() == 0);
 }

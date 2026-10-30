@@ -2,18 +2,23 @@
 #include "render/render_mirror.hpp"
 
 #include "core/log.hpp"
+#include "assets/model_pose.hpp"
 #include "document/entity_transform.hpp"
+#include "geometry/solid_geometry.hpp"
 #include "render/helper_shapes.hpp"
 #include "render/solid_mesh.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <charconv>
 #include <functional>
 #include <map>
 #include <set>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace apex::render {
@@ -58,6 +63,8 @@ struct SolidState {
 };
 
 struct ModelMesh {
+    std::string path;     // ModelCache key.
+    std::string sequence; // Lower-case defaultanim; empty draws the cache's static pose.
     std::shared_ptr<const assets::ModelData> data;
     Buffer vertices, indices, edges;
     std::map<std::int32_t, std::string> materials;
@@ -73,8 +80,14 @@ std::uint32_t entityUint(const kv1::Node& block, std::string_view key) {
     return value;
 }
 
+// models map key: the path alone, or path and defaultanim when the entity names a sequence. The game
+// spawns props in that sequence's first frame (prop_testchamber_door's leaves exist only in idleclose).
+std::string modelMeshKey(const std::string& path, const std::string& sequence) {
+    return sequence.empty() ? path : path + '\n' + sequence;
+}
+
 struct EntityState {
-    std::string model;
+    std::string model; // models map key (modelMeshKey), not the bare path.
     std::uint32_t skin = 0, body = 0;
     DMat4 transform{1.0};
     DVec3 position{0.0}, mins{-8.0}, maxs{8.0};
@@ -94,14 +107,22 @@ struct EntityState {
     // key), known once the solids have meshed.
     bool brush = false;
     std::vector<NodeId> brushSolids;
+    bool cubemap = false; // env_cubemap: a reflection probe at `position`.
 };
 
 struct MaterialState {
     TextureSlot slot = kCheckerboardSlot;
+    TextureSlot bumpSlot = kNoTexture;
+    TextureSlot mraoSlot = kNoTexture;
+    TextureSlot phongExponentSlot = kNoTexture;
+    TextureSlot envmapCube = kNoTexture; // Owned cube slot of a named $envmap.
+    TextureSlot envmapMaskSlot = kNoTexture;
+    TextureSlot selfIllumMaskSlot = kNoTexture;
     TextureSize size;
     bool loading = false;
     std::size_t textureBytes = 0;
     AlphaMode alpha = AlphaMode::Opaque; // From $translucent / $alphatest once the VMT has loaded.
+    bool sky = false;                   // %compilesky once loaded.
     bool nodraw = false;                 // %compilenodraw once loaded; see isNodraw().
     std::set<NodeId> users;
 };
@@ -112,6 +133,23 @@ bool isNodraw(std::string_view name, const MaterialState* state) {
     const bool named = name.size() == kName.size() &&
                        std::ranges::equal(name, kName, [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; });
     return named || (state && state->nodraw);
+}
+
+// Name fallback also works before a VMT is available, including toolsskybox2d and HDR variants.
+bool isSkyMaterial(std::string_view name, bool compileSky = false) {
+    return compileSky || lower(name).starts_with("tools/toolsskybox");
+}
+
+bool isToolFace(std::string_view name, const MaterialState* state) {
+    return lower(name).starts_with("tools/") && !isSkyMaterial(name, state && state->sky);
+}
+
+bool blocksSky(std::string_view name) {
+    const auto key = lower(name);
+    // VRAD's trigger/clip contents do not block light. Keep nodraw (including %compilenodraw):
+    // it suppresses drawing, not light visibility. Unknown tools stay solid conservatively.
+    return key != "tools/toolstrigger" && key != "tools/toolsclip" &&
+           key != "tools/toolsplayerclip" && key != "tools/toolsnpcclip";
 }
 
 } // namespace
@@ -141,8 +179,23 @@ struct RenderMirror::Impl {
     std::map<NodeId, EntityState> entities;
     std::vector<lighting::Light> lights;
     bool lightsDirty = true;
+    std::shared_ptr<const lighting::SkyVisibilityGrid> skyGrid;
+    JobHandle skyJob;
+    std::uint64_t skyRevision = 0, skyRequested = 1;
+    bool skyBuilding = false, skyWanted = false, skyUsedSincePump = false, skyHasAmbient = false;
+    std::chrono::steady_clock::time_point skyChanged = std::chrono::steady_clock::now();
+    std::map<NodeId, std::string> skyEntityClasses;
+    std::map<std::shared_ptr<const Document>, std::uint64_t> skyInstanceRevisions;
+
+    void invalidateSky() {
+        ++skyRequested;
+        skyChanged = std::chrono::steady_clock::now();
+    }
+
     std::map<std::string, MaterialState, std::less<>> materials;
     TextureSize placeholderSize;
+    CubemapSource cubemapSource;
+    std::map<std::array<long long, 3>, TextureSlot> probeCubes; // Rounded origin -> cube slot.
 
     Buffer entityBuffer;
     std::uint32_t entityCount = 0;
@@ -254,13 +307,49 @@ struct RenderMirror::Impl {
     }
 
     ~Impl() {
+        skyJob.cancel();
         for (auto& [id, solid] : solids) solid.job.cancel();
         context.waitIdle();
-        for (auto& [name, material] : materials) {
-            if (material.slot != kCheckerboardSlot) heap.release(material.slot);
-        }
+        for (auto& [name, material] : materials) releaseTextures(material);
+        for (const auto& [origin, cube] : probeCubes) heap.releaseCube(cube);
         if (errorSlot != kCheckerboardSlot) heap.release(errorSlot);
         heap.collectGarbage();
+    }
+
+    // Releases every heap slot the material owns and resets it to the placeholder.
+    void releaseTextures(MaterialState& state) {
+        if (state.slot != kCheckerboardSlot) heap.release(state.slot);
+        for (TextureSlot* slot : {&state.bumpSlot, &state.mraoSlot, &state.phongExponentSlot,
+                                  &state.envmapMaskSlot, &state.selfIllumMaskSlot}) {
+            if (*slot != kNoTexture) heap.release(*slot);
+            *slot = kNoTexture;
+        }
+        if (state.envmapCube != kNoTexture) heap.releaseCube(state.envmapCube);
+        state.envmapCube = kNoTexture;
+        state.slot = kCheckerboardSlot;
+    }
+
+    // Probe cubes come from cubemapSource, once per rounded origin; slot 0 when it has none.
+    TextureSlot probeCube(DVec3 origin) {
+        if (!cubemapSource) return kDefaultCubeSlot;
+        const std::array<long long, 3> key{std::llround(origin.x), std::llround(origin.y), std::llround(origin.z)};
+        if (const auto found = probeCubes.find(key); found != probeCubes.end()) return found->second;
+        TextureSlot cube = kDefaultCubeSlot;
+        if (auto texture = cubemapSource(origin)) {
+            if (auto created = heap.uploadCube(*texture)) cube = *created;
+            else log::warn("render mirror: cubemap at ({}, {}, {}) failed: {}", key[0], key[1], key[2],
+                           std::string_view(created.error().message));
+        }
+        probeCubes.emplace(key, cube);
+        return cube;
+    }
+
+    void loadDefaultCube() {
+        if (heap.defaultCubeLoaded()) return;
+        auto texture = cache.loadTexture("engine/defaultcubemap");
+        if (!texture) return; // The mid-grey fallback stays.
+        if (auto set = heap.setDefaultCube(*texture); !set)
+            log::warn("render mirror: engine/defaultcubemap: {}", std::string_view(set.error().message));
     }
 
     // Destroys retired buffers once no frame can still use them.
@@ -283,35 +372,104 @@ struct RenderMirror::Impl {
     // --- Materials -------------------------------------------------------------------------
 
     void uploadMaterial(const std::string& name, MaterialState& state, const assets::CachedMaterial& material) {
+        const auto skyFlag = material.material.compileFlags.find("%compilesky");
+        const bool sky = skyFlag != material.material.compileFlags.end() && !skyFlag->second.empty() && skyFlag->second != "0";
+        if (state.sky != sky) {
+            state.sky = sky;
+            invalidateSky();
+        }
         const assets::Texture& texture = material.texture;
         const auto format = vulkanFormat(texture.format);
         if (!format || texture.mips.empty()) return;
-        std::vector<std::span<const std::byte>> mips;
-        std::uint32_t w = texture.mips[0].width, h = texture.mips[0].height;
-        if (w == 0 || h == 0) return;
-        for (const assets::TextureMip& mip : texture.mips) {
-            const VkDeviceSize need = mipByteSize(*format, w, h);
-            if (mip.width != w || mip.height != h || mip.data.size() < need) break;
-            mips.emplace_back(mip.data.data(), static_cast<std::size_t>(need)); // First frame/face.
-            w = std::max(1u, w / 2);
-            h = std::max(1u, h / 2);
-        }
-        if (mips.empty()) return;
         const assets::Material& vmt = material.material;
         state.alpha = vmt.translucent ? AlphaMode::Blend : vmt.alphaTest ? AlphaMode::Test : AlphaMode::Opaque;
         if (const auto flag = vmt.compileFlags.find("%compilenodraw"); flag != vmt.compileFlags.end()) {
             state.nodraw = !flag->second.empty() && flag->second != "0";
         }
-        auto slot = heap.upload({texture.mips[0].width, texture.mips[0].height, *format}, mips);
+        auto slot = heap.upload(texture);
         if (!slot) {
             log::warn("render mirror: texture upload for '{}' failed: {}", std::string_view(name),
                       std::string_view(slot.error().message));
             return;
         }
-        if (state.slot != kCheckerboardSlot) heap.release(state.slot);
+        releaseTextures(state);
         state.slot = *slot;
-        state.textureBytes = 0;
-        for (auto mip : mips) state.textureBytes += mip.size();
+        std::uint32_t flags = texture.format == assets::TextureFormat::Rgba32Float ||
+            texture.format == assets::TextureFormat::Bc6Signed || texture.format == assets::TextureFormat::Bc6Unsigned ?
+            kMaterialLinearBase : 0u;
+        const auto shader = lower(vmt.shader);
+        if (material.bumpTexture && (shader == "lightmappedgeneric" || shader == "vertexlitgeneric" ||
+                                      shader == "worldvertextransition" || shader == "pbr")) {
+            if (auto bump = heap.upload(*material.bumpTexture)) {
+                state.bumpSlot = *bump;
+                flags |= kMaterialHasBump | (vmt.ssbump() ? kMaterialSsbump : 0u);
+                if (material.bumpTexture->format == assets::TextureFormat::Bc5) flags |= kMaterialTwoChannelNormal;
+            }
+        }
+        GpuMaterial record{state.slot, state.bumpSlot, flags, kNoTexture};
+        if (shader == "pbr") {
+            record.flags |= kMaterialPbr;
+            if (material.mraoTexture) {
+                if (auto data = heap.upload(*material.mraoTexture)) state.mraoSlot = *data;
+            }
+            record.mraoSlot = state.mraoSlot;
+            record.mraoScale = Vec4(Vec3(vmt.mraoScale()), 0);
+        }
+        if (shader == "vertexlitgeneric" && vmt.phong()) {
+            record.flags |= kMaterialPhong | (vmt.baseMapAlphaPhongMask() ? kMaterialBaseAlphaPhongMask : 0u);
+            if (material.phongExponentTexture) {
+                if (auto data = heap.upload(*material.phongExponentTexture)) state.phongExponentSlot = *data;
+            }
+            record.phongExponentSlot = state.phongExponentSlot;
+            record.phongParams = Vec4(float(vmt.phongExponent()), float(vmt.phongBoost()), 0, 0);
+            record.phongFresnel = Vec4(Vec3(vmt.phongFresnelRanges()), 0);
+            record.phongTint = Vec4(Vec3(vmt.phongTint()), 0);
+        }
+        const bool lit = shader == "lightmappedgeneric" || shader == "vertexlitgeneric" ||
+                         shader == "worldvertextransition" || shader == "pbr";
+        std::size_t envmapBytes = 0;
+        if (lit && !vmt.envmap().empty()) {
+            if (vmt.envmapProbe()) {
+                record.flags |= kMaterialEnvmap | kMaterialEnvmapProbe;
+            } else if (material.envmapTexture) {
+                if (auto cube = heap.uploadCube(*material.envmapTexture)) {
+                    state.envmapCube = record.envmapSlot = *cube;
+                    record.flags |= kMaterialEnvmap;
+                    envmapBytes += material.envmapTexture->byteSize();
+                } else {
+                    log::warn("render mirror: envmap of '{}' failed: {}", std::string_view(name),
+                              std::string_view(cube.error().message));
+                }
+            }
+            if ((record.flags & kMaterialEnvmap) != 0u) {
+                record.envmapTint = Vec4(Vec3(vmt.envmapTint()), float(vmt.envmapLightScale()));
+                // PBR masks by its own roughness and AO; the mask sources belong to the other shaders.
+                if (shader != "pbr") {
+                    if (material.envmapMaskTexture) {
+                        if (auto mask = heap.upload(*material.envmapMaskTexture)) {
+                            state.envmapMaskSlot = record.envmapMaskSlot = *mask;
+                            envmapBytes += material.envmapMaskTexture->byteSize();
+                        }
+                    }
+                    if (vmt.normalMapAlphaEnvmapMask()) record.flags |= kMaterialNormalAlphaEnvmapMask;
+                    if (vmt.baseAlphaEnvmapMask()) record.flags |= kMaterialBaseAlphaEnvmapMask;
+                }
+            }
+        }
+        if (lit && vmt.selfIllum()) {
+            record.flags |= kMaterialSelfIllum;
+            record.selfIllumTint = Vec4(Vec3(vmt.selfIllumTint()), 0);
+            if (material.selfIllumMaskTexture) {
+                if (auto mask = heap.upload(*material.selfIllumMaskTexture)) {
+                    state.selfIllumMaskSlot = record.selfIllumMaskSlot = *mask;
+                    envmapBytes += material.selfIllumMaskTexture->byteSize();
+                }
+            }
+        }
+        heap.setMaterial(state.slot, record);
+        state.textureBytes = texture.byteSize() + (material.bumpTexture ? material.bumpTexture->byteSize() : 0) +
+            (material.mraoTexture ? material.mraoTexture->byteSize() : 0) +
+            (material.phongExponentTexture ? material.phongExponentTexture->byteSize() : 0) + envmapBytes;
         state.size = {texture.mips[0].width, texture.mips[0].height, vmt.baseTextureTransform};
         uploaded = true;
         ++stats.texturesUploaded;
@@ -515,6 +673,7 @@ struct RenderMirror::Impl {
         state.block = entity->block;
         state.pose = pose;
         state.brush = !brushSolids.empty();
+        state.cubemap = lower(classname) == "env_cubemap";
         for (const NodeId solid : brushSolids) brushOwner[solid] = entity->id;
         state.brushSolids = std::move(brushSolids);
         if (const kv1::Node* name = entity->block->find("targetname")) {
@@ -540,9 +699,14 @@ struct RenderMirror::Impl {
         if (modelCache) {
             const auto name = document::entityDisplayModel(*entity->block, state.cls);
             if (!name.empty()) {
-                state.model = assets::modelPath(name);
-                models.try_emplace(state.model);
-                modelCache->request(state.model);
+                const auto path = assets::modelPath(name);
+                std::string sequence;
+                if (const auto* anim = entity->block->find("defaultanim")) sequence = lower(anim->decodedValue().value_or(""));
+                state.model = modelMeshKey(path, sequence);
+                auto& mesh = models.try_emplace(state.model).first->second;
+                mesh.path = path;
+                mesh.sequence = sequence;
+                modelCache->request(path);
             }
         }
         if (!state.nameKey.empty()) {
@@ -657,6 +821,92 @@ struct RenderMirror::Impl {
                 lights.push_back(std::move(light));
             }
         }
+    }
+
+    struct SkyBrush {
+        kv1::Node block;
+        DMat4 transform{1.0};
+    };
+
+    void collectSkyBrushes(std::vector<SkyBrush>& brushes, std::set<std::string>& skyMaterials,
+                           const DMat4& transform = DMat4(1)) const {
+        for (const auto& [name, material] : materials)
+            if (isSkyMaterial(name, material.sky)) skyMaterials.insert(name);
+        for (const auto& [id, solid] : solids) {
+            bool occludes = true;
+            for (auto node = id; node != 0;) {
+                if (const auto entity = skyEntityClasses.find(node); entity != skyEntityClasses.end()) {
+                    // func_detail is compiled into world geometry and blocks VRAD. Other brush
+                    // entities (func_brush etc.) do not occlude by default; leave them out.
+                    occludes = entity->second == "worldspawn" || entity->second == "func_detail";
+                    break;
+                }
+                const auto parent = hierarchy.find(node);
+                node = parent == hierarchy.end() ? 0 : parent->second.parent;
+            }
+            if (occludes && solid.block) brushes.push_back({*solid.block, transform});
+        }
+    }
+
+    bool skyPending() const { return skyWanted && skyHasAmbient && skyRevision != skyRequested; }
+
+    void pumpSky() {
+        if (!skyPending() || skyBuilding ||
+            std::chrono::steady_clock::now() - skyChanged < std::chrono::milliseconds(500)) return;
+        // Material flags can arrive after the geometry; don't build an immediately obsolete grid.
+        if (std::ranges::any_of(materials, [](const auto& entry) { return entry.second.loading; })) return;
+        std::vector<SkyBrush> brushes;
+        std::set<std::string> skyMaterials;
+        collectSkyBrushes(brushes, skyMaterials);
+        for (const auto& content : instances) {
+            if (!content.keys || instanceVisibility == document::InstanceVisibility::Hidden) continue;
+            const auto& child = *instanceMirrors.at(content.keys)->impl_;
+            if (std::ranges::any_of(child.materials, [](const auto& entry) { return entry.second.loading; })) return;
+            child.collectSkyBrushes(brushes, skyMaterials, content.transform);
+        }
+        const auto revision = skyRequested;
+        skyBuilding = true;
+        // Only immutable values cross the worker boundary; no document handles or mirror pointers.
+        skyJob = jobs.submit(Priority::Low,
+            [brushes = std::move(brushes), skyMaterials = std::move(skyMaterials)](CancelToken token) {
+                std::vector<lighting::SkyTriangle> triangles;
+                AABB bounds;
+                for (const auto& brush : brushes) {
+                    if (token.cancelled()) return std::shared_ptr<const lighting::SkyVisibilityGrid>{};
+                    const auto geometry = geometry::solidGeometry(brush.block);
+                    if (!geometry) continue;
+                    const auto& poly = geometry->poly;
+                    const auto point = [&](std::size_t i) { return DVec3(brush.transform * DVec4(poly.vertices[i], 1)); };
+                    for (const auto& vertex : poly.vertices) bounds.expand(DVec3(brush.transform * DVec4(vertex, 1)));
+                    for (const auto& face : poly.faces) {
+                        const auto name = lower(face.material);
+                        const bool sky = isSkyMaterial(name, skyMaterials.contains(name));
+                        if (!sky && !blocksSky(name)) continue;
+                        for (const auto& tri : poly.triangulate(face)) {
+                            // Kernel loops point out of solid, into air. Preserve that winding even
+                            // when an instance placement reflects its geometry.
+                            auto a = point(tri[0]), b = point(tri[1]), c = point(tri[2]);
+                            if (glm::determinant(DMat3(brush.transform)) < 0) std::swap(b, c);
+                            triangles.push_back({a, b, c, sky});
+                        }
+                    }
+                }
+                // An empty/unsealed editor map sees open sky; still use a grid, never ungated fill.
+                if (bounds.empty()) bounds = {DVec3(-64), DVec3(64)};
+                lighting::SkyVisibilityOptions options;
+                options.cancelled = [&token] { return token.cancelled(); };
+                auto grid = lighting::buildSkyVisibility(triangles, bounds, options);
+                if (token.cancelled()) return std::shared_ptr<const lighting::SkyVisibilityGrid>{};
+                return std::shared_ptr<const lighting::SkyVisibilityGrid>(
+                    std::make_shared<lighting::SkyVisibilityGrid>(std::move(grid)));
+            },
+            [this, revision](std::shared_ptr<const lighting::SkyVisibilityGrid> grid) {
+                skyBuilding = false;
+                if (revision != skyRequested || !grid) return; // An edit overtook this build.
+                skyGrid = std::move(grid);
+                skyRevision = revision;
+                redraw = true;
+            });
     }
 
     void evaluateHelpers(NodeId id) {
@@ -786,7 +1036,7 @@ struct RenderMirror::Impl {
         if (!modelCache) return;
         for (auto& [name, mesh] : models) {
             if (mesh.data) continue;
-            auto data = modelCache->request(name);
+            auto data = modelCache->request(mesh.path);
             if (data == mesh.data) continue;
             for (Buffer* buffer : {&mesh.vertices, &mesh.indices, &mesh.edges})
                 if (*buffer) garbage.push_back(std::move(*buffer));
@@ -794,8 +1044,17 @@ struct RenderMirror::Impl {
             mesh.materials.clear();
             entitiesDirty = redraw = true;
             if (!data) continue;
+            std::vector<assets::ModelVertex> posed;
+            if (!mesh.sequence.empty()) {
+                const auto found = std::ranges::find_if(data->sequences, [&](const assets::ModelSequence& sequence) {
+                    return lower(sequence.name) == mesh.sequence;
+                });
+                // Unknown or unsupported sequences keep the static pose, as the inspector does.
+                if (found != data->sequences.end())
+                    posed = assets::animateModel(*data, static_cast<int>(found - data->sequences.begin()), 0.0);
+            }
             std::vector<BrushVertex> vertices;
-            for (const auto& v : data->vertices)
+            for (const auto& v : posed.empty() ? data->vertices : posed)
                 vertices.push_back({{v.position.x, v.position.y, v.position.z},
                                     {v.normal.x, v.normal.y, v.normal.z}, {v.uv.x, v.uv.y}, 0});
             std::vector<std::uint32_t> edges;
@@ -850,10 +1109,15 @@ struct RenderMirror::Impl {
     }
 
     void apply(const Document& doc, const document::ChangeSet& changes) {
+        if (!changes.created.empty() || !changes.modified.empty() || !changes.destroyed.empty()) invalidateSky();
         // Cache IDs only: setPreview/buildDrawList never consult or mutate the document.
         const auto remember = [&](const NodeHandle& handle) {
             if (const auto* node = doc.get(handle)) {
                 hierarchy[node->id] = {node->parent, node->children};
+                if (std::holds_alternative<Handle<document::Entity>>(handle) && node->block) {
+                    const auto* cls = node->block->find("classname");
+                    skyEntityClasses[node->id] = cls ? lower(cls->decodedValue().value_or("")) : "";
+                }
                 hierarchyIds[handle] = node->id;
             }
         };
@@ -863,6 +1127,7 @@ struct RenderMirror::Impl {
         // to the ChangeSet, including containers that do not have render state of their own.
         for (const auto& handle : changes.destroyed) {
             if (const auto found = hierarchyIds.find(handle); found != hierarchyIds.end()) {
+                skyEntityClasses.erase(found->second);
                 hierarchy.erase(found->second);
                 hierarchyIds.erase(found);
             }
@@ -914,6 +1179,7 @@ struct RenderMirror::Impl {
     }
 
     bool pending() const {
+        if (skyBuilding || skyPending()) return true;
         // Hidden contents are not pumped (see pump), so their loads never finish and must not hold frames open.
         if (instanceVisibility != document::InstanceVisibility::Hidden)
             for (const auto& [keys, mirror] : instanceMirrors) if (mirror->pending()) return true;
@@ -933,7 +1199,20 @@ RenderMirror::RenderMirror(Context& context, TextureHeap& heap, JobPool& jobs, a
     : impl_(std::make_unique<Impl>(context, heap, jobs, materials, entityClasses, models, std::move(modelMaterialExists))) {}
 RenderMirror::~RenderMirror() = default;
 
+void RenderMirror::setCubemapSource(CubemapSource source) {
+    Impl& m = *impl_;
+    if (!m.probeCubes.empty()) {
+        m.context.waitIdle();
+        for (const auto& [origin, cube] : m.probeCubes) m.heap.releaseCube(cube);
+        m.probeCubes.clear();
+        m.heap.collectGarbage();
+    }
+    m.cubemapSource = std::move(source);
+    m.redraw = true;
+}
+
 void RenderMirror::rebuild(const Document& document) {
+    impl_->loadDefaultCube();
     refreshModels();
     document::ChangeSet all;
     const auto walk = [&](const auto& self, NodeId id) -> void {
@@ -958,7 +1237,7 @@ void RenderMirror::refreshModels() {
             if (*buffer) m.garbage.push_back(std::move(*buffer));
         mesh.data.reset();
         mesh.materials.clear();
-        if (m.modelCache) m.modelCache->request(name);
+        if (m.modelCache) m.modelCache->request(mesh.path);
     }
     for (const auto& name : oldMaterials) {
         const auto found = m.materials.find(name);
@@ -968,7 +1247,7 @@ void RenderMirror::refreshModels() {
         });
         if (previewUses) continue;
         m.context.waitIdle();
-        if (found->second.slot != kCheckerboardSlot) m.heap.release(found->second.slot);
+        m.releaseTextures(found->second);
         m.materials.erase(found);
     }
     if (m.errorSlot != kCheckerboardSlot) {
@@ -1027,6 +1306,8 @@ void RenderMirror::setInstanceContents(std::span<const document::InstanceContent
     const bool same = contents.size() == m.instances.size() && std::ranges::equal(contents, m.instances,
         [](const auto& a, const auto& b) { return a.instance == b.instance && a.keys == b.keys && a.transform == b.transform; });
     if (same && m.instanceVisibility == visibility) return;
+    m.invalidateSky();
+    m.skyInstanceRevisions.clear();
     m.instanceVisibility = visibility;
     const auto previous = std::move(m.instances);
     m.instances.assign(contents.begin(), contents.end());
@@ -1057,6 +1338,8 @@ void RenderMirror::setInstanceContents(std::span<const document::InstanceContent
 }
 
 bool RenderMirror::pump() {
+    // Demand spans all views drawn between ticks: a later Flat/ortho view must not cancel Lit.
+    impl_->skyWanted = std::exchange(impl_->skyUsedSincePump, false);
     impl_->jobs.drainCompletions();
     impl_->pumpModels();
     impl_->pumpMaterials();
@@ -1064,13 +1347,24 @@ bool RenderMirror::pump() {
     impl_->collectGarbage();
     // Hidden contents are never drawn, so their dirty flags would never clear.
     if (impl_->instanceVisibility != document::InstanceVisibility::Hidden)
-        for (auto& [keys, mirror] : impl_->instanceMirrors) if (mirror->pump()) impl_->redraw = true;
+        for (auto& [keys, mirror] : impl_->instanceMirrors) {
+            if (mirror->pump()) impl_->redraw = true;
+            auto& revision = impl_->skyInstanceRevisions[keys];
+            if (revision != mirror->impl_->skyRequested) {
+                revision = mirror->impl_->skyRequested;
+                impl_->invalidateSky();
+            }
+        }
+    impl_->pumpSky();
     return impl_->redraw;
 }
 
 bool RenderMirror::settle(std::chrono::milliseconds timeout) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
+    const bool skyWanted = impl_->skyWanted;
     for (;;) {
+        // Headless callers explicitly wait for the last requested view without drawing each tick.
+        impl_->skyUsedSincePump |= skyWanted;
         pump();
         if (!impl_->pending()) return true;
         if (std::chrono::steady_clock::now() >= deadline) return false;
@@ -1084,6 +1378,9 @@ bool RenderMirror::needsRedraw() const {
     return std::ranges::any_of(impl_->instanceMirrors, [](const auto& item) { return item.second->needsRedraw(); });
 }
 bool RenderMirror::pending() const { return impl_->pending(); }
+SkyVisibilityState RenderMirror::skyVisibilityState() const {
+    return {impl_->skyRevision, impl_->skyRequested, impl_->skyBuilding};
+}
 
 void RenderMirror::setHighlight(const Highlight& highlight) {
     if (impl_->highlight == highlight) return;
@@ -1160,6 +1457,15 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     m.resolvePreview();
     m.rebuildLights();
     list.lights = m.lights;
+    if (options.mode == DisplayMode::Lit) {
+        for (const auto& [id, entity] : m.entities) {
+            if (!entity.cubemap) continue;
+            const auto found = m.effectivePreview.find(id);
+            const DVec3 position = found == m.effectivePreview.end() ? entity.position :
+                DVec3(found->second * DVec4(entity.position, 1));
+            list.cubemaps.push_back({position, kDefaultCubeSlot});
+        }
+    }
     const auto previewIndex = [&](NodeId id, DVec3 origin) -> std::uint32_t {
         const auto found = m.effectivePreview.find(id);
         if (found == m.effectivePreview.end()) return 0;
@@ -1195,8 +1501,10 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.texture = material->second.slot;
             }
             // Wireframe keeps every edge: 2D views would otherwise lose the nodraw faces' outline.
-            const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
-                                  isNodraw(batch.material, material != m.materials.end() ? &material->second : nullptr);
+            const MaterialState* state = material != m.materials.end() ? &material->second : nullptr;
+            const bool hideFill = options.mode != DisplayMode::Wireframe &&
+                                  ((!options.showNodraw && isNodraw(batch.material, state)) ||
+                                   (!options.showToolFaces && isToolFace(batch.material, state)));
             if (textured && material != m.materials.end()) draw.alpha = material->second.alpha;
             switch (options.mode) {
             case DisplayMode::Lit:
@@ -1278,8 +1586,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 if (textured) draw.alpha = material.alpha; // Ghosts stay uniformly translucent.
                 if (m.selected.contains(state.node)) draw.highlight = m.highlight.selectTint;
                 else if (m.highlight.hover == state.node) draw.highlight = m.highlight.hoverTint;
-                const bool hideFill = !options.showNodraw && options.mode != DisplayMode::Wireframe &&
-                                      isNodraw(batch.material, &material);
+                const bool hideFill = options.mode != DisplayMode::Wireframe &&
+                                      ((!options.showNodraw && isNodraw(batch.material, &material)) ||
+                                       (!options.showToolFaces && isToolFace(batch.material, &material)));
                 if (!hideFill) list.meshes.push_back(draw);
             } else {
                 list.ghosts.push_back(draw);
@@ -1290,7 +1599,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
         }
     }
-    if (options.showEntities && m.entityBuffer && m.entityCount > 0) {
+    if (options.showEntities && options.showEntityHelpers && m.entityBuffer && m.entityCount > 0) {
         std::uint32_t instance = 0;
         for (const auto& [id, entity] : m.entities) {
             if (entity.brush || (!entity.model.empty() && m.models.at(entity.model).data) || m.drawsSprite(entity)) continue;
@@ -1309,7 +1618,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
         }
     }
-    if (options.showEntities && m.spriteBuffer && m.spriteCount > 0) {
+    if (options.showEntities && options.showEntityHelpers && m.spriteBuffer && m.spriteCount > 0) {
         std::uint32_t instance = 0;
         for (const auto& [id, entity] : m.entities) {
             if (!m.drawsSprite(entity)) continue;
@@ -1326,7 +1635,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
         }
     }
-    if (options.showEntities) {
+    if (options.showEntities && options.showEntityHelpers) {
         // A brush entity is carried by its solids, so a preview on either counts for it.
         const auto previewOf = [&](NodeId id) {
             auto it = m.effectivePreview.find(id);
@@ -1464,6 +1773,10 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 if (glm::length(light.direction) > 0) light.direction = glm::normalize(DMat3(transform) * light.direction);
                 list.lights.push_back(std::move(light));
             }
+            for (auto probe : child.cubemaps) {
+                probe.position = point(probe.position);
+                list.cubemaps.push_back(probe);
+            }
             const auto preview = [&](std::uint32_t index, DVec3 origin, std::uint32_t count = 1) {
                 const auto first = static_cast<std::uint32_t>(list.previews.size() + 1);
                 if (index) {
@@ -1510,6 +1823,24 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 label.position = point(label.position);
                 list.labels.push_back(std::move(label));
             }
+        }
+    }
+    if (options.mode == DisplayMode::Lit && !m.drawsInstanceContents) {
+        m.skyWanted = true;
+        m.skyUsedSincePump = true;
+    }
+    m.skyHasAmbient = std::ranges::any_of(list.lights, [](const auto& light) {
+        return light.kind == lighting::LightKind::Ambient;
+    });
+    m.pumpSky();
+    // Only Lit samples the grid; other modes must not pay for its upload.
+    if (options.mode == DisplayMode::Lit) list.skyVisibility = m.skyGrid;
+    // Probe cubes are named by world origin, so only the outermost mirror resolves them.
+    if (options.mode == DisplayMode::Lit && !m.drawsInstanceContents && m.cubemapSource && !list.cubemaps.empty()) {
+        const auto cubes = m.heap.liveCubes();
+        for (auto& probe : list.cubemaps) probe.cube = m.probeCube(probe.position);
+        if (m.heap.liveCubes() != cubes) {
+            if (auto flushed = m.heap.flush(); !flushed) log::error("render mirror: cubemap upload: {}", flushed.error().what());
         }
     }
     return list;

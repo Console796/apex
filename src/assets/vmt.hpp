@@ -9,6 +9,34 @@ namespace apex::assets {
 
 struct Material {
     std::string shader;
+    // Resolved, lower-case $ keys; proxy contents are never material parameters.
+    std::map<std::string, std::string> params;
+    std::string_view bumpMap() const;
+    bool ssbump() const;
+    std::string_view envmap() const;
+    DVec3 envmapTint() const;
+    std::string_view envmapMask() const;
+    bool normalMapAlphaEnvmapMask() const;
+    bool baseAlphaEnvmapMask() const;
+    double envmapLightScale() const; // Default 0.
+    // $envmap env_cubemap (any case): the nearest env_cubemap probe, not a texture.
+    bool envmapProbe() const;
+    bool selfIllum() const;
+    DVec3 selfIllumTint() const;
+    std::string_view selfIllumMask() const;
+    std::string_view mraoTexture() const;
+    DVec3 mraoScale() const;
+    bool model() const;
+    DVec3 phongTint() const;
+    bool baseMapAlphaPhongMask() const;
+    bool phong() const;
+    double phongExponent() const;
+    double phongBoost() const;
+    DVec3 phongFresnelRanges() const;
+    std::string_view phongExponentTexture() const;
+    std::string_view parameter(std::string_view key) const;
+    double scalar(std::string_view key, double fallback = 0) const;
+    DVec3 vector(std::string_view key, DVec3 fallback) const;
     std::string baseTexture;
     std::string baseTexture2;
     // Applied to normalized brush UVs after the VMF face mapping.

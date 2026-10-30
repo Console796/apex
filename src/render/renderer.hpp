@@ -13,6 +13,7 @@
 #include "core/math.hpp"
 #include "core/result.hpp"
 #include "lighting/light.hpp"
+#include "lighting/sky_visibility.hpp"
 #include "render/resources.hpp"
 #include "render/glyph_atlas.hpp"
 #include "render/texture_heap.hpp"
@@ -162,11 +163,20 @@ struct Label {
     Vec4 colour{1.0f};
 };
 
+// An env_cubemap probe: world position and the TextureHeap cube slot it reflects.
+struct CubemapProbe {
+    DVec3 position{0.0};
+    TextureSlot cube = kDefaultCubeSlot;
+};
+
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
     bool fullbright = false; // Lit: unit irradiance, useful for inspecting albedo.
     std::vector<lighting::Light> lights; // World-space doubles; rebased at upload.
+    std::shared_ptr<const lighting::SkyVisibilityGrid> skyVisibility; // Last finished world-space grid.
+    // Lit: probes for $envmap env_cubemap (nearest wins); without any, the default cube.
+    std::vector<CubemapProbe> cubemaps;
     FrameView view;
     std::vector<MeshDraw> meshes;
     std::vector<MeshDraw> ghosts; // Blended material pass, no depth writes.

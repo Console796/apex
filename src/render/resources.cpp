@@ -95,11 +95,13 @@ VkImageAspectFlags Image::aspect() const {
 
 Result<Image> Image::create(Context& context, const ImageDesc& desc) {
     if (desc.format == VK_FORMAT_UNDEFINED || desc.width == 0 || desc.height == 0 ||
-        desc.mipLevels == 0 || desc.arrayLayers == 0 || desc.usage == 0) {
+        desc.mipLevels == 0 || desc.arrayLayers == 0 || desc.usage == 0 ||
+        (desc.cube && (desc.arrayLayers != 6 || desc.width != desc.height))) {
         return std::unexpected(Error{ErrorCode::InvalidArgument, "invalid image description"});
     }
     VkImageCreateInfo ii = vkStruct<VkImageCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
     ii.imageType = VK_IMAGE_TYPE_2D;
+    if (desc.cube) ii.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     ii.format = desc.format;
     ii.extent = {desc.width, desc.height, 1};
     ii.mipLevels = desc.mipLevels;
@@ -119,7 +121,8 @@ Result<Image> Image::create(Context& context, const ImageDesc& desc) {
     result.desc_ = desc;
     VkImageViewCreateInfo vi = vkStruct<VkImageViewCreateInfo>(VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
     vi.image = result.image_;
-    vi.viewType = desc.arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
+    vi.viewType = desc.cube ? VK_IMAGE_VIEW_TYPE_CUBE :
+                  desc.arrayLayers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     vi.format = desc.format;
     vi.subresourceRange = {aspectOf(desc.format), 0, desc.mipLevels, 0, desc.arrayLayers};
     APEX_VK_TRY(vkCreateImageView(context.device(), &vi, nullptr, &result.view_), "vkCreateImageView");
@@ -137,6 +140,8 @@ std::optional<FormatInfo> formatInfo(VkFormat format) {
     case VK_FORMAT_B8G8R8A8_UNORM:
     case VK_FORMAT_B8G8R8A8_SRGB:
         return FormatInfo{1, 1, 4, false};
+    case VK_FORMAT_R32G32B32A32_SFLOAT:
+        return FormatInfo{1, 1, 16, false};
     case VK_FORMAT_R16G16B16A16_SFLOAT:
         return FormatInfo{1, 1, 8, false};
     case VK_FORMAT_BC1_RGB_UNORM_BLOCK:

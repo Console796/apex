@@ -6,6 +6,10 @@
 
 namespace apex::viewport {
 
+double sourceFovYDegrees(double fovDegrees) {
+    return glm::degrees(2.0 * std::atan(std::tan(glm::radians(fovDegrees) * 0.5) / (4.0 / 3.0)));
+}
+
 DVec2 Camera::halfExtents(double aspect, double depth) const {
     if (isOrtho()) {
         return {orthoHeight * 0.5 * aspect, orthoHeight * 0.5};

@@ -862,15 +862,14 @@ void PaneFrame::buildMenu() {
 
     auto* mode = menu_->addMenu(tr("Display mode"));
     auto* modeGroup = new QActionGroup(mode);
-    for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat, viewport::DisplayMode::Textured}) {
+    for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat, viewport::DisplayMode::Textured,
+                         viewport::DisplayMode::Lit}) {
         auto* a = mode->addAction(modeName(m), this, [edit, m] { edit([m](viewport::Viewport& v) { v.mode = m; }); });
         a->setCheckable(true);
         a->setChecked(vp->mode == m);
         modeGroup->addAction(a);
     }
-    for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked}) {
-        mode->addAction(modeName(m) + tr(" (later)"))->setEnabled(false);
-    }
+    mode->addAction(modeName(viewport::DisplayMode::Baked) + tr(" (later)"))->setEnabled(false);
 
     auto* overlays = menu_->addMenu(tr("Overlays"));
     struct OverlayEntry { const char* label; bool viewport::Overlays::*field; };

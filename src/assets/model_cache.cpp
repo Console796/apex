@@ -177,4 +177,10 @@ void ModelCache::setBudget(std::size_t bytes) {
 std::size_t ModelCache::residentBytes() const { return impl_->resident; }
 std::shared_ptr<const ModelData> ModelCache::errorModel() const { return impl_->errorModel; }
 
+std::vector<std::string> ModelCache::requestedNames() const {
+    std::vector<std::string> names;
+    for (const auto& [name, entry] : impl_->entries) names.push_back(name);
+    return names;
+}
+
 } // namespace apex::assets

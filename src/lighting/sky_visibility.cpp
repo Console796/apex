@@ -99,19 +99,7 @@ double SkyVisibilityGrid::sample(DVec3 point, DVec3 normal) const {
                 weight += w;
             }
     if (weight > 1e-9) return skyAmbientResponse(normal.z) * sum / weight;
-    // Every neighbour is buried: the nearest valid probe stands in.
-    double best = std::numeric_limits<double>::infinity();
-    const Probe* nearest = nullptr;
-    for (int z = 0; z < dims_.z; ++z)
-        for (int y = 0; y < dims_.y; ++y)
-            for (int x = 0; x < dims_.x; ++x) {
-                const Probe& p = probe(x, y, z);
-                if (!p.valid) continue;
-                const DVec3 d = probePosition(x, y, z) - point;
-                const double dist = glm::dot(d, d);
-                if (dist < best) best = dist, nearest = &p;
-            }
-    return nearest ? skyAmbientResponse(normal.z) * ambientCubeResponse(nearest->cube, normal) : 0.0;
+    return 0.0; // No local air probe: match the GPU without leaking a distant room's sky.
 }
 
 SkyVisibilityGrid buildSkyVisibility(std::span<const SkyTriangle> triangles, const AABB& bounds,
@@ -170,6 +158,7 @@ SkyVisibilityGrid buildSkyVisibility(std::span<const SkyTriangle> triangles, con
     for (int z = 0; z < n[2]; ++z)
         for (int y = 0; y < n[1]; ++y)
             for (int x = 0; x < n[0]; ++x) {
+                if (options.cancelled && options.cancelled()) return {};
                 const DVec3 origin = grid.probePosition(x, y, z);
                 std::array<double, 6> sky{};
                 std::size_t buried = 0;

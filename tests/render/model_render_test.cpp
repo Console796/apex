@@ -4,6 +4,8 @@
 #include "golden_image.hpp"
 #include "shared_context.hpp"
 #include "render/render_mirror.hpp"
+#include "render/scene_target.hpp"
+#include "lighting/normal_map.hpp"
 #include "render/view_math.hpp"
 #include "render/model_thumbnail_scheduler.hpp"
 
@@ -31,7 +33,7 @@ struct Bytes {
     std::string_view view() const { return {reinterpret_cast<const char*>(data.data()), data.size()}; }
 };
 constexpr std::uint32_t secondVertex = 65544;
-void putModel(GameTree& tree, std::string name = "fixture") {
+void putModel(GameTree& tree, std::string name = "fixture", bool mapped = false) {
     Bytes mdl(2048), vtx(512), vvd(64 + (secondVertex + 4) * 64);
     mdl.text(0, "IDST"); mdl.put(4, 48); mdl.put(76, 2048);
     mdl.put(204, 2); mdl.put(208, 512);
@@ -76,6 +78,7 @@ void putModel(GameTree& tree, std::string name = "fixture") {
         for (int i = 0; i < 4; ++i) {
             const auto base = 64 + (first + static_cast<std::uint32_t>(i)) * 48;
             vvd.put(base + 16, points[i]); vvd.put(base + 28, Vec3(0, 0, 1));
+            if (mapped) vvd.put(base + 40, Vec2(i == 1 || i == 2 ? 1 : 0, i >= 2 ? 1 : 0));
         }
     };
     quad(0, -12); quad(4, 12); quad(secondVertex, 0);
@@ -581,4 +584,58 @@ TEST_CASE("installed spotlight helper model renders and is pickable with P2CE FG
         detail.write(reinterpret_cast<const char*>(closePng.data()), static_cast<std::streamsize>(closePng.size()));
         CHECK(detail.good());
     }
+}
+
+TEST_CASE("model mirror: Lit VertexLitGeneric normal material reaches the light loop") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    context->validation().clear();
+    Fixture fixture;
+    putModel(fixture.tree, "bumped", true);
+    fixture.tree.put("materials/test/red.vmt", "VertexLitGeneric { $basetexture test/red $bumpmap test/normal }");
+    vtfpp::VTF::CreationOptions options;
+    options.version = 6;
+    options.outputFormat = vtfpp::ImageFormat::RGBA8888;
+    options.computeThumbnail = false;
+    options.computeReflectivity = false;
+    const std::array<std::byte, 4> pixel{std::byte{230}, std::byte{128}, std::byte{200}, std::byte{255}};
+    std::vector<std::byte> pixels;
+    for (int i = 0; i < 16 * 16; ++i) pixels.insert(pixels.end(), pixel.begin(), pixel.end());
+    auto normal = vtfpp::VTF::create(pixels, vtfpp::ImageFormat::RGBA8888, 16, 16, options);
+    REQUIRE(normal.bake(fixture.tree.root / "materials/test/normal.vtf"));
+    REQUIRE(fixture.vfs->refresh(fixture.jobs));
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    auto doc = map("model models/bumped.mdl body 1 skin 0");
+    RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, nullptr, fixture.models.get(),
+                        [&](const std::string& path) { return fixture.vfs->exists(path); });
+    mirror.rebuild(*doc); REQUIRE(mirror.settle());
+    REQUIRE(fixture.materials->request("test/red")->bumpTexture);
+    auto settings = view(); settings.mode = DisplayMode::Lit;
+    auto list = mirror.buildDrawList(settings);
+    REQUIRE(list.meshes.size() == 1);
+    const auto slot = list.meshes[0].texture;
+    REQUIRE(slot < (*heap)->materials().size());
+    CHECK(((*heap)->materials()[slot].flags & kMaterialHasBump) != 0u);
+    lighting::Light light;
+    light.kind = lighting::LightKind::Sun;
+    light.direction = -glm::normalize(DVec3(1, 0, 0.2));
+    light.intensity = DVec3(0.5);
+    list.lights = {light};
+    auto renderer = Renderer::create(*context, **heap, RenderTarget::kColorFormat, RenderTarget::kDepthFormat);
+    REQUIRE(renderer);
+    auto target = RenderTarget::create(*context, 128, 128); REQUIRE(target);
+    SceneTarget scene(*context, **heap);
+    REQUIRE(scene.resize(128, 128));
+    const float clear[] = {0, 0, 0, 1};
+    REQUIRE(context->oneShot([&](VkCommandBuffer commands) {
+        (*renderer)->prepare(commands, list, scene, clear);
+        target->begin(commands, clear); (*renderer)->record(commands, list); target->end(commands);
+    }));
+    const auto image = target->readback(); REQUIRE(image);
+    const auto mapped = lighting::decodeNormal(DVec3(230, 128, 200) / 255.0, false);
+    const auto energy = lighting::irradiance(light, {0, 0, 0}, mapped);
+    const int expected = int(std::lround(std::pow(energy.r, 1 / 2.2) * 255));
+    CHECK(channel(*image, 64, 64, 0) > 120);
+    CHECK(std::abs(channel(*image, 64, 64, 0) - expected) <= 1);
+    CHECK(context->validation().errorCount() == 0);
 }
