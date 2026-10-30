@@ -29,7 +29,6 @@ sudo apt install build-essential g++-15 clang-21 libclang-rt-21-dev cmake ninja-
 
 ```bash
 git clone <remote> apex && cd apex
-git switch 0.3
 cmake --preset linux-asan
 cmake --build --preset linux-asan -j6
 ```
@@ -70,8 +69,9 @@ ASAN_OPTIONS=detect_leaks=0 build/linux-asan/tests/apex_tests -tc='*face*'   # o
 
   Don't start a bare nested `kwin_wayland`.
 
-  The manual 0.5.1 real-tool gate is `python3 tools/chamber_runner_check.py` with
-  `APEX_P2CE_DIR` set and both linux-asan test binaries built. It generates D17's
+  The real-tool compile gate is `python3 tools/chamber_runner_check.py` with
+  `APEX_P2CE_DIR` set and both linux-asan test binaries built. The `compile-chamber` stage of
+  `tools/ci.py` runs it. It generates D17's
   Apex-authored chamber and runs `compile_chamber` through the real Fast profile
   (vbsp, vvis, vrad and BSP copy), without launching the game. It also checks a cut cordon and a newly created instance compiled into an addon target. VMFs, snapshots and
   copied BSPs stay under `/tmp`; the install is read-only. The driver uses the
@@ -226,7 +226,9 @@ Check that the guest has the toolchain from step 2 before relying on it. Then ru
 
 ## 7. Day to day
 
-1. **Work on the milestone branch** (`0.3`). `master` takes releases only.
+1. **Branches.** Recent work lands on `master`. The milestone branches `0.3`, `0.4` and `0.5` were
+   used while each milestone was open, and they are merged into `master`. If a milestone gets its
+   own branch again, work on that branch and check `git branch` first.
 2. **Plans:** each milestone has its plan in `docs/plans/`. Record decisions and *As built* notes
    there as the work lands.
 3. **Before each commit:** build `linux-asan` with `-j6`, run the targeted tests and the UI tests

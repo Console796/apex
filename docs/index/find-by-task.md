@@ -33,6 +33,19 @@ name from the header to find its uses, and read the header comment of each file 
 | Change themes or colours | [`src/ui/theme.hpp`](../../src/ui/theme.hpp) | `ui/theme_editor.cpp`, `ui/settings_dialog.cpp` |
 | Change the Wayland pointer handling | [`src/ui/pointer_lock.hpp`](../../src/ui/pointer_lock.hpp) | `ui/pointer_lock_wayland.cpp`, `third_party/wayland-protocols/` |
 | Change logging | [`src/core/log.hpp`](../../src/core/log.hpp) | the callers, with grep |
+| Change compile profiles, sequences or tool commands | [`src/compile/sequence.hpp`](../../src/compile/sequence.hpp) | `compile/variables.hpp`, `compile/runner.hpp`, `ui/profile_editor.cpp`, `ui/profile_store.cpp`, `ui/compile_panel.cpp` |
+| Change how compile logs become diagnostics | [`src/compile/diagnostics.hpp`](../../src/compile/diagnostics.hpp) | `editor/diagnostic_lookup.hpp`, `tests/compile/logs/` (the golden logs) |
+| Change leak or portal overlays | [`src/compile/map_files.hpp`](../../src/compile/map_files.hpp) | `editor/compile_overlay.hpp`, `ui/compile_panel.cpp` |
+| Change what Play does, or the game's arguments | [`src/compile/game_launch.hpp`](../../src/compile/game_launch.hpp) | `ui/qprocess_runner.cpp`, `compile/special_commands.cpp` |
+| Change cordons | [`src/document/cordon.hpp`](../../src/document/cordon.hpp) | `ui/cordon_editor.cpp`, `editor/compile_snapshot.hpp` |
+| Change the Problems list or the pre-compile checks | [`src/editor/map_problems.hpp`](../../src/editor/map_problems.hpp) | `ui/compile_panel.cpp` |
+| Change prefabs | [`src/editor/prefab.hpp`](../../src/editor/prefab.hpp) | `editor/placement_item.hpp`, `ui/prefab_dialog.cpp`, `ui/prefab_thumbnail.cpp` |
+| Change addon scaffolding or campaign lookup | [`src/assets/addon_authoring.hpp`](../../src/assets/addon_authoring.hpp) | `assets/addons.hpp`, `ui/addons_panel.cpp` |
+| Change the Find area or the asset report | [`src/editor/find_replace.hpp`](../../src/editor/find_replace.hpp) | `editor/asset_report.hpp`, `editor/entity_report.hpp`, `ui/find_panel.cpp`, `ui/asset_report_builder.cpp` |
+| Change the light model: falloff, spotlight cones, `light_rt` | [`src/lighting/light.hpp`](../../src/lighting/light.hpp) | `editor/light_edit.hpp` (the handles), the plan in [`docs/plans/0.6.md`](../plans/0.6.md) |
+| Change sky ambient or the sky visibility probes | [`src/lighting/sky_visibility.hpp`](../../src/lighting/sky_visibility.hpp) | `render/renderer.hpp` (the sampling), [`docs/plans/0.6.md`](../plans/0.6.md) D16 |
+| Change `Lit` shading, its passes or its HDR targets | [`src/render/renderer.hpp`](../../src/render/renderer.hpp) | `render/scene_target.hpp`, `render/gpu_lighting.hpp` (the std430 ABI), `render/shaders/` |
+| Change material shading from VMT parameters | [`src/render/gpu_material.hpp`](../../src/render/gpu_material.hpp) | `lighting/normal_map.hpp`, `lighting/specular.hpp`, `assets/vmt.hpp` |
 | Run work on a background thread | [`src/core/job_pool.hpp`](../../src/core/job_pool.hpp) | `assets/asset_index.hpp` for the owner-thread rules |
 | Add a source file or a dependency | [`CMakeLists.txt`](../../CMakeLists.txt) (the `apex_layer` calls) | [`cmake/Layers.cmake`](../../cmake/Layers.cmake), [`cmake/deps.cmake`](../../cmake/deps.cmake), [`THIRD_PARTY.md`](../../THIRD_PARTY.md), `tools/check_licenses.py` |
 | Change a layer's allowed includes | `DEPS` in [`tools/check_layers.py`](../../tools/check_layers.py) | [architecture.md](architecture.md#layers) |

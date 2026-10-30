@@ -40,12 +40,20 @@ then Strata and the project's own vocabulary.
 | **Displacement** | A subdivided, deformable face. Planned for 0.8. |
 | **Texture lock** | Keeps texture alignment fixed while a brush is transformed. |
 | **point_data** | Per-solid data that Apex reconciles against the planes (`solid_geometry`, decision D8). |
+| **Cordon** | A box in the `cordons` block that limits a compile to part of the map. Cordons were added in 0.5. |
+| **light_rt** | Strata's dynamic light entity. The 0.6 preview shades it, and its direct, indirect and specular modes are planned. |
+| **Light model** | The shared description of every light, built once from entity keys in `src/lighting/`. The preview uses it now, and the baker will use it in 0.7. |
 
 ## Apex terms
 
 | Term | Meaning |
 |---|---|
 | **Document** | The in-memory map: a tree of nodes with stable IDs and a transaction history. |
+| **Compile profile** | A saved set of compile steps and their variables, kept in the user's preferences, not in the map. |
+| **Sequence** | An ordered list of compile tool runs, such as Fast or Final. Each step has a status: queued, running, ok, failed, cancelled or skipped. |
+| **Diagnostic** | A problem parsed from a compile log, with a stable ID. Diagnostics link back to the object that caused them. |
+| **Problem** | An entry in the Problems list. It selects an object and never changes the map by itself (0.5 D8). |
+| **Addon target** | An addon that a compile writes its maps into, rather than the game's own `maps` folder (0.5.7). |
 | **Transaction** | One logged change to the document. Undo, redo and the history panel work from these. |
 | **Handle** | An ID for a node. It never revives once its node is deleted. |
 | **Codec** | The part of the document that keeps unknown keys, spans and original spelling, so unchanged data is written back exactly. |
@@ -81,6 +89,7 @@ then Strata and the project's own vocabulary.
 | **Reversed-Z** | A depth scheme that stores depth with 0 as the far plane, to keep precision. |
 | **Camera-relative** | Positions are sent to the GPU relative to the camera, so large coordinates keep their precision. |
 | **Bindless texture heap** | One descriptor set that holds every texture, indexed from the shader. |
+| **Lit** | The display mode that shows the map with direct light and sky ambient, rendered in HDR and tone-mapped with a fixed exposure from the map (0.6). |
 | **SPIR-V** | The compiled form of the shaders, embedded in the binary. |
 | **lavapipe** | Mesa's software Vulkan driver. The required device for GPU tests. |
 | **RADV** | Mesa's AMD driver. Used for GPU tests when an AMD GPU is present. |

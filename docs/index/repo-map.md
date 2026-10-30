@@ -7,7 +7,7 @@ root. For the source tree in detail, see [source-map.md](source-map.md).
 
 | Path | What it is | Read it when |
 |---|---|---|
-| [`src/`](../../src/) | The program: nine layers, see [architecture.md](architecture.md). | You change behaviour. |
+| [`src/`](../../src/) | The program: eleven layers, see [architecture.md](architecture.md). | You change behaviour. |
 | [`tests/`](../../tests/) | doctest suites that mirror `src/`, plus fixtures, fuzz targets and golden images. | You add or change behaviour, or need a test to copy from. |
 | [`tools/`](../../tools/) | Helper scripts and small C++ programs: the CI gate, layer and licence checks, packaging, a VMF dump tool, probes, and Windows VM control. | You run CI, package a release, or debug a file. |
 | [`cmake/`](../../cmake/) | CMake modules: pinned dependencies, the layer macro, shader compilation, packaging rules. | You add a dependency, a source file to a layer, or a shader. |

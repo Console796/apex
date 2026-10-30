@@ -20,7 +20,7 @@ cmake --build --preset linux-gcc-debug
 ctest --preset linux-gcc-debug
 ```
 
-Presets: `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan`,
+Presets: `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan`, `linux-fuzz`,
 `windows-msvc-{debug,release}`.
 
 ## Packaging
@@ -39,9 +39,10 @@ CI runs locally (plan 0.1, D22): `tools/ci.py`. It needs `APEX_P2CE_DIR` pointin
 
 ## Layers
 
-`core -> geometry -> document -> {assets} -> render -> viewport -> ui -> app`, see
-`docs/plans/0.1.md` section 2. `tools/check_layers.py` rejects upward includes and Qt includes
-below `ui/`.
+Eleven layers: `core`, `geometry`, `document`, `compile`, `lighting`, `editor`, `assets`, `render`,
+`viewport`, `ui` and `app`. Each may include only the layers it depends on. The exact edges are in
+[docs/index/architecture.md](docs/index/architecture.md#layers), and `docs/plans/0.1.md` section 2
+explains the seams. `tools/check_layers.py` rejects upward includes and Qt includes below `ui/`.
 
 ## Test fixtures
 

@@ -35,11 +35,12 @@ string puts the suffix last (`0.2.11.42-release`). Git tags mark completed sub-m
 (`v0.1.3`) and releases (`v0.2.11-release`) and carry no build number. 0.1 predates this policy:
 its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 
-**Status:** 0.1–0.3 are complete (latest release `0.3.10-release`). 0.4.1–0.4.9 and
-0.5.1–0.5.6 have landed on the `0.5` branch. Addon authoring/compile targets (0.5.7) and Create Instance
-from Selection (0.5.8) are implemented in the working tree; final release validation is in progress.
-The owner confirms real playtests on `1f89631`. See [the 0.5 plan](plans/0.5.md) for current evidence
-and remaining gates. No 0.5 release is tagged yet.
+**Status (2026-10-29):** 0.1–0.3 are complete (latest release `0.3.10-release`). 0.4.1–0.4.9 have
+landed. 0.5.1–0.5.8 are committed on `master`, including addon authoring and compile targets (0.5.7)
+and Create Instance from Selection (0.5.8). The owner confirmed real playtests on `1f89631`. Release
+verification is still open: see [the 0.5 plan](plans/0.5.md) for the remaining gates. No 0.5 release
+is tagged yet. 0.6 is in progress: 0.6.1 to 0.6.5 have landed, and 0.6.6 to 0.6.8 and the 0.6 release
+have not started. See [the 0.6 plan](plans/0.6.md). `version.txt` still reads `0.5.8`.
 
 ## Principles that hold across every milestone
 

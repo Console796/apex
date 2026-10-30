@@ -54,22 +54,56 @@ The map as data.
 | `instance_contents.hpp` | The contents of an instance, as the document holds them. |
 | `instance_fixup.hpp`, `.cpp` | Fixes up instance contents when an instance is placed. |
 | `instance_collapse.hpp`, `.cpp` | Collapses an instance back into its contents. |
+| `cordon.hpp`, `.cpp` | Cordon boxes, stored in the VMF's `cordons` block. Each edit is one undo step (0.5 D7). |
+| `entity_helpers.hpp`, `.cpp`, `entity_transform.hpp`, `.cpp` | Entity keys and the transforms that move, rotate and scale entities. |
+
+## `src/compile/` (layer `compile`)
+
+The compile pipeline without Qt or the document. It depends on `core` only. The Qt side is in
+`ui/compile_panel.*` and `ui/qprocess_runner.*`, and the editor side is in `editor/compile_snapshot.*`.
+
+| File | Purpose |
+|---|---|
+| `sequence.hpp`, `.cpp` | Compile sequences (Fast, Final and so on) and the status machine: queued, running, ok, failed, cancelled, skipped. |
+| `variables.hpp`, `.cpp` | Command-line variable expansion for profiles. |
+| `special_commands.cpp` | Commands with built-in behaviour inside a sequence. |
+| `runner.hpp`, `.cpp` | Runs one tool command. The Qt runner is in `ui/qprocess_runner.*`. |
+| `game_launch.hpp`, `.cpp` | Builds the detached game arguments for Play (`-map`, `-campaign`). |
+| `file_ops.hpp`, `.cpp` | File operations for compile runs and snapshots. |
+| `map_files.hpp`, `.cpp` | Reads `.lin` leak files and `.prt` portal files. |
+| `diagnostics.hpp`, `.cpp` | Parses real compile logs into diagnostics with stable IDs, tested against `tests/compile/logs/`. |
+| `wc_import.hpp`, `.cpp` | Imports Hammer `.wc` compile profiles through `toolpp`. |
+
+## `src/lighting/` (layer `lighting`)
+
+The light model for 0.6. It is pure data and maths, so the realtime preview and, later, the baker
+read the same numbers.
+
+| File | Purpose |
+|---|---|
+| `light.hpp`, `.cpp` | The light model: `light`, `light_spot`, `light_environment` and `light_rt` from entity keys, with the falloff and spotlight formulas. Plan 0.6, D1 and D12. |
+| `sky_visibility.hpp`, `.cpp` | A CPU grid of sky-visibility probes over the BVH. Lit ambient samples it where the sky is visible (plan 0.6, D16). |
+| `normal_map.hpp` | Cotangent frame from the texture gradients, for normal-mapped shading. |
+| `specular.hpp` | Material response formulas (Karis-style specular). Provisional until fitted to game captures (plan 0.6, D2). |
 
 ## `src/editor/` (layer `editor`)
 
-What the user does to the document. About 100 files; grouped here by job.
+What the user does to the document. About 120 files; grouped here by job.
 
 | Group | Key files |
 |---|---|
 | Session and commands | `editor_session.hpp/.cpp` (the owner), `actions.hpp/.cpp` (named actions and their defaults), `preset_io.hpp/.cpp` (keybinding presets on disk), `autosave.hpp/.cpp` |
-| Tools | `tool.hpp/.cpp` (the interface), `select_tool.cpp`, `entity_tool.cpp`, `block_tool.hpp`, `clip_tool.cpp`, `draw_extrude_tool.cpp`, `primitive_tool.cpp`, `vertex_tool.cpp`, `measure_tool.cpp`, `apply_tool.cpp` |
+| Tools | `tool.hpp/.cpp` (the interface), `select_tool.cpp`, `entity_tool.cpp`, `block_tool.hpp`, `clip_tool.cpp`, `draw_extrude_tool.cpp`, `primitive_tool.cpp`, `vertex_tool.cpp`, `measure_tool.cpp`, `apply_tool.cpp`, `light_edit.hpp/.cpp` (light helpers and falloff edits) |
 | Selection | `selection.hpp/.cpp` (the selection value), `selection_ops.cpp`, `selection_expand.cpp`, `selection_undo.cpp`, `group_index.cpp` |
-| Picking and snapping | `pick_index.hpp/.cpp`, `pick_model.hpp/.cpp`, `snapper.hpp/.cpp`, `work_plane.hpp/.cpp`, `placement.hpp/.cpp` |
+| Picking and snapping | `pick_index.hpp/.cpp`, `pick_model.hpp/.cpp`, `snapper.hpp/.cpp`, `work_plane.hpp/.cpp`, `placement.hpp/.cpp`, `placement_item.hpp` (what the Entity tool places: class, model or prefab) |
 | Transforms and handles | `transform.hpp/.cpp`, `modal_transform.hpp/.cpp`, `gizmo.hpp/.cpp`, `vertex_edit.cpp`, `face_edit.cpp`, `topology_ops.cpp` |
 | Preview | `preview.hpp/.cpp` (ghosts and preview geometry) |
 | Groups, visgroups, hiding | `group_ops.cpp`, `visgroups.hpp/.cpp`, `visibility.hpp/.cpp`, `hide_ops.cpp` |
 | Clipboard | `clipboard.hpp/.cpp` |
-| Entity I/O and instances | `connection_model.hpp/.cpp`, `connection_validation.cpp`, `connection_completion.cpp`, `incoming_connections.cpp`, `instance_templates.cpp`, `instance_expansion.cpp`, `instance_watch_state.cpp`, `instance_collapse_command.cpp`, `rename_propagation.cpp` |
+| Entity I/O and instances | `connection_model.hpp/.cpp`, `connection_validation.cpp`, `connection_completion.cpp`, `incoming_connections.cpp`, `instance_templates.cpp`, `instance_expansion.cpp`, `instance_watch_state.cpp`, `instance_collapse_command.cpp`, `instance_create.cpp` (Create Instance from Selection, 0.5.8), `instance_key_types.hpp/.cpp`, `rename_propagation.cpp` |
+| Prefabs | `prefab.hpp/.cpp` (plain VMF prefabs in Strata Hammer's `hammer/prefabs` folder, shared with Hammer) |
+| Compile and validation | `compile_snapshot.hpp/.cpp` (isolated work copies, with instances rebased), `compile_overlay.hpp/.cpp` (leak and portal overlays), `diagnostic_lookup.hpp/.cpp` (log diagnostics to objects), `map_problems.hpp/.cpp` (the Problems list; it selects problems and never fixes them, 0.5 D8) |
+| Reports and find | `asset_report.hpp/.cpp`, `entity_report.hpp/.cpp`, `find_replace.hpp/.cpp`, `overlay_palette.hpp` |
 | Inspector data | `inspector_model.hpp/.cpp`, `name_index.cpp` |
 | Pie menus | `pie_menu.hpp/.cpp`, `pie_menus.hpp/.cpp` |
 
@@ -82,6 +116,8 @@ Everything that reads the game's files. Third-party format libraries stay behind
 | `vfs.hpp`, `.cpp` | Virtual filesystem: mounts, Steam discovery, VPK reads. Earlier mounts win. Main-thread owner. |
 | `game_profile.hpp`, `.cpp` | A game's `gameinfo`, mounts and search paths. P2CE/Strata is the only profile planned through 0.10. |
 | `addons.hpp`, `.cpp` | Strata addon mounting. Background and open questions are in [../plans/addons.md](../plans/addons.md). |
+| `addon_authoring.hpp`, `.cpp` | Creates a new addon scaffold and resolves its campaign. It never replaces an existing addon or mounts one (0.5.7). |
+| `unmounted_addons.hpp`, `.cpp` | Reads the metadata of addons on disk that are not mounted, for the missing-asset hints (0.4.9). |
 | `vmt.hpp`, `.cpp` | Material (VMT) parsing. |
 | `vtf.hpp`, `.cpp` | Texture (VTF) decoding. |
 | `fgd.hpp`, `.cpp` | Entity definitions (FGD), which drive the inspector. |
@@ -107,6 +143,9 @@ Vulkan. The GPU code lives here. `ui/gpu_host` is the bridge that connects it to
 | `solid_mesh.hpp`, `.cpp`, `helper_shapes.hpp`, `.cpp` | Mesh building for solids and helper shapes (grids, gizmos). |
 | `glyph_atlas.hpp`, `.cpp` | Font atlas for labels. |
 | `render_mirror.hpp`, `.cpp` | Render mirroring. Read the header for its contract. |
+| `scene_target.hpp`, `.cpp` | Viewport-sized HDR scene and reversed-Z depth attachments, sampled by the display pass (0.6.3). |
+| `gpu_lighting.hpp` | std430 frame and light records, shared with the GLSL `frame.inc` and `lighting.inc` (0.6). |
+| `gpu_material.hpp` | Per-material GPU records, indexed by base texture slot. Zero records keep the legacy shading (0.6.5). |
 | `model_thumbnail.hpp`, `.cpp`, `model_thumbnail_scheduler.hpp`, `.cpp` | Renders model thumbnails in the background. |
 | `model_inspector.hpp`, `.cpp` | Loads and renders one model for the Models browser's inspect view. |
 | `view_math.hpp` | Projection and camera-relative maths. |
@@ -138,6 +177,7 @@ Qt. The largest directory after `editor`, and the only one that includes Qt head
 | Viewports | `viewport_area.hpp/.cpp`, `viewport_pane.hpp/.cpp`, `gpu_host.hpp/.cpp` (puts Vulkan into a Qt window), `uv_view.cpp` |
 | Panels | `outliner_panel.cpp`, `inspector_panel.cpp`, `history_panel.cpp`, `log_panel.cpp`, `visgroup_panel.cpp`, `face_properties_panel.cpp`, `tool_parameter_strip.cpp` |
 | Asset browsers | `asset_browser_panel.cpp`, `materials_panel.cpp`, `models_panel.cpp`, `prefab_thumbnail.cpp`, `model_inspect_view.hpp/.cpp`, `model_pick.hpp/.cpp`, `sounds_panel.cpp`, `sound_preview.cpp`, `particles_panel.cpp`, `game_content.hpp/.cpp` |
+| Compile and content | `compile_panel.hpp/.cpp` (the Compile panel, one persistent instance across workspaces), `qprocess_runner.hpp/.cpp` (the native runner for compile and game steps), `profile_editor.*` and `profile_store.*` (user compile profiles, kept in preferences, not the VMF), `addons_panel.*` (mount toggles and addon authoring), `cordon_editor.*`, `find_panel.*` and `asset_report_builder.*` (the Find area's reports) |
 | Input | `key_chord.hpp/.cpp`, `pie_menu_popup.cpp`, `pointer_lock.hpp/.cpp`, `pointer_lock_wayland.cpp` (Wayland-only), `input_log.hpp/.cpp`, `transform_input.cpp` |
 | Dialogs | `paste_special_dialog.cpp`, `transform_dialog.cpp`, `tie_dialog.cpp`, `prefab_dialog.cpp`, `recovery_dialog.cpp`, `rename_confirmation.cpp` |
 | Icons | `icons/` and `icons.qrc`, compiled into the executable |
@@ -149,13 +189,12 @@ Qt. The largest directory after `editor`, and the only one that includes Qt head
 | `main.cpp` | `main()`. Starts Qt, logging and themes, creates `MainWindow`, and opens a map if one is given on the command line. |
 
 
-## Compile and play (0.5)
+## Where the 0.5 and 0.6 code sits
 
-`src/compile/` depends on core only: profiles, command expansion, file operations, the sequence
-state machine, detached game arguments, diagnostics and leak/portal readers. `src/editor/compile_snapshot.*`
-writes isolated snapshots and copies/rebases local instances. `src/editor/instance_create.cpp` owns
-Create Instance from Selection, its crossing-connection warning and the single document transaction.
-
-`src/assets/addon_authoring.*` owns the addon scaffold, campaign lookup and ordered mount comparison;
-`Vfs::compileGameInfo` supplies compile-tool content. `src/ui/compile_panel.*`, `profile_editor.*`,
-`profile_store.*`, `qprocess_runner.*` and `addons_panel.*` provide the Qt controls and native runner.
+- **Compile and play (0.5):** the pipeline is in `src/compile/`. Snapshots are in
+  `src/editor/compile_snapshot.*`. Create Instance from Selection is `src/editor/instance_create.cpp`,
+  with one document transaction. Addon scaffolding and campaign lookup are in
+  `src/assets/addon_authoring.*`, and `Vfs::compileGameInfo` supplies compile-tool content.
+- **Lighting (0.6):** the light model is in `src/lighting/`. The `Lit` passes are in `src/render/`
+  (`scene_target`, `gpu_lighting`, `gpu_material`) and the shaders in `src/render/shaders/`. Light
+  helpers and falloff edits are in `src/editor/light_edit.*`.

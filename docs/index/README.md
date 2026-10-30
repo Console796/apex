@@ -44,8 +44,9 @@ design documents in [docs/](../); they point at them.
   work starts. Probe output lives in `docs/plans/probe-results/`.
 - **Version string.** `version.txt` holds `MAJOR.MILESTONE.SUB`, with a `-release` suffix when a
   milestone is released. CMake reads it and embeds it in the binary.
-- **Git.** The default branch is `master`. Work happens on a branch named for the milestone in
-  progress (for example `0.4`).
+- **Git.** The default branch is `master`. Milestone branches (`0.3`, `0.4`, `0.5`) were used while
+  each milestone was open. The `0.5` branch is now an ancestor of `master`, and the 0.6 work is
+  committed on `master`. Check `git branch` and `git log` for the current state.
 - **Layer rule.** Code is split into layers with a strict include direction. Read
   [architecture.md](architecture.md) before adding an `#include`.
 
@@ -54,9 +55,8 @@ design documents in [docs/](../); they point at them.
 These are places where the written status is behind the code. When in doubt, trust the code, the
 `version.txt` file and the roadmap, in that order.
 
-- The root README says "0.2.12 shipped, 0.3 in progress". `version.txt` and the recent commits are
-  at 0.3.10-release and 0.4.x. The "What works today" section also has not caught up.
-- The root README's layer order omits `editor`. The real graph, in `tools/check_layers.py`, has
-  `editor` between `document` and `ui`. [architecture.md](architecture.md) has the full graph.
-- [../development.md](../development.md) says `git switch 0.3` in its clone step. Use the branch
-  for the milestone you are working on.
+- `version.txt` says `0.5.8`, but `master` has the 0.6.1 to 0.6.5 commits. Under the versioning
+  rule in [../roadmap.md](../roadmap.md), the version should name the last completed sub-milestone.
+  It is not bumped here because a version bump is the owner's call.
+- The 0.5 release has no tag. Its verification is recorded in
+  [../plans/0.5.md](../plans/0.5.md) and [../plans/probe-results/compile_0_5_release.md](../plans/probe-results/compile_0_5_release.md).

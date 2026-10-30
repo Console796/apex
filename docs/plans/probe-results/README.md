@@ -54,3 +54,24 @@ D10 and D15 in `../0.3.md`.
 and [cordon evidence and remaining Hammer assumptions](compile_0_5_4.md). The owner confirmed real
 playtests on `1f89631`; the release plan records this separately from automated verification.
 Release evidence (2026-10-29): [Linux real-tool gate, equivalence and measurements](compile_0_5_release.md).
+
+Other 0.5 probes: [process-tree termination and runner shape](compile_0_5_1.md) (0.5.1),
+[compile log shapes and object mapping](compile_0_5_2.md) (0.5.2; the logs themselves are in
+`tests/compile/logs/`), [`.lin` and `.prt` as the tools write them](compile_0_5_3.md) (0.5.3),
+[Play launch arguments](compile_0_5_6.md) (0.5.6). Other notes: [addon mount locations](addons_p2.md)
+(0.3.7), [instance drawing](instance_drawing_0_4_5.md) (0.4.5), and [Hammer's instance, prefab and
+scale findings](hammer_0_4_1.md) (0.4.1). The sub-milestone numbers are in each file's title.
+
+0.6 lighting, all measured from the P2CE tools and captures, with no Valve source consulted:
+
+- [Light keys to worldlights](lighting_0_6_p0.md) (2026-10-29): how native VRAD turns `light`,
+  `light_spot` and `light_rt` keys into worldlights. P0 for 0.6.1.
+- [Irradiance reference](lighting_0_6_2_reference.md) (0.6.2): the measurements behind the
+  irradiance parity work, which `tools/light_parity.py` runs against native VRAD.
+- [Light helpers](light_helpers.md) (2026-10-28): the falloff and cone handles in the editor.
+- [Material normal decoding](material_normals_0_6_5.md) (0.6.5 a/b): the green-channel measurement
+  and the normal-map decode.
+- [In-game captures of test1](captures_test1_0_6_5.md) (0.6.5): the owner's P2CE captures, which
+  are kept outside the repository. Used to fit the material and envmap response.
+- [Lighting compile verification](lighting_compilation.md) (2026-10-28): native VBSP, VVIS and VRAD
+  run on a snapshot of the owner's map, and the note records what the compiler does with its lights.

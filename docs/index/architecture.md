@@ -17,9 +17,11 @@ which mirrors the CMake link graph:
 | `core` | [`src/core/`](../../src/core/) | nothing | Maths, KV1 and KV3 parsing, JSON, paths, logging, job pool, handles, results. |
 | `geometry` | [`src/geometry/`](../../src/geometry/) | `core` | Convex hulls, primitives, solid geometry, face UVs, BVH. No document knowledge. |
 | `document` | [`src/document/`](../../src/document/) | `geometry`, `core` | The VMF model, transactions, instances, connection codec. |
-| `editor` | [`src/editor/`](../../src/editor/) | `document`, `geometry`, `core` | Tools, selection, gizmos, snapping, clipboard, groups, visgroups, autosave. |
-| `assets` | [`src/assets/`](../../src/assets/) | `core` | Virtual filesystem, game profiles, VMT, VTF, FGD, indexes, caches, model baking. |
-| `render` | [`src/render/`](../../src/render/) | `document`, `assets` | Vulkan context, renderer, swapchain, texture heap, thumbnails. |
+| `compile` | [`src/compile/`](../../src/compile/) | `core` | Compile profiles, `$variable` expansion, sequences, the runner's state machine, log parsers for diagnostics, `.lin` and `.prt`, `.wc` import. |
+| `lighting` | [`src/lighting/`](../../src/lighting/) | `geometry`, `document`, `core` | The light model shared by the preview and, later, the baker; sky visibility probes; normal-map and specular helpers. |
+| `editor` | [`src/editor/`](../../src/editor/) | `document`, `geometry`, `core`, `compile` | Tools, selection, gizmos, snapping, clipboard, groups, visgroups, autosave, cordons, problems, compile snapshots. |
+| `assets` | [`src/assets/`](../../src/assets/) | `core` | Virtual filesystem, game profiles, addons and addon authoring, VMT, VTF, FGD, indexes, caches, model baking. |
+| `render` | [`src/render/`](../../src/render/) | `document`, `assets`, `lighting` | Vulkan context, renderer and its `Lit` passes, swapchain, texture heap, thumbnails. |
 | `viewport` | [`src/viewport/`](../../src/viewport/) | `render`, `document` | Cameras, display modes, split layouts, workspaces, picking maths. |
 | `ui` | [`src/ui/`](../../src/ui/) | `viewport`, `editor` | Qt widgets, panels, dialogs, the GPU host that puts Vulkan into a Qt widget. |
 | `app` | [`src/app/`](../../src/app/) | `ui` | `main()` only. |
@@ -29,15 +31,17 @@ Two rules are enforced, and CI runs the check:
 1. **Include direction.** A layer may include only its own dependency closure. Violations are
    reported as `layer 'x' must not include 'y'`.
 2. **Qt stays up top.** Qt headers (`<Q...>`) are allowed only in `ui/` and `app/`. The layers
-   below the UI are plain C++. `core`, `geometry`, `document` and `editor` build and test without a
-   GPU or a window. The render tests need a Vulkan device, and lavapipe is the required one.
+   below the UI are plain C++. `core`, `geometry`, `document`, `compile`, `lighting`, `editor` and
+   `assets` build and test without a window. The render tests need a Vulkan device, and lavapipe is
+   the required one.
 
 `tools/check_layers.py` also rejects any use of `processModelData`, which is forbidden because Apex
 owns model baking itself. CI runs the check. [../development.md](../development.md) asks you to run
 it by hand before each commit.
 
-Note that `editor` sits between `document` and `ui`, which the root README's layer order leaves
-out.
+The graph is a DAG, so the root README's one-line summary only gives its rough order. The table
+above is exact. `compile` and `lighting` are the two layers that the root README and CONTRIBUTING.md
+used to leave out.
 
 ## The core model
 
