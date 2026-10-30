@@ -147,6 +147,12 @@ Gpu* gpu() {
         writeCubeVtf(g->tree.root / "materials/test/cube.vtf");
         g->tree.put("materials/test/env_lmg.vmt", "LightmappedGeneric { $basetexture test/floor $envmap env_cubemap }");
         g->tree.put("materials/test/plain_lmg.vmt", "LightmappedGeneric { $basetexture test/floor }");
+        // Portal 2's light-cover shape, and screen-space Refract (no $localrefract).
+        g->tree.put("materials/test/cover.vmt", R"(Refract {
+            $model 1 $refractamount ".025" $refracttint "[0.5 0.25 1]" $normalmap test/normal $localrefract 1
+            $localrefractdepth 0.05 $basetexture test/floor $envmap test/cube $envmaptint 0.2 $normalmapalphaenvmapmask 1
+        })");
+        g->tree.put("materials/test/refract.vmt", "Refract { $basetexture test/floor $normalmap test/normal $refractamount 0.1 }");
         assets::GameProfile profile;
         profile.gameDirectory = g->tree.root;
         auto vfs = assets::Vfs::load(profile, g->jobs);
@@ -2049,6 +2055,36 @@ TEST_CASE("mirror: specular material records resolve patches and retire optional
     }
     for (const auto slot : slots) CHECK(g->heap->materials()[slot].flags == 0);
     CHECK(g->heap->liveTextures() == live);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: local Refract records take the normal map, tint, offsets and envmap; screen-space Refract none") {
+    REQUIRE_GPU();
+    bool local = false;
+    SUBCASE("local") { local = true; }
+    SUBCASE("screen-space") {}
+    auto text = readFixture("render_map.vmf");
+    const std::string name = local ? "test/cover" : "test/refract";
+    for (std::size_t at = 0; (at = text.find("test/red", at)) != std::string::npos; at += name.size())
+        text.replace(at, 8, name);
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    Scene scene(*g, std::make_unique<document::Document>(*parsed));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    std::size_t localRecords = 0;
+    for (const auto& mesh : scene.mirror.buildDrawList(options).meshes) {
+        const auto record = g->heap->materials()[mesh.texture];
+        if ((record.flags & kMaterialLocalRefract) == 0) continue;
+        ++localRecords;
+        CHECK((record.flags & kMaterialHasBump) != 0);
+        CHECK((record.flags & kMaterialEnvmap) != 0);
+        CHECK((record.flags & kMaterialNormalAlphaEnvmapMask) != 0);
+        CHECK(record.refractTint.x == doctest::Approx(std::pow(0.5, 2.2)));
+        CHECK(record.refractTint.z == 1);
+        CHECK(record.refractParams == Vec4(0.025f, 0.05f, 0, 0));
+    }
+    CHECK((localRecords > 0) == local);
     CHECK(g->context->validation().errorCount() == 0);
 }
 

@@ -116,7 +116,7 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         Vec4 texel{}, dpdx{}, dpdy{}, uv{};
         GpuMaterial material{};
     };
-    static_assert(sizeof(Sample) == 336);
+    static_assert(sizeof(Sample) == 368);
     static_assert(offsetof(Sample, material) == 192);
     const auto grid = testing::skyRoomGrid();
     REQUIRE(grid.validCount() > 0);
@@ -273,10 +273,10 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         expected.push_back(brdf);
     }
     // Envmap BRDF fit with light scale (5), non-PBR mask selection (6), self-illumination (7)
-    // and $envmapcontrast/$envmapsaturation (8).
-    for (int i = 0; i < 800; ++i) {
+    // $envmapcontrast/$envmapsaturation (8) and the $localrefract offset (9).
+    for (int i = 0; i < 1000; ++i) {
         Sample s{};
-        s.pad[1] = 5u + i % 4;
+        s.pad[1] = 5u + i % 5;
         s.texel = Vec4(float(positive(random)), float(positive(random)), float(positive(random)), float(positive(random)));
         s.dpdx = Vec4(float(positive(random) * 3), float(positive(random)), float(positive(random)), 0);
         s.uv = Vec4(float(unit(random) * 0.6 + 0.5), float(unit(random) * 0.6 + 0.5), 0, 0); // Includes out-of-range.
@@ -290,11 +290,15 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         m.selfIllumTint = Vec4(float(positive(random)), float(positive(random)), float(positive(random)), 0);
         m.envmapParams = Vec4(float(positive(random)), float(positive(random) * 2), 0, 0);
         if (i < 40) m.envmapParams = Vec4(float(i % 2), float((i / 2) % 3) * 0.5f, 0, 0); // Endpoints.
+        m.refractParams = Vec4(float(positive(random) * 0.1), float(positive(random) * 0.1), 0, 0);
+        if (s.pad[1] == 9 && i % 10 < 5) s.dpdx.z = float(positive(random) * 0.04); // Grazing: z clamps.
         const DVec3 texel(s.texel), maskTexel(s.dpdx), envTint(m.envmapTint);
         DVec3 value = s.pad[1] == 5 ?
             lighting::envBrdf(texel, s.uv.x, s.uv.y) * lighting::envmapLightScale(maskTexel, m.envmapTint.w) :
             s.pad[1] == 6 ? envTint * lighting::envmapMask(m.envmapMaskSlot != kNoTexture, maskTexel,
                 (m.flags & kMaterialNormalAlphaEnvmapMask) != 0, s.uv.x, (m.flags & kMaterialBaseAlphaEnvmapMask) != 0, s.texel.w) :
+            s.pad[1] == 9 ? DVec3(lighting::localRefractUv(DVec2(s.uv), DVec3(texel), maskTexel,
+                                                           m.refractParams.x, m.refractParams.y), 0) :
             s.pad[1] == 8 ? lighting::envmapContrastSaturation(texel, m.envmapParams.x, m.envmapParams.y) :
             DVec3(m.selfIllumTint) * lighting::selfIllumMask(m.selfIllumMaskSlot != kNoTexture, s.uv.y, s.texel.w);
         samples.push_back(s);

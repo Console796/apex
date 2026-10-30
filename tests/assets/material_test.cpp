@@ -240,5 +240,27 @@ TEST_CASE("VMT envmap probe mask selectors and self-illumination mask are typed"
     CHECK(defaults.envmapLightScale() == 0);
     CHECK(defaults.envmapContrast() == 0);
     CHECK(defaults.envmapSaturation() == 1);
+    CHECK_FALSE(defaults.localRefract());
+    CHECK(defaults.refractTint() == DVec3(1));
     CHECK(defaults.selfIllumMask().empty());
+}
+
+TEST_CASE("VMT Refract light cover parameters are typed and $normalmap is its bump map") {
+    const auto material = parseMaterial([](std::string_view) -> Result<std::string> {
+        return R"(Refract {
+            $model 1 $refractamount ".025" $REFRACTTINT "[.81 .89 1.0]" $normalmap "glass/refract_light_normal"
+            $localrefract 1 $localrefractdepth "0.05" $basetexture "glass/refract_light_color"
+        })";
+    }, "test");
+    REQUIRE(material);
+    CHECK(material->localRefract());
+    CHECK(material->localRefractDepth() == doctest::Approx(0.05));
+    CHECK(material->refractAmount() == doctest::Approx(0.025));
+    CHECK(material->refractTint().x == doctest::Approx(0.81));
+    CHECK(material->refractTint().y == doctest::Approx(0.89));
+    CHECK(material->bumpMap() == "glass/refract_light_normal");
+    Material both;
+    both.params["$bumpmap"] = "bump";
+    both.params["$normalmap"] = "normal";
+    CHECK(both.bumpMap() == "bump");
 }

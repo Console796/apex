@@ -38,18 +38,29 @@ void main() {
         vec3 geometricNormal = normalize(vNormal);
         vec3 normal = geometricNormal;
         float bumpAlpha = 1.0;
-        if ((frame.flags & 1u) == 0u && (material.flags & MATERIAL_HAS_BUMP) != 0u) {
+        bool fullbright = (frame.flags & 1u) != 0u;
+        bool localRefract = (material.flags & MATERIAL_LOCAL_REFRACT) != 0u;
+        vec3 mapped = vec3(0.0, 0.0, 1.0);
+        // The light-cover offset is part of the surface's look, so it is kept in fullbright.
+        if ((!fullbright || localRefract) && (material.flags & MATERIAL_HAS_BUMP) != 0u) {
             vec4 bump = textureGrad(sampler2D(textures[nonuniformEXT(material.bumpSlot)], samplers[0]),
                                     vUv, duvdx, duvdy);
             bumpAlpha = bump.a;
-            vec3 mapped = decodeNormal(bump.rgb, (material.flags & MATERIAL_SSBUMP) != 0u,
-                                       (material.flags & MATERIAL_TWO_CHANNEL_NORMAL) != 0u);
+            mapped = decodeNormal(bump.rgb, (material.flags & MATERIAL_SSBUMP) != 0u,
+                                  (material.flags & MATERIAL_TWO_CHANNEL_NORMAL) != 0u);
             normal = perturbNormal(normal, dpdx, dpdy, duvdx, duvdy, mapped);
+        }
+        if (localRefract) {
+            vec3 t, b;
+            tangentFrame(geometricNormal, dpdx, dpdy, duvdx, duvdy, t, b);
+            vec3 eye = dot(vPosition, vPosition) > 1e-12 ? normalize(-vPosition) : geometricNormal;
+            vec2 uv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, geometricNormal)),
+                                     material.refractParams.x, material.refractParams.y);
+            texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), uv, duvdx, duvdy);
         }
         vec3 albedo = max(texel.rgb * push.colour.rgb, vec3(0.0));
         if ((material.flags & MATERIAL_LINEAR_BASE) == 0u) albedo = pow(albedo, vec3(2.2));
         vec3 colour = albedo;
-        bool fullbright = (frame.flags & 1u) != 0u;
         bool pbr = (material.flags & MATERIAL_PBR) != 0u;
         vec3 mrao = vec3(0.0, 1.0, 1.0);
         if (pbr) {
@@ -88,6 +99,8 @@ void main() {
             }
             colour = albedo * (1.0 - mrao.r) * diffuse + specular;
         }
+        // Unlit: the cover shows its base texture through the tint; lighting still drives $envmaplightscale.
+        if (localRefract) colour = albedo * max(material.refractTint.rgb, vec3(0.0));
         // Unlit terms, kept in fullbright: environment reflection and self-illumination.
         if ((material.flags & MATERIAL_ENVMAP) != 0u) {
             uint cube = (material.flags & MATERIAL_ENVMAP_PROBE) != 0u ?

@@ -12,16 +12,27 @@ vec3 decodeNormal(vec3 texel, bool ssbump, bool twoChannel) {
     return dot(normal, normal) > 1e-12 ? normalize(normal) : vec3(0.0, 0.0, 1.0);
 }
 
-vec3 perturbNormal(vec3 normal, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy, vec3 tangentNormal) {
-    normal = normalize(normal);
+// Unit tangent (+U) and bitangent (+V) from screen-space derivatives; false when degenerate.
+bool tangentFrame(vec3 normal, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy, out vec3 t, out vec3 b) {
     vec3 px = cross(dpdy, normal), py = cross(normal, dpdx);
     float orientation = dot(dpdx, px);
     float det = duvdx.x * duvdy.y - duvdx.y * duvdy.x;
-    if (orientation == 0.0 || det * det <= 1e-12 * dot(duvdx, duvdx) * dot(duvdy, duvdy)) return normal;
-    vec3 t = (px * duvdx.x + py * duvdy.x) * sign(orientation);
-    vec3 b = (px * duvdx.y + py * duvdy.y) * sign(orientation);
-    if (dot(t, t) <= 1e-20 || dot(b, b) <= 1e-20) return normal;
-    vec3 result = normalize(t) * tangentNormal.x + normalize(b) * tangentNormal.y + normal * tangentNormal.z;
+    t = vec3(1.0, 0.0, 0.0);
+    b = vec3(0.0, 1.0, 0.0);
+    if (orientation == 0.0 || det * det <= 1e-12 * dot(duvdx, duvdx) * dot(duvdy, duvdy)) return false;
+    vec3 tu = (px * duvdx.x + py * duvdy.x) * sign(orientation);
+    vec3 bv = (px * duvdx.y + py * duvdy.y) * sign(orientation);
+    if (dot(tu, tu) <= 1e-20 || dot(bv, bv) <= 1e-20) return false;
+    t = normalize(tu);
+    b = normalize(bv);
+    return true;
+}
+
+vec3 perturbNormal(vec3 normal, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy, vec3 tangentNormal) {
+    normal = normalize(normal);
+    vec3 t, b;
+    if (!tangentFrame(normal, dpdx, dpdy, duvdx, duvdy, t, b)) return normal;
+    vec3 result = t * tangentNormal.x + b * tangentNormal.y + normal * tangentNormal.z;
     return dot(result, result) > 1e-12 ? normalize(result) : normal;
 }
 #endif

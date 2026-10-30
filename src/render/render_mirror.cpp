@@ -398,8 +398,11 @@ struct RenderMirror::Impl {
             texture.format == assets::TextureFormat::Bc6Signed || texture.format == assets::TextureFormat::Bc6Unsigned ?
             kMaterialLinearBase : 0u;
         const auto shader = lower(vmt.shader);
+        // Refract with $localrefract (light covers) draws unlit from its own base texture; screen-space
+        // Refract stays base-texture-only until the renderer has a scene copy to refract.
+        const bool localRefract = shader == "refract" && vmt.localRefract();
         if (material.bumpTexture && (shader == "lightmappedgeneric" || shader == "vertexlitgeneric" ||
-                                      shader == "worldvertextransition" || shader == "pbr")) {
+                                      shader == "worldvertextransition" || shader == "pbr" || localRefract)) {
             if (auto bump = heap.upload(*material.bumpTexture)) {
                 state.bumpSlot = *bump;
                 flags |= kMaterialHasBump | (vmt.ssbump() ? kMaterialSsbump : 0u);
@@ -425,10 +428,16 @@ struct RenderMirror::Impl {
             record.phongFresnel = Vec4(Vec3(vmt.phongFresnelRanges()), 0);
             record.phongTint = Vec4(Vec3(vmt.phongTint()), 0);
         }
+        if (localRefract) {
+            record.flags |= kMaterialLocalRefract;
+            // Gamma-space like $envmaptint.
+            record.refractTint = Vec4(Vec3(glm::pow(glm::max(vmt.refractTint(), DVec3(0)), DVec3(2.2))), 0);
+            record.refractParams = Vec4(float(vmt.refractAmount()), float(vmt.localRefractDepth()), 0, 0);
+        }
         const bool lit = shader == "lightmappedgeneric" || shader == "vertexlitgeneric" ||
                          shader == "worldvertextransition" || shader == "pbr";
         std::size_t envmapBytes = 0;
-        if (lit && !vmt.envmap().empty()) {
+        if ((lit || localRefract) && !vmt.envmap().empty()) {
             if (vmt.envmapProbe()) {
                 record.flags |= kMaterialEnvmap | kMaterialEnvmapProbe;
             } else if (material.envmapTexture) {

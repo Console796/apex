@@ -63,6 +63,10 @@ vec3 envmapContrastSaturation(vec3 env, float contrast, float saturation) {
     vec3 contrasted = mix(env, env * env, contrast);
     return mix(vec3(luminance(contrasted)), contrasted, saturation);
 }
+vec2 localRefractUv(vec2 uv, vec3 tangentNormal, vec3 tangentView, float amount, float depth) {
+    vec2 parallax = tangentView.xy / max(tangentView.z, 0.05);
+    return uv + tangentNormal.xy * amount - parallax * depth;
+}
 vec3 envmapMask(bool hasMaskTexture, vec3 maskTexel, bool normalAlpha, float bumpAlpha,
                 bool baseAlpha, float baseAlphaValue) {
     if (hasMaskTexture) return maskTexel;

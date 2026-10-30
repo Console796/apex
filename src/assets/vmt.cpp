@@ -181,7 +181,10 @@ DVec3 Material::vector(std::string_view key, DVec3 fallback) const {
     else if (!(in >> result.y >> result.z) || !std::isfinite(result.y) || !std::isfinite(result.z)) return fallback;
     return bytes ? result / 255.0 : result;
 }
-std::string_view Material::bumpMap() const { return parameter("$bumpmap"); }
+std::string_view Material::bumpMap() const {
+    const auto bump = parameter("$bumpmap");
+    return bump.empty() ? parameter("$normalmap") : bump;
+}
 bool Material::ssbump() const { return scalar("$ssbump") != 0; }
 std::string_view Material::envmap() const { return parameter("$envmap"); }
 DVec3 Material::envmapTint() const { return vector("$envmaptint", DVec3(1)); }
@@ -209,6 +212,10 @@ double Material::phongExponent() const { return scalar("$phongexponent", 5); }
 double Material::phongBoost() const { return scalar("$phongboost", 1); }
 DVec3 Material::phongFresnelRanges() const { return vector("$phongfresnelranges", {0, 0.5, 1}); }
 std::string_view Material::phongExponentTexture() const { return parameter("$phongexponenttexture"); }
+bool Material::localRefract() const { return scalar("$localrefract") != 0; }
+double Material::localRefractDepth() const { return scalar("$localrefractdepth"); }
+double Material::refractAmount() const { return scalar("$refractamount"); }
+DVec3 Material::refractTint() const { return vector("$refracttint", DVec3(1)); }
 Result<Material> loadMaterial(const Vfs& vfs, std::string_view name) {
     return parseMaterial([&](std::string_view path) { return read(vfs, path); }, name);
 }

@@ -19,6 +19,7 @@ inline constexpr std::uint32_t kMaterialEnvmapProbe = 256u;     // $envmap env_c
 inline constexpr std::uint32_t kMaterialBaseAlphaEnvmapMask = 512u;
 inline constexpr std::uint32_t kMaterialNormalAlphaEnvmapMask = 1024u;
 inline constexpr std::uint32_t kMaterialSelfIllum = 2048u;
+inline constexpr std::uint32_t kMaterialLocalRefract = 4096u; // Refract with $localrefract: unlit, offset base.
 inline constexpr std::uint32_t kNoTexture = 0xFFFFFFFFu;
 inline constexpr std::uint32_t kDefaultEnvmapCube = 0u; // TextureHeap's kDefaultCubeSlot.
 
@@ -39,8 +40,10 @@ struct alignas(16) GpuMaterial {
     Vec4 envmapTint{1, 1, 1, 0}; // w = $envmaplightscale
     Vec4 selfIllumTint{1, 1, 1, 0};
     Vec4 envmapParams{0, 1, 0, 0}; // $envmapcontrast, $envmapsaturation; zw reserved
+    Vec4 refractTint{1, 1, 1, 0};
+    Vec4 refractParams{0, 0, 0, 0}; // $refractamount, $localrefractdepth; zw reserved
 };
-static_assert(sizeof(GpuMaterial) == 144);
+static_assert(sizeof(GpuMaterial) == 176);
 static_assert(alignof(GpuMaterial) == 16);
 static_assert(offsetof(GpuMaterial, mraoSlot) == 16);
 static_assert(offsetof(GpuMaterial, phongExponentSlot) == 20);
@@ -55,5 +58,7 @@ static_assert(offsetof(GpuMaterial, envmapMaskSlot) == 28);
 static_assert(offsetof(GpuMaterial, envmapTint) == 96);
 static_assert(offsetof(GpuMaterial, selfIllumTint) == 112);
 static_assert(offsetof(GpuMaterial, envmapParams) == 128);
+static_assert(offsetof(GpuMaterial, refractTint) == 144);
+static_assert(offsetof(GpuMaterial, refractParams) == 160);
 
 } // namespace apex::render

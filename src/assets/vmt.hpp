@@ -11,7 +11,7 @@ struct Material {
     std::string shader;
     // Resolved, lower-case $ keys; proxy contents are never material parameters.
     std::map<std::string, std::string> params;
-    std::string_view bumpMap() const;
+    std::string_view bumpMap() const; // $bumpmap, else $normalmap (Refract, Water).
     bool ssbump() const;
     std::string_view envmap() const;
     DVec3 envmapTint() const;
@@ -36,6 +36,10 @@ struct Material {
     double phongBoost() const;
     DVec3 phongFresnelRanges() const;
     std::string_view phongExponentTexture() const;
+    bool localRefract() const;
+    double localRefractDepth() const; // Default 0.
+    double refractAmount() const;     // Default 0.
+    DVec3 refractTint() const;        // Default white.
     std::string_view parameter(std::string_view key) const;
     double scalar(std::string_view key, double fallback = 0) const;
     DVec3 vector(std::string_view key, DVec3 fallback) const;

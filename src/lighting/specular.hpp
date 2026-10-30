@@ -84,6 +84,14 @@ inline DVec3 envmapContrastSaturation(DVec3 env, double contrast, double saturat
     const DVec3 contrasted = glm::mix(env, env * env, contrast);
     return glm::mix(DVec3(luminance(contrasted)), contrasted, saturation);
 }
+// Refract with $localrefract (Portal 2's light covers), provisional: the base texture is read where the view
+// ray, bent by the tangent-space normal times $refractamount, meets a plane $localrefractdepth (UV units)
+// behind the surface. tangentView points from the surface to the eye; its z is clamped to keep grazing
+// views finite.
+inline DVec2 localRefractUv(DVec2 uv, DVec3 tangentNormal, DVec3 tangentView, double amount, double depth) {
+    const DVec2 parallax = DVec2(tangentView) / std::max(tangentView.z, 0.05);
+    return uv + DVec2(tangentNormal) * amount - parallax * depth;
+}
 // Non-PBR envmap mask: $envmapmask RGB, else bump alpha with $normalmapalphaenvmapmask,
 // else base alpha with $basealphaenvmapmask, else 1. Read directly, never inverted (unverified).
 inline DVec3 envmapMask(bool hasMaskTexture, DVec3 maskTexel, bool normalAlpha, double bumpAlpha,
