@@ -145,7 +145,7 @@ Result<assets::Thumbnail> ModelThumbnailRenderer::draw(RenderTarget& target, con
         const assets::Material& vmt = found->second.material->material;
         RangeTexture entry;
         entry.slot = *slot;
-        entry.alpha = vmt.translucent ? AlphaMode::Blend : vmt.alphaTest ? AlphaMode::Test : AlphaMode::Opaque;
+        entry.alpha = vmt.additive ? AlphaMode::Add : vmt.translucent ? AlphaMode::Blend : vmt.alphaTest ? AlphaMode::Test : AlphaMode::Opaque;
         textured[range.material] = entry;
     }
     TextureSlot white = kCheckerboardSlot;

@@ -2088,7 +2088,7 @@ TEST_CASE("mirror: local Refract records take the normal map, tint, offsets and 
         CHECK((record.flags & kMaterialNormalAlphaEnvmapMask) != 0);
         CHECK(record.refractTint.x == doctest::Approx(std::pow(0.5, 2.2)));
         CHECK(record.refractTint.z == 1);
-        CHECK(record.refractParams == Vec4(0.025f, 0.05f, 0, 0));
+        CHECK(record.refractParams == Vec4(0.025f, 10.0f, 0.95f, 0)); // Depth in world units (x200), eta.
     }
     CHECK((localRecords > 0) == local);
     CHECK(g->context->validation().errorCount() == 0);

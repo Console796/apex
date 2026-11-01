@@ -30,11 +30,11 @@ namespace {
 enum class Kind : std::uint32_t {
     Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid,
     Outline, OutlineAlways, BoxOutline, BoxOutlineAlways, SpriteOutline, SpriteOutlineAlways,
-    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Tonemap, Highlight, Sky, Shadow, Count
+    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Tonemap, Highlight, Sky, Shadow, AddTextured, Count
 };
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
-// Relative depth pull per AlphaMode layer (opaque 0, alpha test 1, blend 2), so coplanar
+// Relative depth pull per AlphaMode layer (opaque 0, alpha test 1, blend 2, add 3), so coplanar
 // alpha-tested and translucent faces win against the opaque face under them. Applied as a
 // clip-z scale like the grid's surface bias: dynamic depth-bias units are implementation-defined.
 // Well above D32 resolution (~6e-8) and far below the grid's 2e-4.
@@ -43,7 +43,7 @@ constexpr float kLayerBias = 1e-5f;
 // Filled face kinds that honour DrawList::cullBackFaces. Wireframe's fill and depth passes never cull.
 constexpr bool cullable(Kind kind) {
     return kind == Kind::Textured || kind == Kind::Flat || kind == Kind::GhostTextured ||
-           kind == Kind::GhostFlat || kind == Kind::Highlight;
+           kind == Kind::AddTextured || kind == Kind::GhostFlat || kind == Kind::Highlight;
 }
 
 bool srgbAttachment(VkFormat format) {
@@ -76,6 +76,7 @@ struct Spec {
     bool depthTest = true;
     bool colourWrite = true;
     VkCompareOp compare = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    bool additive = false; // With blend: colour adds (ONE, ONE) and destination alpha is kept.
 };
 
 constexpr Spec kSpecs[kKindCount] = {
@@ -105,6 +106,7 @@ constexpr Spec kSpecs[kKindCount] = {
     {Signature::Caller, "brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
     {Signature::Both, "sky_vert", "sky_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, false, false, false},
     {Signature::Shadow, "brush_vert", "shadow_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, true, true, false},
+    {Signature::Both, "brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, true, true, VK_COMPARE_OP_GREATER_OR_EQUAL, true},
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
@@ -394,6 +396,12 @@ struct Renderer::Impl {
             attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
             attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
             attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+            if (spec.additive) {
+                attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+                attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            }
         }
         VkPipelineColorBlendStateCreateInfo blend = vkStruct<VkPipelineColorBlendStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
         blend.attachmentCount = shadow ? 0u : 1u;
@@ -656,7 +664,7 @@ void Renderer::recordShadows(VkCommandBuffer commands, const DrawList& list) {
         ShadowAtlas::tile(commands, shadow.rects[view]);
         for (std::size_t i = 0; i < casters.size(); ++i) {
             const auto& mesh = casters[i];
-            if (!mesh.vertices || !mesh.indices || mesh.indexCount == 0 || mesh.alpha == AlphaMode::Blend) continue;
+            if (!mesh.vertices || !mesh.indices || mesh.indexCount == 0 || blended(mesh.alpha)) continue;
             if (!boxes[i].empty() && std::ranges::none_of(boxes[i], [&](const AABB& box) {
                     return castsInto(box, shadow.tiles[view].projection, list.view.cameraPosition, shadow.reach[view]);
                 })) continue;
@@ -993,7 +1001,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             const std::uint32_t n = count(mesh);
             if (!mesh.vertices || !indices(mesh) || n == 0 ||
                 ((scenePass || list.mode == DisplayMode::Textured) &&
-                 (kind == Kind::Textured || kind == Kind::GhostTextured) && (mesh.skySurface || mesh.sky != skyPass))) continue;
+                 (kind == Kind::Textured || kind == Kind::GhostTextured || kind == Kind::AddTextured) && (mesh.skySurface || mesh.sky != skyPass))) continue;
             if (cull) {
                 // Brushes and studio models share one winding; a mirroring preview transform flips
                 // which side is the back.
@@ -1058,9 +1066,11 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
     if ((scenePass || list.mode == DisplayMode::Textured) && list.sky.camera) {
         skyPass = true;
         drawMeshes(Kind::Textured, list.meshes, brushColour,
-            [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? 0u : m.indexCount; }, trianglesBuf, false);
+            [](const MeshDraw& m) { return blended(m.alpha) ? 0u : m.indexCount; }, trianglesBuf, false);
         drawMeshes(Kind::GhostTextured, list.meshes, brushColour,
             [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? m.indexCount : 0u; }, trianglesBuf, false);
+        drawMeshes(Kind::AddTextured, list.meshes, brushColour,
+            [](const MeshDraw& m) { return m.alpha == AlphaMode::Add ? m.indexCount : 0u; }, trianglesBuf, false);
         // Main geometry always wins over the 3D sky (D10).
         VkClearAttachment depth{};
         depth.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -1075,16 +1085,19 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
         if (!scenePass) break;
         [[fallthrough]];
     case DisplayMode::Textured: {
-        const auto opaqueOf = [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? 0u : m.indexCount; };
+        const auto opaqueOf = [](const MeshDraw& m) { return blended(m.alpha) ? 0u : m.indexCount; };
         drawMeshes(Kind::Textured, list.meshes, brushColour, opaqueOf, trianglesBuf, false);
         // Translucent solids last, farthest first (by draw origin), blended over the opaque scene.
-        std::vector<MeshDraw> blended;
+        std::vector<MeshDraw> translucent;
         for (const MeshDraw& mesh : list.meshes) {
-            if (mesh.alpha == AlphaMode::Blend) blended.push_back(mesh);
+            if (mesh.alpha == AlphaMode::Blend) translucent.push_back(mesh);
         }
         const auto distance = [&](const MeshDraw& m) { return glm::dot(m.origin - camera, m.origin - camera); };
-        std::ranges::stable_sort(blended, [&](const MeshDraw& a, const MeshDraw& b) { return distance(a) > distance(b); });
-        drawMeshes(Kind::GhostTextured, blended, brushColour, trianglesOf, trianglesBuf, false);
+        std::ranges::stable_sort(translucent, [&](const MeshDraw& a, const MeshDraw& b) { return distance(a) > distance(b); });
+        drawMeshes(Kind::GhostTextured, translucent, brushColour, trianglesOf, trianglesBuf, false);
+        // Additive layers commute, so they need no sort.
+        drawMeshes(Kind::AddTextured, list.meshes, brushColour,
+            [](const MeshDraw& m) { return m.alpha == AlphaMode::Add ? m.indexCount : 0u; }, trianglesBuf, false);
         break;
     }
     case DisplayMode::Flat:

@@ -28,7 +28,9 @@ Result<std::string> read(const Vfs& vfs, std::string_view path) {
     }
     return std::string(reinterpret_cast<const char*>(blob->data()), blob->size());
 }
-// Source patch insert only fills absent keys; replace only changes existing keys.
+// Patch insert adds keys and overwrites existing ones; replace only changes existing keys. Insert
+// overwriting is measured: EverythingPBR's door skins insert $refracttint over an included one, and
+// the game shows the inserted tint (probe-results/captures_test1_0_6_release.md).
 Result<void> merge(kv1::Node& target, const kv1::Node& changes, bool replace) {
     for (const auto& change : changes.children()) {
         auto existing = target.find(change.key());
@@ -38,9 +40,9 @@ Result<void> merge(kv1::Node& target, const kv1::Node& changes, bool replace) {
             if (!result) {
                 return result;
             }
-        } else if (existing && replace) {
+        } else if (existing) {
             *existing = change;
-        } else if (!existing && !replace) {
+        } else if (!replace) {
             auto result = target.append(change);
             if (!result) {
                 return result;
@@ -205,6 +207,7 @@ std::string_view Material::selfIllumMask() const { return parameter("$selfillumm
 DVec3 Material::selfIllumTint() const { return vector("$selfillumtint", DVec3(1)); }
 std::string_view Material::mraoTexture() const { return parameter("$mraotexture"); }
 DVec3 Material::mraoScale() const { return vector("$mraoscale", DVec3(1)); }
+DVec3 Material::color2() const { return vector("$color2", DVec3(1)); }
 bool Material::model() const { return scalar("$model") != 0; }
 DVec3 Material::phongTint() const { return vector("$phongtint", DVec3(1)); }
 bool Material::baseMapAlphaPhongMask() const { return scalar("$basemapalphaphongmask") != 0; }
@@ -243,6 +246,7 @@ Result<Material> parseMaterial(const MaterialReader& read, std::string_view name
     result.surfaceProp = result.parameter("$surfaceprop");
     result.translucent = result.scalar("$translucent") != 0;
     result.alphaTest = result.scalar("$alphatest") != 0;
+    result.additive = result.scalar("$additive") != 0;
     result.noCull = result.scalar("$nocull") != 0;
     for (const auto& node : root->children()) {
         auto key = toLowerAscii(node.key());

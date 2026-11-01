@@ -65,7 +65,10 @@ inline constexpr std::uint32_t kVertexMaterial = 0xFFFFFFFFu;
 // How the textured pass treats the texture's alpha channel. Opaque ignores it. Test discards
 // below 0.5 in the opaque pass ($alphatest). Blend draws in the sorted translucent pass with no
 // depth writes ($translucent). Textured and Lit share these rules; Flat/Wireframe treat Blend as Opaque.
-enum class AlphaMode : std::uint32_t { Opaque = 0, Test = 1, Blend = 2 };
+enum class AlphaMode : std::uint32_t { Opaque = 0, Test = 1, Blend = 2, Add = 3 };
+
+// Blend and Add draw after the opaque scene, without depth writes or shadows.
+constexpr bool blended(AlphaMode alpha) { return alpha == AlphaMode::Blend || alpha == AlphaMode::Add; }
 
 struct MeshDraw {
     const Buffer* vertices = nullptr;  // BrushVertex, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT.

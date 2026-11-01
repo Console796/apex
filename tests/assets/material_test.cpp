@@ -46,6 +46,24 @@ TEST_CASE("VMT extracts editor flags and resolves nested case-insensitive patche
     CHECK_FALSE(loadMaterial(*vfs, "missing"));
 }
 
+TEST_CASE("VMT patch insert overwrites an included key, as EverythingPBR door skins rely on") {
+    GameTree tree;
+    tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    tree.put("materials/bits_off.vmt", R"(Refract { $basetexture bits $refracttint "[0.1 0.1 0.1]" })");
+    tree.put("materials/bits.vmt", R"(patch { include "materials/bits_off.vmt"
+        insert { $refracttint "[0.45 0.75 0.73]" }
+    })");
+    JobPool jobs(1);
+    GameProfile profile;
+    profile.gameDirectory = tree.root;
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    auto material = loadMaterial(*vfs, "bits");
+    REQUIRE(material);
+    CHECK(material->params.at("$refracttint") == "[0.45 0.75 0.73]");
+    CHECK(material->baseTexture == "bits");
+}
+
 TEST_CASE("VMT reports invalid patches cycles and syntax") {
     GameTree tree;
     tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");

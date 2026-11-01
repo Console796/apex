@@ -28,6 +28,7 @@ struct Material {
     std::string_view selfIllumMask() const;
     std::string_view mraoTexture() const;
     DVec3 mraoScale() const;
+    DVec3 color2() const; // $color2, gamma-space albedo multiply (default 1).
     bool model() const;
     DVec3 phongTint() const;
     bool baseMapAlphaPhongMask() const;
@@ -58,6 +59,7 @@ struct Material {
     bool hasToolTexture = false;
     bool translucent = false;
     bool alphaTest = false;
+    bool additive = false; // $additive: adds its colour to what is behind it.
     bool noCull = false;
     // All %compile* values, with lower-case keys (including the '%' prefix).
     std::map<std::string, std::string> compileFlags;

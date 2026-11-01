@@ -424,7 +424,8 @@ struct RenderMirror::Impl {
         const auto format = vulkanFormat(texture.format);
         if (!format || texture.mips.empty()) return;
         const assets::Material& vmt = material.material;
-        state.alpha = vmt.translucent ? AlphaMode::Blend : vmt.alphaTest ? AlphaMode::Test : AlphaMode::Opaque;
+        state.alpha = vmt.additive ? AlphaMode::Add : vmt.translucent ? AlphaMode::Blend :
+                      vmt.alphaTest ? AlphaMode::Test : AlphaMode::Opaque;
         if (const auto flag = vmt.compileFlags.find("%compilenodraw"); flag != vmt.compileFlags.end()) {
             state.nodraw = !flag->second.empty() && flag->second != "0";
         }
@@ -458,6 +459,11 @@ struct RenderMirror::Impl {
             }
         }
         GpuMaterial record{state.slot, state.bumpSlot, flags, kNoTexture};
+        if (const DVec3 colour2 = vmt.color2(); colour2 != DVec3(1)) {
+            // A VMT colour like $envmaptint: decoded by Source's 2.2 rule.
+            record.flags |= kMaterialColour2;
+            record.colour2 = Vec4(Vec3(glm::pow(glm::max(colour2, DVec3(0)), DVec3(2.2))), 0);
+        }
         if (shader == "pbr") {
             record.flags |= kMaterialPbr;
             if (material.mraoTexture) {
@@ -485,7 +491,13 @@ struct RenderMirror::Impl {
             record.flags |= kMaterialLocalRefract;
             // Gamma-space like $envmaptint.
             record.refractTint = Vec4(Vec3(glm::pow(glm::max(vmt.refractTint(), DVec3(0)), DVec3(2.2))), 0);
-            record.refractParams = Vec4(float(vmt.refractAmount()), float(vmt.localRefractDepth()), 0, 0);
+            // Fitted to set 3 (probe-results/captures_test1_0_6_release.md): $localrefractdepth reads as
+            // 200 world units per unit, so the light covers' 0.05 puts the strip 10 units deep, where the game's
+            // shows the same far-edge offset and grazing sliver; a weak index (0.95) keeps the ribs' bend
+            // without the end bars a glass-like 1/1.5 draws. The door icons stay crisp at this depth.
+            constexpr double kLocalRefractDepthUnits = 200, kLocalRefractEta = 0.95;
+            record.refractParams = Vec4(float(vmt.refractAmount()), float(vmt.localRefractDepth() * kLocalRefractDepthUnits),
+                                        float(kLocalRefractEta), 0);
         }
         const bool lit = shader == "lightmappedgeneric" || shader == "vertexlitgeneric" ||
                          shader == "worldvertextransition" || shader == "pbr";

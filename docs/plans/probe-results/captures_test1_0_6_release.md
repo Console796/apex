@@ -102,3 +102,18 @@ Ratios with the sRGB curve, Apex ÷ game, same masking and statistics as above:
   Apex's exposure.
 - Set 2's shortfall (0.68–0.73× overall, 0.39–0.55× in the darker half) is the missing bounce, which is
   about half of test1's baked light. It closes with 0.7's GI.
+
+## Light covers and door icons (2026-11-01)
+
+Set 3, pose 1, three `glass_lightcover` strips (crops (680,150)–(940,300), (1030,0)–(1430,140),
+(1140,380)–(1420,460)) and the door at (1150,520)–(1450,780).
+
+- In the game, the lit strip sits against the cover's far long edge and is cut off there. At the grazing
+  cover (third crop) only a thin sliver shows along the far edge.
+- Depth scale per `$localrefractdepth` unit, at index 0.95: 20 world units keeps the strip centred, 60–120
+  move it partway, 200 matches the offset and the grazing sliver, and 400 pushes most of the strip off the
+  cover. With an index of 1/1.5 the rib bend drew dark bars at the strip ends. Apex uses 200 and 0.95.
+- Door: EverythingPBR's `testchmb_door_bits` patch-inserts `$refracttint [0.45 0.75 0.73]` over
+  `testchmb_door_bits_off`'s `[0.1 0.1 0.1]`, and the game shows the inserted teal. The white was the
+  `$additive` `pbr_specular` overlay drawn opaque. At depth 200 the running-man icon stays crisp and sits
+  where the game draws it.

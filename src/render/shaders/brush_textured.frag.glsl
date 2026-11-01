@@ -25,7 +25,7 @@ void main() {
     vec2 duvdx = dFdx(vUv), duvdy = dFdy(vUv);
     float shade = 0.65 + 0.35 * abs(dot(normalize(vNormal), normalize(vec3(0.3, 0.5, 0.8))));
     vec4 texel = sampleSlot(slot, vUv);
-    // p1.w (unused by the brush vertex shader): 0 opaque, 1 alpha test, 2 blend (AlphaMode);
+    // p1.w (unused by the brush vertex shader): 0 opaque, 1 alpha test, 2 blend, 3 add (AlphaMode);
     // bit 2 outputs only the highlight tint, covering what the mesh covers.
     uint alphaMode = floatBitsToUint(push.p1.w) & 3u;
     bool tintOnly = (floatBitsToUint(push.p1.w) & 4u) != 0u;
@@ -35,6 +35,12 @@ void main() {
         alpha = 1.0;
     }
     outColor = vec4(texel.rgb * push.colour.rgb * shade, alpha);
+    // Additive layers are mostly tinted by $color2 (often to black, leaving only specular), so
+    // Textured applies it too, back in the VMT's gamma space.
+    if (alphaMode == 3u && (floatBitsToUint(push.p1.w) & 8u) == 0u) {
+        Material material = materialRecord(frameBlock(), slot);
+        if ((material.flags & MATERIAL_COLOUR2) != 0u) outColor.rgb *= pow(material.colour2.rgb, vec3(1.0 / 2.2));
+    }
     if ((floatBitsToUint(push.p1.w) & 8u) != 0u) {
         FrameBlock frame = frameBlock();
         Material material = materialRecord(frame, slot);
@@ -71,12 +77,14 @@ void main() {
             vec3 t, b;
             tangentFrame(geometricNormal, dpdx, dpdy, duvdx, duvdy, t, b);
             vec3 eye = dot(eyePosition, eyePosition) > 1e-12 ? normalize(-eyePosition) : geometricNormal;
-            vec2 refractUv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, normal)),
-                                            material.refractParams.x, material.refractParams.y);
+            vec2 refractUv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, geometricNormal)),
+                                            material.refractParams.y, material.refractParams.z,
+                                            uvPerUnit(geometricNormal, dpdx, dpdy, duvdx, duvdy));
             texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), refractUv, duvdx, duvdy);
         }
         vec3 albedo = max(texel.rgb * push.colour.rgb, vec3(0.0));
         if ((material.flags & MATERIAL_LINEAR_BASE) == 0u) albedo = srgbToLinear(albedo);
+        if ((material.flags & MATERIAL_COLOUR2) != 0u) albedo *= material.colour2.rgb;
         vec3 colour = albedo;
         bool pbr = (material.flags & MATERIAL_PBR) != 0u;
         vec3 mrao = vec3(0.0, 1.0, 1.0);
@@ -123,7 +131,7 @@ void main() {
         }
         // Unlit: the cover shows its base texture through the tint; lighting still drives $envmaplightscale.
         if (localRefract) colour = albedo * max(material.refractTint.rgb, vec3(0.0)) *
-            localRefractTransmission(dot(normal, view), dot(geometricNormal, view));
+            localRefractTransmission(mapped.z);
         // Unlit terms, kept in fullbright: environment reflection and self-illumination.
         if ((material.flags & MATERIAL_ENVMAP) != 0u && (frame.flags & 2u) == 0u) {
             uint cube = (material.flags & MATERIAL_ENVMAP_PROBE) != 0u ?

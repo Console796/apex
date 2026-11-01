@@ -116,7 +116,7 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         Vec4 texel{}, dpdx{}, dpdy{}, uv{};
         GpuMaterial material{};
     };
-    static_assert(sizeof(Sample) == 400);
+    static_assert(sizeof(Sample) == 416);
     static_assert(offsetof(Sample, material) == 208);
     const auto grid = testing::skyRoomGrid();
     REQUIRE(grid.validCount() > 0);
@@ -294,19 +294,21 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         m.envmapParams = Vec4(float(positive(random)), float(positive(random) * 2), 0, 0);
         if (i < 40) m.envmapParams = Vec4(float(i % 2), float((i / 2) % 3) * 0.5f, 0, 0); // Endpoints.
         m.refractParams = Vec4(float(positive(random) * 0.1), float(positive(random) * 0.1), 0, 0);
-        if (s.pad[1] == 9 && i % 10 < 5) s.dpdx.z = float(positive(random) * 0.04); // Grazing: z clamps.
-        if (s.pad[1] == 9) { // Bumped and flat N.V: back-facing, clamped above 1 and a zero flat term.
-            s.uv.z = float(unit(random));
-            s.uv.w = i % 15 == 4 ? 0.0f : float(positive(random));
+        if (s.pad[1] == 9) { // Bumped normal (texel), unit view (dpdx), UV per world unit (dpdy), rib z (uv.z).
+            if (i % 10 < 5) s.dpdx.z = float(positive(random) * 0.04); // Grazing: the march clamps.
+            s.dpdx = Vec4(glm::normalize(Vec3(s.dpdx)), 0);
+            s.dpdy = Vec4(float(positive(random) * 0.03), float(positive(random) * 0.01), 0, 0);
+            m.refractParams = Vec4(0, float(positive(random) * 10), float(0.6 + positive(random) * 0.4), 0);
+            s.uv.z = i % 15 == 4 ? 1.5f : float(unit(random)); // Back-facing and above 1 clamp.
         }
         const DVec3 texel(s.texel), maskTexel(s.dpdx), envTint(m.envmapTint);
         DVec3 value = s.pad[1] == 5 ?
             lighting::envBrdf(texel, s.uv.x, s.uv.y) * lighting::envmapLightScale(maskTexel, m.envmapTint.w) :
             s.pad[1] == 6 ? envTint * lighting::envmapMask(m.envmapMaskSlot != kNoTexture, maskTexel,
                 (m.flags & kMaterialNormalAlphaEnvmapMask) != 0, s.uv.x, (m.flags & kMaterialBaseAlphaEnvmapMask) != 0, s.texel.w) :
-            s.pad[1] == 9 ? DVec3(lighting::localRefractUv(DVec2(s.uv), DVec3(texel), maskTexel,
-                                                           m.refractParams.x, m.refractParams.y),
-                                  lighting::localRefractTransmission(s.uv.z, s.uv.w)) :
+            s.pad[1] == 9 ? DVec3(lighting::localRefractUv(DVec2(s.uv), DVec3(texel), maskTexel, m.refractParams.y,
+                                                           m.refractParams.z, DVec2(s.dpdy)),
+                                  lighting::localRefractTransmission(s.uv.z)) :
             s.pad[1] == 8 ? lighting::envmapContrastSaturation(texel, m.envmapParams.x, m.envmapParams.y) :
             DVec3(m.selfIllumTint) * lighting::selfIllumMask(m.selfIllumMaskSlot != kNoTexture, s.uv.y, s.texel.w);
         samples.push_back(s);

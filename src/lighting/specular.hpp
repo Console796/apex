@@ -84,21 +84,28 @@ inline DVec3 envmapContrastSaturation(DVec3 env, double contrast, double saturat
     const DVec3 contrasted = glm::mix(env, env * env, contrast);
     return glm::mix(DVec3(luminance(contrasted)), contrasted, saturation);
 }
-// Refract with $localrefract (Portal 2's light covers), provisional: the base texture is read where the view
-// ray, bent by the tangent-space normal times $refractamount, meets a plane $localrefractdepth (UV units)
-// behind the surface. tangentView points from the surface to the eye, its z taken against the bumped
-// normal so each rib shifts the read (the captures' scalloped strip edges); z is clamped to keep grazing
-// views finite.
-inline DVec2 localRefractUv(DVec2 uv, DVec3 tangentNormal, DVec3 tangentView, double amount, double depth) {
-    const DVec2 parallax = DVec2(tangentView) / std::max(tangentView.z, 0.05);
-    return uv + DVec2(tangentNormal) * amount - parallax * depth;
+// Refract with $localrefract (Portal 2's light covers, EverythingPBR's door icons), provisional: the
+// base texture is a plane `depth` world units behind the surface. The view ray refracts into the cover at
+// the bumped normal with relative index `eta`, so each rib bends the read (the strip's scalloped edges),
+// and travels to that plane. The read is clamped to the fragment's texture tile: at grazing angles it
+// lands on the texture's border instead of repeating. tangentView points to the eye in the flat tangent
+// frame (z = flat N.V); tangentNormal is the bumped normal in the same frame; uvPerUnit is the UV change
+// per world unit along the frame's axes, so a cover's long and short axes shift by the same distance.
+// $refractamount is not used: the door's 1 would smear its icon, which the game draws crisp.
+inline DVec2 localRefractUv(DVec2 uv, DVec3 tangentNormal, DVec3 tangentView, double depth, double eta,
+                            DVec2 uvPerUnit) {
+    const DVec3 ray = glm::refract(-tangentView, glm::normalize(tangentNormal), eta);
+    const DVec2 shifted = uv + DVec2(ray) / std::max(-ray.z, 0.05) * depth * uvPerUnit;
+    const DVec2 cell = glm::floor(uv);
+    return glm::clamp(shifted, cell + 1e-3, cell + 1.0 - 1e-3);
 }
-// Light-cover rib shading, fitted to test1's captures (provisional): rib flanks turned away from the eye
-// darken by the squared ratio of bumped to flat N.V, clamped to 1, so crests keep the tinted base. The
-// square matches the captured groove depth (about 0.63 of the crest at pose 02).
-inline double localRefractTransmission(double bumpedNdotV, double flatNdotV) {
-    const double ratio = std::clamp(bumpedNdotV / std::max(flatNdotV, 1e-3), 0.0, 1.0);
-    return ratio * ratio;
+// Light-cover rib shading (provisional): a rib's flanks darken by the square of their slope's cosine
+// (the bumped normal's z), independent of the view, so crests keep the tinted base. From below this is
+// the captured groove depth (about 0.63 of the crest); unlike a view-dependent ratio it never turns a
+// flank black at grazing angles.
+inline double localRefractTransmission(double bumpedZ) {
+    const double z = std::clamp(bumpedZ, 0.0, 1.0);
+    return z * z;
 }
 // PBR $parallax (Strata), provisional: parallax occlusion mapping (Brawley and Tatarchuk, ShaderX3), a
 // layered march down the view ray with a linear refinement between the last two layers. Height is the bump

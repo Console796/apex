@@ -63,13 +63,16 @@ vec3 envmapContrastSaturation(vec3 env, float contrast, float saturation) {
     vec3 contrasted = mix(env, env * env, contrast);
     return mix(vec3(luminance(contrasted)), contrasted, saturation);
 }
-vec2 localRefractUv(vec2 uv, vec3 tangentNormal, vec3 tangentView, float amount, float depth) {
-    vec2 parallax = tangentView.xy / max(tangentView.z, 0.05);
-    return uv + tangentNormal.xy * amount - parallax * depth;
+// lighting::localRefractUv / localRefractTransmission in specular.hpp.
+vec2 localRefractUv(vec2 uv, vec3 tangentNormal, vec3 tangentView, float depth, float eta, vec2 uvPerUnit) {
+    vec3 ray = refract(-tangentView, normalize(tangentNormal), eta);
+    vec2 shifted = uv + ray.xy / max(-ray.z, 0.05) * depth * uvPerUnit;
+    vec2 cell = floor(uv);
+    return clamp(shifted, cell + 1e-3, cell + 1.0 - 1e-3);
 }
-float localRefractTransmission(float bumpedNdotV, float flatNdotV) {
-    float ratio = clamp(bumpedNdotV / max(flatNdotV, 1e-3), 0.0, 1.0);
-    return ratio * ratio;
+float localRefractTransmission(float bumpedZ) {
+    float z = clamp(bumpedZ, 0.0, 1.0);
+    return z * z;
 }
 vec3 envmapMask(bool hasMaskTexture, vec3 maskTexel, bool normalAlpha, float bumpAlpha,
                 bool baseAlpha, float baseAlphaValue) {

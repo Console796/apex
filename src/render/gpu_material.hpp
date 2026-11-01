@@ -21,6 +21,7 @@ inline constexpr std::uint32_t kMaterialNormalAlphaEnvmapMask = 1024u;
 inline constexpr std::uint32_t kMaterialSelfIllum = 2048u;
 inline constexpr std::uint32_t kMaterialLocalRefract = 4096u; // Refract with $localrefract: unlit, offset base.
 inline constexpr std::uint32_t kMaterialParallax = 8192u;     // PBR $parallax: height in the bump alpha.
+inline constexpr std::uint32_t kMaterialColour2 = 16384u;    // Multiply albedo by colour2 (linear).
 inline constexpr std::uint32_t kNoTexture = 0xFFFFFFFFu;
 inline constexpr std::uint32_t kDefaultEnvmapCube = 0u; // TextureHeap's kDefaultCubeSlot.
 
@@ -42,10 +43,11 @@ struct alignas(16) GpuMaterial {
     Vec4 selfIllumTint{1, 1, 1, 0};
     Vec4 envmapParams{0, 1, 0, 0}; // $envmapcontrast, $envmapsaturation; zw reserved
     Vec4 refractTint{1, 1, 1, 0};
-    Vec4 refractParams{0, 0, 0, 0}; // $refractamount, $localrefractdepth; zw reserved
+    Vec4 refractParams{0, 0, 0, 0}; // $refractamount, $localrefract depth (world units), eta; w reserved
     Vec4 parallaxParams{0, 0, 1, 0}; // $parallaxdepth, $parallaxcenter, $parallaxscale; w reserved
+    Vec4 colour2{1, 1, 1, 0};        // $color2 decoded by 2.2, applied with kMaterialColour2
 };
-static_assert(sizeof(GpuMaterial) == 192);
+static_assert(sizeof(GpuMaterial) == 208);
 static_assert(alignof(GpuMaterial) == 16);
 static_assert(offsetof(GpuMaterial, mraoSlot) == 16);
 static_assert(offsetof(GpuMaterial, phongExponentSlot) == 20);
@@ -63,5 +65,6 @@ static_assert(offsetof(GpuMaterial, envmapParams) == 128);
 static_assert(offsetof(GpuMaterial, refractTint) == 144);
 static_assert(offsetof(GpuMaterial, refractParams) == 160);
 static_assert(offsetof(GpuMaterial, parallaxParams) == 176);
+static_assert(offsetof(GpuMaterial, colour2) == 192);
 
 } // namespace apex::render

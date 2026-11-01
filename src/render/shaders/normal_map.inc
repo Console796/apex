@@ -28,6 +28,14 @@ bool tangentFrame(vec3 normal, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy, out
     return true;
 }
 
+// UV change per world unit along the tangent frame's t and b: the lengths of the gradients of u and v.
+vec2 uvPerUnit(vec3 normal, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy) {
+    vec3 px = cross(dpdy, normal), py = cross(normal, dpdx);
+    float orientation = dot(dpdx, px);
+    if (abs(orientation) <= 1e-20) return vec2(0.0);
+    return vec2(length(px * duvdx.x + py * duvdy.x), length(px * duvdx.y + py * duvdy.y)) / abs(orientation);
+}
+
 vec3 perturbNormal(vec3 normal, vec3 dpdx, vec3 dpdy, vec2 duvdx, vec2 duvdy, vec3 tangentNormal) {
     normal = normalize(normal);
     vec3 t, b;
