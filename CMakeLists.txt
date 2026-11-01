@@ -130,7 +130,16 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
            DEPS apex_render apex_document)
 
 if(APEX_BUILD_APP)
-  find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Svg Multimedia)
+  find_package(Qt6 6.5 QUIET COMPONENTS Widgets Svg Multimedia)
+  if(NOT Qt6_FOUND)
+    message(FATAL_ERROR
+      "Qt 6.5 or newer (Widgets, Svg, Multimedia) was not found, and the Apex application needs it.\n"
+      "  Debian/Ubuntu: sudo apt install qt6-base-dev qt6-svg-dev qt6-multimedia-dev\n"
+      "  Fedora:        sudo dnf install qt6-qtbase-devel qt6-qtsvg-devel qt6-qtmultimedia-devel\n"
+      "  Arch:          sudo pacman -S qt6-base qt6-svg qt6-multimedia\n"
+      "  Windows/other: install Qt 6.5+ from https://www.qt.io/download and set CMAKE_PREFIX_PATH to it.\n"
+      "To build only the non-GUI libraries and tools, configure with -DAPEX_BUILD_APP=OFF.")
+  endif()
   apex_layer(ui SOURCES src/ui/compile_panel.cpp src/ui/cordon_editor.cpp src/ui/profile_store.cpp src/ui/profile_editor.cpp src/ui/qprocess_runner.cpp src/ui/rename_confirmation.cpp src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/game_content.cpp src/ui/materials_panel.cpp src/ui/asset_browser_panel.cpp src/ui/models_panel.cpp src/ui/model_inspect_view.cpp src/ui/sounds_panel.cpp src/ui/particles_panel.cpp src/ui/face_properties_panel.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/tool_parameter_strip.cpp src/ui/gpu_host.cpp src/ui/model_pick.cpp
                         src/ui/sound_preview.cpp src/ui/uv_view.cpp src/ui/pointer_lock.cpp src/ui/input_log.cpp
                         src/ui/pie_menu_popup.cpp src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/prefab_dialog.cpp src/ui/prefab_thumbnail.cpp src/ui/find_panel.cpp src/ui/asset_report_builder.cpp src/ui/addons_panel.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp

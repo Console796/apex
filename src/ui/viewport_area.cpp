@@ -9,7 +9,10 @@
 #include <QToolTip>
 #include <QKeyEvent>
 #include <QJsonArray>
+#include <QMessageBox>
 #include <QMouseEvent>
+#include <QTimer>
+#include <QGuiApplication>
 #include <QSplitter>
 #include <QSplitterHandle>
 #include <QVBoxLayout>
@@ -469,6 +472,25 @@ double ViewportArea::pixelHeight() const {
     return 768.0;
 }
 
+namespace {
+// One-time, non-blocking alert that 3D viewports are unavailable. Skipped on headless Qt
+// platforms (tests), where there is never a Vulkan surface and nobody to read it.
+void warnNoVulkan(QWidget* parent, const QString& reason) {
+    const QString platform = QGuiApplication::platformName();
+    if (platform == QLatin1String("offscreen") || platform == QLatin1String("minimal")) return;
+    auto* box = new QMessageBox(QMessageBox::Warning, QObject::tr("No Vulkan support found"),
+                                QObject::tr("Apex could not find a usable Vulkan graphics device, so the 3D viewports are disabled."),
+                                QMessageBox::Ok, parent->window());
+    box->setInformativeText(QObject::tr("Install or update your graphics drivers (with Vulkan support), then restart Apex. "
+                                        "On Linux this is usually the vulkan-icd-loader package plus your GPU's Mesa or proprietary driver; "
+                                        "'vulkaninfo' shows what the system detects."));
+    box->setDetailedText(reason);
+    box->setAttribute(Qt::WA_DeleteOnClose);
+    box->setWindowModality(Qt::NonModal);
+    QTimer::singleShot(0, box, [box] { box->show(); });
+}
+} // namespace
+
 void ViewportArea::rebuild() {
     endHandleDrag();
     rebuildPending_ = false;
@@ -476,7 +498,10 @@ void ViewportArea::rebuild() {
         gpuTried_ = true;
         gpuReady_ = host_->ensure();
         gpuReason_ = gpuReady_ ? QString() : host_->error();
-        if (!gpuReady_) log::warn("viewports: no GPU rendering ({})", gpuReason_.toStdString());
+        if (!gpuReady_) {
+            log::warn("viewports: no GPU rendering ({})", gpuReason_.toStdString());
+            warnNoVulkan(this, gpuReason_);
+        }
     }
     // Take the panels back before the frames go; drop those whose leaf is gone or changed role.
     for (auto it = panels_.begin(); it != panels_.end();) {
