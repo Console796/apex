@@ -163,6 +163,20 @@ Result<void> GameContent::setAddonMounted(std::size_t index, bool mounted) {
     reload(profile ? &*profile : nullptr);
     return {};
 }
+std::size_t GameContent::mountAddons(const std::vector<std::size_t>& indices) {
+    if (!vfs_) return 0;
+    std::size_t written = 0;
+    for (const auto index : indices) {
+        auto result = assets::setAddonMounted(vfs_->addons(), index, true);
+        if (result) ++written;
+        else { error_ = QString::fromStdString(result.error().what()); log::warn("game content: {}", result.error().what()); }
+    }
+    if (written != 0) {
+        auto profile = profile_;
+        reload(profile ? &*profile : nullptr);
+    }
+    return written;
+}
 std::optional<std::size_t> GameContent::unmountedAddon(std::string_view path) const {
     return unmounted_ ? unmounted_->provider(path) : std::nullopt;
 }

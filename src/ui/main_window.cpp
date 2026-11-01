@@ -1,5 +1,6 @@
 #include "ui/main_window.hpp"
 #include "ui/compile_panel.hpp"
+#include "ui/asset_report_builder.hpp"
 #include "ui/game_content.hpp"
 
 
@@ -543,8 +544,32 @@ void MainWindow::buildMenus() {
 }
 
 void MainWindow::reloadGameContent() {
+    autoMountPending_ = true;
     gameContent_->reload(currentProfile());
     if (viewport_) viewport_->setDocument(document_.get(), currentProfile());
+}
+
+// A map that needs an installed-but-unmounted addon would show missing textures and models, so mount
+// the addons that provide them. Each addon is tried once per window, so a failed write cannot loop.
+void MainWindow::mountAddonsForMap() {
+    if (!autoMountPending_ || !document_ || gameContent_->loading()) return;
+    const auto vfs = gameContent_->vfs();
+    if (!vfs) return;
+    autoMountPending_ = false;
+    const auto report = buildAssetReport(*document_, gameContent_.get(), &session_);
+    std::set<std::string> names;
+    for (const auto& missing : report->missing()) if (missing.addon) names.insert(*missing.addon);
+    std::vector<std::size_t> indices;
+    QStringList mounted;
+    for (std::size_t i = 0; i < vfs->addons().entries.size(); ++i) {
+        const auto name = gameContent_->addonName(i);
+        const auto& dir = vfs->addons().entries[i].dir;
+        if (!names.contains(name.toStdString()) || !autoMountTried_.insert(dir).second) continue;
+        indices.push_back(i);
+        mounted << name;
+    }
+    if (!indices.empty() && gameContent_->mountAddons(indices) != 0)
+        statusBar()->showMessage(tr("Mounted addons this map needs: %1").arg(mounted.join(QStringLiteral(", "))), 10000);
 }
 
 void MainWindow::rebuildAddonsMenu() {
@@ -1149,6 +1174,7 @@ void MainWindow::buildStatusBar() {
     updateGridStatus();
     modeLabel_->setText(modeSummary(session_));
     connect(gameContent_.get(), &GameContent::contentChanged, this, &MainWindow::updateActiveMaterialIndicator);
+    connect(gameContent_.get(), &GameContent::contentChanged, this, &MainWindow::mountAddonsForMap);
     connect(gameContent_.get(), &GameContent::thumbnailsReady, this, &MainWindow::updateActiveMaterialIndicator);
     connect(gameContent_.get(), &GameContent::indexReady, this, &MainWindow::updateActiveMaterialIndicator);
     updateActiveMaterialIndicator();
@@ -1726,6 +1752,8 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     savedState_ = document_->historyState();
     viewport_->setDocument(document_.get(), currentProfile());
     viewport_->applyMapViews(viewport::readMapViews(parsed));
+    autoMountPending_ = true;
+    mountAddonsForMap();
     saveAction_->setEnabled(true);
     saveAsAction_->setEnabled(true);
     startAutosave();

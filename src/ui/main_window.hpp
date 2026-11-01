@@ -7,6 +7,8 @@
 #include <QPointer>
 #include <QString>
 #include <memory>
+#include <set>
+#include <string>
 #include <vector>
 
 #include "assets/game_profile.hpp"
@@ -136,6 +138,7 @@ private:
     void buildMenus();
     void rebuildAddonsMenu();
     void reloadGameContent();
+    void mountAddonsForMap();
     bool loadFile(const QString& readPath, const QString& source, bool recovered);
     void installDocument(std::unique_ptr<document::Document> doc, const vmf::VmfFile& parsed,
                          const QString& path, bool unsaved);
@@ -202,6 +205,8 @@ private:
     editor::PresetStore presetStore_;
     QMenu* presetMenu_ = nullptr;
     QString path_;
+    bool autoMountPending_ = false;
+    std::set<std::string> autoMountTried_;
     std::vector<assets::GameProfile> profiles_;
 
     ViewportArea* viewport_ = nullptr;

@@ -57,6 +57,8 @@ public:
     std::optional<std::size_t> unmountedAddon(std::string_view path) const;
     QString missingAssetTooltip(std::string_view path) const;
     Result<void> setAddonMounted(std::size_t index, bool mounted);
+    // Mounts several addons with one reload; returns how many were written.
+    std::size_t mountAddons(const std::vector<std::size_t>& indices);
     bool loading() const { return loading_; }
     QString error() const { return error_; }
     std::pair<int, int> faceTextureSize(std::string_view material) const;
