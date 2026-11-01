@@ -32,6 +32,20 @@ option(APEX_BUILD_APP "Build the Qt application (needs Qt 6)" ON)
 set(APEX_SANITIZE "" CACHE STRING "Sanitizers, e.g. address;undefined")
 # BUILD field of the version (plan 0.1, D1): injected by tools/ci.py, 0 for ad-hoc builds.
 set(APEX_BUILD_NUMBER 0 CACHE STRING "CI run counter")
+option(APEX_PREFER_LLD "Link GCC builds with ld.lld when it is installed" OFF)
+
+# ld.lld links far faster than GNU ld; fall back silently when it is absent.
+if(APEX_PREFER_LLD AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  find_program(APEX_LD_LLD ld.lld)
+  if(APEX_LD_LLD)
+    include(CheckLinkerFlag)
+    check_linker_flag(CXX "-fuse-ld=lld" APEX_HAVE_FUSE_LD_LLD)
+    if(APEX_HAVE_FUSE_LD_LLD)
+      add_link_options(-fuse-ld=lld)
+      message(STATUS "Linking with ${APEX_LD_LLD}")
+    endif()
+  endif()
+endif()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
 include(Layers)
