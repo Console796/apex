@@ -56,8 +56,5 @@ design documents in [docs/](../); they point at them.
 These are places where the written status is behind the code. When in doubt, trust the code, the
 `version.txt` file and the roadmap, in that order.
 
-- `version.txt` says `0.5.8`, but `master` has the 0.6.1 to 0.6.5 commits. Under the versioning
-  rule in [../roadmap.md](../roadmap.md), the version should name the last completed sub-milestone.
-  It is not bumped here because a version bump is the owner's call.
 - The 0.5 release has no tag. Its verification is recorded in
   [../plans/0.5.md](../plans/0.5.md) and [../plans/probe-results/compile_0_5_release.md](../plans/probe-results/compile_0_5_release.md).

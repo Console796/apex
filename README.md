@@ -4,9 +4,9 @@ Apex is a native, cross-platform level editor for Source-engine maps, aimed at t
 (P2CE) toolchain. It is a C++23 / Qt 6 / Vulkan program that reads and writes `.vmf` files and is
 meant to interoperate with Strata Hammer in both directions without loss.
 
-**Status: pre-release.** `version.txt` reads `0.5.8`. Milestones 0.1 to 0.3 are released (latest
-`v0.3.10-release`). 0.4 and 0.5 have landed, but 0.5 has no release tag yet because its
-verification is still open. 0.6 (realtime lighting) is in progress on `master`. Apex can open,
+**Status: pre-release.** `version.txt` reads `0.6.8-release`. Milestones 0.1 to 0.3 and 0.6
+(realtime direct lighting) are released (latest `v0.6.8-release`). 0.4 and 0.5 have landed, but 0.5
+has no release tag yet because its verification is still open. Apex can open,
 author, entity-edit, compile and launch maps, and it can preview direct lighting. Do not use it on
 maps you have no backup of.
 

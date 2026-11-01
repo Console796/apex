@@ -40,7 +40,7 @@ landed. 0.5.1–0.5.8 are committed on `master`, including addon authoring and c
 and Create Instance from Selection (0.5.8). The owner confirmed real playtests on `1f89631`. Release
 verification is still open: see [the 0.5 plan](plans/0.5.md) for the remaining gates. No 0.5 release
 is tagged yet. 0.6.1 to 0.6.8 have landed, and the owner accepted the 0.6 release gates on 2026-11-01
-(parity, performance, Windows Lit goldens). See [the 0.6 plan](plans/0.6.md).
+(parity, performance, Windows Lit goldens). 0.6 is released as `0.6.8-release` (tag `v0.6.8-release`). See [the 0.6 plan](plans/0.6.md).
 
 ## Principles that hold across every milestone
 
