@@ -126,7 +126,11 @@ Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transfor
             edges.push_back(base + static_cast<std::uint32_t>(i));
             edges.push_back(base + static_cast<std::uint32_t>((i + 1) % 4));
         }
+        // The corners run clockwise from outside; brushes wind counter-clockwise, so reverse them,
+        // except for an interior room or a mirroring transform (as a rebuilt brush would face).
+        const bool flip = interior != (glm::determinant(DMat3(transform)) < 0.0);
         for (std::uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u}) indices.push_back(base + i);
+        if (!flip) std::reverse(indices.end() - 6, indices.end());
     }
     auto bytes = [](const auto& v) { return std::as_bytes(std::span{v}); };
     auto& ring = f.heap->uploadRing();
@@ -257,6 +261,26 @@ TEST_CASE("renderer: flat cube with edge overlay") {
     for (std::uint32_t x = 19; x <= 23; ++x) found = found || nearColour(at(image, x, 32), {255, 255, 255}, 8);
     CHECK(found);
     CHECK(nearColour(at(image, 32, 32), {35, 140, 35}, 12));
+}
+
+TEST_CASE("renderer: back faces are culled unless the list turns culling off") {
+    REQUIRE_GPU();
+    const Cube cube = makeCube(*gpu, 32.0f, 0);
+    // From inside the cube every face shows its back.
+    DrawList list = cubeList(cube, DisplayMode::Flat, 0);
+    list.view = makeView({0.0, 0.0, 0.0}, {0.0, 0.0, 0.0});
+    CHECK(list.cullBackFaces);
+    CHECK(isBackground(at(drawFrame(*gpu, list), 32, 32)));
+    list.cullBackFaces = false;
+    CHECK_FALSE(isBackground(at(drawFrame(*gpu, list), 32, 32)));
+    // Wireframe shows every edge either way.
+    list.mode = DisplayMode::Wireframe;
+    list.cullBackFaces = true;
+    const auto wire = drawFrame(*gpu, list);
+    int lines = 0;
+    for (std::uint32_t y = 0; y < 64; ++y)
+        for (std::uint32_t x = 0; x < 64; ++x) lines += isBackground(at(wire, x, y)) ? 0 : 1;
+    CHECK(lines > 0);
 }
 
 TEST_CASE("renderer: wireframe cube is hollow with edge lines") {

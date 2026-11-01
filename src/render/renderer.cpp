@@ -36,6 +36,12 @@ constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 // Well above D32 resolution (~6e-8) and far below the grid's 2e-4.
 constexpr float kLayerBias = 1e-5f;
 
+// Filled face kinds that honour DrawList::cullBackFaces. Wireframe's fill and depth passes never cull.
+constexpr bool cullable(Kind kind) {
+    return kind == Kind::Textured || kind == Kind::Flat || kind == Kind::GhostTextured ||
+           kind == Kind::GhostFlat || kind == Kind::Highlight;
+}
+
 bool srgbAttachment(VkFormat format) {
     switch (format) {
     case VK_FORMAT_R8_SRGB:
@@ -345,7 +351,7 @@ struct Renderer::Impl {
         viewport.scissorCount = 1;
         VkPipelineRasterizationStateCreateInfo raster = vkStruct<VkPipelineRasterizationStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO);
         raster.polygonMode = spec.polygon;
-        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.cullMode = VK_CULL_MODE_NONE; // Dynamic: set per bind and per mesh.
         raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
         raster.depthBiasEnable = spec.depthBias ? VK_TRUE : VK_FALSE;
         raster.lineWidth = 1.0f;
@@ -370,9 +376,10 @@ struct Renderer::Impl {
         VkPipelineColorBlendStateCreateInfo blend = vkStruct<VkPipelineColorBlendStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
         blend.attachmentCount = 1;
         blend.pAttachments = &attachment;
-        const VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS};
+        const VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS,
+                                                VK_DYNAMIC_STATE_CULL_MODE};
         VkPipelineDynamicStateCreateInfo dynamic = vkStruct<VkPipelineDynamicStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
-        dynamic.dynamicStateCount = 3;
+        dynamic.dynamicStateCount = 4;
         dynamic.pDynamicStates = dynamicStates;
         VkPipelineRenderingCreateInfo rendering = vkStruct<VkPipelineRenderingCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
         rendering.colorAttachmentCount = 1;
@@ -419,6 +426,7 @@ struct Renderer::Impl {
 
     void bind(VkCommandBuffer commands, Kind kind, bool scene = false) const {
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines[scene ? 1 : 0][static_cast<std::size_t>(kind)]);
+        vkCmdSetCullMode(commands, VK_CULL_MODE_NONE); // drawMeshes culls the kinds that take it.
     }
     void pushAll(VkCommandBuffer commands, const PushConstants& push) const {
         vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_ALL, 0, sizeof(PushConstants), &push);
@@ -670,9 +678,19 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
     auto drawMeshes = [&](Kind kind, const auto& meshes, auto&& setup, auto&& count, auto&& indices, bool edges) {
         if (!s.has(kind, scenePass)) return;
         s.bind(commands, kind, scenePass);
+        // Tool ghosts stay double-sided so a preview reads as a volume; translucent materials cull.
+        const bool cull = list.cullBackFaces && cullable(kind) &&
+                          static_cast<const void*>(&meshes) != static_cast<const void*>(&list.ghosts);
         for (const MeshDraw& mesh : meshes) {
             const std::uint32_t n = count(mesh);
             if (!mesh.vertices || !indices(mesh) || n == 0) continue;
+            if (cull) {
+                // Pipelines take counter-clockwise as front; a clockwise mesh or a mirroring preview
+                // transform flips which side is the back.
+                const bool mirrored = mesh.previewIndex != 0 &&
+                                      glm::determinant(DMat3(list.previews[mesh.previewIndex - 1].matrix)) < 0.0;
+                vkCmdSetCullMode(commands, mirrored != mesh.clockwise ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT);
+            }
             const VkDeviceSize zero = 0;
             VkBuffer vb = mesh.vertices->handle();
             vkCmdBindVertexBuffers(commands, 0, 1, &vb, &zero);

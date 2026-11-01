@@ -20,6 +20,7 @@ struct Overlays {
     bool leak = true;         // The compile's leak path, when there is one (0.5 D6).
     bool portals = true;      // The compile's portals, when there are any.
     bool cordons = true;      // The map's cordon boxes (0.5 D7).
+    bool backfaceCulling = true; // False draws the back of every face too (Textured, Flat, Lit).
 
     bool operator==(const Overlays&) const = default;
 };

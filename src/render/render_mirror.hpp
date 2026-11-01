@@ -97,6 +97,8 @@ struct MirrorViewOptions {
     // False also omits every other tools/* face except sky (trigger, clip, hint, skip...), as
     // the game draws them: for captures compared against in-game screenshots. Same Wireframe rule.
     bool showToolFaces = true;
+    // Culls the back of filled faces; wireframe always shows every edge.
+    bool cullBackFaces = true;
     // Labels each point entity with its targetname (entities without one are skipped).
     bool showEntityNames = false;
     // Samples entity icon sprites with nearest filtering instead of linear.

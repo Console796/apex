@@ -85,6 +85,7 @@ struct MeshDraw {
     std::uint32_t instanceCount = 1;
     bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
     bool edgeOverlay = true;          // False skips this mesh in the Textured/Lit/Flat edge overlay pass.
+    bool clockwise = false;           // Front faces wind clockwise from outside (models); brushes are counter-clockwise.
 };
 
 struct BoxDraw {
@@ -173,6 +174,7 @@ struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
     bool fullbright = false; // Lit: unit irradiance, useful for inspecting albedo.
+    bool cullBackFaces = true; // Filled mesh kinds only; a mirroring preview culls the other side.
     std::vector<lighting::Light> lights; // World-space doubles; rebased at upload.
     std::shared_ptr<const lighting::SkyVisibilityGrid> skyVisibility; // Last finished world-space grid.
     // Lit: probes for $envmap env_cubemap (nearest wins); without any, the default cube.

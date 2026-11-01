@@ -568,6 +568,7 @@ double PaneWindow::draw() {
     options.modelEdgeOverlay = !session_ || session_->modelEdgeOverlay();
     options.showEntities = vp->overlays.entityHelpers;
     options.showNodraw = vp->overlays.nodrawFaces;
+    options.cullBackFaces = vp->overlays.backfaceCulling;
     options.showEntityNames = vp->overlays.entityNames;
     options.iconNearest = session_ && session_->entityIconsNearest();
     options.grid = makeGridSettings(*vp, session_);
@@ -578,6 +579,7 @@ double PaneWindow::draw() {
         list = mirror->buildDrawList(options);
     } else {
         list.mode = options.mode;
+        list.cullBackFaces = options.cullBackFaces;
         list.view = options.view;
         list.grid = options.grid;
     }
@@ -881,7 +883,8 @@ void PaneFrame::buildMenu() {
                                     {"Entity names", &viewport::Overlays::entityNames},
                                     {"Compile leak", &viewport::Overlays::leak},
                                     {"Compile portals", &viewport::Overlays::portals},
-                                    {"Cordons", &viewport::Overlays::cordons}};
+                                    {"Cordons", &viewport::Overlays::cordons},
+                                    {"Backface culling", &viewport::Overlays::backfaceCulling}};
     for (const auto& entry : entries) {
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);
