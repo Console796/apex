@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+#include <limits>
 #include <span>
 #include <vector>
 
@@ -114,6 +116,47 @@ inline std::vector<GpuShadowTile> sunCascadeTiles(DVec3 direction, const Mat4& v
         start = end;
     }
     return tiles;
+}
+
+// Where a shadow view's light can reach: casters beyond it cannot darken anything it lights (D13).
+// The sun reaches everywhere; its cascades are bounded by their projections instead.
+struct ShadowReach {
+    DVec3 origin{0.0};
+    double range = std::numeric_limits<double>::infinity();
+};
+
+// The world-space corners of `local` placed by `transform` (draw-local vertex space to world).
+inline AABB worldBounds(const AABB& local, const DMat4& transform) {
+    AABB world;
+    if (local.empty()) return world;
+    for (int corner = 0; corner < 8; ++corner) {
+        const DVec3 p((corner & 1) ? local.max.x : local.min.x, (corner & 2) ? local.max.y : local.min.y,
+                      (corner & 4) ? local.max.z : local.min.z);
+        world.expand(DVec3(transform * DVec4(p, 1.0)));
+    }
+    return world;
+}
+
+// False only when `world` cannot cast into the view: beyond the light's reach, or wholly outside one
+// clip half-space of `projection` (camera-relative, reversed-Z: 0 <= z <= w). Empty bounds always cast.
+inline bool castsInto(const AABB& world, const Mat4& projection, DVec3 camera, const ShadowReach& reach) {
+    if (world.empty()) return true;
+    const DVec3 nearest = glm::clamp(reach.origin, world.min, world.max);
+    if (glm::length(nearest - reach.origin) > reach.range) return false;
+    const DMat4 clip(projection);
+    int outside[6] = {};
+    for (int corner = 0; corner < 8; ++corner) {
+        const DVec3 p((corner & 1) ? world.max.x : world.min.x, (corner & 2) ? world.max.y : world.min.y,
+                      (corner & 4) ? world.max.z : world.min.z);
+        const DVec4 c = clip * DVec4(p - camera, 1.0);
+        outside[0] += c.x > c.w;
+        outside[1] += c.x < -c.w;
+        outside[2] += c.y > c.w;
+        outside[3] += c.y < -c.w;
+        outside[4] += c.z < 0.0;
+        outside[5] += c.z > c.w;
+    }
+    return std::ranges::none_of(outside, [](int count) { return count == 8; });
 }
 
 // One atlas per recording slot: another viewport may still be sampling its own (D5).

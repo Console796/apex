@@ -1,4 +1,5 @@
 #include "render/shadow_alloc.hpp"
+#include "render/shadows.hpp"
 #include "render/view_math.hpp"
 
 #include <doctest/doctest.h>
@@ -184,4 +185,48 @@ TEST_CASE("shadow: requests are made for shadowable lights only") {
     lighting::Light ambient;
     ambient.kind = lighting::LightKind::Ambient;
     CHECK_FALSE(shadowRequest(ambient, DVec3(0.0), vp, 200));
+}
+
+TEST_CASE("shadow: casters are culled by the light's reach and by each view's clip half-spaces") {
+    const DVec3 camera{37, -12, 5}; // Projections are camera-relative; the test must not depend on the origin.
+    lighting::Light spot;
+    spot.kind = lighting::LightKind::Spot;
+    spot.origin = {10, 20, 30};
+    spot.direction = {1, 0, 0};
+    spot.stopdot2 = std::cos(glm::radians(30.0));
+    const auto tile = spotShadowTile(spot, camera, {0, 0, 512});
+    const ShadowReach reach{spot.origin, 500};
+    const auto box = [&](DVec3 centre, double half = 4) { return AABB{centre - DVec3(half), centre + DVec3(half)}; };
+    CHECK(castsInto(box(spot.origin + DVec3(100, 0, 0)), tile.projection, camera, reach));
+    CHECK_FALSE(castsInto(box(spot.origin + DVec3(-100, 0, 0)), tile.projection, camera, reach)); // Behind.
+    CHECK_FALSE(castsInto(box(spot.origin + DVec3(100, 300, 0)), tile.projection, camera, reach)); // Outside the cone.
+    CHECK_FALSE(castsInto(box(spot.origin + DVec3(600, 0, 0)), tile.projection, camera, reach));   // Beyond reach.
+    CHECK(castsInto(box(spot.origin + DVec3(600, 0, 0)), tile.projection, camera, ShadowReach{}));
+    CHECK(castsInto(box(spot.origin, 50), tile.projection, camera, reach)); // Surrounds the light.
+    CHECK(castsInto(box(spot.origin + DVec3(250, 0, 0), 300), tile.projection, camera, reach)); // Straddles planes.
+    CHECK(castsInto(AABB{}, tile.projection, camera, reach)); // Unknown bounds always cast.
+
+    lighting::Light point;
+    point.kind = lighting::LightKind::Point;
+    point.origin = {-40, 8, 64};
+    const DVec3 axes[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        CAPTURE(face);
+        const auto faceTile = pointShadowTile(point, camera, face, {0, 0, 256});
+        for (std::uint32_t other = 0; other < 6; ++other)
+            CHECK(castsInto(box(point.origin + axes[other] * 100.0, 2), faceTile.projection, camera, ShadowReach{}) ==
+                  (face == other));
+    }
+}
+
+TEST_CASE("shadow: world bounds place a draw-local box through its transform") {
+    DMat4 turn(0.0); // A quarter turn about z, then a move.
+    turn[0] = {0, 1, 0, 0};
+    turn[1] = {-1, 0, 0, 0};
+    turn[2] = {0, 0, 1, 0};
+    turn[3] = {100, 200, 300, 1};
+    const auto world = worldBounds(AABB{{0, 0, 0}, {10, 2, 4}}, turn);
+    CHECK(world.min == DVec3(98, 200, 300));
+    CHECK(world.max == DVec3(100, 210, 304));
+    CHECK(worldBounds(AABB{}, turn).empty());
 }

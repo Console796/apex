@@ -88,6 +88,7 @@ struct MeshDraw {
     bool sky = false;
     std::optional<DVec3> reflectionPoint; // Brush-side centre; models use the fragment.
     bool edgeOverlay = true;          // False skips this mesh in the Textured/Lit/Flat edge overlay pass.
+    AABB bounds;                      // Draw-local (vertex space); culls shadow casters. Empty always casts.
 };
 
 struct BoxDraw {

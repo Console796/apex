@@ -239,6 +239,7 @@ struct Renderer::Impl {
         std::unique_ptr<ShadowAtlas> atlas;
         std::vector<GpuShadowTile> tiles; // Uploaded order; a light's views are contiguous.
         std::vector<ShadowRect> rects;
+        std::vector<ShadowReach> reach; // Per tile: casters beyond it are skipped.
         std::uint32_t overflow = 0; // In-view lights that did not fit the atlas (D7).
     };
     std::map<VkCommandBuffer, ShadowSlot> shadowSlots;
@@ -635,10 +636,29 @@ void Renderer::recordShadows(VkCommandBuffer commands, const DrawList& list) {
     vkCmdSetDepthBias(commands, kShadowConstantBias, 0, kShadowSlopeBias);
     const auto frame = s.frameBuffers.at(commands).deviceAddress();
     const auto& casters = list.shadowCasters ? *list.shadowCasters : list.meshes;
+    // World boxes once per frame, one per instance; a draw casts into a view if any of them does (D13).
+    std::vector<std::vector<AABB>> boxes(casters.size());
+    for (std::size_t i = 0; i < casters.size(); ++i) {
+        const auto& mesh = casters[i];
+        if (mesh.bounds.empty()) continue;
+        if (mesh.previewIndex == 0) {
+            boxes[i].push_back({mesh.bounds.min + mesh.origin, mesh.bounds.max + mesh.origin});
+            continue;
+        }
+        const std::uint32_t count = mesh.instancedTransforms ? mesh.instanceCount : 1;
+        for (std::uint32_t k = 0; k < count; ++k) {
+            const auto& preview = list.previews.at(mesh.previewIndex - 1 + k);
+            boxes[i].push_back(worldBounds({mesh.bounds.min + preview.origin, mesh.bounds.max + preview.origin}, preview.matrix));
+        }
+    }
     for (std::size_t view = 0; view < shadow.tiles.size(); ++view) {
         ShadowAtlas::tile(commands, shadow.rects[view]);
-        for (const auto& mesh : casters) {
+        for (std::size_t i = 0; i < casters.size(); ++i) {
+            const auto& mesh = casters[i];
             if (!mesh.vertices || !mesh.indices || mesh.indexCount == 0 || mesh.alpha == AlphaMode::Blend) continue;
+            if (!boxes[i].empty() && std::ranges::none_of(boxes[i], [&](const AABB& box) {
+                    return castsInto(box, shadow.tiles[view].projection, list.view.cameraPosition, shadow.reach[view]);
+                })) continue;
             const VkDeviceSize zero = 0;
             const VkBuffer vertices = mesh.vertices->handle();
             vkCmdBindVertexBuffers(commands, 0, 1, &vertices, &zero);
@@ -808,6 +828,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     auto& shadow = s.shadowSlots[commands];
     shadow.tiles.clear();
     shadow.rects.clear();
+    shadow.reach.clear();
     shadow.overflow = 0;
     // Tile planning (D13): the allocator keeps owners across frames; the atlas itself is redrawn every frame.
     std::vector<ShadowGrant> grants(list.lights.size());
@@ -901,9 +922,12 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
             if (!views.empty()) {
                 packed.shadow = static_cast<std::uint32_t>(shadow.tiles.size()) + 1;
                 packed.shadowViews = static_cast<std::uint32_t>(views.size());
+                const auto reach = light.kind == lighting::LightKind::Sun
+                    ? ShadowReach{} : ShadowReach{light.origin, exposureRange(light)};
                 for (std::size_t v = 0; v < views.size(); ++v) {
                     shadow.tiles.push_back(views[v]);
                     shadow.rects.push_back(rects[v]);
+                    shadow.reach.push_back(reach);
                 }
             }
         }

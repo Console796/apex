@@ -1797,6 +1797,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.edgeIndexCount = batch.edgeCount;
             draw.origin = solid.origin;
             draw.previewIndex = preview;
+            if (solid.bounded) draw.bounds = {solid.bounds.min - solid.origin, solid.bounds.max - solid.origin};
             const auto material = m.materials.find(batch.material);
             if (material != m.materials.end()) {
                 draw.texture = material->second.slot;
@@ -2053,6 +2054,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.firstEdgeIndex = range.firstIndex * 2;
                 draw.edgeIndexCount = range.indexCount * 2;
                 draw.edgeOverlay = options.modelEdgeOverlay;
+                draw.bounds = mesh.data->bounds; // Model space; each instance transform places it.
                 const auto material = mesh.materials.find(range.material);
                 if (material != mesh.materials.end() && !material->second.empty()) {
                     const auto& state = m.materials.at(material->second);
