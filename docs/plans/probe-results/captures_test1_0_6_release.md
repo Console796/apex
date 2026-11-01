@@ -9,6 +9,10 @@ a `mat_fullbright 1` frame.
 - **`set 2/`** (`N1.png` lit, `N2.png` fullbright): exposure pinned with `sv_cheats 1`,
   `mat_autoexposure_min 1`, `mat_autoexposure_max 1`, `mat_force_tonemap_scale 1`,
   `mat_disable_bloom 1`, `r_drawviewmodel 0`, `cl_showpos 1`. This is the set the release reviews.
+- **`set 3/`** (same names and settings as set 2): captured from `build/parity/test1_b0.bsp`, test1 relit
+  with `-bounce 0`, so the game shows direct light only, as Apex does (D8). Cubemaps were not built for
+  either BSP; the game's placeholders are black, and Apex renders with and without them differ
+  negligibly.
 
 | Set 2 pose | Pos (x y z) | Ang (pitch yaw roll) |
 |---|---|---|
@@ -16,6 +20,13 @@ a `mat_fullbright 1` frame.
 | 2 | −645.80 −1078.80 64.03 | −7.55 177.66 0 |
 | 3 | −1046.74 −693.74 64.03 | −7.03 −83.60 0 |
 | 4 | −1135.97 −973.72 64.03 | −10.20 −9.25 0 |
+
+| Set 3 pose | Pos (x y z) | Ang (pitch yaw roll) |
+|---|---|---|
+| 1 | −1135.97 −1135.97 64.03 | −8.06 34.09 0 |
+| 2 | −645.80 −1055.31 64.03 | −3.58 176.65 0 |
+| 3 | −991.38 −706.54 64.03 | −8.07 −92.90 0 |
+| 4 | −1135.97 −874.79 64.03 | −7.95 −12.25 0 |
 
 ## Comparison with Apex Lit
 
@@ -61,7 +72,33 @@ still darken metallic diffuse, while Apex fullbright reproduces albedo.
 Together: about 0.55× from missing bounce, times about 1.35× from the curve and material response,
 gives the 0.75× observed. Neither the light model nor exposure is shown to be wrong.
 
-**Next capture to separate them (D3's still-open in-game `-bounce 0` capture).**
+**The capture that separates them (D3's in-game `-bounce 0` capture), now taken as set 3.**
 `build/parity/test1_b0.bsp` is test1 relit with `-bounce 0`. Captured in game at the set 2 poses with the
 same pinned settings, Apex Lit should match it in direct-lit regions once the display curve is right,
 and the remaining difference measures the curve and material response by themselves.
+
+## Set 3 result (2026-11-01): the game encodes with sRGB
+
+Against set 3, decoding the game's frames with the piecewise sRGB curve gives a game ÷ Apex-linear
+ratio of about 0.8 that is flat from dark to bright, the same in lit and fullbright frames and across
+R, G and B. Decoding with 2.2 instead makes the ratio run from 0.19 in the darks to 0.9 in the
+brights. So the game's display curve is sRGB. Apex now encodes Lit with sRGB and decodes textures and
+sky faces with its inverse (5ef7bdf). VMT colour parameters and light colours keep Source's 2.2 rule.
+
+Ratios with the sRGB curve, Apex ÷ game, same masking and statistics as above:
+
+| Pose | Set 3 Lit mean | Set 3 Lit bright | Set 3 Lit dark | Set 3 Fullbright | Set 2 Lit mean | Set 2 Lit dark |
+|---|---|---|---|---|---|---|
+| 1 | 1.27 | 1.16 | 1.33 | 1.38 | 0.69 | 0.55 |
+| 2 | 1.30 | 1.26 | 1.29 | 1.40 | 0.68 | 0.39 |
+| 3 | 1.21 | 1.14 | 1.40 | 1.31 | 0.70 | 0.46 |
+| 4 | 1.23 | 1.14 | 1.26 | 1.40 | 0.73 | 0.44 |
+
+- With direct light only on both sides, Apex is 1.14–1.26× the game in direct-lit regions. Fullbright
+  carries the same excess, so the scale is in surface response, not in the lights: Apex's light model
+  matches the game's relative to albedo.
+- **Open:** the uniform scale of about 0.8 (game ÷ Apex). The candidates are EverythingPBR's diffuse
+  response in game (most of test1 is EverythingPBR) and a game output scale. It is not folded into
+  Apex's exposure.
+- Set 2's shortfall (0.68–0.73× overall, 0.39–0.55× in the darker half) is the missing bounce, which is
+  about half of test1's baked light. It closes with 0.7's GI.
