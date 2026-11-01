@@ -20,6 +20,7 @@ enum class LightKind : std::uint8_t { Point = 1, Spot = 2, Sun = 3, Ambient = 5 
 
 struct Light {
     LightKind kind = LightKind::Point;
+    std::uint64_t id = 0; // Stable owner key for the renderer's shadow tiles (D13); 0 derives one from the pose.
     DVec3 origin{0.0};
     // Linear HDR intensity: the 2.2-decoded colour times brightness/255, times _lightscaleHDR, times the
     // 100-unit normalisation for point and spot lights. Irradiance is intensity / attenuation(d).

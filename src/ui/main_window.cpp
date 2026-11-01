@@ -1114,9 +1114,9 @@ void MainWindow::buildAreas() {
     });
     connect(viewport_, &ViewportArea::frameTimeChanged, this,
             [this](double ms) { frameLabel_->setText(tr("%1 ms").arg(ms, 0, 'f', 1)); });
-    connect(viewport_, &ViewportArea::lightingBudgetChanged, this, [this](bool lit, std::uint32_t overflow) {
+    connect(viewport_, &ViewportArea::lightingBudgetChanged, this, [this](bool lit, std::uint32_t clusters, std::uint32_t shadows) {
         lightingBudgetLabel_->setVisible(lit);
-        lightingBudgetLabel_->setText(tr("Clusters: %1 overflow").arg(overflow));
+        lightingBudgetLabel_->setText(tr("Clusters: %1 overflow, Shadows: %2 over budget").arg(clusters).arg(shadows));
     });
     connect(viewport_, &ViewportArea::gpuNameChanged, this,
             [this](const QString& n) { gpuLabel_->setText(tr("GPU: %1").arg(n)); });
@@ -1151,9 +1151,9 @@ void MainWindow::buildStatusBar() {
     statusBar()->addWidget(readoutLabel_);
     cameraLabel_ = new QLabel(tr("Cam: -"));
     frameLabel_ = new QLabel(tr("- ms"));
-    lightingBudgetLabel_ = new QLabel(tr("Clusters: 0 overflow"));
+    lightingBudgetLabel_ = new QLabel(tr("Clusters: 0 overflow, Shadows: 0 over budget"));
     lightingBudgetLabel_->setObjectName(QStringLiteral("statusLightingBudget"));
-    lightingBudgetLabel_->setToolTip(tr("Dropped light entries across clusters (64 lights per cluster)."));
+    lightingBudgetLabel_->setToolTip(tr("Dropped light entries across clusters (64 lights per cluster), and lights in view that did not fit the shadow atlas and render unshadowed."));
     gpuLabel_ = new QLabel(tr("GPU: -"));
     activeMaterialLabel_ = new QToolButton;
     activeMaterialLabel_->setObjectName(QStringLiteral("activeMaterialIndicator"));

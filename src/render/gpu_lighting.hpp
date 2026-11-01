@@ -36,8 +36,12 @@ struct alignas(16) FrameBlock {
     Mat4 skyInverseView{1.0f};
     glm::uvec4 skyFaces[2]{};
     Vec4 skyTransform{0.0f}; // xyz translation, w scale.
+    VkDeviceAddress shadows = 0;
+    std::uint32_t shadowAtlas = 0, shadowCount = 0;
 };
-static_assert(sizeof(FrameBlock) == 400);
+static_assert(sizeof(FrameBlock) == 416);
+static_assert(offsetof(FrameBlock, shadows) == 400);
+static_assert(offsetof(FrameBlock, shadowAtlas) == 408);
 static_assert(offsetof(FrameBlock, clusters) == 160);
 static_assert(offsetof(FrameBlock, clusterStats) == 168);
 static_assert(offsetof(FrameBlock, clusterDims) == 176);
@@ -100,8 +104,11 @@ struct alignas(16) GpuLight {
     Vec4 directionInner;
     Vec4 attenuationOuter; // constant, linear, quadratic, outer cone cosine
     std::uint32_t kind = 0, directMode = 0, specularMode = 0, indirectMode = 0;
+    // 0 = unshadowed; otherwise first tile index + 1 and the number of views: 1 spot, 6 point, 2-3 cascades (D14).
+    std::uint32_t shadow = 0, shadowViews = 0, shadowPad[2]{};
 };
-static_assert(sizeof(GpuLight) == 80);
+static_assert(sizeof(GpuLight) == 96);
+static_assert(offsetof(GpuLight, shadow) == 80);
 static_assert(offsetof(GpuLight, kind) == 64);
 static_assert(offsetof(GpuLight, directMode) == 68);
 static_assert(offsetof(GpuLight, specularMode) == 72);

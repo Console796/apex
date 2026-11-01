@@ -687,3 +687,30 @@ TEST_CASE("installed studio model culls only its hidden faces") {
         CHECK(differing < covered / 50);
     }
 }
+
+TEST_CASE("model mirror: disableshadows props are drawn but never cast") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    Fixture fixture;
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    auto parsed = vmf::parse(R"(entity { id 1 classname prop_static model models/fixture.mdl origin "-12 0 0" }
+                               entity { id 2 classname prop_static model models/fixture.mdl origin "12 0 0" disableshadows 1 }
+                               entity { id 3 classname prop_static model models/fixture.mdl origin "0 30 0" disableshadows 1 })");
+    REQUIRE(parsed); document::Document doc(*parsed);
+    RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, nullptr, fixture.models.get());
+    mirror.rebuild(doc); REQUIRE(mirror.settle());
+    auto options = view(); options.mode = DisplayMode::Lit;
+    auto list = mirror.buildDrawList(options);
+    std::size_t drawn = 0, casting = 0;
+    for (const auto& mesh : list.meshes) drawn += mesh.instanceCount;
+    REQUIRE(list.shadowCasters);
+    for (const auto& mesh : *list.shadowCasters) casting += mesh.instanceCount;
+    CHECK(drawn == 3);
+    CHECK(casting == 1); // Only the prop without disableshadows casts.
+    auto edit = doc.begin("enable shadows"); edit.setKeyValue(*doc.handle(2), "disableshadows", "0");
+    mirror.apply(doc, edit.commit()); REQUIRE(mirror.settle());
+    casting = 0;
+    list = mirror.buildDrawList(options);
+    for (const auto& mesh : *list.shadowCasters) casting += mesh.instanceCount;
+    CHECK(casting == 2);
+}

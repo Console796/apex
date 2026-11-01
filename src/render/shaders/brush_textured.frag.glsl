@@ -4,6 +4,7 @@
 #include "heap.inc"
 #include "frame.inc"
 #include "lighting.inc"
+#include "shadows.inc"
 #include "clusters.inc"
 #include "material.inc"
 #include "normal_map.inc"
@@ -106,7 +107,8 @@ void main() {
                 uint i = entry < frame.clusterDims.w ? entry :
                     ClusterBuffer(frame.clusters).cells[cell].indices[entry - frame.clusterDims.w];
                 Light light = LightBuffer(frame.lights).lights[i];
-                vec3 energy = irradiance(light, vPosition, normal, frame);
+                vec3 energy = irradiance(light, vPosition, normal, frame) *
+                    shadowVisibility(frame, light, vPosition, geometricNormal);
                 if (hasDirect(light)) diffuse += energy * (light.kindMode.x == 5u ? mrao.b : 1.0);
                 if ((!pbr && !phong) || !hasSpecular(light)) continue;
                 vec3 delta = light.kindMode.x == 3u ? -light.directionInner.xyz : light.originRadius.xyz - vPosition;

@@ -2578,3 +2578,51 @@ TEST_CASE("mirror: Strata cubemap parallaxobb link resolves brush bounds and ins
     CHECK(glm::length(DVec3(glm::inverse(*list.cubemaps[0].correction) * DVec4(500, 300, 100, 1))) < 1e-6);
     CHECK(g->context->validation().errorCount() == 0);
 }
+
+TEST_CASE("mirror: shadow casters keep nodraw and detail but omit noncompile and hidden geometry") {
+    REQUIRE_GPU();
+    Scene scene(*g, boxesDocument({{"test/red", {0, 0, 0, 32, 32, 32}},
+                                  {"tools/toolsnodraw", {64, 0, 0, 96, 32, 32}},
+                                  {"test/skipped", {128, 0, 0, 160, 32, 32}},
+                                  {"tools/toolstrigger", {192, 0, 0, 224, 32, 32}},
+                                  {"tools/toolsplayerclip", {256, 0, 0, 288, 32, 32}},
+                                  {"test/sky", {320, 0, 0, 352, 32, 32}}}));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    options.showNodraw = options.showToolFaces = false;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.shadowCasters);
+    CHECK(list.shadowCasters->size() == 3);
+    const auto solid = findSolid(*scene.doc, "test/red");
+    REQUIRE(solid);
+    const auto hidden = kv1::parse("hidden {}");
+    REQUIRE(hidden);
+    auto tx = scene.doc->begin("hide caster");
+    const auto wrapper = tx.create(hidden->root().children()[0]);
+    tx.reparent(*solid, wrapper);
+    tx.commit();
+    REQUIRE(scene.mirror.settle());
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.shadowCasters);
+    CHECK(list.shadowCasters->size() == 2);
+    REQUIRE(scene.doc->undo());
+    REQUIRE(scene.mirror.settle());
+    CHECK(scene.mirror.buildDrawList(options).shadowCasters->size() == 3);
+    options.mode = DisplayMode::Textured;
+    CHECK_FALSE(scene.mirror.buildDrawList(options).shadowCasters);
+}
+
+TEST_CASE("mirror: shadow brush entity caster rules match VRAD") {
+    REQUIRE_GPU();
+    std::string owner;
+    bool casts = true;
+    SUBCASE("world") {}
+    SUBCASE("detail") { owner = "func_detail"; }
+    SUBCASE("brush") { owner = "func_brush"; casts = false; }
+    Scene scene(*g, documentOf(skyBrushRoom("test/red", owner)));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    const auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.shadowCasters);
+    CHECK(list.shadowCasters->size() == (casts ? 6u : 5u));
+}

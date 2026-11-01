@@ -214,6 +214,8 @@ struct DrawList {
     std::vector<CubemapProbe> cubemaps;
     FrameView view;
     std::vector<MeshDraw> meshes;
+    // Mirror supplies compile-visible casters, including nodraw; unset uses meshes (D13).
+    std::optional<std::vector<MeshDraw>> shadowCasters;
     std::vector<MeshDraw> ghosts; // Blended material pass, no depth writes.
     std::vector<BoxDraw> boxes;
     std::vector<SpriteDraw> sprites;
@@ -287,11 +289,14 @@ class Renderer {
 
     // Caller must complete this frame slot before reading its GPU-written counter (D14).
     std::uint32_t clusterOverflow(VkCommandBuffer commands) const;
+    // In-view lights left unshadowed by the atlas budget in the last Lit prepare of this recording (D7).
+    std::uint32_t shadowOverflow(VkCommandBuffer commands) const;
 
     bool wireframeFill() const { return wireFill_; } // fillModeNonSolid pipelines available.
 
   private:
     bool uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExtent2D extent = {});
+    void recordShadows(VkCommandBuffer commands, const DrawList& list);
     void recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass, VkExtent2D extent = {});
     struct Impl;
     explicit Renderer(std::unique_ptr<Impl> impl, bool wireFill);

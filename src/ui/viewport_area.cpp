@@ -930,7 +930,8 @@ void ViewportArea::tick() {
         if (id == layout_.active()) {
             if (ms >= 0.0) emit frameTimeChanged(ms);
             const auto* vp = layout_.viewport(id);
-            emit lightingBudgetChanged(vp && vp->mode == viewport::DisplayMode::Lit, f->window()->clusterOverflow());
+            emit lightingBudgetChanged(vp && vp->mode == viewport::DisplayMode::Lit, f->window()->clusterOverflow(),
+                                         f->window()->shadowOverflow());
         }
     }
     emitCamera();

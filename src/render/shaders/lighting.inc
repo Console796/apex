@@ -5,13 +5,14 @@
 
 #include "frame.inc"
 
-// GpuLight in gpu_lighting.hpp; std430, 80-byte stride.
+// GpuLight in gpu_lighting.hpp; std430, 96-byte stride.
 struct Light {
     vec4 originRadius;
     vec4 intensityExponent;
     vec4 directionInner;
     vec4 attenuationOuter;
     uvec4 kindMode;
+    uvec4 shadow;
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer LightBuffer {
     Light lights[];

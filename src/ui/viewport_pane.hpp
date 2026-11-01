@@ -60,6 +60,7 @@ public:
     // Slice D can yield background thumbnails during navigation, tool gestures or resizing.
     bool interacting() const;
     std::uint32_t clusterOverflow() const { return clusterOverflow_; }
+    std::uint32_t shadowOverflow() const { return shadowOverflow_; }
     bool failed() const { return failed_; }
     std::uint32_t recreateCount() const { return swapchain_ ? swapchain_->recreateCount() : 0; }
 
@@ -112,6 +113,7 @@ private:
     VkCommandBuffer clusterCommands_ = VK_NULL_HANDLE;
     bool clusterPending_ = false;
     std::uint32_t clusterOverflow_ = 0;
+    std::uint32_t shadowOverflow_ = 0;
 
     // Input state accumulated between ticks.
     Qt::MouseButtons buttons_;

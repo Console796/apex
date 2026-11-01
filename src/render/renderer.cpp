@@ -5,6 +5,8 @@
 #include "render/render_target.hpp"
 #include "render/gpu_lighting.hpp"
 #include "render/scene_target.hpp"
+#include "render/shadow_alloc.hpp"
+#include "render/shadows.hpp"
 #include "render/shader_blobs.hpp"
 #include "render/swapchain.hpp"
 #include "render/view_math.hpp"
@@ -12,6 +14,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -27,7 +30,7 @@ namespace {
 enum class Kind : std::uint32_t {
     Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid,
     Outline, OutlineAlways, BoxOutline, BoxOutlineAlways, SpriteOutline, SpriteOutlineAlways,
-    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Tonemap, Highlight, Sky, Count
+    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Tonemap, Highlight, Sky, Shadow, Count
 };
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
@@ -58,7 +61,7 @@ bool srgbAttachment(VkFormat format) {
 
 enum class Input { Brush, Box, Sprite, None };
 
-enum class Signature : std::uint32_t { Caller = 1, Scene = 2, Both = 3 };
+enum class Signature : std::uint32_t { Caller = 1, Scene = 2, Both = 3, Shadow = 4 };
 
 struct Spec {
     Signature signatures;
@@ -101,10 +104,11 @@ constexpr Spec kSpecs[kKindCount] = {
     {Signature::Caller, "fullscreen_vert", "tonemap_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, true, VK_COMPARE_OP_ALWAYS},
     {Signature::Caller, "brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
     {Signature::Both, "sky_vert", "sky_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, false, false, false},
+    {Signature::Shadow, "brush_vert", "shadow_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, true, true, false},
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
-                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag", "fullscreen_vert", "tonemap_frag", "cluster_comp", "sky_vert", "sky_frag"};
+                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag", "fullscreen_vert", "tonemap_frag", "cluster_comp", "sky_vert", "sky_frag", "shadow_frag"};
 
 struct OverlayVertex {
     Vec4 position;
@@ -230,7 +234,16 @@ struct Renderer::Impl {
     VkPipeline clusterPipeline = VK_NULL_HANDLE;
     struct ClusterSlot { Buffer lists, stats; };
     std::map<VkCommandBuffer, ClusterSlot> clusterBuffers; // Same fence discipline as frameBuffers.
-    VkPipeline pipelines[2][kKindCount]{}; // Caller signature, then RGBA16F/D32 scene signature.
+    VkPipeline pipelines[3][kKindCount]{}; // Caller, HDR scene, depth-only shadow.
+    struct ShadowSlot {
+        std::unique_ptr<ShadowAtlas> atlas;
+        std::vector<GpuShadowTile> tiles; // Uploaded order; a light's views are contiguous.
+        std::vector<ShadowRect> rects;
+        std::uint32_t overflow = 0; // In-view lights that did not fit the atlas (D7).
+    };
+    std::map<VkCommandBuffer, ShadowSlot> shadowSlots;
+    std::map<const SceneTarget*, ShadowAllocator> shadowAllocators; // Per viewport: tiles follow its camera (D13).
+    const SceneTarget* shadowOwner = nullptr; // Set by prepare for the upload it makes.
     std::map<VkCommandBuffer, std::array<TextureSlot, 2>> preparedScenes;
     std::map<std::string, std::vector<std::uint32_t>> overrides; // Hot-reloaded SPIR-V.
     // Swapchains have one frame in flight and distinct command buffers. A slot is reused only
@@ -282,9 +295,10 @@ struct Renderer::Impl {
 
     // Builds one pipeline over dynamic rendering. Returns VK_NULL_HANDLE (not an error) for kinds
     // the device cannot do.
-    Result<VkPipeline> build(Kind kind, bool scene) const {
+    Result<VkPipeline> build(Kind kind, std::size_t pass) const {
+        const bool scene = pass == 1, shadow = pass == 2;
         const Spec& spec = kSpecs[static_cast<std::size_t>(kind)];
-        const auto signature = scene ? Signature::Scene : Signature::Caller;
+        const auto signature = shadow ? Signature::Shadow : scene ? Signature::Scene : Signature::Caller;
         if (!(static_cast<std::uint32_t>(spec.signatures) & static_cast<std::uint32_t>(signature)))
             return VkPipeline(VK_NULL_HANDLE);
         if (spec.polygon == VK_POLYGON_MODE_LINE && !context->info().fillModeNonSolid) return VkPipeline(VK_NULL_HANDLE);
@@ -381,7 +395,7 @@ struct Renderer::Impl {
             attachment.alphaBlendOp = VK_BLEND_OP_ADD;
         }
         VkPipelineColorBlendStateCreateInfo blend = vkStruct<VkPipelineColorBlendStateCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
-        blend.attachmentCount = 1;
+        blend.attachmentCount = shadow ? 0u : 1u;
         blend.pAttachments = &attachment;
         const VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_DEPTH_BIAS,
                                                 VK_DYNAMIC_STATE_CULL_MODE};
@@ -389,10 +403,10 @@ struct Renderer::Impl {
         dynamic.dynamicStateCount = 4;
         dynamic.pDynamicStates = dynamicStates;
         VkPipelineRenderingCreateInfo rendering = vkStruct<VkPipelineRenderingCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO);
-        rendering.colorAttachmentCount = 1;
+        rendering.colorAttachmentCount = shadow ? 0u : 1u;
         const VkFormat color = scene ? SceneTarget::kColorFormat : colorFormat;
         rendering.pColorAttachmentFormats = &color;
-        rendering.depthAttachmentFormat = scene ? SceneTarget::kDepthFormat : depthFormat;
+        rendering.depthAttachmentFormat = scene || shadow ? SceneTarget::kDepthFormat : depthFormat;
 
         VkGraphicsPipelineCreateInfo info = vkStruct<VkGraphicsPipelineCreateInfo>(VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO);
         info.pNext = &rendering;
@@ -414,9 +428,9 @@ struct Renderer::Impl {
     }
 
     Result<void> buildAll() {
-        VkPipeline built[2][kKindCount]{};
-        for (std::size_t pass = 0; pass < 2; ++pass) for (std::size_t i = 0; i < kKindCount; ++i) {
-            auto pipeline = build(static_cast<Kind>(i), pass == 1);
+        VkPipeline built[3][kKindCount]{};
+        for (std::size_t pass = 0; pass < 3; ++pass) for (std::size_t i = 0; i < kKindCount; ++i) {
+            auto pipeline = build(static_cast<Kind>(i), pass);
             if (!pipeline) {
                 for (auto& batch : built) for (VkPipeline p : batch) {
                     if (p) vkDestroyPipeline(context->device(), p, nullptr);
@@ -445,7 +459,7 @@ struct Renderer::Impl {
         }
         destroyPipelines();
         clusterPipeline = compute;
-        for (std::size_t pass = 0; pass < 2; ++pass)
+        for (std::size_t pass = 0; pass < 3; ++pass)
             std::copy(std::begin(built[pass]), std::end(built[pass]), pipelines[pass]);
         return {};
     }
@@ -564,7 +578,10 @@ Result<bool> Renderer::reloadChangedShaders() {
 
 void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarget& scene, const float clearColor[4]) {
     if (list.mode != DisplayMode::Lit) return;
-    if (!uploadFrame(commands, list, scene.extent())) return;
+    impl_->shadowOwner = &scene;
+    const bool uploaded = uploadFrame(commands, list, scene.extent());
+    impl_->shadowOwner = nullptr;
+    if (!uploaded) return;
     Impl& s = *impl_;
     const auto& buffer = s.clusterBuffers.at(commands).stats;
     vkCmdFillBuffer(commands, buffer.handle(), 0, 16, 0);
@@ -590,6 +607,7 @@ void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarg
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
     vkCmdPipelineBarrier2(commands, &dep);
+    recordShadows(commands, list);
     // The clear colour is display-space, like the caller's clear (D15).
     const float linearClear[4] = {std::pow(clearColor[0], 2.2f), std::pow(clearColor[1], 2.2f),
                                   std::pow(clearColor[2], 2.2f), clearColor[3]};
@@ -597,6 +615,51 @@ void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarg
     recordPass(commands, list, true, scene.extent());
     scene.end(commands);
     impl_->preparedScenes[commands] = {scene.colorSlot(), scene.depthSlot()};
+}
+
+void Renderer::recordShadows(VkCommandBuffer commands, const DrawList& list) {
+    Impl& s = *impl_;
+    const auto& shadow = s.shadowSlots.at(commands);
+    if (shadow.tiles.empty()) return;
+    std::uint32_t x0 = kShadowAtlasSize, y0 = kShadowAtlasSize, x1 = 0, y1 = 0;
+    for (const auto& rect : shadow.rects) {
+        x0 = std::min(x0, rect.x); y0 = std::min(y0, rect.y);
+        x1 = std::max(x1, rect.x + rect.size); y1 = std::max(y1, rect.y + rect.size);
+    }
+    shadow.atlas->begin(commands, {{std::int32_t(x0), std::int32_t(y0)}, {x1 - x0, y1 - y0}});
+    const VkDescriptorSet set = s.heap->descriptorSet();
+    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, s.layout, 0, 1, &set, 0, nullptr);
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      s.pipelines[2][static_cast<std::size_t>(Kind::Shadow)]);
+    vkCmdSetCullMode(commands, VK_CULL_MODE_NONE); // Casters are drawn from both sides (dynamic state).
+    vkCmdSetDepthBias(commands, kShadowConstantBias, 0, kShadowSlopeBias);
+    const auto frame = s.frameBuffers.at(commands).deviceAddress();
+    const auto& casters = list.shadowCasters ? *list.shadowCasters : list.meshes;
+    for (std::size_t view = 0; view < shadow.tiles.size(); ++view) {
+        ShadowAtlas::tile(commands, shadow.rects[view]);
+        for (const auto& mesh : casters) {
+            if (!mesh.vertices || !mesh.indices || mesh.indexCount == 0 || mesh.alpha == AlphaMode::Blend) continue;
+            const VkDeviceSize zero = 0;
+            const VkBuffer vertices = mesh.vertices->handle();
+            vkCmdBindVertexBuffers(commands, 0, 1, &vertices, &zero);
+            vkCmdBindIndexBuffer(commands, mesh.indices->handle(), 0, VK_INDEX_TYPE_UINT32);
+            auto push = basePush(list);
+            push.viewProjection = shadow.tiles[view].projection;
+            push.offsetSlot = slotVec(toCameraRelative(mesh.origin, list.view.cameraPosition), mesh.texture);
+            push.colour = mesh.colour;
+            const auto index = mesh.previewIndex | (mesh.instancedTransforms ? 0x80000000u : 0u);
+            push.p1 = {std::bit_cast<float>(std::uint32_t(frame)), std::bit_cast<float>(std::uint32_t(frame >> 32)),
+                       std::bit_cast<float>(index), std::bit_cast<float>(std::uint32_t(mesh.alpha))};
+            s.pushAll(commands, push);
+            vkCmdDrawIndexed(commands, mesh.indexCount, mesh.instanceCount, mesh.firstIndex, 0, 0);
+        }
+    }
+    shadow.atlas->end(commands);
+}
+
+std::uint32_t Renderer::shadowOverflow(VkCommandBuffer commands) const {
+    const auto found = impl_->shadowSlots.find(commands);
+    return found == impl_->shadowSlots.end() ? 0 : found->second.overflow;
 }
 
 void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
@@ -678,7 +741,8 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     const VkDeviceSize cubemapOffset = previewOffset + list.previews.size() * sizeof(PreviewTransform);
     // At least one probe slot, so frame.cubemaps is never a null address: llvmpipe's JIT dereferences it in
     // nearestCubemap even when cubemapCount is 0. The zeroed slot names the default cube.
-    const VkDeviceSize size = cubemapOffset + std::max<std::size_t>(list.cubemaps.size(), 1) * sizeof(GpuCubemapProbe);
+    const VkDeviceSize shadowOffset = cubemapOffset + std::max<std::size_t>(list.cubemaps.size(), 1) * sizeof(GpuCubemapProbe);
+    const VkDeviceSize size = shadowOffset + kMaxShadowViews * sizeof(GpuShadowTile);
     const auto* sky = list.skyVisibility.get();
     VkDeviceAddress skyAddress = 0;
     if (sky && sky->probeCount() > 0) {
@@ -741,6 +805,42 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     }
     auto* bytes = static_cast<std::byte*>(buffer.mapped());
     FrameBlock frame;
+    auto& shadow = s.shadowSlots[commands];
+    shadow.tiles.clear();
+    shadow.rects.clear();
+    shadow.overflow = 0;
+    // Tile planning (D13): the allocator keeps owners across frames; the atlas itself is redrawn every frame.
+    std::vector<ShadowGrant> grants(list.lights.size());
+    const auto exposureRange = [&](const lighting::Light& light) {
+        return light.kind == lighting::LightKind::Sun || light.kind == lighting::LightKind::Ambient
+            ? 0.0 : lighting::previewRange(light, list.exposure);
+    };
+    if (list.mode == DisplayMode::Lit && !list.fullbright && s.shadowOwner &&
+        !(list.shadowCasters ? list.shadowCasters->empty() : list.meshes.empty())) {
+        std::vector<ShadowRequest> requests;
+        std::vector<std::size_t> requested;
+        for (std::size_t i = 0; i < list.lights.size(); ++i)
+            if (auto request = shadowRequest(list.lights[i], list.view.cameraPosition, list.view.viewProjection,
+                                             exposureRange(list.lights[i]))) {
+                requests.push_back(*request);
+                requested.push_back(i);
+            }
+        static const auto epoch = std::chrono::steady_clock::now();
+        auto& allocator = s.shadowAllocators[s.shadowOwner];
+        const auto result = allocator.update(requests, std::chrono::duration<double>(std::chrono::steady_clock::now() - epoch).count());
+        shadow.overflow = allocator.overflow();
+        bool any = false;
+        for (std::size_t k = 0; k < requested.size(); ++k) {
+            grants[requested[k]] = result[k];
+            any = any || result[k].shadowed;
+        }
+        if (any && !shadow.atlas) {
+            auto atlas = std::make_unique<ShadowAtlas>(*s.context, *s.heap);
+            auto created = atlas->create();
+            if (!created) { log::error("shadow atlas: {}", created.error().what()); return false; }
+            shadow.atlas = std::move(atlas);
+        }
+    }
     if (list.mode == DisplayMode::Lit) {
         const auto dims = clusterDimensions(extent);
         const VkDeviceSize clusterSize = VkDeviceSize(dims.x) * dims.y * dims.z * sizeof(GpuCluster);
@@ -781,15 +881,39 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     frame.cameraRight = Vec4(list.view.cameraRight, 0);
     frame.cameraUp = Vec4(list.view.cameraUp, 0);
     if (skyAddress) packSkyGrid(frame, *sky, skyAddress, list.view.cameraPosition);
+    frame.shadows = buffer.deviceAddress() + shadowOffset;
     std::size_t lightIndex = 0;
-    for (const bool global : {true, false}) for (const auto& light : list.lights) {
+    for (const bool global : {true, false}) for (std::size_t i = 0; i < list.lights.size(); ++i) {
+        const auto& light = list.lights[i];
         const bool isGlobal = light.kind == lighting::LightKind::Sun || light.kind == lighting::LightKind::Ambient;
         if (isGlobal != global) continue;
         auto packed = packLight(light, list.view.cameraPosition);
         if (!global && list.mode == DisplayMode::Lit)
             packed.originRadius.w = static_cast<float>(lighting::previewRange(light, list.exposure));
+        if (const auto& grant = grants[i]; grant.shadowed) {
+            std::vector<GpuShadowTile> views;
+            const auto rects = std::span<const ShadowRect>(grant.rects.data(), grant.views);
+            if (light.kind == lighting::LightKind::Sun)
+                views = sunCascadeTiles(light.direction, list.view.viewProjection, list.view.cameraPosition, rects);
+            else for (std::uint32_t v = 0; v < grant.views; ++v)
+                views.push_back(grant.views == 6 ? pointShadowTile(light, list.view.cameraPosition, v, rects[v])
+                                                 : spotShadowTile(light, list.view.cameraPosition, rects[v]));
+            if (!views.empty()) {
+                packed.shadow = static_cast<std::uint32_t>(shadow.tiles.size()) + 1;
+                packed.shadowViews = static_cast<std::uint32_t>(views.size());
+                for (std::size_t v = 0; v < views.size(); ++v) {
+                    shadow.tiles.push_back(views[v]);
+                    shadow.rects.push_back(rects[v]);
+                }
+            }
+        }
         std::memcpy(bytes + lightOffset + lightIndex++ * sizeof(GpuLight), &packed, sizeof(packed));
         if (global) ++frame.clusterDims.w;
+    }
+    if (!shadow.tiles.empty()) {
+        frame.shadowAtlas = shadow.atlas->slot();
+        frame.shadowCount = static_cast<std::uint32_t>(shadow.tiles.size());
+        std::memcpy(bytes + shadowOffset, shadow.tiles.data(), shadow.tiles.size() * sizeof(GpuShadowTile));
     }
     std::memcpy(bytes, &frame, sizeof(frame));
     for (std::size_t i = 0; i < list.previews.size(); ++i) {

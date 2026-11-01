@@ -133,6 +133,7 @@ struct EntityState {
     bool brush = false;
     std::vector<NodeId> brushSolids;
     bool cubemap = false; // env_cubemap: a reflection probe at `position`.
+    bool castsShadow = true; // Static props: false for `disableshadows` (D7).
 };
 
 struct MaterialState {
@@ -732,6 +733,7 @@ struct RenderMirror::Impl {
         state.transform = document::entityTransform(pose);
         state.skin = entityUint(*entity->block, "skin");
         state.body = entityUint(*entity->block, "body");
+        state.castsShadow = entityUint(*entity->block, "disableshadows") == 0;
         state.position = pose.origin;
         state.basis = pose.basis;
         state.block = entity->block;
@@ -880,7 +882,9 @@ struct RenderMirror::Impl {
             }
             const auto* cls = entities.at(id).cls;
             auto built = cls ? lighting::lightsFromEntity(block, *cls, target) : lighting::lightsFromEntity(block, target);
+            std::uint64_t part = 0;
             for (auto& light : built) {
+                light.id = (std::uint64_t(id) << 3) | ++part;
                 light.origin = DVec3(matrix * DVec4(light.origin, 1));
                 if (glm::length(light.direction) > 0) light.direction = glm::normalize(DMat3(matrix) * light.direction);
                 lightHelpers[id].push_back(light);
@@ -894,23 +898,23 @@ struct RenderMirror::Impl {
         DMat4 transform{1.0};
     };
 
+    bool brushCasts(NodeId id) const {
+        // VRAD: func_detail reaches world geometry; other brush entities do not (D13).
+        for (auto node = id; node != 0;) {
+            if (const auto entity = skyEntityClasses.find(node); entity != skyEntityClasses.end())
+                return entity->second == "worldspawn" || entity->second == "func_detail";
+            const auto parent = hierarchy.find(node);
+            node = parent == hierarchy.end() ? 0 : parent->second.parent;
+        }
+        return true;
+    }
+
     void collectSkyBrushes(std::vector<SkyBrush>& brushes, std::set<std::string>& skyMaterials,
                            const DMat4& transform = DMat4(1)) const {
         for (const auto& [name, material] : materials)
             if (isSkyMaterial(name, material.sky)) skyMaterials.insert(name);
         for (const auto& [id, solid] : solids) {
-            bool occludes = true;
-            for (auto node = id; node != 0;) {
-                if (const auto entity = skyEntityClasses.find(node); entity != skyEntityClasses.end()) {
-                    // func_detail is compiled into world geometry and blocks VRAD. Other brush
-                    // entities (func_brush etc.) do not occlude by default; leave them out.
-                    occludes = entity->second == "worldspawn" || entity->second == "func_detail";
-                    break;
-                }
-                const auto parent = hierarchy.find(node);
-                node = parent == hierarchy.end() ? 0 : parent->second.parent;
-            }
-            if (occludes && solid.block) brushes.push_back({*solid.block, transform});
+            if (brushCasts(id) && solid.block) brushes.push_back({*solid.block, transform});
         }
     }
 
@@ -1698,6 +1702,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     DrawList list;
     list.mode = options.mode;
     list.cullBackFaces = options.cullBackFaces;
+    if (options.mode == DisplayMode::Lit) list.shadowCasters.emplace();
     list.exposure = options.exposure;
     list.view = options.view;
     list.grid = options.grid;
@@ -1801,6 +1806,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                                    ((!options.showNodraw && isNodraw(batch.material, state)) ||
                                     (!options.showToolFaces && isToolFace(batch.material, state))));
             if (textured && material != m.materials.end()) draw.alpha = material->second.alpha;
+            if (list.shadowCasters && m.brushCasts(id) && blocksSky(batch.material) &&
+                !isSkyMaterial(batch.material, state && state->sky)) list.shadowCasters->push_back(draw);
             switch (options.mode) {
             case DisplayMode::Lit:
             case DisplayMode::Textured: draw.colour = Vec4(1.0f); break;
@@ -1894,6 +1901,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.colour.a = state.shape.opacity;
             if (state.node) {
                 if (textured) draw.alpha = material.alpha; // Ghosts stay uniformly translucent.
+                if (list.shadowCasters && m.brushCasts(state.node) && blocksSky(batch.material) &&
+                    !isSkyMaterial(batch.material, material.sky)) list.shadowCasters->push_back(draw);
                 if (m.selected.contains(state.node)) draw.highlight = m.highlight.selectTint;
                 else if (m.highlight.hover == state.node) draw.highlight = m.highlight.hoverTint;
                 const bool hideFill = options.mode != DisplayMode::Wireframe &&
@@ -2017,7 +2026,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         }
     }
     if (options.showEntities) {
-        struct Group { MeshDraw draw; std::vector<DMat4> transforms; };
+        struct Group { MeshDraw draw; std::vector<DMat4> transforms; bool casts = true; };
         std::vector<Group> groups;
         for (const auto& [id, entity] : m.entities) {
             if (entity.model.empty()) continue;
@@ -2053,9 +2062,10 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 auto group = std::ranges::find_if(groups, [&](const Group& g) {
                     const auto& d = g.draw;
                     return d.vertices == draw.vertices && d.firstIndex == draw.firstIndex &&
-                        d.indexCount == draw.indexCount && d.alpha == draw.alpha && d.texture == draw.texture && d.colour == draw.colour && d.highlight == tint;
+                        d.indexCount == draw.indexCount && d.alpha == draw.alpha && d.texture == draw.texture && d.colour == draw.colour && d.highlight == tint &&
+                        g.casts == entity.castsShadow;
                 });
-                if (group == groups.end()) { groups.push_back({draw, {}}); group = std::prev(groups.end()); }
+                if (group == groups.end()) { groups.push_back({draw, {}, entity.castsShadow}); group = std::prev(groups.end()); }
                 group->transforms.push_back(transform);
             }
         }
@@ -2065,6 +2075,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             group.draw.instancedTransforms = true;
             for (const auto& transform : group.transforms) list.previews.push_back({transform, DVec3(0.0)});
             list.meshes.push_back(group.draw);
+            if (list.shadowCasters && group.casts) list.shadowCasters->push_back(group.draw);
             const bool outlined = options.modelEdgeOverlay || options.mode == DisplayMode::Wireframe;
             if (outlined && group.draw.highlight == m.highlight.selectTint && !m.selected.empty()) {
                 MeshDraw outline = group.draw;
@@ -2100,6 +2111,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             if (const auto it = m.effectivePreview.find(content.instance); it != m.effectivePreview.end()) transform = it->second * transform;
             const auto point = [&](DVec3 p) { return DVec3(transform * DVec4(p, 1.0)); };
             for (auto light : child.lights) {
+                light.id = (light.id ^ (std::uint64_t(content.instance) << 40)) * 0x9E3779B97F4A7C15ull | 1;
                 light.origin = point(light.origin);
                 if (glm::length(light.direction) > 0) light.direction = glm::normalize(DMat3(transform) * light.direction);
                 list.lights.push_back(std::move(light));
@@ -2128,6 +2140,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 }
             };
             meshes(child.meshes, list.meshes);
+            if (list.shadowCasters && child.shadowCasters) meshes(*child.shadowCasters, *list.shadowCasters);
             meshes(child.outlines, list.outlines, true);
             meshes(child.ghosts, list.ghosts);
             for (auto draw : child.boxes) {

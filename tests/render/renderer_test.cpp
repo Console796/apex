@@ -1043,6 +1043,9 @@ TEST_CASE("renderer: Lit box room evaluates point spot and sun in linear space")
     auto list = cubeList(room, DisplayMode::Lit, *slot);
     list.meshes[0].colour = Vec4(1);
     list.view = makeView({-24, 0, 0}, {0, 0, 0});
+    // This test checks the light model's arithmetic against unoccluded irradiance. The closed room would otherwise
+    // shadow its own sun through the ceiling (correctly), so opt out of shadow casters here; shadows have their own tests.
+    list.shadowCasters.emplace();
     lighting::Light point;
     point.origin = {-16, -20, 8}; point.intensity = {1, 0, 0}; point.constant = 1; point.quadratic = 0.0005;
     auto spot = point;
@@ -2155,4 +2158,476 @@ TEST_CASE("renderer: Strata cubemap parallax correction uses the box intersectio
     gpu->heap->release(base);
     gpu->heap->releaseCube(*cube);
     gpu->heap->collectGarbage();
+}
+
+namespace {
+
+lighting::Light shadowSpot() {
+    lighting::Light light;
+    light.kind = lighting::LightKind::Spot;
+    light.origin = {-40, -24, 80};
+    light.direction = glm::normalize(-light.origin);
+    light.intensity = DVec3(1);
+    light.constant = 1;
+    light.stopdot = std::cos(glm::radians(35.0));
+    light.stopdot2 = std::cos(glm::radians(60.0));
+    return light;
+}
+
+DrawList shadowFloor(const Cube& floor, TextureSlot slot) {
+    auto list = cubeList(floor, DisplayMode::Lit, slot);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].colour = Vec4(1);
+    list.view = makeView({0, 0, 128}, {90, 90, 0});
+    list.view.viewProjection = reversedZOrtho(64, 64, 1, 256) * rotationOnlyView(angleVectors(DVec3{90, 90, 0}));
+    list.lights = {shadowSpot()};
+    return list;
+}
+
+Px shadowPixel(const Rgba8Image& image, const DrawList& list, DVec3 world) {
+    const Vec4 clip = list.view.viewProjection * Vec4(Vec3(world - list.view.cameraPosition), 1);
+    return at(image, std::uint32_t((clip.x / clip.w * 0.5f + 0.5f) * float(image.width)),
+                     std::uint32_t((clip.y / clip.w * 0.5f + 0.5f) * float(image.height)));
+}
+
+TextureSlot shadowWhite(Fixture& f) {
+    const std::array<std::byte, 4> white{std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    const auto slot = f.heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, white);
+    REQUIRE(slot); REQUIRE(f.heap->flush());
+    return *slot;
+}
+
+Cube shadowFloorMesh(Fixture& f) {
+    GridSettings plane;
+    plane.bounds = GridRect{-64, 64, -64, 64};
+    return makeGridFace(f, plane);
+}
+
+} // namespace
+
+TEST_CASE("renderer: shadow spot pillar golden and reversed-Z PCF") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto pillar = makeCube(*gpu, 8, slot,
+        editor::Transform::translate({0, 0, 16}).matrix() * editor::Transform::scale({1, 1, 2}, DMat3(1), DVec3(0)).matrix());
+    auto list = shadowFloor(floor, slot);
+    auto caster = cubeList(pillar, DisplayMode::Lit, slot).meshes[0];
+    caster.colour = Vec4(1);
+    list.meshes.push_back(caster);
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    auto output = RenderTarget::create(*gpu->context, 128, 128);
+    REQUIRE(output);
+    const auto image = drawLitFrame(*gpu, list, scene, &*output);
+    golden::check("shadow_spot_pillar", image, *gpu->context);
+    list.shadowCasters.emplace();
+    const auto unshadowed = drawLitFrame(*gpu, list, scene, &*output);
+    CHECK(shadowPixel(image, list, {18, 11, 0}).r == 0);
+    CHECK(shadowPixel(unshadowed, list, {18, 11, 0}).r > 100);
+    CHECK(nearColour(shadowPixel(image, list, {-24, 20, 0}), shadowPixel(unshadowed, list, {-24, 20, 0}), 1));
+    // Fixed 3x3 comparison filtering must produce a fractional edge, not just a binary mask.
+    unsigned filtered = 0;
+    for (unsigned y = 1; y < image.height - 1; ++y)
+        for (unsigned x = 1; x < image.width - 1; ++x) {
+            const int a = at(image, x, y).r, b = at(unshadowed, x, y).r;
+            if (a > 10 && a + 10 < b) ++filtered;
+        }
+    CHECK(filtered > 5);
+    // Rebasing keeps both the shadow projection and caster vertices precise far from the origin.
+    list.shadowCasters.reset();
+    const DVec3 shift{1e8, -2e8, 3e8};
+    list.view.cameraPosition += shift;
+    list.lights[0].origin += shift;
+    for (auto& mesh : list.meshes) mesh.origin += shift;
+    checkLitParity(image, drawLitFrame(*gpu, list, scene, &*output));
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow spot wall blocks every receiver pixel without exclusion masks") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto wall = makeCube(*gpu, 1, slot,
+        editor::Transform::translate({0, 0, 40}).matrix() * editor::Transform::scale({256, 256, 2}, DMat3(1), DVec3(0)).matrix());
+    auto list = shadowFloor(floor, slot);
+    // The camera sees the receiver from below the wall; the light is on the other side.
+    list.view.cameraPosition.z = 32;
+    auto caster = cubeList(wall, DisplayMode::Lit, slot).meshes[0];
+    caster.colour = Vec4(1);
+    list.shadowCasters = std::vector<MeshDraw>{caster};
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto blocked = drawLitFrame(*gpu, list, scene);
+    for (unsigned y = 0; y < blocked.height; ++y)
+        for (unsigned x = 0; x < blocked.width; ++x) CHECK(nearColour(at(blocked, x, y), {0, 0, 0}, 0));
+    list.shadowCasters->clear();
+    const auto open = drawLitFrame(*gpu, list, scene);
+    CHECK(at(open, 32, 32).r > 100);
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow spot instanced preview alpha test and tile clearing") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto pillar = makeCube(*gpu, 8, slot);
+    auto list = shadowFloor(floor, slot);
+    auto caster = cubeList(pillar, DisplayMode::Lit, slot).meshes[0];
+    caster.colour = Vec4(1);
+    caster.previewIndex = 1;
+    caster.instancedTransforms = true;
+    caster.instanceCount = 2;
+    list.previews = {{editor::Transform::translate({0, 0, 16}).matrix(), DVec3(0)},
+                     {editor::Transform::translate({-24, 24, 16}).matrix(), DVec3(0)}};
+    list.shadowCasters = std::vector<MeshDraw>{caster};
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto opaque = drawLitFrame(*gpu, list, scene);
+    CHECK(shadowPixel(opaque, list, {10, 6, 0}).r == 0);
+    CHECK(shadowPixel(opaque, list, {-19, 35, 0}).r == 0);
+    const std::array<std::byte, 4> hole{std::byte{255}, std::byte{255}, std::byte{255}, std::byte{0}};
+    auto cutout = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, hole);
+    REQUIRE(cutout); REQUIRE(gpu->heap->flush());
+    list.shadowCasters->front().texture = *cutout;
+    list.shadowCasters->front().alpha = AlphaMode::Test;
+    const auto transparent = drawLitFrame(*gpu, list, scene);
+    CHECK(shadowPixel(transparent, list, {10, 6, 0}).r > 100);
+    CHECK(shadowPixel(transparent, list, {-19, 35, 0}).r > 100);
+    list.shadowCasters->clear();
+    checkLitParity(transparent, drawLitFrame(*gpu, list, scene)); // The tile is cleared every recording.
+    gpu->heap->release(*cutout);
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow spot frame time report") {
+    if (!std::getenv("APEX_SHADOW_MEASURE")) { MESSAGE("APEX_SHADOW_MEASURE=1 is required"); return; }
+    REQUIRE_GPU();
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto pillar = makeCube(*gpu, 8, gpu->checker);
+    auto list = shadowFloor(floor, gpu->checker);
+    list.meshes.push_back(cubeList(pillar, DisplayMode::Lit, gpu->checker).meshes[0]);
+    list.meshes.back().origin.z = 16;
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    REQUIRE(scene.resize(640, 360));
+    auto output = RenderTarget::create(*gpu->context, 640, 360);
+    REQUIRE(output);
+    for (const bool shadowed : {false, true}) {
+        if (shadowed) list.shadowCasters.reset();
+        else list.shadowCasters.emplace();
+        const auto render = [&] {
+            REQUIRE(gpu->context->oneShot([&](VkCommandBuffer commands) {
+                gpu->renderer->prepare(commands, list, scene, kClear);
+                output->begin(commands, kClear);
+                gpu->renderer->record(commands, list);
+                output->end(commands);
+            }));
+        };
+        for (int i = 0; i < 3; ++i) render();
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < 10; ++i) render();
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() / 10;
+        std::cout << "[shadow frame time] " << gpu->context->info().name << ": " << (shadowed ? "spot shadow" : "unshadowed spot")
+                  << ", " << ms << " ms/frame (640x360, 10 frames, submit + wait, no image readback)\n";
+    }
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: shadow spot frame slots own independent depth atlases") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto pillar = makeCube(*gpu, 8, slot);
+    std::array<DrawList, 2> lists;
+    std::array<Rgba8Image, 2> expected;
+    std::array<RenderTarget, 2> targets;
+    std::array<std::unique_ptr<SceneTarget>, 2> scenes;
+    for (std::size_t i = 0; i < lists.size(); ++i) {
+        scenes[i] = std::make_unique<SceneTarget>(*gpu->context, *gpu->heap);
+        auto output = RenderTarget::create(*gpu->context, kSize, kSize);
+        REQUIRE(output); targets[i] = std::move(*output);
+        lists[i] = shadowFloor(floor, slot);
+        auto caster = cubeList(pillar, DisplayMode::Lit, slot).meshes[0];
+        caster.origin = {0, i == 0 ? -16 : 16, 16};
+        lists[i].shadowCasters = std::vector<MeshDraw>{caster};
+        expected[i] = drawLitFrame(*gpu, lists[i], *scenes[i]);
+    }
+    CHECK(expected[0].pixels != expected[1].pixels);
+    VkCommandBuffer commands[2]{};
+    auto alloc = vkStruct<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
+    alloc.commandPool = gpu->context->commandPool(); alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; alloc.commandBufferCount = 2;
+    REQUIRE(vkAllocateCommandBuffers(gpu->context->device(), &alloc, commands) == VK_SUCCESS);
+    // Record both shadow maps before either submission; reverse submission order too.
+    for (std::size_t i = 0; i < lists.size(); ++i) {
+        const auto begin = vkStruct<VkCommandBufferBeginInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+        REQUIRE(vkBeginCommandBuffer(commands[i], &begin) == VK_SUCCESS);
+        gpu->renderer->prepare(commands[i], lists[i], *scenes[i], kClear);
+        targets[i].begin(commands[i], kClear);
+        gpu->renderer->record(commands[i], lists[i]);
+        targets[i].end(commands[i]);
+        REQUIRE(vkEndCommandBuffer(commands[i]) == VK_SUCCESS);
+    }
+    for (const std::size_t i : {1u, 0u}) {
+        REQUIRE(gpu->context->submitAndWait(commands[i]));
+        auto image = targets[i].readback(); REQUIRE(image);
+        CHECK(image->pixels == expected[i].pixels);
+    }
+    vkFreeCommandBuffers(gpu->context->device(), gpu->context->commandPool(), 2, commands);
+    CHECK(gpu->context->validation().errorCount() == 0);
+    gpu->heap->release(slot);
+}
+
+namespace {
+
+lighting::Light shadowPoint(DVec3 origin = {-40, -24, 80}) {
+    lighting::Light light;
+    light.kind = lighting::LightKind::Point;
+    light.origin = origin;
+    light.intensity = DVec3(1);
+    light.constant = 1;
+    return light;
+}
+
+lighting::Light shadowSun() {
+    lighting::Light light;
+    light.kind = lighting::LightKind::Sun;
+    light.direction = glm::normalize(DVec3{0.5, 0.35, -1});
+    light.intensity = DVec3(1);
+    return light;
+}
+
+// The reference scene (pillar on a floor) lit by the given lights.
+DrawList shadowPillarScene(Fixture& f, TextureSlot slot, std::vector<lighting::Light> lights, const Cube& floor, const Cube& pillar) {
+    auto list = shadowFloor(floor, slot);
+    auto caster = cubeList(pillar, DisplayMode::Lit, slot).meshes[0];
+    caster.colour = Vec4(1);
+    list.meshes.push_back(caster);
+    list.lights = std::move(lights);
+    (void)f;
+    return list;
+}
+
+Cube shadowPillarMesh(Fixture& f, TextureSlot slot) {
+    return makeCube(f, 8, slot,
+        editor::Transform::translate({0, 0, 16}).matrix() * editor::Transform::scale({1, 1, 2}, DMat3(1), DVec3(0)).matrix());
+}
+
+// Pixel column/row of a floor point, for scanning.
+std::pair<int, int> shadowPixelXY(const Rgba8Image& image, const DrawList& list, DVec3 world) {
+    const Vec4 clip = list.view.viewProjection * Vec4(Vec3(world - list.view.cameraPosition), 1);
+    return {int((clip.x / clip.w * 0.5f + 0.5f) * float(image.width)), int((clip.y / clip.w * 0.5f + 0.5f) * float(image.height))};
+}
+
+} // namespace
+
+TEST_CASE("renderer: shadow point pillar golden, six faces") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto pillar = shadowPillarMesh(*gpu, slot);
+    auto list = shadowPillarScene(*gpu, slot, {shadowPoint()}, floor, pillar);
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    auto output = RenderTarget::create(*gpu->context, 128, 128);
+    REQUIRE(output);
+    const auto image = drawLitFrame(*gpu, list, scene, &*output);
+    golden::check("shadow_point_pillar", image, *gpu->context);
+    list.shadowCasters.emplace();
+    const auto unshadowed = drawLitFrame(*gpu, list, scene, &*output);
+    // The shadow falls away from the light (toward +x, +y); the far side of the floor is lit as before.
+    CHECK(shadowPixel(image, list, {18, 11, 0}).r < 10);
+    CHECK(shadowPixel(unshadowed, list, {18, 11, 0}).r > 100);
+    CHECK(nearColour(shadowPixel(image, list, {-30, 40, 0}), shadowPixel(unshadowed, list, {-30, 40, 0}), 1));
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow point wall blocks every receiver pixel without exclusion masks") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto wall = makeCube(*gpu, 1, slot,
+        editor::Transform::translate({0, 0, 40}).matrix() * editor::Transform::scale({256, 256, 2}, DMat3(1), DVec3(0)).matrix());
+    auto list = shadowFloor(floor, slot);
+    list.lights = {shadowPoint()};
+    list.view.cameraPosition.z = 32;
+    auto caster = cubeList(wall, DisplayMode::Lit, slot).meshes[0];
+    caster.colour = Vec4(1);
+    list.shadowCasters = std::vector<MeshDraw>{caster};
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto blocked = drawLitFrame(*gpu, list, scene);
+    for (unsigned y = 0; y < blocked.height; ++y)
+        for (unsigned x = 0; x < blocked.width; ++x) CHECK(nearColour(at(blocked, x, y), {0, 0, 0}, 0));
+    list.shadowCasters->clear();
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r > 100);
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow point cube faces show no seam across the guard band") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    auto output = RenderTarget::create(*gpu->context, 512, 512);
+    REQUIRE(output);
+    // The light is 40 above the floor, so the -Z / +X cube-face boundary meets the floor on the line x = 40. A slab
+    // whose lower front edge sits at half the light's height projects its shadow edge to twice its x: edge 40 lands
+    // on the boundary, where the 3x3 filter taps both faces (without the guard texel they clamp at the face edge and
+    // shift the edge by a further texel or more); edge 30 is the same shadow well inside the -Z face, the seam-free reference.
+    // The camera looks at the edge from 16 units across, 16 pixels to the unit.
+    struct Edge { double lo, hi, offset; };
+    const auto measure = [&](double edgeX) {
+        const auto slab = makeCube(*gpu, 1, slot,
+            editor::Transform::translate({edgeX / 2 + 40, 0, 21}).matrix() *
+                editor::Transform::scale({40, 100, 1}, DMat3(1), DVec3(0)).matrix());
+        auto list = shadowFloor(floor, slot);
+        list.view = makeView({edgeX, 0, 128}, {90, 90, 0});
+        list.view.viewProjection = reversedZOrtho(16, 16, 1, 256) * rotationOnlyView(angleVectors(DVec3{90, 90, 0}));
+        // A radius of 80 keeps the floor lit there and puts the light's share of the view low enough for the
+        // smallest (256) tile, where a texel is widest.
+        list.lights = {shadowPoint({0, 0, 40})};
+        list.lights[0].radius = 80;
+        auto caster = cubeList(slab, DisplayMode::Lit, slot).meshes[0];
+        caster.colour = Vec4(1);
+        list.shadowCasters = std::vector<MeshDraw>{caster};
+        const auto shadowed = drawLitFrame(*gpu, list, scene, &*output);
+        list.shadowCasters->clear();
+        const auto open = drawLitFrame(*gpu, list, scene, &*output);
+        const double expected = double(shadowPixelXY(shadowed, list, {edgeX, 0, 0}).first);
+        Edge edge{1e9, -1e9, 0};
+        for (int row = 32; row < 480; row += 16) {
+            double found = -1;
+            for (int col = 1; col < int(shadowed.width) && found < 0; ++col) {
+                const double before = double(at(shadowed, std::uint32_t(col - 1), std::uint32_t(row)).r) / std::max<double>(at(open, std::uint32_t(col - 1), std::uint32_t(row)).r, 1);
+                const double after = double(at(shadowed, std::uint32_t(col), std::uint32_t(row)).r) / std::max<double>(at(open, std::uint32_t(col), std::uint32_t(row)).r, 1);
+                if ((before - 0.5) * (after - 0.5) <= 0 && before != after) found = double(col - 1) + (before - 0.5) / (before - after);
+            }
+            REQUIRE(found >= 0);
+            edge.lo = std::min(edge.lo, found); edge.hi = std::max(edge.hi, found);
+        }
+        edge.offset = 0.5 * (edge.lo + edge.hi) - expected;
+        return edge;
+    };
+    const Edge seam = measure(40), reference = measure(30);
+    MESSAGE("seam edge " << seam.lo << ".." << seam.hi << " offset " << seam.offset << " px; reference offset " << reference.offset << " px");
+    CHECK(seam.hi - seam.lo <= 1.0);
+    CHECK(reference.hi - reference.lo <= 1.0);
+    // A 256 tile's texel is about 5 px here. Measured: 3.1 px with the guard texel (sub-texel snapping), 8.4 without.
+    CHECK(std::abs(seam.offset - reference.offset) <= 5.0);
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow sun pillar golden and cascades") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto pillar = shadowPillarMesh(*gpu, slot);
+    auto list = shadowPillarScene(*gpu, slot, {shadowSun()}, floor, pillar);
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    auto output = RenderTarget::create(*gpu->context, 128, 128);
+    REQUIRE(output);
+    const auto image = drawLitFrame(*gpu, list, scene, &*output);
+    golden::check("shadow_sun_pillar", image, *gpu->context);
+    list.shadowCasters.emplace();
+    const auto unshadowed = drawLitFrame(*gpu, list, scene, &*output);
+    // The pillar's top (z 32) leans the shadow by 32 * (0.5, 0.35) from its base.
+    CHECK(shadowPixel(image, list, {16, 12, 0}).r < 10);
+    CHECK(shadowPixel(unshadowed, list, {16, 12, 0}).r > 100);
+    CHECK(nearColour(shadowPixel(image, list, {-30, -30, 0}), shadowPixel(unshadowed, list, {-30, -30, 0}), 1));
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow sun wall blocks every receiver pixel without exclusion masks") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto wall = makeCube(*gpu, 1, slot,
+        editor::Transform::translate({0, 0, 40}).matrix() * editor::Transform::scale({512, 512, 2}, DMat3(1), DVec3(0)).matrix());
+    auto list = shadowFloor(floor, slot);
+    list.lights = {shadowSun()};
+    list.view.cameraPosition.z = 32;
+    auto caster = cubeList(wall, DisplayMode::Lit, slot).meshes[0];
+    caster.colour = Vec4(1);
+    list.shadowCasters = std::vector<MeshDraw>{caster};
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto blocked = drawLitFrame(*gpu, list, scene);
+    for (unsigned y = 0; y < blocked.height; ++y)
+        for (unsigned x = 0; x < blocked.width; ++x) CHECK(nearColour(at(blocked, x, y), {0, 0, 0}, 0));
+    list.shadowCasters->clear();
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r > 100);
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow budget overflow renders extras unshadowed and reports the count") {
+    REQUIRE_GPU();
+    const auto slot = shadowWhite(*gpu);
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto wall = makeCube(*gpu, 1, slot,
+        editor::Transform::translate({0, 0, 40}).matrix() * editor::Transform::scale({256, 256, 2}, DMat3(1), DVec3(0)).matrix());
+    auto list = shadowFloor(floor, slot);
+    list.view.cameraPosition.z = 32;
+    auto caster = cubeList(wall, DisplayMode::Lit, slot).meshes[0];
+    caster.colour = Vec4(1);
+    list.shadowCasters = std::vector<MeshDraw>{caster};
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    REQUIRE(scene.resize(kSize, kSize));
+    const auto overflowOf = [&](std::size_t count) {
+        list.lights.clear();
+        for (std::size_t i = 0; i < count; ++i) {
+            auto light = shadowPoint({double(i) * 0.01, 0, 80});
+            light.intensity = DVec3(0.05);
+            list.lights.push_back(light);
+        }
+        VkCommandBuffer slotCommands = VK_NULL_HANDLE;
+        Rgba8Image image;
+        REQUIRE(gpu->context->oneShot([&](VkCommandBuffer commands) {
+            slotCommands = commands;
+            gpu->renderer->prepare(commands, list, scene, kClear);
+            gpu->target.begin(commands, kClear);
+            gpu->renderer->record(commands, list);
+            gpu->target.end(commands);
+        }));
+        return gpu->renderer->shadowOverflow(slotCommands);
+    };
+    CHECK(overflowOf(4) == 0);
+    const auto many = overflowOf(40);
+    CHECK(many > 20);
+    CHECK(many < 40);
+    // Lights beyond the budget add light without a shadow: the floor under the wall is no longer black.
+    auto image = gpu->target.readback();
+    REQUIRE(image);
+    CHECK(at(*image, 32, 32).r > 0);
+    CHECK(overflowOf(1) == 0);
+    gpu->heap->release(slot);
+}
+
+TEST_CASE("renderer: shadow frame time report for point and sun") {
+    if (!std::getenv("APEX_SHADOW_MEASURE")) { MESSAGE("APEX_SHADOW_MEASURE=1 is required"); return; }
+    REQUIRE_GPU();
+    const auto floor = shadowFloorMesh(*gpu);
+    const auto pillar = makeCube(*gpu, 8, gpu->checker);
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    REQUIRE(scene.resize(640, 360));
+    auto output = RenderTarget::create(*gpu->context, 640, 360);
+    REQUIRE(output);
+    const struct { const char* name; std::vector<lighting::Light> lights; } cases[] = {
+        {"point", {shadowPoint()}}, {"sun", {shadowSun()}}, {"4 points", {shadowPoint(), shadowPoint({40, 30, 60}), shadowPoint({-30, 40, 70}), shadowPoint({30, -40, 50})}}};
+    for (const auto& c : cases)
+        for (const bool shadowed : {false, true}) {
+            auto list = shadowFloor(floor, gpu->checker);
+            list.meshes.push_back(cubeList(pillar, DisplayMode::Lit, gpu->checker).meshes[0]);
+            list.meshes.back().origin.z = 16;
+            list.lights = c.lights;
+            if (!shadowed) list.shadowCasters.emplace();
+            const auto render = [&] {
+                REQUIRE(gpu->context->oneShot([&](VkCommandBuffer commands) {
+                    gpu->renderer->prepare(commands, list, scene, kClear);
+                    output->begin(commands, kClear);
+                    gpu->renderer->record(commands, list);
+                    output->end(commands);
+                }));
+            };
+            for (int i = 0; i < 3; ++i) render();
+            const auto start = std::chrono::steady_clock::now();
+            for (int i = 0; i < 10; ++i) render();
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() / 10;
+            std::cout << "[shadow frame time] " << gpu->context->info().name << ": " << c.name << (shadowed ? " shadowed" : " unshadowed")
+                      << ", " << ms << " ms/frame (640x360, 10 frames, submit + wait, no image readback)\n";
+        }
+    CHECK(gpu->context->validation().errorCount() == 0);
 }

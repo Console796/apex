@@ -214,6 +214,7 @@ void PaneWindow::destroySwapchain() {
     swapchain_.reset();
     clusterPending_ = false;
     clusterOverflow_ = 0;
+    shadowOverflow_ = 0;
     depth_ = render::SwapchainDepth(*host_.context());
 }
 
@@ -509,8 +510,10 @@ void PaneWindow::applyNavigation(double dt) {
 
 double PaneWindow::tick(bool forceDraw) {
     if (clusterPending_ && swapchain_ && swapchain_->frameComplete()) {
-        if (auto* renderer = host_.renderer(swapchain_->format()))
+        if (auto* renderer = host_.renderer(swapchain_->format())) {
             clusterOverflow_ = renderer->clusterOverflow(clusterCommands_);
+            shadowOverflow_ = renderer->shadowOverflow(clusterCommands_);
+        }
         clusterPending_ = false;
     }
     const double dt = std::min(static_cast<double>(sinceTick_.restart()) / 1000.0, kMaxDt);
