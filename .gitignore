@@ -9,3 +9,4 @@ CMakeUserPresets.json
 __pycache__/
 /.venv-tools/
 .claude/
+/dist/

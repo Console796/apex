@@ -25,11 +25,14 @@ Presets: `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan
 
 ## Packaging
 
-`tools/package.py` builds release archives from an existing release build tree (build the `apex`
-target first): a Linux `.tar.gz` (executable, Qt runtime libraries and platform plugins, and a
-launcher script) or, on Windows, a `.zip` (`apex.exe` plus `windeployqt` output). Archives go to
-`dist/`. Install rules live in `cmake/Packaging.cmake`. Use `--no-bundle-qt` to skip the Qt
-runtime. There is no AppImage yet. The Vulkan loader and GPU drivers always come from the host.
+`tools/package.py` builds release packages from an existing release build tree (build the `apex`
+target first). On Linux it writes a `.tar.xz` (executable, Qt runtime libraries and platform
+plugins, and a launcher script), a `.deb` (needs `dpkg-dev`) and an `.rpm` (needs `rpm`); pick with
+`--formats`. On Windows, run from a Visual Studio environment, it writes a `.zip` (`apex.exe`,
+`windeployqt` output and the C++ runtime). `--installer <zip>` builds the Windows installer from that
+zip with NSIS's `makensis`, on Linux or Windows. Packages go to `dist/`. Install rules live in
+`cmake/Packaging.cmake`. Use `--no-bundle-qt` to skip the Qt runtime. There is no AppImage yet. The
+Vulkan loader and GPU drivers always come from the host. Release notes live in `docs/releases/`.
 
 ## The CI gate
 

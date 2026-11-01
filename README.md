@@ -143,9 +143,11 @@ the `linux-fuzz` preset. The compile-chamber stage runs the real P2CE compile to
 
 ## Packaging
 
-`tools/package.py` builds a Linux `.tar.gz` or a Windows `.zip` from an existing release build.
-There is no AppImage or installer yet. The Windows `.zip` carries the Qt DLLs next to `apex.exe`
-(through `windeployqt`), so running it needs no Qt install, only a GPU driver with Vulkan support.
+`tools/package.py` builds the release packages from an existing release build: on Linux a
+`.tar.xz` that bundles Qt, plus a `.deb` and an `.rpm` that use the system Qt; on Windows a `.zip`.
+`--installer` turns that zip into an NSIS installer. The Windows `.zip` carries the Qt DLLs and the
+C++ runtime next to `apex.exe`, so running it needs no Qt install, only a GPU driver with Vulkan
+support. There is no AppImage yet.
 
 ## Repository layout
 

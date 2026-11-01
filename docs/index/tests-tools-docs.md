@@ -71,7 +71,7 @@ marker in their first lines. Never add Valve or Strata content. The
 | [`check_layers.py`](../../tools/check_layers.py) | Enforces the include rules between layers and the `processModelData` ban. |
 | [`check_licenses.py`](../../tools/check_licenses.py) | Checks that dependencies are compatible with MIT and GPLv3-or-later. |
 | [`install-hooks.sh`](../../tools/install-hooks.sh) | Installs `ci.py --fast` as the `pre-push` hook. |
-| [`package.py`](../../tools/package.py) | Builds the Linux `.tar.gz` or Windows `.zip` from a release build. |
+| [`package.py`](../../tools/package.py) | Builds the Linux `.tar.xz`, `.deb` and `.rpm`, the Windows `.zip`, and the NSIS installer from a release build. |
 | [`vmf_dump/`](../../tools/vmf_dump/) | Dumps object IDs, side IDs and plane strings of a VMF as TSV, for the srctools cross-check. Not shipped. |
 | [`replane/`](../../tools/replane/) | Writes a re-planed copy of a VMF, used by the manual `vbsp_equivalence.py` gate. |
 | [`pie_probe/`](../../tools/pie_probe/) | Plan 0.3 probe for the pie-menu popup over a native child window. Has its own CMake file. |
