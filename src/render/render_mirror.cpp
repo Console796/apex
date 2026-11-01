@@ -1271,12 +1271,16 @@ struct RenderMirror::Impl {
                 if (name.empty()) continue;
                 constexpr const char* suffix[] = {"rt", "lf", "bk", "ft", "up", "dn"};
                 list.sky.enabled = true;
+                // Indexed by texture slot; a face still loading or missing sits on the checkerboard,
+                // which never has a record, so the table can be shorter than its slot.
+                const auto records = heap.materials();
                 for (std::size_t face = 0; face < 6; ++face) {
                     const auto& material = resolveMaterial("skybox/" + name + suffix[face]);
                     const bool hdr = list.mode == DisplayMode::Lit && material.skyHdrSlot != kNoTexture;
                     list.sky.faces[face] = hdr ? material.skyHdrSlot : material.slot;
-                    if ((hdr && material.skyHdrLinear) || (!hdr && (heap.materials()[material.slot].flags & kMaterialLinearBase) != 0u))
-                        list.sky.linearMask |= 1u << face;
+                    const bool linearBase = material.slot < records.size() &&
+                        (records[material.slot].flags & kMaterialLinearBase) != 0u;
+                    if (hdr ? material.skyHdrLinear : linearBase) list.sky.linearMask |= 1u << face;
                 }
             } else if (classname == "sky_camera" && !list.sky.camera) {
                 DVec3 origin = entityVector(block, "origin");
@@ -1822,7 +1826,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             const bool faceMode = !selected && std::ranges::any_of(batch.faces, [&](const FaceRange& face) {
                 return sides.contains(face.side);
             });
-            const bool probeMaterial = state && (m.heap.materials()[state->slot].flags & kMaterialEnvmapProbe) != 0u;
+            const auto records = m.heap.materials(); // By texture slot; a loading face has no record yet.
+            const bool probeMaterial = state && state->slot < records.size() &&
+                (records[state->slot].flags & kMaterialEnvmapProbe) != 0u;
             if (faceMode || (options.mode == DisplayMode::Lit && probeMaterial)) {
                 // Split existing ranges so a face tint does not bleed into its material siblings.
                 for (const FaceRange& face : batch.faces) {

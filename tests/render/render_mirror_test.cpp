@@ -2361,6 +2361,23 @@ TEST_CASE("mirror: light_rt helper flags indirect-only and shares the live clust
     check(scene.mirror.buildDrawList(options), true);
 }
 
+TEST_CASE("mirror: a missing skyname leaves checkerboard faces with no linear flag") {
+    REQUIRE_GPU();
+    // Missing faces sit on the checkerboard slot, which has no material record (render_pose crashed here).
+    auto parsed = vmf::parse("world { classname worldspawn skyname apex_no_such_sky\n" +
+                             boxSolid(1, {0, 0, 0}, {16, 16, 16}, "test/green") + "}");
+    REQUIRE(parsed);
+    Scene scene(*g, std::make_unique<document::Document>(*parsed));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    scene.mirror.buildDrawList(options);
+    REQUIRE(scene.mirror.settle());
+    const auto list = scene.mirror.buildDrawList(options);
+    CHECK(list.sky.enabled);
+    for (auto face : list.sky.faces) CHECK(face == kCheckerboardSlot);
+    CHECK(list.sky.linearMask == 0u);
+}
+
 TEST_CASE("mirror: skyname materials, sky_camera region and fog entity reach the frame") {
     REQUIRE_GPU();
     std::string text = "world { classname worldspawn skyname apex068\n";
