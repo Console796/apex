@@ -99,6 +99,7 @@ export APEX_P2CE_DIR="$HOME/.steam/debian-installation/steamapps/common/Portal 2
 export APEX_WIN_SSH=<user>@<guest address>   # the guest account, see §6
 export APEX_WIN_SSH_PORT=2222                # 22 with the libvirt backend
 export APEX_WINVM_LIBVIRT=win10              # only with the libvirt backend
+export APEX_WIN_TARGET=machine               # only for a real Windows PC, see §6
 ```
 
 - **`APEX_P2CE_DIR`:** a P2CE install (Steam). CI reads it but never writes under it. Without it,
@@ -177,6 +178,37 @@ let you reserve the VM so CI refuses to start it.
 
    It must log in without a password prompt and print the MSVC banner. If `cl` isn't on PATH over
    SSH, that's expected; CI calls `vcvars64.bat` first (`APEX_WIN_ENV_CMD`).
+
+### A real Windows machine instead of the VM
+
+The stage can run on a physical Windows PC instead. Set it up the same way as the guest above (the
+toolchain, OpenSSH Server and the authorised key), then on this host:
+
+```bash
+export APEX_WIN_TARGET=machine
+export APEX_WIN_SSH=<user>@<machine address>   # a DHCP reservation or hostname keeps this stable
+export APEX_WIN_SSH_PORT=22                    # the default for a machine
+```
+
+With `APEX_WIN_TARGET=machine`, CI:
+- never starts or stops anything, so the machine must already be on and awake.
+  `APEX_WIN_MANAGE` is ignored;
+- does not reserve memory or a build slot for it on this host, so the Linux builds run at full width
+  beside it;
+- checks first that it can log in and that commands run in `cmd.exe`, and fails the stage with the
+  reason if not;
+- still honours `tools/winvm-lock.sh` and lets only one run at a time use the work directory.
+
+OpenSSH on Windows runs commands in `cmd.exe` unless someone set `DefaultShell` to PowerShell. If
+the stage reports that, remove the override on the machine:
+
+```powershell
+Remove-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell
+```
+
+Keep the machine from sleeping during a build (Power settings, or `powercfg /change standby-timeout-ac 0`).
+A real GPU can run the GPU tests too: set `APEX_WIN_VK_DEVICE` to a substring of its Vulkan device
+name. The default `apex-ci-no-gpu` skips them, as in the VM.
 
 ### How `tools/winvm.sh` finds the guest
 

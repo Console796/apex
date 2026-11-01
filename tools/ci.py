@@ -17,14 +17,18 @@ The guest keeps its build tree between runs, so a run after a small change is in
 
 Environment:
   APEX_P2CE_DIR      P2CE install; required unless --fixtures-only (D20)
-  APEX_WIN_SSH       ssh target of the Windows VM, e.g. user@127.0.0.1 (D23)
-  APEX_WIN_SSH_PORT  ssh port (default 2222, forwarded by tools/winvm.sh)
+  APEX_WIN_TARGET    vm (default): the local guest driven by tools/winvm.sh; machine: a real Windows
+                     PC reached over SSH that is already running (never started, stopped or
+                     counted against this host's memory)
+  APEX_WIN_SSH       ssh target of the Windows VM or machine, e.g. user@127.0.0.1 (D23)
+  APEX_WIN_SSH_PORT  ssh port (default 2222, forwarded by tools/winvm.sh; 22 for a machine)
   APEX_WIN_SSH_KEY   private key (default ~/.ssh/id_ed25519_apex_ci)
   APEX_WIN_QT        Qt prefix in the guest (default C:\\Qt\\6.10.2\\msvc2022_64)
   APEX_WIN_DIR       work directory in the VM (default C:/apex-ci)
   APEX_WIN_LOCK_WAIT seconds to wait for another run to release the VM (default 0: refuse at once)
   APEX_WIN_MANAGE    1 (default): tools/winvm.sh starts the VM before and shuts it down after;
-                     0 leaves it running (for a working session)
+                     0 leaves it running (for a working session). Ignored for a machine.
+  APEX_WIN_VK_DEVICE Vulkan device the Windows tests use (default apex-ci-no-gpu: GPU tests skip)
   APEX_WIN_ENV_CMD   cmd command that puts MSVC on PATH (default: vcvars64 of VS 2022 Build Tools)
   XDG_STATE_HOME     holds apex/build_number (default ~/.local/state)
 """
@@ -55,6 +59,14 @@ WIN_TRIGGERS = ["CMakeLists.txt", "CMakePresets.json", "cmake/", "tests/CMakeLis
 # Peak resident memory of one ASan compile or test process, and what the Windows VM takes.
 JOB_GB = 0.75
 VM_GB = 4.5
+
+
+def win_machine():
+    """True when the Windows stage targets a real machine over SSH rather than the local VM."""
+    t = os.environ.get("APEX_WIN_TARGET", "vm")
+    if t not in ("vm", "machine"):
+        sys.exit(f"ci: APEX_WIN_TARGET must be vm or machine, not {t!r}")
+    return t == "machine"
 
 
 def memory_jobs(run_win):
@@ -426,11 +438,14 @@ def windows_stage(build, report, test_jobs=1):
         report.add("windows-msvc", "FAIL", 0, "APEX_WIN_SSH unset (VM not set up, D23); use --skip-windows")
         return
     wdir = os.environ.get("APEX_WIN_DIR", "C:/apex-ci")
-    port = os.environ.get("APEX_WIN_SSH_PORT", "2222")
-    manage = os.environ.get("APEX_WIN_MANAGE", "1") == "1"
+    machine = win_machine()
+    port = os.environ.get("APEX_WIN_SSH_PORT", "22" if machine else "2222")
+    manage = not machine and os.environ.get("APEX_WIN_MANAGE", "1") == "1"
     key = os.environ.get("APEX_WIN_SSH_KEY", str(Path.home() / ".ssh" / "id_ed25519_apex_ci"))
+    # Keepalives: a long link step is silent, and a NAT or Wi-Fi hop on the way to a real machine
+    # can drop an idle connection.
     opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-i", key,
-            "-o", "IdentitiesOnly=yes"]
+            "-o", "IdentitiesOnly=yes", "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=6"]
     sshc = ["ssh", "-p", port] + opts
     scpc = ["scp", "-P", port] + opts
     envcmd = os.environ.get("APEX_WIN_ENV_CMD", DEFAULT_VCVARS)
@@ -453,6 +468,21 @@ def windows_stage(build, report, test_jobs=1):
                                   capture_output=True).returncode == 0:
                     break
                 time.sleep(5)
+        # The steps below are cmd syntax. A machine whose OpenSSH DefaultShell is PowerShell
+        # echoes %OS% back literally, so say that instead of failing on the first `if not exist`.
+        probe = subprocess.run(sshc + ["-o", "ConnectTimeout=10", ssh, "echo %OS%"],
+                               capture_output=True, text=True)
+        if probe.returncode != 0:
+            where = "machine" if machine else "VM"
+            report.add("windows-msvc", "FAIL", time.time() - t,
+                       f"cannot reach the Windows {where} at {ssh} port {port}: "
+                       + (probe.stderr.strip().splitlines() or ["ssh failed"])[-1])
+            return
+        if probe.stdout.strip() != "Windows_NT":
+            report.add("windows-msvc", "FAIL", time.time() - t,
+                       f"{ssh} does not run commands in cmd.exe (got {probe.stdout.strip()[:40]!r}); "
+                       "set the OpenSSH DefaultShell back to cmd (docs/development.md §6)")
+            return
         # Working tree as a tar: tracked + untracked files that are not gitignored, so the VM
         # never sees build output or junk but does see uncommitted work.
         files = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=ROOT,
@@ -476,7 +506,7 @@ def windows_stage(build, report, test_jobs=1):
             envcmd,
             f'set "CMAKE_PREFIX_PATH={qt}"', f'set "CPM_SOURCE_CACHE={wwin}\\cpm-cache"',
             # Non-GPU tests only (0.1 D23): a guest's software Vulkan isn't the lavapipe reference.
-            'set "APEX_VK_DEVICE=apex-ci-no-gpu"',
+            f'set "APEX_VK_DEVICE={os.environ.get("APEX_WIN_VK_DEVICE", "apex-ci-no-gpu")}"',
             f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}",
             "cmake --build --preset windows-msvc-release",
             f"ctest --preset windows-msvc-release -j {test_jobs}",
@@ -621,14 +651,16 @@ def main():
             run_win, win_why = windows_needed()
 
     cores = os.cpu_count() or 4
-    slots = a.build_slots or (1 if run_win else 2)
+    # The local VM competes with the Linux builds for cores and memory; a real machine does not.
+    vm_local = run_win and not win_machine()
+    slots = a.build_slots or (1 if vm_local else 2)
     if a.serial:
         slots = 1
     jobs = max(2, cores // slots)
     test_jobs = 1 if a.serial else (a.test_jobs or max(2, cores // 2))
     # Cores alone overcommit memory: 24 ASan compiles beside the VM ran a 15 GB host out of memory.
     # Builds in every slot and one test stage share the budget.
-    budget = memory_jobs(run_win)
+    budget = memory_jobs(vm_local)
     if budget is not None:
         share = max(2, budget // (slots + 1))
         jobs = min(jobs, share)
