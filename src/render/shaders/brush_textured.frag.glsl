@@ -37,6 +37,9 @@ void main() {
     if ((floatBitsToUint(push.p1.w) & 8u) != 0u) {
         FrameBlock frame = frameBlock();
         Material material = materialRecord(frame, slot);
+        vec3 eyePosition = vPosition;
+        if ((floatBitsToUint(push.p1.w) & 16u) != 0u)
+            eyePosition += frame.skyTransform.xyz / frame.skyTransform.w;
         vec3 geometricNormal = normalize(vNormal);
         vec3 normal = geometricNormal;
         float bumpAlpha = 1.0;
@@ -48,7 +51,7 @@ void main() {
         if ((material.flags & MATERIAL_PARALLAX) != 0u) {
             vec3 t, b;
             tangentFrame(geometricNormal, dpdx, dpdy, duvdx, duvdy, t, b);
-            vec3 eye = dot(vPosition, vPosition) > 1e-12 ? normalize(-vPosition) : geometricNormal;
+            vec3 eye = dot(eyePosition, eyePosition) > 1e-12 ? normalize(-eyePosition) : geometricNormal;
             uv = parallaxOcclusionUv(vUv, vec3(dot(eye, t), dot(eye, b), dot(eye, geometricNormal)),
                                      material.parallaxParams.x, material.parallaxParams.y,
                                      material.parallaxParams.z, material.bumpSlot, duvdx, duvdy);
@@ -66,7 +69,7 @@ void main() {
         if (localRefract) {
             vec3 t, b;
             tangentFrame(geometricNormal, dpdx, dpdy, duvdx, duvdy, t, b);
-            vec3 eye = dot(vPosition, vPosition) > 1e-12 ? normalize(-vPosition) : geometricNormal;
+            vec3 eye = dot(eyePosition, eyePosition) > 1e-12 ? normalize(-eyePosition) : geometricNormal;
             vec2 refractUv = localRefractUv(vUv, mapped, vec3(dot(eye, t), dot(eye, b), dot(eye, normal)),
                                             material.refractParams.x, material.refractParams.y);
             texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), refractUv, duvdx, duvdy);
@@ -84,7 +87,7 @@ void main() {
             // MRAO alpha is a blend-tint mask, reserved for step (f), never opacity/AO.
         }
         // Fragment positions and lights are camera-relative; camera is the origin.
-        vec3 view = dot(vPosition, vPosition) > 1e-12 ? normalize(-vPosition) : normal;
+        vec3 view = dot(eyePosition, eyePosition) > 1e-12 ? normalize(-eyePosition) : normal;
         vec3 diffuse = vec3(1.0); // Fullbright: unit irradiance.
         if (!fullbright) {
             bool phong = (material.flags & MATERIAL_PHONG) != 0u;
@@ -120,10 +123,14 @@ void main() {
         if (localRefract) colour = albedo * max(material.refractTint.rgb, vec3(0.0)) *
             localRefractTransmission(dot(normal, view), dot(geometricNormal, view));
         // Unlit terms, kept in fullbright: environment reflection and self-illumination.
-        if ((material.flags & MATERIAL_ENVMAP) != 0u) {
+        if ((material.flags & MATERIAL_ENVMAP) != 0u && (frame.flags & 2u) == 0u) {
             uint cube = (material.flags & MATERIAL_ENVMAP_PROBE) != 0u ?
-                nearestCubemap(frame, vPosition) : material.envmapSlot;
+                nearestCubemap(frame, push.p0.a > 0.0 ? push.p0.xyz : vPosition) : material.envmapSlot;
             vec3 reflected = reflect(-view, normal);
+            if ((material.flags & MATERIAL_ENVMAP_PROBE) != 0u && frame.cubemapCount > 0u) {
+                uint index = nearestCubemapIndex(frame, push.p0.a > 0.0 ? push.p0.xyz : vPosition);
+                reflected = correctedReflection(CubemapProbeBuffer(frame.cubemaps).probes[index], vPosition, reflected);
+            }
             if (pbr) {
                 float levels = float(textureQueryLevels(samplerCube(cubes[nonuniformEXT(cube)], samplers[0])));
                 vec3 radiance = textureLod(samplerCube(cubes[nonuniformEXT(cube)], samplers[0]),
@@ -149,9 +156,20 @@ void main() {
                                                             samplers[0]), uv, duvdx, duvdy).r : 1.0;
             colour += albedo * max(material.selfIllumTint.rgb, vec3(0.0)) * selfIllumMask(hasMask, maskRed, texel.a);
         }
+        if (frame.fogParams.w > 0.0) {
+            vec3 fogPosition = vPosition;
+            if ((floatBitsToUint(push.p1.w) & 16u) != 0u)
+                fogPosition = fogPosition * frame.skyTransform.w + frame.skyTransform.xyz;
+            float distance = length(fogPosition);
+            float fog = frame.fogParams.y > frame.fogParams.x ?
+                clamp((distance - frame.fogParams.x) / (frame.fogParams.y - frame.fogParams.x), 0.0, 1.0) :
+                step(frame.fogParams.x, distance);
+            colour = mix(colour, frame.fogColour.rgb, fog * frame.fogParams.z);
+        }
         outColor = vec4(colour, alpha);
     }
-    outColor.rgb = mix(outColor.rgb, push.p0.rgb, push.p0.a);
+    if ((floatBitsToUint(push.p1.w) & 8u) == 0u)
+        outColor.rgb = mix(outColor.rgb, push.p0.rgb, push.p0.a);
     if (tintOnly) outColor = vec4(push.p0.rgb, push.p0.a * alpha);
 }
 

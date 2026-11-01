@@ -27,6 +27,7 @@ struct TextureSize {
 
 // Ranges into the batch's existing buffers; face selection never re-meshes or uploads.
 struct FaceRange {
+    DVec3 centre{0.0};
     document::SideId side = 0;
     std::uint32_t firstIndex = 0, indexCount = 0;
     std::uint32_t firstEdgeIndex = 0, edgeIndexCount = 0;

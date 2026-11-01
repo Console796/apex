@@ -1963,3 +1963,196 @@ TEST_CASE("renderer: cluster frame time report for 16 256 and 1024 lights") {
     }
     CHECK(gpu->context->validation().errorCount() == 0);
 }
+
+TEST_CASE("renderer: 2D sky in Lit and Textured leaves Flat and Wireframe unchanged") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube cube = makeCube(*gpu, 24, gpu->checker);
+    auto list = cubeList(cube, DisplayMode::Textured, gpu->checker);
+    list.viewportSize = Vec2(kSize);
+    list.view = makeView({-96, -70, 40}, {15, 35, 0});
+    const std::array<std::array<std::uint8_t, 4>, 6> colours{{
+        {220, 60, 40, 255}, {40, 180, 80, 255}, {40, 80, 220, 255},
+        {220, 180, 40, 255}, {100, 180, 240, 255}, {80, 40, 120, 255}}};
+    for (std::size_t face = 0; face < 6; ++face) list.sky.faces[face] = solidTexture(*gpu, colours[face]);
+    REQUIRE(gpu->heap->flush());
+    for (const auto mode : {DisplayMode::Flat, DisplayMode::Wireframe}) {
+        list.mode = mode;
+        list.sky.enabled = false;
+        const auto before = drawFrame(*gpu, list);
+        list.sky.enabled = true;
+        CHECK(drawFrame(*gpu, list).pixels == before.pixels);
+    }
+    list.mode = DisplayMode::Textured;
+    golden::check("sky_2d_textured", drawFrame(*gpu, list), *gpu->context);
+    list.mode = DisplayMode::Lit;
+    list.fullbright = true;
+    golden::check("sky_2d_lit", drawLitFrame(*gpu, list, scene), *gpu->context);
+    list.meshes.clear();
+    // Capture orientation agrees with Vulkan's unswizzled cube lookup on all six axes.
+    const auto capture = gpu->renderer->buildCubemap(list, {1000, 2000, 3000}, 8);
+    REQUIRE(capture);
+    REQUIRE(capture->mips.size() == 4);
+    for (std::size_t face = 0; face < 6; ++face) {
+        std::array<float, 4> pixel;
+        std::memcpy(pixel.data(), capture->mips[0].data.data() + (face * 8 * 8 + 4 * 8 + 4) * sizeof(pixel), sizeof(pixel));
+        for (int channel = 0; channel < 3; ++channel)
+            CHECK(pixel[channel] == doctest::Approx(std::pow(colours[face][channel] / 255.0f, 2.2f)).epsilon(0.002));
+    }
+    for (auto slot : list.sky.faces) gpu->heap->release(slot);
+    gpu->heap->collectGarbage();
+}
+
+TEST_CASE("renderer: 3D sky scales around sky_camera before the main scene") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto blue = solidTexture(*gpu, {40, 100, 220, 255});
+    const auto red = solidTexture(*gpu, {220, 40, 20, 255});
+    REQUIRE(gpu->heap->flush());
+    const Cube cube = makeCube(*gpu, 2, blue);
+    auto list = cubeList(cube, DisplayMode::Lit, blue);
+    list.fullbright = true;
+    list.viewportSize = Vec2(kSize);
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    list.sky.camera = DVec3(10000, 20000, 30000);
+    list.sky.scale = 16;
+    list.meshes[0].origin = *list.sky.camera;
+    list.meshes[0].colour = Vec4(1);
+    list.meshes[0].sky = true;
+    auto main = list.meshes[0];
+    main.sky = false;
+    main.origin = {-25, -16, 0};
+    main.texture = red;
+    list.meshes.push_back(main);
+    const auto sky = drawLitFrame(*gpu, list, scene);
+    golden::check("sky_3d", sky, *gpu->context);
+    CHECK(at(sky, 32, 32).b > 100);
+    CHECK(at(sky, 39, 32).r > 100); // Main geometry wins even behind the scaled sky surface.
+    CHECK(at(sky, 39, 32).b <= 20);
+    list.meshes.erase(list.meshes.begin());
+    const auto without = drawLitFrame(*gpu, list, scene);
+    CHECK(at(without, 32, 32).b < 100);
+    // Textured uses the same sky transform and clears sky depth before main geometry.
+    list.mode = DisplayMode::Textured;
+    list.meshes.insert(list.meshes.begin(), main);
+    list.meshes[0].sky = true;
+    list.meshes[0].origin = *list.sky.camera;
+    CHECK(drawFrame(*gpu, list).pixels != drawFrame(*gpu, DrawList{}).pixels);
+    gpu->heap->release(blue);
+    gpu->heap->release(red);
+    gpu->heap->collectGarbage();
+}
+
+TEST_CASE("renderer: distance fog is applied after Lit shading") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto white = solidTexture(*gpu, {255, 255, 255, 255});
+    REQUIRE(gpu->heap->flush());
+    const Cube cube = makeCube(*gpu, 40, white);
+    auto list = cubeList(cube, DisplayMode::Lit, white);
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    list.meshes[0].colour = Vec4(1);
+    list.fullbright = true;
+    list.fog = {{0.1f, 0.3f, 0.8f}, 20, 100, 0.75f, true};
+    golden::check("fog_distance", drawLitFrame(*gpu, list, scene), *gpu->context);
+    const float clear[4] = {0, 0, 0, 1};
+    REQUIRE(scene.resize(kSize, kSize));
+    REQUIRE(gpu->context->oneShot([&](VkCommandBuffer commands) { gpu->renderer->prepare(commands, list, scene, clear); }));
+    const auto linear = scene.readback();
+    REQUIRE(linear);
+    const auto inverse = glm::inverse(list.view.viewProjection);
+    const Vec3 ray(inverse * Vec4(1.0f / kSize, 1.0f / kSize, 0, 1));
+    const float distance = 56.0f * glm::length(ray) / ray.x;
+    const float fog = std::clamp((distance - 20) / 80, 0.0f, 1.0f) * 0.75f;
+    const Vec3 expected = glm::mix(Vec3(1), list.fog.colour, fog);
+    for (int c = 0; c < 3; ++c)
+        CHECK((*linear)[(32 * kSize + 32) * 4 + c] == doctest::Approx(expected[c]).epsilon(0.002));
+    list.fog.start = list.fog.end = 0;
+    list.fog.maxDensity = 1;
+    const auto fullFog = drawLitFrame(*gpu, list, scene);
+    CHECK(at(fullFog, 32, 32).b > at(fullFog, 32, 32).r);
+    gpu->heap->release(white);
+    gpu->heap->collectGarbage();
+}
+
+TEST_CASE("renderer: editor-built cubemaps have no reflection feedback, including named envmaps") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto base = solidTexture(*gpu, {255, 255, 255, 255});
+    const auto initial = gpu->heap->uploadCube(colourCube({Vec3(2), Vec3(2), Vec3(2), Vec3(2), Vec3(2), Vec3(2)}));
+    REQUIRE(initial);
+    REQUIRE(gpu->heap->flush());
+    const Cube room = makeCube(*gpu, 100, base, DMat4(1), true);
+    auto list = cubeList(room, DisplayMode::Lit, base);
+    list.meshes[0].colour = Vec4(1);
+    list.cubemaps = {{{0, 0, 0}, *initial}};
+    GpuMaterial material{base, kNoTexture, kMaterialEnvmap | kMaterialEnvmapProbe | kMaterialSelfIllum, kNoTexture};
+    material.selfIllumTint = Vec4(0.1f, 0.3f, 0.7f, 0);
+    gpu->heap->setMaterial(base, material);
+    const auto first = gpu->renderer->buildCubemap(list, {0, 0, 0}, 16);
+    REQUIRE(first);
+    const auto built = gpu->heap->uploadCube(*first);
+    REQUIRE(built);
+    REQUIRE(gpu->heap->flush());
+    list.cubemaps[0].cube = *built;
+    const auto second = gpu->renderer->buildCubemap(list, {0, 0, 0}, 16);
+    REQUIRE(second);
+    REQUIRE(first->mips.size() == second->mips.size());
+    for (std::size_t mip = 0; mip < first->mips.size(); ++mip) CHECK(first->mips[mip].data == second->mips[mip].data);
+    material.flags &= ~kMaterialEnvmapProbe;
+    material.envmapSlot = *initial;
+    gpu->heap->setMaterial(base, material);
+    const auto named = gpu->renderer->buildCubemap(list, {0, 0, 0}, 16);
+    REQUIRE(named);
+    CHECK(first->mips[0].data == named->mips[0].data);
+    material.flags = kMaterialEnvmap | kMaterialEnvmapProbe;
+    gpu->heap->setMaterial(base, material);
+    const Cube reflector = makeCube(*gpu, 40, base);
+    list = cubeList(reflector, DisplayMode::Lit, base);
+    list.meshes[0].colour = Vec4(1);
+    list.cubemaps = {{{0, 0, 0}, *built}};
+    golden::check("cubemap_editor_built", drawLitFrame(*gpu, list, scene), *gpu->context);
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).b > at(drawLitFrame(*gpu, list, scene), 32, 32).r + 50);
+    gpu->heap->release(base);
+    gpu->heap->releaseCube(*initial);
+    gpu->heap->releaseCube(*built);
+    gpu->heap->collectGarbage();
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: Strata cubemap parallax correction uses the box intersection in world space") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto cube = gpu->heap->uploadCube(colourCube({Vec3(1,0,0), Vec3(0,1,0), Vec3(0,0,1),
+                                                        Vec3(1,1,0), Vec3(1,0,1), Vec3(0,1,1)}));
+    REQUIRE(cube);
+    const auto base = solidTexture(*gpu, {255, 255, 255, 255});
+    REQUIRE(gpu->heap->flush());
+    const Cube face = makeCube(*gpu, 40, base);
+    auto list = cubeList(face, DisplayMode::Lit, base);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].colour = Vec4(1);
+    list.view = makeView({-96, 0, 0}, {0, 0, 0});
+    GpuMaterial material{base, kNoTexture, kMaterialEnvmap | kMaterialEnvmapProbe, kNoTexture};
+    gpu->heap->setMaterial(base, material);
+    list.cubemaps = {{{0, -150, 0}, *cube}};
+    CHECK(dominant(at(drawLitFrame(*gpu, list, scene), 32, 32), 1));
+    DMat4 box(1);
+    box[0][0] = 50; box[1][1] = 200; box[2][2] = 100;
+    list.cubemaps[0].correction = box;
+    const auto corrected = drawLitFrame(*gpu, list, scene);
+    golden::check("cubemap_parallax", corrected, *gpu->context);
+    CHECK(dominant(at(corrected, 32, 32), 2));
+    const auto transform = (editor::Transform::translate({65536, -65536, 32768}) *
+                            editor::Transform::rotate({0, 0, 1}, 90, {0, 0, 0})).matrix();
+    list.previews.push_back({transform, {0, 0, 0}});
+    list.meshes[0].previewIndex = 1;
+    list.view = makeView(DVec3(transform * DVec4(-96, 0, 0, 1)), {0, 90, 0});
+    list.cubemaps[0].position = DVec3(transform * DVec4(0, -150, 0, 1));
+    list.cubemaps[0].correction = transform * box;
+    // Texture directions remain world-aligned; the corrected centre now looks along -X.
+    CHECK(dominant(at(drawLitFrame(*gpu, list, scene), 32, 32), 1));
+    gpu->heap->release(base);
+    gpu->heap->releaseCube(*cube);
+    gpu->heap->collectGarbage();
+}

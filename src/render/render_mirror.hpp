@@ -137,6 +137,12 @@ class RenderMirror {
     // probe reflects the heap's default cube. rebuild() also loads engine/defaultcubemap into
     // that default slot (through the MaterialCache's Vfs) until it succeeds once.
     void setCubemapSource(CubemapSource source);
+    void requestCubemapRebuild();
+    // Main-thread debounce/capture. Explicit requests wait for pending meshes/materials too.
+    Result<std::size_t> rebuildCubemaps(Renderer& renderer, bool force = false,
+        std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    std::size_t staleCubemapCount() const;
+    bool cubemapRebuildPending() const;
     void setInstanceContents(std::span<const document::InstanceContent> contents,
                              document::InstanceVisibility visibility = document::InstanceVisibility::Normal);
 

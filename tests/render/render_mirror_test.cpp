@@ -157,6 +157,8 @@ Gpu* gpu() {
             $localrefractdepth 0.05 $basetexture test/floor $envmap test/cube $envmaptint 0.2 $normalmapalphaenvmapmask 1
         })");
         g->tree.put("materials/test/refract.vmt", "Refract { $basetexture test/floor $normalmap test/normal $refractamount 0.1 }");
+        for (const auto* suffix : {"rt", "lf", "bk", "ft", "up", "dn"})
+            g->tree.put(std::string("materials/skybox/apex068") + suffix + ".vmt", "UnlitGeneric { $basetexture test/blue }");
         assets::GameProfile profile;
         profile.gameDirectory = g->tree.root;
         auto vfs = assets::Vfs::load(profile, g->jobs);
@@ -2357,4 +2359,222 @@ TEST_CASE("mirror: light_rt helper flags indirect-only and shares the live clust
     check(scene.mirror.buildDrawList(options), false);
     scene.mirror.setPreview({}, PreviewGeometry{}, 2);
     check(scene.mirror.buildDrawList(options), true);
+}
+
+TEST_CASE("mirror: skyname materials, sky_camera region and fog entity reach the frame") {
+    REQUIRE_GPU();
+    std::string text = "world { classname worldspawn skyname apex068\n";
+    text += boxSolid(1, {1000, -80, -80}, {1008, 80, 80}, "tools/toolsskybox");
+    text += boxSolid(2, {1192, -80, -80}, {1200, 80, 80}, "tools/toolsskybox");
+    text += boxSolid(3, {1000, -88, -80}, {1200, -80, 80}, "tools/toolsskybox");
+    text += boxSolid(4, {1000, 80, -80}, {1200, 88, 80}, "tools/toolsskybox");
+    text += boxSolid(5, {1000, -88, -88}, {1200, 88, -80}, "tools/toolsskybox");
+    text += boxSolid(6, {1000, -88, 80}, {1200, 88, 88}, "tools/toolsskybox");
+    text += boxSolid(7, {1080, -4, -4}, {1088, 4, 4}, "test/red");
+    text += boxSolid(8, {0, 0, 0}, {16, 16, 16}, "test/green");
+    text += R"(}
+        entity { classname sky_camera origin "1100 0 0" scale 8 }
+        entity { classname env_fog_controller fogenable 1 fogcolor "64 128 255" fogstart 100 fogend 900 fogmaxdensity .8 }
+    )";
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    Scene scene(*g, std::make_unique<document::Document>(*parsed));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    scene.mirror.buildDrawList(options); // Starts sky material loads.
+    REQUIRE(scene.mirror.settle());
+    auto list = scene.mirror.buildDrawList(options);
+    CHECK(list.sky.enabled);
+    REQUIRE(list.sky.camera);
+    CHECK(*list.sky.camera == DVec3(1100, 0, 0));
+    CHECK(list.sky.scale == 8);
+    CHECK(list.fog.enabled);
+    CHECK(list.fog.start == 100);
+    CHECK(list.fog.end == 900);
+    CHECK(list.fog.colour.g == doctest::Approx(std::pow(128.0 / 255, 2.2)));
+    CHECK(std::ranges::count_if(list.meshes, [](const auto& mesh) { return mesh.sky && !mesh.skySurface; }) == 1);
+    for (auto face : list.sky.faces) CHECK(face != kCheckerboardSlot);
+    auto tx = scene.doc->begin("remove sky camera");
+    tx.destroy(*findEntity(*scene.doc, "sky_camera"));
+    tx.commit();
+    list = scene.mirror.buildDrawList(options);
+    CHECK(list.sky.enabled);
+    CHECK_FALSE(list.sky.camera);
+    CHECK(std::ranges::none_of(list.meshes, [](const auto& mesh) { return mesh.sky; }));
+    options.mode = DisplayMode::Textured;
+    CHECK(scene.mirror.buildDrawList(options).sky.enabled);
+    options.mode = DisplayMode::Flat;
+    CHECK_FALSE(scene.mirror.buildDrawList(options).sky.enabled);
+    RenderMirror warm(*g->context, *g->heap, g->jobs, *g->cache);
+    warm.rebuild(*scene.doc);
+    REQUIRE(warm.settle());
+    const auto image = drawFrame(*g, warm, DisplayMode::Textured);
+    CHECK(at(image, 0, 0).b > 100); // Already-cached sky uploads are flushed before the first draw.
+}
+
+TEST_CASE("mirror: cubemap neighbourhood staleness, explicit rebuild and settled auto rebuild") {
+    REQUIRE_GPU();
+    auto parsed = vmf::parse("world { classname worldspawn\n" +
+        boxSolid(1, {-8, -8, -8}, {8, 8, 8}, "test/red") +
+        R"(} entity { classname env_cubemap origin "100 0 0" cubemapsize 4 }
+            entity { classname env_cubemap origin "5000 0 0" cubemapsize 4 }
+            entity { classname light origin "120 0 0" _light "255 255 255 200" }
+        )");
+    REQUIRE(parsed);
+    Scene scene(*g, std::make_unique<document::Document>(*parsed));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    auto list = scene.mirror.buildDrawList(options);
+    CHECK(scene.mirror.staleCubemapCount() == 2);
+    CHECK(std::ranges::count(list.labels, std::string("Cubemap stale"), &Label::text) == 2);
+    auto rebuilt = scene.mirror.rebuildCubemaps(*g->renderer, true);
+    REQUIRE(rebuilt);
+    CHECK(*rebuilt == 2);
+    list = scene.mirror.buildDrawList(options);
+    CHECK(scene.mirror.staleCubemapCount() == 0);
+    CHECK(list.labels.empty());
+    REQUIRE(list.cubemaps.size() == 2);
+    for (const auto& probe : list.cubemaps) CHECK(probe.cube != kDefaultCubeSlot);
+    const auto farCube = list.cubemaps[1].cube;
+    const auto helper = findEntity(*scene.doc, "env_cubemap");
+    REQUIRE(helper);
+    scene.mirror.setPreview({{scene.doc->get(*helper)->id, editor::Transform::translate({500, 0, 0}).matrix()}});
+    scene.mirror.buildDrawList(options);
+    scene.mirror.clearPreview();
+    list = scene.mirror.buildDrawList(options);
+    CHECK(list.cubemaps[1].cube == farCube); // Cancelling a drag retains the built cube.
+    CHECK(scene.mirror.staleCubemapCount() == 0);
+    auto tx = scene.doc->begin("edit light near one probe");
+    tx.setKeyValue(*findEntity(*scene.doc, "light"), "_light", "255 128 64 100");
+    tx.commit();
+    REQUIRE(scene.mirror.settle());
+    list = scene.mirror.buildDrawList(options);
+    CHECK(scene.mirror.staleCubemapCount() == 1);
+    CHECK(std::ranges::count(list.labels, std::string("Cubemap stale"), &Label::text) == 1);
+    rebuilt = scene.mirror.rebuildCubemaps(*g->renderer);
+    REQUIRE(rebuilt);
+    CHECK(*rebuilt == 0);
+    rebuilt = scene.mirror.rebuildCubemaps(*g->renderer, false, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    REQUIRE(rebuilt);
+    CHECK(*rebuilt == 1);
+    CHECK(scene.mirror.staleCubemapCount() == 0);
+    list = scene.mirror.buildDrawList(options);
+    CHECK(list.cubemaps[1].cube == farCube);
+    // Undo also invalidates; an explicit request bypasses only the debounce.
+    REQUIRE(scene.doc->undo());
+    scene.mirror.buildDrawList(options);
+    CHECK(scene.mirror.staleCubemapCount() == 1);
+    scene.mirror.requestCubemapRebuild();
+    rebuilt = scene.mirror.rebuildCubemaps(*g->renderer);
+    REQUIRE(rebuilt);
+    CHECK(*rebuilt == 2);
+    CHECK(scene.mirror.staleCubemapCount() == 0);
+    const auto solid = findSolid(*scene.doc, "test/red");
+    REQUIRE(solid);
+    const auto* side = scene.doc->get(*solid)->block->find("side");
+    REQUIRE(side);
+    const auto sideId = side->find("id")->asInt();
+    REQUIRE(sideId);
+    auto retexture = scene.doc->begin("edit nearby geometry");
+    retexture.setSideKeyValue(*sideId, "material", "test/green");
+    retexture.commit();
+    REQUIRE(scene.mirror.settle());
+    scene.mirror.buildDrawList(options);
+    CHECK(scene.mirror.staleCubemapCount() == 1);
+    rebuilt = scene.mirror.rebuildCubemaps(*g->renderer, false, std::chrono::steady_clock::now() + std::chrono::seconds(2));
+    REQUIRE(rebuilt);
+    CHECK(*rebuilt == 1);
+    auto distant = kv1::parse(boxSolid(20, {4900, -8, -8}, {4920, 8, 8}, "test/blue"));
+    REQUIRE(distant);
+    auto create = scene.doc->begin("create distant geometry");
+    create.create(distant->root().children()[0], findEntity(*scene.doc, "worldspawn"));
+    create.commit();
+    REQUIRE(scene.mirror.settle());
+    list = scene.mirror.buildDrawList(options);
+    CHECK(scene.mirror.staleCubemapCount() == 1);
+    REQUIRE(list.labels.size() == 1);
+    CHECK(list.labels[0].position == DVec3(5000, 0, 0));
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: cubemap assignment uses one nearest probe per side on a generated probe map") {
+    REQUIRE_GPU();
+    // D10 rule; BSP patch VMTs record side assignment, not a per-fragment seam (0.6.5 d).
+    auto parsed = vmf::parse("world { classname worldspawn\n" +
+        boxSolid(1, {-8, -120, -40}, {8, 120, 40}, "test/env_lmg") +
+        R"(} entity { classname env_cubemap origin "-64 -80 0" }
+            entity { classname env_cubemap origin "-64 80 0" })");
+    REQUIRE(parsed);
+    Scene scene(*g, std::make_unique<document::Document>(*parsed));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    options.view = makeView({-96, 0, 0}, {0, 0, 0});
+    const auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.cubemaps.size() == 2);
+    REQUIRE(list.meshes.size() == 6);
+    std::size_t first = 0, second = 0;
+    for (const auto& mesh : list.meshes) {
+        REQUIRE(mesh.reflectionPoint);
+        const auto probe = nearestCubemap(list.cubemaps, *mesh.reflectionPoint);
+        CHECK(probe == (mesh.reflectionPoint->y > 0 ? 1 : 0));
+        probe ? ++second : ++first;
+    }
+    CHECK(first == 5);
+    CHECK(second == 1);
+    // The front face spans both probes but samples only the first on the equal-distance tie.
+    CHECK(nearestCubemap(list.cubemaps, {-8, 0, 0}) == 0);
+    scene.mirror.setCubemapSource([](DVec3 origin) -> std::optional<assets::Texture> {
+        assets::Texture texture;
+        texture.format = assets::TextureFormat::Rgba32Float;
+        texture.faces = 6;
+        assets::TextureMip mip{1, 1, 1, {}};
+        const std::array<float, 4> rgba = origin.y < 0 ? std::array<float, 4>{1, 0, 0, 1} :
+            std::array<float, 4>{0, 0, 1, 1};
+        const auto bytes = std::as_bytes(std::span(rgba));
+        for (int face = 0; face < 6; ++face) mip.data.insert(mip.data.end(), bytes.begin(), bytes.end());
+        texture.mips.push_back(std::move(mip));
+        return texture;
+    });
+    const auto assigned = drawFrame(*g, scene.mirror, DisplayMode::Lit, false, options.view);
+    for (const auto x : {32u, 96u}) {
+        CHECK(at(assigned, x, 64).r > 100);
+        CHECK(at(assigned, x, 64).b < 10);
+    }
+}
+
+TEST_CASE("mirror: Strata cubemap parallaxobb link resolves brush bounds and instance transforms") {
+    REQUIRE_GPU();
+    const auto text = std::string(R"(entity { classname parallax_obb targetname room )") +
+        boxSolid(1, {-100, -80, -60}, {100, 80, 60}, "tools/toolsnodraw") +
+        R"(} entity { classname env_cubemap origin "0 0 0" parallaxobb room })";
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    Scene scene(*g, std::make_unique<document::Document>(*parsed));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.cubemaps.size() == 1);
+    REQUIRE(list.cubemaps[0].correction);
+    CHECK(list.meshes.empty()); // Correction volumes are helpers, not scene geometry.
+    const auto inverse = glm::inverse(*list.cubemaps[0].correction);
+    CHECK(glm::length(DVec3(inverse * DVec4(0, 0, 0, 1))) < 1e-6);
+    CHECK(glm::length(DVec3(inverse * DVec4(100, 80, 60, 1))) == doctest::Approx(std::sqrt(3.0)));
+    g->tree.put("parallax068.vmf", text);
+    auto outer = vmf::parse(R"(entity { classname func_instance file parallax068.vmf origin "500 300 100" angles "0 90 0" })");
+    REQUIRE(outer);
+    document::Document doc(*outer);
+    editor::InstanceTemplates templates;
+    editor::InstanceExpansion expansion(templates);
+    expansion.update(doc, g->tree.root / "map.vmf");
+    REQUIRE(expansion.problems().empty());
+    RenderMirror mirror(*g->context, *g->heap, g->jobs, *g->cache);
+    mirror.rebuild(doc);
+    mirror.setInstanceContents(expansion.contents());
+    REQUIRE(mirror.settle());
+    list = mirror.buildDrawList(options);
+    REQUIRE(list.cubemaps.size() == 1);
+    REQUIRE(list.cubemaps[0].correction);
+    CHECK(glm::distance(list.cubemaps[0].position, DVec3(500, 300, 100)) < 1e-6);
+    CHECK(glm::length(DVec3(glm::inverse(*list.cubemaps[0].correction) * DVec4(500, 300, 100, 1))) < 1e-6);
+    CHECK(g->context->validation().errorCount() == 0);
 }

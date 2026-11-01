@@ -45,16 +45,17 @@ Material materialRecord(FrameBlock frame, uint slot) {
                     vec4(0.0, 0.0, 1.0, 0.0));
 }
 
-// GpuCubemapProbe in gpu_lighting.hpp; std430, 16-byte stride. Camera-relative positions.
+// GpuCubemapProbe in gpu_lighting.hpp; std430, 80-byte stride. Camera-relative positions.
 struct CubemapProbe {
     vec3 position;
     uint cube;
+    mat4 worldToBox;
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer CubemapProbeBuffer {
     CubemapProbe probes[];
 };
 // The env_cubemap nearest to the point (first on ties), or the default cube without probes.
-uint nearestCubemap(FrameBlock frame, vec3 point) {
+uint nearestCubemapIndex(FrameBlock frame, vec3 point) {
     uint cube = 0u;
     float best = 3.4e38;
     for (uint i = 0u; i < frame.cubemapCount; ++i) {
@@ -63,9 +64,23 @@ uint nearestCubemap(FrameBlock frame, vec3 point) {
         float distance = dot(delta, delta);
         if (distance < best) {
             best = distance;
-            cube = probe.cube;
+            cube = i;
         }
     }
     return cube;
+}
+uint nearestCubemap(FrameBlock frame, vec3 point) {
+    return frame.cubemapCount == 0u ? 0u :
+        CubemapProbeBuffer(frame.cubemaps).probes[nearestCubemapIndex(frame, point)].cube;
+}
+vec3 correctedReflection(CubemapProbe probe, vec3 point, vec3 ray) {
+    if (probe.worldToBox[3][3] == 0.0) return ray;
+    vec3 local = (probe.worldToBox * vec4(point, 1.0)).xyz;
+    if (any(greaterThan(abs(local), vec3(1.0)))) return ray;
+    vec3 direction = mat3(probe.worldToBox) * ray;
+    vec3 safeRay = mix(vec3(1e-20), direction, greaterThan(abs(direction), vec3(1e-20)));
+    vec3 farHit = max((-vec3(1.0) - local) / safeRay, (vec3(1.0) - local) / safeRay);
+    float distance = min(farHit.x, min(farHit.y, farHit.z));
+    return point + ray * distance - probe.position;
 }
 #endif

@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <cstring>
+#include <glm/gtc/packing.hpp>
 
 namespace apex::render {
 
@@ -14,7 +15,7 @@ SceneTarget::~SceneTarget() {
 Result<void> SceneTarget::resize(std::uint32_t width, std::uint32_t height) {
     if (color_ && color_.desc().width == width && color_.desc().height == height) return {};
     auto color = Image::create(*context_, {kColorFormat, width, height, 1, 1,
-        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT});
     if (!color) return std::unexpected(color.error().withContext("scene colour"));
     auto depth = Image::create(*context_, {kDepthFormat, width, height, 1, 1,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT});
@@ -77,6 +78,28 @@ void SceneTarget::end(VkCommandBuffer commands) {
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     transitionImage(commands, depth_.handle(), VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+Result<std::vector<float>> SceneTarget::readback() {
+    const std::size_t count = static_cast<std::size_t>(extent().width) * extent().height * 4;
+    auto buffer = Buffer::create(*context_, {count * sizeof(std::uint16_t), VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUsage::Readback});
+    if (!buffer) return std::unexpected(buffer.error());
+    auto copied = context_->oneShot([&](VkCommandBuffer commands) {
+        transitionImage(commands, color_.handle(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {extent().width, extent().height, 1};
+        vkCmdCopyImageToBuffer(commands, color_.handle(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer->handle(), 1, &copy);
+        transitionImage(commands, color_.handle(), VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    });
+    if (!copied) return std::unexpected(copied.error());
+    buffer->invalidate();
+    const auto* halves = static_cast<const std::uint16_t*>(buffer->mapped());
+    std::vector<float> result(count);
+    for (std::size_t i = 0; i < count; ++i) result[i] = glm::unpackHalf1x16(halves[i]);
+    return result;
 }
 
 } // namespace apex::render

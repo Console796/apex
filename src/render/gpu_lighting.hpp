@@ -14,7 +14,7 @@ struct alignas(16) FrameBlock {
     VkDeviceAddress previews = 0;
     VkDeviceAddress lights = 0;
     std::uint32_t lightCount = 0;
-    std::uint32_t flags = 0; // Bit 0: fullbright.
+    std::uint32_t flags = 0; // Bit 0: fullbright; bit 1: cubemap capture.
     std::uint32_t pad[2]{};
     Vec4 cameraRight{0.0f};
     Vec4 cameraUp{0.0f};
@@ -31,12 +31,20 @@ struct alignas(16) FrameBlock {
     VkDeviceAddress clusterStats = 0;
     glm::uvec4 clusterDims{0}; // xyz dimensions; w global light count (prefix of lights).
     Mat4 clusterProjection{1.0f}; // Camera-relative world to clip.
+    Vec4 fogColour{0.0f};
+    Vec4 fogParams{0.0f}; // start, end, max density, enabled.
+    Mat4 skyInverseView{1.0f};
+    glm::uvec4 skyFaces[2]{};
+    Vec4 skyTransform{0.0f}; // xyz translation, w scale.
 };
-static_assert(sizeof(FrameBlock) == 256);
+static_assert(sizeof(FrameBlock) == 400);
 static_assert(offsetof(FrameBlock, clusters) == 160);
 static_assert(offsetof(FrameBlock, clusterStats) == 168);
 static_assert(offsetof(FrameBlock, clusterDims) == 176);
 static_assert(offsetof(FrameBlock, clusterProjection) == 192);
+static_assert(offsetof(FrameBlock, fogColour) == 256);
+static_assert(offsetof(FrameBlock, skyInverseView) == 288);
+static_assert(offsetof(FrameBlock, skyTransform) == 384);
 static_assert(offsetof(FrameBlock, cubemaps) == 144);
 static_assert(offsetof(FrameBlock, cubemapCount) == 152);
 static_assert(offsetof(FrameBlock, materials) == 128);
@@ -77,12 +85,13 @@ inline void packSkyGrid(FrameBlock& frame, const lighting::SkyVisibilityGrid& gr
     frame.skyCellSize = Vec4(Vec3(grid.cellSize()), 0);
 }
 
-// std430 vec3 + uint: 16-byte stride and alignment.
+// std430 vec3 + uint + mat4: 80-byte stride, 16-byte alignment.
 struct alignas(16) GpuCubemapProbe {
     float position[3]{}; // Camera-relative.
     std::uint32_t cube = 0;
+    Mat4 worldToBox{0.0f}; // Zero disables correction.
 };
-static_assert(sizeof(GpuCubemapProbe) == 16);
+static_assert(sizeof(GpuCubemapProbe) == 80);
 static_assert(offsetof(GpuCubemapProbe, cube) == 12);
 
 struct alignas(16) GpuLight {

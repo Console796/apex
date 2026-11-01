@@ -131,3 +131,29 @@ TEST_CASE("MaterialCache specular textures are optional linear data and count to
     CHECK_FALSE(cache.request("missing")->mraoTexture);
     CHECK_FALSE(cache.request("missing")->phongExponentTexture);
 }
+
+TEST_CASE("MaterialCache sky HDR input coexists with the Textured preview") {
+    GameTree tree;
+    tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    tree.put("materials/skybox/hdr.vmt", "Sky { $basetexture white $hdrbasetexture white }");
+    tree.put("materials/skybox/hdr_only.vmt", "Sky { $hdrbasetexture white }");
+    tree.put("materials/skybox/ldr.vmt", "Sky { $basetexture white $hdrbasetexture missing }");
+    REQUIRE(whiteVtf().bake(tree.root / "materials/white.vtf"));
+    JobPool jobs(1);
+    GameProfile profile;
+    profile.gameDirectory = tree.root;
+    auto vfs = Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    MaterialCache cache(*vfs, jobs);
+    for (const auto* name : {"skybox/hdr", "skybox/hdr_only", "skybox/ldr"}) {
+        cache.request(name);
+        finish(jobs, cache, name);
+        REQUIRE(cache.state(name) == MaterialState::Ready);
+    }
+    const auto hdr = cache.request("skybox/hdr");
+    REQUIRE(hdr->skyHdrTexture);
+    CHECK(hdr->texture.format == TextureFormat::Rgba8);
+    CHECK(cache.request("skybox/hdr_only")->skyHdrTexture.has_value());
+    CHECK_FALSE(cache.request("skybox/ldr")->skyHdrTexture.has_value());
+    CHECK(cache.residentBytes() == 5 * hdr->texture.byteSize());
+}

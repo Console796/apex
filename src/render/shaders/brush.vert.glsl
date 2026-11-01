@@ -16,7 +16,12 @@ layout(location = 3) out vec3 vPosition;
 
 void main() {
     vPosition = previewPosition(inPosition);
-    gl_Position = push.viewProj * vec4(vPosition, 1.0);
+    vec3 projected = vPosition;
+    if ((floatBitsToUint(push.p1.w) & 16u) != 0u) {
+        vec4 sky = frameBlock().skyTransform;
+        projected = projected * sky.w + sky.xyz;
+    }
+    gl_Position = push.viewProj * vec4(projected, 1.0);
     vNormal = previewNormal(inNormal);
     vUv = inUv;
     vMaterial = inMaterial;

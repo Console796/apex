@@ -1,4 +1,5 @@
 #include "assets/material_cache.hpp"
+#include "core/strings.hpp"
 
 #include <exception>
 #include <map>
@@ -91,6 +92,7 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
         auto data = impl_->vfs.open(texturePath(textureName));
         return data ? std::move(*data) : Blob{};
     };
+    auto skyHdrBytes = optionalBytes(toLowerAscii(material->shader) == "sky" ? material->parameter("$hdrbasetexture") : "");
     auto mraoBytes = optionalBytes(material->mraoTexture());
     auto exponentBytes = optionalBytes(material->phongExponentTexture());
     auto envmapBytes = material->envmapProbe() ? Blob{} : optionalBytes(material->envmap());
@@ -101,7 +103,7 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
         [material = std::move(*material), bytes = std::move(*bytes), bytes2 = std::move(bytes2), bumpBytes = std::move(bumpBytes),
          mraoBytes = std::move(mraoBytes), exponentBytes = std::move(exponentBytes),
          envmapBytes = std::move(envmapBytes), envmapMaskBytes = std::move(envmapMaskBytes),
-         selfIllumMaskBytes = std::move(selfIllumMaskBytes)]
+         selfIllumMaskBytes = std::move(selfIllumMaskBytes), skyHdrBytes = std::move(skyHdrBytes)]
         (CancelToken token) mutable -> Result<CachedMaterial> {
             try {
                 if (token.cancelled()) {
@@ -132,6 +134,7 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
                 result.phongExponentTexture = decodeLinear(exponentBytes);
                 result.envmapMaskTexture = decodeLinear(envmapMaskBytes);
                 result.selfIllumMaskTexture = decodeLinear(selfIllumMaskBytes);
+                result.skyHdrTexture = decodeLinear(skyHdrBytes);
                 // Colour data: keeps the VTF's own encoding. Anything but a cube is unusable.
                 if (!envmapBytes.empty()) {
                     auto envmap = decodeTexture(envmapBytes);
@@ -159,7 +162,8 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
                            (result->phongExponentTexture ? result->phongExponentTexture->byteSize() : 0) +
                            (result->envmapTexture ? result->envmapTexture->byteSize() : 0) +
                            (result->envmapMaskTexture ? result->envmapMaskTexture->byteSize() : 0) +
-                           (result->selfIllumMaskTexture ? result->selfIllumMaskTexture->byteSize() : 0);
+                           (result->selfIllumMaskTexture ? result->selfIllumMaskTexture->byteSize() : 0) +
+                           (result->skyHdrTexture ? result->skyHdrTexture->byteSize() : 0);
             impl->resident += loaded.bytes;
             loaded.data = std::make_shared<CachedMaterial>(std::move(*result));
             loaded.state = MaterialState::Ready;

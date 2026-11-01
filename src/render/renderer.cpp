@@ -27,7 +27,7 @@ namespace {
 enum class Kind : std::uint32_t {
     Textured, Flat, WireFill, Edges, BoxSolid, BoxWire, Sprite, Grid,
     Outline, OutlineAlways, BoxOutline, BoxOutlineAlways, SpriteOutline, SpriteOutlineAlways,
-    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Tonemap, Highlight, Count
+    DepthOnly, BoxDepthOnly, Overlay, WorldOverlay, WorldOccluded, GhostTextured, GhostFlat, Label, Tonemap, Highlight, Sky, Count
 };
 constexpr std::size_t kKindCount = static_cast<std::size_t>(Kind::Count);
 
@@ -100,10 +100,11 @@ constexpr Spec kSpecs[kKindCount] = {
     {Signature::Caller, "overlay_vert", "label_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false, false},
     {Signature::Caller, "fullscreen_vert", "tonemap_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, true, false, false, true, true, VK_COMPARE_OP_ALWAYS},
     {Signature::Caller, "brush_vert", "brush_textured_frag", Input::Brush, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, true, false},
+    {Signature::Both, "sky_vert", "sky_frag", Input::None, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_POLYGON_MODE_FILL, false, false, false, false},
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
-                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag", "fullscreen_vert", "tonemap_frag", "cluster_comp"};
+                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag", "fullscreen_vert", "tonemap_frag", "cluster_comp", "sky_vert", "sky_frag"};
 
 struct OverlayVertex {
     Vec4 position;
@@ -593,7 +594,7 @@ void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarg
     const float linearClear[4] = {std::pow(clearColor[0], 2.2f), std::pow(clearColor[1], 2.2f),
                                   std::pow(clearColor[2], 2.2f), clearColor[3]};
     scene.begin(commands, linearClear);
-    recordPass(commands, list, true);
+    recordPass(commands, list, true, scene.extent());
     scene.end(commands);
     impl_->preparedScenes[commands] = {scene.colorSlot(), scene.depthSlot()};
 }
@@ -610,6 +611,64 @@ std::uint32_t Renderer::clusterOverflow(VkCommandBuffer commands) const {
     std::uint32_t value;
     std::memcpy(&value, found->second.stats.mapped(), sizeof(value));
     return value;
+}
+
+Result<assets::Texture> Renderer::buildCubemap(DrawList list, DVec3 origin, std::uint32_t size) {
+    if (!std::has_single_bit(size) || size > 512) return std::unexpected(Error{ErrorCode::InvalidArgument, "invalid cubemap size"});
+    list.mode = DisplayMode::Lit;
+    list.buildingCubemap = true;
+    list.viewportSize = Vec2(static_cast<float>(size));
+    list.view.cameraPosition = origin;
+    const DVec3 forward[] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    const DVec3 up[] = {{0, -1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}, {0, -1, 0}, {0, -1, 0}};
+    SceneTarget target(*impl_->context, *impl_->heap);
+    if (auto sized = target.resize(size, size); !sized) return std::unexpected(sized.error());
+    assets::Texture result;
+    result.format = assets::TextureFormat::Rgba32Float;
+    result.faces = 6;
+    assets::TextureMip mip;
+    mip.width = mip.height = static_cast<std::uint16_t>(size);
+    for (int face = 0; face < 6; ++face) {
+        const DVec3 right = glm::cross(forward[face], up[face]);
+        list.view.viewProjection = reversedZPerspective(glm::radians(90.0), 1.0, 1.0) *
+            rotationOnlyView(forward[face], right, up[face]);
+        list.view.cameraRight = Vec3(right);
+        list.view.cameraUp = Vec3(up[face]);
+        auto rendered = impl_->context->oneShot([&](VkCommandBuffer commands) {
+            const float clear[4] = {0, 0, 0, 1};
+            prepare(commands, list, target, clear);
+            impl_->preparedScenes.erase(commands);
+        });
+        if (!rendered) return std::unexpected(rendered.error());
+        auto pixels = target.readback();
+        if (!pixels) return std::unexpected(pixels.error());
+        auto bytes = std::as_bytes(std::span(*pixels));
+        mip.data.insert(mip.data.end(), bytes.begin(), bytes.end());
+    }
+    result.mips.push_back(std::move(mip));
+    while (size > 1) {
+        const auto next = size / 2;
+        assets::TextureMip level;
+        level.width = level.height = static_cast<std::uint16_t>(next);
+        std::vector<float> pixels(6 * next * next * 4);
+        const auto& source = result.mips.back().data;
+        for (std::size_t face = 0; face < 6; ++face) for (std::size_t y = 0; y < next; ++y)
+            for (std::size_t x = 0; x < next; ++x) for (std::size_t c = 0; c < 4; ++c) {
+                float value = 0;
+                for (std::size_t dy = 0; dy < 2; ++dy) for (std::size_t dx = 0; dx < 2; ++dx) {
+                    float sample;
+                    const auto index = ((face * size * size + (2 * y + dy) * size + 2 * x + dx) * 4 + c) * sizeof(float);
+                    std::memcpy(&sample, source.data() + index, sizeof(sample));
+                    value += sample * 0.25f;
+                }
+                pixels[(face * next * next + y * next + x) * 4 + c] = value;
+            }
+        const auto bytes = std::as_bytes(std::span(pixels));
+        level.data.assign(bytes.begin(), bytes.end());
+        result.mips.push_back(std::move(level));
+        size = next;
+    }
+    return result;
 }
 
 bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExtent2D extent) {
@@ -707,7 +766,14 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     frame.previews = buffer.deviceAddress() + previewOffset;
     frame.lights = buffer.deviceAddress() + lightOffset;
     frame.lightCount = static_cast<std::uint32_t>(list.lights.size());
-    frame.flags = list.fullbright ? 1u : 0u;
+    frame.flags = (list.fullbright ? 1u : 0u) | (list.buildingCubemap ? 2u : 0u);
+    frame.fogColour = Vec4(list.fog.colour, 0);
+    frame.fogParams = Vec4(list.fog.start, list.fog.end, list.fog.maxDensity, list.fog.enabled ? 1.0f : 0.0f);
+    frame.skyInverseView = glm::inverse(list.view.viewProjection);
+    for (std::size_t i = 0; i < 6; ++i) frame.skyFaces[i / 4][i % 4] = list.sky.faces[i];
+    frame.skyFaces[1].z = list.sky.linearMask;
+    if (list.sky.camera) frame.skyTransform = Vec4(Vec3(
+        (list.view.cameraPosition - *list.sky.camera) * list.sky.scale - list.view.cameraPosition), float(list.sky.scale));
     frame.materials = materialAddress;
     frame.materialCount = materialAddress ? static_cast<std::uint32_t>(materials.size()) : 0;
     frame.cubemaps = buffer.deviceAddress() + cubemapOffset;
@@ -733,7 +799,12 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     }
     for (std::size_t i = 0; i < list.cubemaps.size(); ++i) {
         const Vec3 position(list.cubemaps[i].position - list.view.cameraPosition);
-        const GpuCubemapProbe probe{{position.x, position.y, position.z}, list.cubemaps[i].cube};
+        GpuCubemapProbe probe{{position.x, position.y, position.z}, list.cubemaps[i].cube};
+        if (const auto& box = list.cubemaps[i].correction) {
+            DMat4 relative = *box;
+            relative[3] -= DVec4(list.view.cameraPosition, 0);
+            probe.worldToBox = Mat4(glm::inverse(relative));
+        }
         std::memcpy(bytes + cubemapOffset + i * sizeof(GpuCubemapProbe), &probe, sizeof(probe));
     }
     if (list.cubemaps.empty()) std::memset(bytes + cubemapOffset, 0, sizeof(GpuCubemapProbe));
@@ -741,7 +812,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     return true;
 }
 
-void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass) {
+void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass, VkExtent2D passExtent) {
     Impl& s = *impl_;
     const VkDeviceAddress frameAddress = s.frameBuffers.at(commands).deviceAddress();
     const auto previewPush = [&](PushConstants& push, std::uint32_t index, bool sprite = false, bool outline = false) {
@@ -762,6 +833,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
     vkCmdSetDepthBias(commands, 0.0f, 0.0f, 0.0f);
     const DVec3 camera = list.view.cameraPosition;
 
+    bool skyPass = false;
     auto drawMeshes = [&](Kind kind, const auto& meshes, auto&& setup, auto&& count, auto&& indices, bool edges) {
         if (!s.has(kind, scenePass)) return;
         s.bind(commands, kind, scenePass);
@@ -770,7 +842,9 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
                           static_cast<const void*>(&meshes) != static_cast<const void*>(&list.ghosts);
         for (const MeshDraw& mesh : meshes) {
             const std::uint32_t n = count(mesh);
-            if (!mesh.vertices || !indices(mesh) || n == 0) continue;
+            if (!mesh.vertices || !indices(mesh) || n == 0 ||
+                ((scenePass || list.mode == DisplayMode::Textured) &&
+                 (kind == Kind::Textured || kind == Kind::GhostTextured) && (mesh.skySurface || mesh.sky != skyPass))) continue;
             if (cull) {
                 // Pipelines take counter-clockwise as front; a clockwise mesh or a mirroring preview
                 // transform flips which side is the back.
@@ -789,7 +863,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             if (mesh.instancedTransforms) push.p1.z = std::bit_cast<float>(mesh.previewIndex | 0x80000000u);
             // Bit 2 asks brush_textured_frag for the tint alone (Lit's post-tone-map highlight pass).
             push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha) |
-                                            (kind == Kind::Highlight ? 4u : 0u) | (scenePass ? 8u : 0u));
+                                            (kind == Kind::Highlight ? 4u : 0u) | (scenePass ? 8u : 0u) | (skyPass ? 16u : 0u));
             // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
             const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
             for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;
@@ -803,7 +877,8 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
     auto edgesBuf = [](const MeshDraw& m) { return m.edgeIndices; };
     auto brushColour = [&](PushConstants& p, const MeshDraw& m) {
         p.colour = m.colour;
-        p.p0 = scenePass ? Vec4(0.0f) : m.highlight; // Lit tints after tone mapping (D15).
+        p.p0 = scenePass && m.reflectionPoint ? Vec4(toCameraRelative(*m.reflectionPoint, camera), 1) :
+            scenePass ? Vec4(0.0f) : m.highlight; // Lit tints after tone mapping (D15).
     };
 
     if (!scenePass && list.mode == DisplayMode::Lit) {
@@ -822,6 +897,29 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
         // Selection and hover tints, depth-tested against the copied scene depth.
         drawMeshes(Kind::Highlight, list.meshes, brushColour,
                    [](const MeshDraw& m) { return m.highlight.a > 0.0f ? m.indexCount : 0u; }, trianglesBuf, false);
+    }
+    if ((scenePass || list.mode == DisplayMode::Textured) && list.sky.enabled) {
+        PushConstants push = basePush(list);
+        previewPush(push, 0);
+        push.p0.x = scenePass ? 1.0f : 0.0f;
+        s.bind(commands, Kind::Sky, scenePass);
+        s.pushAll(commands, push);
+        vkCmdDraw(commands, 3, 1, 0, 0);
+    }
+    if ((scenePass || list.mode == DisplayMode::Textured) && list.sky.camera) {
+        skyPass = true;
+        drawMeshes(Kind::Textured, list.meshes, brushColour,
+            [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? 0u : m.indexCount; }, trianglesBuf, false);
+        drawMeshes(Kind::GhostTextured, list.meshes, brushColour,
+            [](const MeshDraw& m) { return m.alpha == AlphaMode::Blend ? m.indexCount : 0u; }, trianglesBuf, false);
+        // Main geometry always wins over the 3D sky (D10).
+        VkClearAttachment depth{};
+        depth.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        depth.clearValue.depthStencil = {0.0f, 0};
+        if (!passExtent.width) passExtent = {static_cast<std::uint32_t>(list.viewportSize.x), static_cast<std::uint32_t>(list.viewportSize.y)};
+        const VkClearRect rect{{{0, 0}, passExtent}, 0, 1};
+        if (rect.rect.extent.width && rect.rect.extent.height) vkCmdClearAttachments(commands, 1, &depth, 1, &rect);
+        skyPass = false;
     }
     switch (list.mode) {
     case DisplayMode::Lit:

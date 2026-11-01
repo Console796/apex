@@ -77,6 +77,7 @@
 #include "editor/prefab.hpp"
 #include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
+#include "ui/gpu_host.hpp"
 #include "ui/game_content.hpp"
 #include "ui/materials_panel.hpp"
 #include "ui/asset_browser_panel.hpp"
@@ -1099,6 +1100,11 @@ void MainWindow::buildAreas() {
     themeMenu_->setObjectName(QStringLiteral("themeMenu"));
     refreshThemeMenu();
     viewMenu_->addSeparator();
+    auto* rebuildCubemaps = viewMenu_->addAction(tr("Rebuild cubemaps"), this, [this] {
+        viewport_->host().rebuildCubemaps();
+        statusBar()->showMessage(tr("Cubemap rebuild requested"), 3000);
+    });
+    rebuildCubemaps->setObjectName(QStringLiteral("actionRebuildCubemaps"));
     viewMenu_->addAction(tr("Reset cameras"), viewport_, &ViewportArea::resetCameras);
     viewMenu_->addAction(tr("Reset workspace"), workspaces_, &WorkspaceBar::resetActive)
         ->setObjectName(QStringLiteral("actionResetWorkspace"));

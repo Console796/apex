@@ -28,6 +28,7 @@ class SceneTarget {
     void begin(VkCommandBuffer commands, const float clearColor[4]);
     // Ends rendering and transitions both images to SHADER_READ_ONLY_OPTIMAL.
     void end(VkCommandBuffer commands);
+    Result<std::vector<float>> readback(); // Linear RGBA, after completion.
 
   private:
     Context* context_;

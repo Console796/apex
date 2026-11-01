@@ -17,6 +17,7 @@ struct CachedMaterial {
     std::optional<Texture> envmapTexture;        // Named $envmap cube; never for env_cubemap.
     std::optional<Texture> envmapMaskTexture;    // Linear data.
     std::optional<Texture> selfIllumMaskTexture; // Linear data.
+    std::optional<Texture> skyHdrTexture; // Sky $hdrbasetexture, before tone mapping.
 };
 enum class MaterialState { Unloaded, Loading, Ready, Failed };
 

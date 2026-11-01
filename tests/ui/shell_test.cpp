@@ -3596,3 +3596,14 @@ TEST_CASE("Lit status line displays cluster overflow beside the lighting budget"
     emit area->lightingBudgetChanged(false, 0);
     CHECK(label->isHidden());
 }
+
+TEST_CASE("shell: cubemap rebuild command is available and safe without a GPU") {
+    auto& application = apex::ui_test::app();
+    apex::ui::MainWindow window;
+    auto* action = window.findChild<QAction*>(QStringLiteral("actionRebuildCubemaps"));
+    REQUIRE(action);
+    CHECK(action->isEnabled());
+    action->trigger();
+    application.processEvents();
+    CHECK(window.statusBar()->currentMessage() == QStringLiteral("Cubemap rebuild requested"));
+}

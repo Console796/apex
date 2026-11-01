@@ -69,6 +69,7 @@ public:
 
     // Delivers finished mesh/texture jobs; returns true when the scene needs redrawing.
     bool pump();
+    void rebuildCubemaps();
     void requestModelThumbnail(const QObject* owner, const QString& path, bool visible);
     void clearModelThumbnails();
     void tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting);

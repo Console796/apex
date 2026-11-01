@@ -16,6 +16,8 @@
 #include <functional>
 #include <map>
 #include <set>
+#include <sstream>
+#include <bit>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -33,6 +35,29 @@ std::string lower(std::string_view text) {
     std::ranges::transform(result, result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return result;
 }
+
+std::string entityText(const kv1::Node& block, std::string_view key) {
+    const auto* node = block.find(key);
+    return node ? std::string(node->decodedValue().value_or("")) : "";
+}
+
+double entityNumber(const kv1::Node& block, std::string_view key, double fallback) {
+    const auto text = entityText(block, key);
+    double value = fallback;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    return parsed.ec == std::errc{} && std::isfinite(value) ? value : fallback;
+}
+
+DVec3 entityVector(const kv1::Node& block, std::string_view key, DVec3 fallback = DVec3(0)) {
+    std::istringstream stream(entityText(block, key));
+    DVec3 result;
+    if (stream >> result.x >> result.y >> result.z && std::isfinite(result.x) &&
+        std::isfinite(result.y) && std::isfinite(result.z)) return result;
+    return fallback;
+}
+
+using ProbeKey = std::array<long long, 3>;
+ProbeKey probeKey(DVec3 p) { return {std::llround(p.x), std::llround(p.y), std::llround(p.z)}; }
 
 // Stable pastel colour per material for Flat mode.
 Vec4 flatColour(const std::string& material) {
@@ -118,6 +143,8 @@ struct MaterialState {
     TextureSlot envmapCube = kNoTexture; // Owned cube slot of a named $envmap.
     TextureSlot envmapMaskSlot = kNoTexture;
     TextureSlot selfIllumMaskSlot = kNoTexture;
+    TextureSlot skyHdrSlot = kNoTexture;
+    bool skyHdrLinear = false;
     TextureSize size;
     bool loading = false;
     std::size_t textureBytes = 0;
@@ -186,6 +213,7 @@ struct RenderMirror::Impl {
     bool skyBuilding = false, skyWanted = false, skyUsedSincePump = false, skyHasAmbient = false;
     std::chrono::steady_clock::time_point skyChanged = std::chrono::steady_clock::now();
     std::map<NodeId, std::string> skyEntityClasses;
+    std::map<NodeId, std::shared_ptr<const kv1::Node>> environmentBlocks;
     std::map<std::shared_ptr<const Document>, std::uint64_t> skyInstanceRevisions;
 
     void invalidateSky() {
@@ -196,7 +224,17 @@ struct RenderMirror::Impl {
     std::map<std::string, MaterialState, std::less<>> materials;
     TextureSize placeholderSize;
     CubemapSource cubemapSource;
+    std::optional<document::InstanceFixup> instanceFixup;
     std::map<std::array<long long, 3>, TextureSlot> probeCubes; // Rounded origin -> cube slot.
+
+    struct ProbeState {
+        std::uint64_t fingerprint = 0;
+        bool stale = true;
+        std::chrono::steady_clock::time_point changed = std::chrono::steady_clock::now();
+    };
+    std::map<ProbeKey, ProbeState> probeStates;
+    bool rebuildProbes = false;
+    std::array<std::uint64_t, 3> probeSyncStamp{};
 
     Buffer entityBuffer;
     std::uint32_t entityCount = 0;
@@ -321,7 +359,7 @@ struct RenderMirror::Impl {
     void releaseTextures(MaterialState& state) {
         if (state.slot != kCheckerboardSlot) heap.release(state.slot);
         for (TextureSlot* slot : {&state.bumpSlot, &state.mraoSlot, &state.phongExponentSlot,
-                                  &state.envmapMaskSlot, &state.selfIllumMaskSlot}) {
+                                  &state.envmapMaskSlot, &state.selfIllumMaskSlot, &state.skyHdrSlot}) {
             if (*slot != kNoTexture) heap.release(*slot);
             *slot = kNoTexture;
         }
@@ -332,9 +370,9 @@ struct RenderMirror::Impl {
 
     // Probe cubes come from cubemapSource, once per rounded origin; slot 0 when it has none.
     TextureSlot probeCube(DVec3 origin) {
-        if (!cubemapSource) return kDefaultCubeSlot;
-        const std::array<long long, 3> key{std::llround(origin.x), std::llround(origin.y), std::llround(origin.z)};
+        const auto key = probeKey(origin);
         if (const auto found = probeCubes.find(key); found != probeCubes.end()) return found->second;
+        if (!cubemapSource) return kDefaultCubeSlot;
         TextureSlot cube = kDefaultCubeSlot;
         if (auto texture = cubemapSource(origin)) {
             if (auto created = heap.uploadCube(*texture)) cube = *created;
@@ -399,6 +437,12 @@ struct RenderMirror::Impl {
             texture.format == assets::TextureFormat::Bc6Signed || texture.format == assets::TextureFormat::Bc6Unsigned ?
             kMaterialLinearBase : 0u;
         const auto shader = lower(vmt.shader);
+        if (shader == "sky" && material.skyHdrTexture) {
+            if (auto hdr = heap.upload(*material.skyHdrTexture)) state.skyHdrSlot = *hdr;
+            state.skyHdrLinear = material.skyHdrTexture->format == assets::TextureFormat::Rgba32Float ||
+                material.skyHdrTexture->format == assets::TextureFormat::Bc6Signed ||
+                material.skyHdrTexture->format == assets::TextureFormat::Bc6Unsigned;
+        }
         // Refract with $localrefract (light covers) draws unlit from its own base texture; screen-space
         // Refract stays base-texture-only until the renderer has a scene copy to refract.
         const bool localRefract = shader == "refract" && vmt.localRefract();
@@ -488,7 +532,8 @@ struct RenderMirror::Impl {
         heap.setMaterial(state.slot, record);
         state.textureBytes = texture.byteSize() + (material.bumpTexture ? material.bumpTexture->byteSize() : 0) +
             (material.mraoTexture ? material.mraoTexture->byteSize() : 0) +
-            (material.phongExponentTexture ? material.phongExponentTexture->byteSize() : 0) + envmapBytes;
+            (material.phongExponentTexture ? material.phongExponentTexture->byteSize() : 0) +
+            (material.skyHdrTexture ? material.skyHdrTexture->byteSize() : 0) + envmapBytes;
         state.size = {texture.mips[0].width, texture.mips[0].height, vmt.baseTextureTransform};
         uploaded = true;
         ++stats.texturesUploaded;
@@ -1137,6 +1182,7 @@ struct RenderMirror::Impl {
                 hierarchy[node->id] = {node->parent, node->children};
                 if (std::holds_alternative<Handle<document::Entity>>(handle) && node->block) {
                     const auto* cls = node->block->find("classname");
+                    environmentBlocks[node->id] = hidden(doc, *node) ? nullptr : node->block;
                     skyEntityClasses[node->id] = cls ? lower(cls->decodedValue().value_or("")) : "";
                 }
                 hierarchyIds[handle] = node->id;
@@ -1148,6 +1194,7 @@ struct RenderMirror::Impl {
         // to the ChangeSet, including containers that do not have render state of their own.
         for (const auto& handle : changes.destroyed) {
             if (const auto found = hierarchyIds.find(handle); found != hierarchyIds.end()) {
+                environmentBlocks.erase(found->second);
                 skyEntityClasses.erase(found->second);
                 hierarchy.erase(found->second);
                 hierarchyIds.erase(found);
@@ -1199,6 +1246,184 @@ struct RenderMirror::Impl {
         collectGarbage();
     }
 
+    kv1::Node effectiveBlock(NodeId id, const kv1::Node& source) const {
+        auto block = source;
+        if (const auto it = helperPreview.find(id); it != helperPreview.end())
+            for (const auto& [key, value] : it->second) {
+                if (auto* entry = block.find(key)) *entry = kv1::Node::value(key, value);
+                else block.append(kv1::Node::value(key, value)).value();
+            }
+        return block;
+    }
+
+    void environment(DrawList& list) {
+        bool fogFound = false, fogMaster = false;
+        for (const auto& [id, source] : environmentBlocks) {
+            if (!source) continue;
+            const auto block = effectiveBlock(id, *source);
+            const auto classname = lower(entityText(block, "classname"));
+            if (classname == "worldspawn") {
+                const auto name = lower(entityText(block, "skyname"));
+                if (name.empty()) continue;
+                constexpr const char* suffix[] = {"rt", "lf", "bk", "ft", "up", "dn"};
+                list.sky.enabled = true;
+                for (std::size_t face = 0; face < 6; ++face) {
+                    const auto& material = resolveMaterial("skybox/" + name + suffix[face]);
+                    const bool hdr = list.mode == DisplayMode::Lit && material.skyHdrSlot != kNoTexture;
+                    list.sky.faces[face] = hdr ? material.skyHdrSlot : material.slot;
+                    if ((hdr && material.skyHdrLinear) || (!hdr && (heap.materials()[material.slot].flags & kMaterialLinearBase) != 0u))
+                        list.sky.linearMask |= 1u << face;
+                }
+            } else if (classname == "sky_camera" && !list.sky.camera) {
+                DVec3 origin = entityVector(block, "origin");
+                if (const auto it = effectivePreview.find(id); it != effectivePreview.end())
+                    origin = DVec3(it->second * DVec4(origin, 1));
+                list.sky.camera = origin;
+                list.sky.scale = std::max(0.001, entityNumber(block, "scale", 16));
+            } else if (classname == "env_fog_controller" && !fogMaster &&
+                       (!fogFound || (entityUint(block, "spawnflags") & 1u) != 0u)) {
+                // First visible controller; the master flag wins (D10, provisional D2).
+                fogFound = true;
+                fogMaster = (entityUint(block, "spawnflags") & 1u) != 0u;
+                list.fog.enabled = entityNumber(block, "fogenable", 1) != 0;
+                list.fog.colour = Vec3(glm::pow(glm::clamp(entityVector(block, "fogcolor", DVec3(255)) / 255.0,
+                    DVec3(0), DVec3(1)), DVec3(2.2))) * float(std::max(0.0, entityNumber(block, "hdrcolorscale", 1)));
+                list.fog.start = float(entityNumber(block, "fogstart", 500));
+                list.fog.end = float(entityNumber(block, "fogend", 2000));
+                list.fog.maxDensity = float(std::clamp(entityNumber(block, "fogmaxdensity", 1), 0.0, 1.0));
+            }
+        }
+        if (uploaded) {
+            if (auto flushed = heap.flush(); !flushed) log::warn("sky texture upload: {}", flushed.error().what());
+            uploaded = false;
+        }
+        if (!list.sky.camera) return;
+        // No BSP leaves in the editor: nearest enclosing axial sky walls bound the sky area.
+        AABB region{DVec3(-std::numeric_limits<double>::infinity()), DVec3(std::numeric_limits<double>::infinity())};
+        const auto camera = *list.sky.camera;
+        for (const auto& [id, solid] : solids) {
+            if (solid.hidden || !solid.bounded || !std::ranges::any_of(solid.materials, [&](const auto& name) {
+                const auto found = materials.find(name);
+                return isSkyMaterial(name, found != materials.end() && found->second.sky);
+            })) continue;
+            for (int axis = 0; axis < 3; ++axis) {
+                const int a = (axis + 1) % 3, b = (axis + 2) % 3;
+                if (camera[a] < solid.bounds.min[a] || camera[a] > solid.bounds.max[a] ||
+                    camera[b] < solid.bounds.min[b] || camera[b] > solid.bounds.max[b]) continue;
+                if (solid.bounds.max[axis] <= camera[axis]) region.min[axis] = std::max(region.min[axis], solid.bounds.max[axis]);
+                if (solid.bounds.min[axis] >= camera[axis]) region.max[axis] = std::min(region.max[axis], solid.bounds.min[axis]);
+            }
+        }
+        if (!std::isfinite(region.min.x) || !std::isfinite(region.min.y) || !std::isfinite(region.min.z) ||
+            !std::isfinite(region.max.x) || !std::isfinite(region.max.y) || !std::isfinite(region.max.z)) return;
+        for (auto& mesh : list.meshes) {
+            DVec3 origin = mesh.origin;
+            if (mesh.previewIndex) origin = DVec3(list.previews[mesh.previewIndex - 1].matrix * DVec4(origin, 1));
+            mesh.sky = region.contains(origin);
+        }
+    }
+
+    void syncProbes(const DrawList& list) {
+        if (cubemapSource || drawsInstanceContents) return;
+        const auto completed = [&](const auto& self, const Impl& mirror) -> std::uint64_t {
+            auto count = static_cast<std::uint64_t>(mirror.stats.solidsRemeshed);
+            for (const auto& [keys, child] : mirror.instanceMirrors) count += self(self, *child->impl_);
+            return count;
+        };
+        const std::array stamp{skyRequested, heap.materialRevision(), completed(completed, *this)};
+        const bool previewing = !preview.empty() || !helperPreview.empty() || !previewGeometry.empty();
+        if (previewing) { probeSyncStamp = {}; return; }
+        if (stamp == probeSyncStamp) return;
+        probeSyncStamp = stamp;
+        std::set<ProbeKey> live;
+        for (const auto& probe : list.cubemaps) {
+            const auto key = probeKey(probe.position);
+            live.insert(key);
+            std::uint64_t hash = 1469598103934665603ull;
+            const auto add = [&](std::uint64_t word) { hash = (hash ^ word) * 1099511628211ull; };
+            const auto nearby = [&](const AABB& bounds) {
+                const auto delta = glm::max(glm::max(bounds.min - probe.position, probe.position - bounds.max), DVec3(0));
+                return glm::dot(delta, delta) <= 1024.0 * 1024.0;
+            };
+            for (const auto& [name, material] : materials) if (name.starts_with("skybox/")) {
+                add(material.slot); add(material.skyHdrSlot);
+            }
+            for (const auto& [id, solid] : solids) {
+                if (solid.hidden || !solid.bounded || !nearby(solid.bounds)) continue;
+                add(id); add(solid.version);
+                for (const auto& name : solid.materials) if (const auto it = materials.find(name); it != materials.end())
+                    add(it->second.slot);
+            }
+            for (const auto& [id, block] : environmentBlocks) {
+                if (!block) continue;
+                const auto cls = lower(entityText(*block, "classname"));
+                if (cls != "worldspawn" && cls != "light_environment" && cls != "env_fog_controller" &&
+                    cls != "sky_camera" && !nearby({entityVector(*block, "origin"), entityVector(*block, "origin")})) continue;
+                add(id); add(reinterpret_cast<std::uintptr_t>(block.get()));
+                if (const auto entity = entities.find(id); entity != entities.end() && !entity->second.model.empty()) {
+                    const auto& mesh = models.at(entity->second.model);
+                    add(reinterpret_cast<std::uintptr_t>(mesh.data.get()));
+                    for (const auto& [index, name] : mesh.materials)
+                        if (const auto it = materials.find(name); it != materials.end()) add(it->second.slot);
+                }
+            }
+            const auto instanceInputs = [&](const auto& self, const Impl& mirror, const DMat4& transform) -> void {
+                for (const auto& [id, solid] : mirror.solids) {
+                    if (solid.hidden || !solid.bounded) continue;
+                    AABB world;
+                    for (int corner = 0; corner < 8; ++corner) {
+                        const DVec3 p{corner & 1 ? solid.bounds.max.x : solid.bounds.min.x,
+                            corner & 2 ? solid.bounds.max.y : solid.bounds.min.y,
+                            corner & 4 ? solid.bounds.max.z : solid.bounds.min.z};
+                        world.expand(DVec3(transform * DVec4(p, 1)));
+                    }
+                    if (!nearby(world)) continue;
+                    add(id); add(solid.version); add(reinterpret_cast<std::uintptr_t>(solid.block.get()));
+                    for (const auto& name : solid.materials) if (const auto it = mirror.materials.find(name); it != mirror.materials.end())
+                        add(it->second.slot);
+                    for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) add(std::bit_cast<std::uint64_t>(transform[c][r]));
+                }
+                for (const auto& [id, entity] : mirror.entities) {
+                    const auto p = DVec3(transform * DVec4(entity.position, 1));
+                    if (!nearby({p, p})) continue;
+                    add(id); add(reinterpret_cast<std::uintptr_t>(entity.block.get()));
+                    if (!entity.model.empty()) {
+                        const auto& mesh = mirror.models.at(entity.model);
+                        add(reinterpret_cast<std::uintptr_t>(mesh.data.get()));
+                        for (const auto& [index, name] : mesh.materials)
+                            if (const auto it = mirror.materials.find(name); it != mirror.materials.end()) add(it->second.slot);
+                    }
+                    for (int axis = 0; axis < 3; ++axis) add(std::bit_cast<std::uint64_t>(p[axis]));
+                }
+                if (mirror.instanceVisibility == document::InstanceVisibility::Hidden) return;
+                for (const auto& content : mirror.instances) {
+                    const auto found = mirror.instanceMirrors.find(content.keys);
+                    if (found != mirror.instanceMirrors.end()) self(self, *found->second->impl_, transform * content.transform);
+                }
+            };
+            if (instanceVisibility != document::InstanceVisibility::Hidden) for (const auto& content : instances) {
+                const auto found = instanceMirrors.find(content.keys);
+                if (found != instanceMirrors.end()) instanceInputs(instanceInputs, *found->second->impl_, content.transform);
+            }
+            auto& state = probeStates[key];
+            if (state.fingerprint != hash) {
+                state.fingerprint = hash;
+                state.stale = true;
+                state.changed = std::chrono::steady_clock::now();
+                redraw = true;
+            }
+        }
+        for (auto it = probeStates.begin(); it != probeStates.end();) {
+            if (live.contains(it->first)) { ++it; continue; }
+            if (const auto cube = probeCubes.find(it->first); cube != probeCubes.end()) {
+                context.waitIdle();
+                heap.releaseCube(cube->second);
+                probeCubes.erase(cube);
+            }
+            it = probeStates.erase(it);
+        }
+    }
+
     bool pending() const {
         if (skyBuilding || skyPending()) return true;
         // Hidden contents are not pumped (see pump), so their loads never finish and must not hold frames open.
@@ -1228,6 +1453,8 @@ void RenderMirror::setCubemapSource(CubemapSource source) {
         m.probeCubes.clear();
         m.heap.collectGarbage();
     }
+    m.probeStates.clear();
+    m.probeSyncStamp = {};
     m.cubemapSource = std::move(source);
     m.redraw = true;
 }
@@ -1480,13 +1707,55 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     m.resolvePreview();
     m.rebuildLights();
     list.lights = m.lights;
-    if (options.mode == DisplayMode::Lit) {
+    {
         for (const auto& [id, entity] : m.entities) {
             if (!entity.cubemap) continue;
-            const auto found = m.effectivePreview.find(id);
-            const DVec3 position = found == m.effectivePreview.end() ? entity.position :
-                DVec3(found->second * DVec4(entity.position, 1));
-            list.cubemaps.push_back({position, kDefaultCubeSlot});
+            const auto posePreview = m.effectivePreview.find(id);
+            CubemapProbe probe;
+            const auto effective = m.effectiveBlock(id, *entity.block);
+            const auto origin = entityVector(effective, "origin", entity.position);
+            probe.position = posePreview == m.effectivePreview.end() ? origin : DVec3(posePreview->second * DVec4(origin, 1));
+            const auto resolution = int(entityNumber(effective, "cubemapsize", 0));
+            probe.size = resolution > 0 ? 1u << std::clamp(resolution - 1, 0, 8) : 32;
+            const auto target = lower(entityText(effective, "parallaxobb"));
+            if (!target.empty()) for (const auto& [boxId, box] : m.entities) {
+                const auto fixedTarget = m.instanceFixup ? lower(m.instanceFixup->fixName(target)) : target;
+                if ((box.nameKey != target && box.nameKey != fixedTarget) ||
+                    lower(entityText(*box.block, "classname")) != "parallax_obb") continue;
+                AABB bounds;
+                DMat3 basis(1.0);
+                if (!box.brushSolids.empty()) {
+                    const auto first = m.solids.find(box.brushSolids.front());
+                    if (first != m.solids.end()) if (auto shape = geometry::solidGeometry(*first->second.block)) {
+                        if (!shape->poly.faces.empty()) {
+                            const auto x = shape->poly.faces.front().plane.normal;
+                            for (const auto& face : shape->poly.faces) {
+                                const auto y = face.plane.normal;
+                                if (std::abs(glm::dot(x, y)) > 1e-6) continue;
+                                basis = DMat3(x, y, glm::cross(x, y));
+                                break;
+                            }
+                        }
+                    }
+                }
+                for (const auto solidId : box.brushSolids) {
+                    const auto found = m.solids.find(solidId);
+                    if (found != m.solids.end()) if (auto shape = geometry::solidGeometry(*found->second.block))
+                        for (const auto& vertex : shape->poly.vertices) bounds.expand(glm::transpose(basis) * vertex);
+                }
+                if (bounds.empty()) continue;
+                const auto half = (bounds.max - bounds.min) * 0.5;
+                if (glm::any(glm::lessThanEqual(half, DVec3(0)))) continue;
+                DMat4 matrix(1.0);
+                for (int axis = 0; axis < 3; ++axis) matrix[axis][axis] = half[axis];
+                matrix[3] = DVec4((bounds.min + bounds.max) * 0.5, 1);
+                matrix = DMat4(basis) * matrix;
+                if (const auto preview = m.effectivePreview.find(boxId); preview != m.effectivePreview.end())
+                    matrix = preview->second * matrix;
+                probe.correction = matrix;
+                break;
+            }
+            list.cubemaps.push_back(probe);
         }
     }
     const auto previewIndex = [&](NodeId id, DVec3 origin) -> std::uint32_t {
@@ -1525,9 +1794,12 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
             // Wireframe keeps every edge: 2D views would otherwise lose the nodraw faces' outline.
             const MaterialState* state = material != m.materials.end() ? &material->second : nullptr;
-            const bool hideFill = options.mode != DisplayMode::Wireframe &&
-                                  ((!options.showNodraw && isNodraw(batch.material, state)) ||
-                                   (!options.showToolFaces && isToolFace(batch.material, state)));
+            draw.skySurface = isSkyMaterial(batch.material, state && state->sky);
+            const bool hideFill = (textured && m.brushOwner.contains(id) &&
+                                   lower(entityText(*m.entities.at(m.brushOwner.at(id)).block, "classname")) == "parallax_obb") ||
+                                  (options.mode != DisplayMode::Wireframe &&
+                                   ((!options.showNodraw && isNodraw(batch.material, state)) ||
+                                    (!options.showToolFaces && isToolFace(batch.material, state))));
             if (textured && material != m.materials.end()) draw.alpha = material->second.alpha;
             switch (options.mode) {
             case DisplayMode::Lit:
@@ -1543,10 +1815,25 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             const bool faceMode = !selected && std::ranges::any_of(batch.faces, [&](const FaceRange& face) {
                 return sides.contains(face.side);
             });
-            if (faceMode) {
+            const bool probeMaterial = state && (m.heap.materials()[state->slot].flags & kMaterialEnvmapProbe) != 0u;
+            if (faceMode || (options.mode == DisplayMode::Lit && probeMaterial)) {
                 // Split existing ranges so a face tint does not bleed into its material siblings.
                 for (const FaceRange& face : batch.faces) {
                     MeshDraw part = draw;
+                    part.reflectionPoint = m.effectivePreview.contains(id) ?
+                        DVec3(m.effectivePreview.at(id) * DVec4(face.centre, 1)) : face.centre;
+                    if (probeMaterial) for (const auto& [probeId, entity] : m.entities) {
+                        if (!entity.cubemap) continue;
+                        std::istringstream sideIds(entityText(*entity.block, "sides"));
+                        document::SideId side = 0;
+                        bool assigned = false;
+                        while (sideIds >> side) if (side == face.side) { assigned = true; break; }
+                        if (!assigned) continue;
+                        const auto it = m.effectivePreview.find(probeId);
+                        part.reflectionPoint = it == m.effectivePreview.end() ? entity.position :
+                            DVec3(it->second * DVec4(entity.position, 1));
+                        break;
+                    }
                     part.firstIndex = face.firstIndex;
                     part.indexCount = face.indexCount;
                     part.firstEdgeIndex = face.firstEdgeIndex;
@@ -1807,6 +2094,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             mirror.setHighlight(highlight);
             mirror.impl_->drawsInstanceContents = true;
             mirror.impl_->ownerInspected = selected || hovered;
+            mirror.impl_->instanceFixup = content.fixup;
             auto child = mirror.buildDrawList(options);
             m.drawnInstanceSolids += mirror.meshedSolidCount();
             DMat4 transform = content.transform;
@@ -1819,6 +2107,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
             for (auto probe : child.cubemaps) {
                 probe.position = point(probe.position);
+                if (probe.correction) probe.correction = transform * *probe.correction;
                 list.cubemaps.push_back(probe);
             }
             const auto preview = [&](std::uint32_t index, DVec3 origin, std::uint32_t count = 1) {
@@ -1833,6 +2122,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             };
             const auto meshes = [&](const auto& source, auto& destination, bool outline = false) {
                 for (auto draw : source) {
+                    if (draw.reflectionPoint) draw.reflectionPoint = point(*draw.reflectionPoint);
                     draw.previewIndex = preview(draw.previewIndex, draw.origin, draw.instancedTransforms ? draw.instanceCount : 1);
                     if (!outline) draw.highlight = tint;
                     destination.push_back(draw);
@@ -1869,6 +2159,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
         }
     }
+    if (textured) m.environment(list);
     if (options.mode == DisplayMode::Lit && !m.drawsInstanceContents) {
         m.skyWanted = true;
         m.skyUsedSincePump = true;
@@ -1880,14 +2171,74 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     // Only Lit samples the grid; other modes must not pay for its upload.
     if (options.mode == DisplayMode::Lit) list.skyVisibility = m.skyGrid;
     // Probe cubes are named by world origin, so only the outermost mirror resolves them.
-    if (options.mode == DisplayMode::Lit && !m.drawsInstanceContents && m.cubemapSource && !list.cubemaps.empty()) {
+    if (options.mode == DisplayMode::Lit && !m.drawsInstanceContents && !list.cubemaps.empty()) {
         const auto cubes = m.heap.liveCubes();
         for (auto& probe : list.cubemaps) probe.cube = m.probeCube(probe.position);
         if (m.heap.liveCubes() != cubes) {
             if (auto flushed = m.heap.flush(); !flushed) log::error("render mirror: cubemap upload: {}", flushed.error().what());
         }
     }
+    m.syncProbes(list);
+    if (options.showEntities && options.showEntityHelpers && !m.cubemapSource && !m.drawsInstanceContents) {
+        for (const auto& probe : list.cubemaps) {
+            const auto state = m.probeStates.find(probeKey(probe.position));
+            if (state == m.probeStates.end() || state->second.stale)
+                list.labels.push_back({probe.position, "Cubemap stale", {12, -12}, {1, 0.65f, 0.1f, 1}});
+        }
+    }
+    if (options.mode != DisplayMode::Lit && !m.drawsInstanceContents) list.cubemaps.clear();
     return list;
+}
+
+void RenderMirror::requestCubemapRebuild() {
+    impl_->rebuildProbes = true;
+    for (auto& [key, state] : impl_->probeStates) state.stale = true;
+    impl_->redraw = true;
+}
+
+std::size_t RenderMirror::staleCubemapCount() const {
+    return std::ranges::count_if(impl_->probeStates, [](const auto& entry) { return entry.second.stale; });
+}
+
+bool RenderMirror::cubemapRebuildPending() const {
+    return !impl_->cubemapSource && (impl_->rebuildProbes || staleCubemapCount() > 0);
+}
+
+Result<std::size_t> RenderMirror::rebuildCubemaps(Renderer& renderer, bool force,
+                                               std::chrono::steady_clock::time_point now) {
+    auto& m = *impl_;
+    if (m.cubemapSource) return 0;
+    if (force) requestCubemapRebuild();
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    options.showEntityHelpers = false;
+    options.showNodraw = options.showToolFaces = false;
+    const bool redraw = m.redraw;
+    auto list = buildDrawList(options);
+    m.redraw = m.redraw || redraw;
+    if (m.pending() || !m.preview.empty() || !m.helperPreview.empty() || !m.previewGeometry.empty()) return 0;
+    std::size_t rebuilt = 0;
+    for (const auto& probe : list.cubemaps) {
+        const auto key = probeKey(probe.position);
+        auto& state = m.probeStates.at(key);
+        if (!state.stale || (!m.rebuildProbes && now - state.changed < std::chrono::seconds(1))) continue;
+        auto texture = renderer.buildCubemap(list, probe.position, probe.size);
+        if (!texture) return std::unexpected(texture.error());
+        auto slot = m.heap.uploadCube(*texture);
+        if (!slot) return std::unexpected(slot.error());
+        if (auto flushed = m.heap.flush(); !flushed) { m.heap.releaseCube(*slot); return std::unexpected(flushed.error()); }
+        if (const auto old = m.probeCubes.find(key); old != m.probeCubes.end()) {
+            m.context.waitIdle();
+            m.heap.releaseCube(old->second);
+        }
+        m.probeCubes[key] = *slot;
+        state.stale = false;
+        ++rebuilt;
+        m.redraw = true;
+    }
+    m.rebuildProbes = false;
+    m.heap.collectGarbage();
+    return rebuilt;
 }
 
 const MirrorStats& RenderMirror::stats() const { return impl_->stats; }

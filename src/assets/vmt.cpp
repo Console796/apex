@@ -154,6 +154,7 @@ std::string_view Material::previewTexture() const {
     if (!toolTexture.empty()) {
         return toolTexture;
     }
+    if (baseTexture.empty() && toLowerAscii(shader) == "sky") return parameter("$hdrbasetexture");
     return baseTexture;
 }
 std::string_view Material::parameter(std::string_view key) const {

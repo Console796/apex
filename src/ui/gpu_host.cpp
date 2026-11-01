@@ -217,8 +217,16 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
 bool GpuHost::pump() {
     if (!mirror_) { if (jobs_) jobs_->drainCompletions(); return false; }
     mirror_->pump();
+    if (mirror_->cubemapRebuildPending()) if (auto* capture = renderer(VK_FORMAT_R8G8B8A8_UNORM)) {
+        if (auto rebuilt = mirror_->rebuildCubemaps(*capture); !rebuilt)
+            log::error("cubemap rebuild: {}", rebuilt.error().what());
+    }
     if (modelPicks_ && modelPicks_->pump()) ++modelPickRevision_;
     return mirror_->needsRedraw();
+}
+
+void GpuHost::rebuildCubemaps() {
+    if (mirror_) mirror_->requestCubemapRebuild();
 }
 
 void GpuHost::clearModelThumbnails() {

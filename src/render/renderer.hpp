@@ -84,6 +84,9 @@ struct MeshDraw {
     AlphaMode alpha = AlphaMode::Opaque; // Textured/Lit modes.
     std::uint32_t instanceCount = 1;
     bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
+    bool skySurface = false; // Aperture: no colour/depth in Textured or Lit.
+    bool sky = false;
+    std::optional<DVec3> reflectionPoint; // Brush-side centre; models use the fragment.
     bool edgeOverlay = true;          // False skips this mesh in the Textured/Lit/Flat edge overlay pass.
     bool clockwise = false;           // Front faces wind clockwise from outside (models); brushes are counter-clockwise.
 };
@@ -168,11 +171,42 @@ struct Label {
 struct CubemapProbe {
     DVec3 position{0.0};
     TextureSlot cube = kDefaultCubeSlot;
+    std::optional<DMat4> correction; // Unit box [-1,1] to world, parallax_obb.
+    std::uint32_t size = 32;
 };
+
+struct FogSettings {
+    Vec3 colour{0.0f}; // Linear.
+    float start = 0.0f, end = 0.0f, maxDensity = 1.0f;
+    bool enabled = false;
+};
+
+struct SkySettings {
+    std::array<TextureSlot, 6> faces{}; // rt, lf, bk, ft, up, dn.
+    std::uint32_t linearMask = 0;
+    bool enabled = false;
+    std::optional<DVec3> camera;
+    double scale = 16.0;
+};
+
+// D10: one probe per brush side, Euclidean distance, first on ties (provisional D2).
+inline std::size_t nearestCubemap(std::span<const CubemapProbe> probes, DVec3 point) {
+    std::size_t nearest = 0;
+    double best = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < probes.size(); ++i) {
+        const auto delta = probes[i].position - point;
+        const auto distance = glm::dot(delta, delta);
+        if (distance < best) { best = distance; nearest = i; }
+    }
+    return nearest;
+}
 
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
+    SkySettings sky;
+    FogSettings fog;
+    bool buildingCubemap = false; // D16: all envmaps sample neutral black.
     bool fullbright = false; // Lit: unit irradiance, useful for inspecting albedo.
     bool cullBackFaces = true; // Filled mesh kinds only; a mirroring preview culls the other side.
     std::vector<lighting::Light> lights; // World-space doubles; rebased at upload.
@@ -202,7 +236,7 @@ struct DrawList {
     std::vector<OverlayTriangle> worldTriangles;
     std::vector<Label> labels;
     float labelScale = 1.0f; // Physical pixels per atlas pixel.
-    Vec2 viewportSize{0.0f};            // Pixels; required when overlay primitives are present.
+    Vec2 viewportSize{0.0f};            // Pixels; required for 3D sky depth reset and overlays.
 };
 
 // Push constants shared by all pipelines (mirrors shaders/common.inc).
@@ -241,6 +275,8 @@ class Renderer {
     // record once per recording, and finish its previous submission before reusing it (as
     // Swapchain does). Frame buffers are retained per slot, including across preview clears.
     void record(VkCommandBuffer commands, const DrawList& list);
+    // Blocking six-face linear HDR capture, before tone mapping or editor overlays (D16).
+    Result<assets::Texture> buildCubemap(DrawList list, DVec3 origin, std::uint32_t size = 32);
     // The atlas may be shared by renderers with different attachment formats.
     void setGlyphAtlas(std::shared_ptr<const GlyphAtlas> atlas);
 
@@ -257,7 +293,7 @@ class Renderer {
 
   private:
     bool uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExtent2D extent = {});
-    void recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass);
+    void recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass, VkExtent2D extent = {});
     struct Impl;
     explicit Renderer(std::unique_ptr<Impl> impl, bool wireFill);
     std::unique_ptr<Impl> impl_;
