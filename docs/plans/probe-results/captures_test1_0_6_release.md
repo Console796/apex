@@ -41,5 +41,27 @@ half (where bounce matters).
 - The exit sign's running-man decal and the door window decal are missing or white in Apex; they are
   among the six materials that fail to load for test1.
 
-Owner review of the side-by-side frames is the release judgment; the open question is whether a
-~0.7× direct-light level is accepted for 0.6 or investigated first.
+## Investigation (2026-11-01): two errors that partly cancel
+
+**Bounce is about half of the game's baked light.** test1 was compiled by the editor's Normal
+profile (`vrad -StaticPropLighting -StaticPropPolys`, default bounce). Relighting that same BSP with
+`-bounce 0` (same flags, the editor's generated `content/gameinfo.txt` so the workshop materials mount)
+gives a style-0 lightmap whose total luminance over all non-displacement luxels is 0.49 of the game
+BSP's. Even the brightest directly lit luxels are only about 0.56 direct (median). Apex shows direct
+light only (D8), so its lit frames should come out at roughly 0.5–0.6× of the game from bounce alone.
+
+**Apex's display curve is still the placeholder.** `tonemap.frag.glsl` encodes with
+`pow(x·exposure, 1/2.2)` ("placeholder display curve until the game's curve is fitted"). Against set 2's
+fullbright frames, Apex is brighter by an amount that depends on level, not by a constant: about 2.6×
+(linear) at sRGB 10–30, 1.4–1.5× at 30–70, 1.1–1.2× at 110–190, and slightly darker above 210. A
+power fit gives Apex ≈ game^0.85–0.9 in display space. Part of this may be material response rather
+than the curve: most of test1 is EverythingPBR, and the game's PBR shader under `mat_fullbright` may
+still darken metallic diffuse, while Apex fullbright reproduces albedo.
+
+Together: about 0.55× from missing bounce, times about 1.35× from the curve and material response,
+gives the 0.75× observed. Neither the light model nor exposure is shown to be wrong.
+
+**Next capture to separate them (D3's still-open in-game `-bounce 0` capture).**
+`build/parity/test1_b0.bsp` is test1 relit with `-bounce 0`. Captured in game at the set 2 poses with the
+same pinned settings, Apex Lit should match it in direct-lit regions once the display curve is right,
+and the remaining difference measures the curve and material response by themselves.
