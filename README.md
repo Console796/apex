@@ -129,7 +129,8 @@ py -m pip install aqtinstall
 py -m aqt install-qt windows desktop 6.10.2 win64_msvc2022_64 -m qtmultimedia -O C:\Qt
 ```
 
-Then configure with `-DCMAKE_PREFIX_PATH=C:/Qt/6.10.2/msvc2022_64`.
+Then configure with `-DCMAKE_PREFIX_PATH=C:/Qt/6.10.2/msvc2022_64`. Each link of `apex.exe` runs
+`windeployqt` on it, so the build folder carries its own Qt DLLs and runs without Qt on `PATH`.
 
 ## Testing and CI
 

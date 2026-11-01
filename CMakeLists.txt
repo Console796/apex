@@ -185,6 +185,14 @@ if(APEX_BUILD_APP)
   endif()
   add_executable(apex src/app/main.cpp)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
+  if(WIN32 AND TARGET Qt6::windeployqt)
+    # Put the Qt DLLs and plugins next to apex.exe so the build folder runs on its own, the same
+    # set tools/package.py ships in the zip.
+    add_custom_command(TARGET apex POST_BUILD
+                       COMMAND Qt6::windeployqt --svg --include-plugins qsvg,qsvgicon --no-translations
+                               --no-system-d3d-compiler --verbose 0 "$<TARGET_FILE:apex>"
+                       VERBATIM)
+  endif()
   if(APEX_BUILD_TESTS)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
