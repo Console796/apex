@@ -167,7 +167,6 @@ Result<assets::Thumbnail> ModelThumbnailRenderer::draw(RenderTarget& target, con
         draw.indices = &*ib;
         draw.firstIndex = range.firstIndex;
         draw.indexCount = range.indexCount;
-        draw.clockwise = true;
         draw.colour = Vec4(0.65f, 0.72f, 0.8f, 1.0f);
         if (!textured.empty()) {
             const auto found = textured.find(range.material);

@@ -65,7 +65,7 @@ void putModel(GameTree& tree, std::string name = "fixture", bool mapped = false)
         vtx.put(group + 8, indices); vtx.put(group + 12, 97);
         vtx.put(group + 16, 1); vtx.put(group + 20, 121);
         for (int i = 0; i < vertices; ++i) vtx.put<std::uint16_t>(group + 25 + i * 9 + 4, static_cast<std::uint16_t>(i));
-        const std::uint16_t order[] = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+        const std::uint16_t order[] = {0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6}; // Wound like a compiled studio model.
         for (int i = 0; i < indices; ++i) vtx.put(group + 97 + i * 2, order[i]);
         vtx.put(group + 121, indices); vtx.put(group + 129, vertices);
         vtx.put<std::uint8_t>(group + 139, 1); // trilist
@@ -638,4 +638,52 @@ TEST_CASE("model mirror: Lit VertexLitGeneric normal material reaches the light 
     CHECK(channel(*image, 64, 64, 0) > 120);
     CHECK(std::abs(channel(*image, 64, 64, 0) - expected) <= 1);
     CHECK(context->validation().errorCount() == 0);
+}
+
+TEST_CASE("installed studio model culls only its hidden faces") {
+    const auto* install = std::getenv("APEX_P2CE_DIR");
+    auto* context = testing::sharedContext();
+    if (!install || !context) { MESSAGE("Skipped: installed P2CE and Vulkan required"); return; }
+    assets::GameProfile profile;
+    profile.gameDirectory = std::filesystem::path(install) / "p2ce";
+    JobPool jobs(2);
+    auto vfs = assets::Vfs::load(profile, jobs); REQUIRE(vfs);
+    auto parsed = vmf::parse(R"(entity { id 1 classname prop_static origin "0 0 0" angles "0 30 0" model "models/props/metal_box.mdl" })");
+    REQUIRE(parsed);
+    document::Document doc(*parsed);
+    assets::ModelCache models(*vfs, jobs);
+    assets::MaterialCache materials(*vfs, jobs);
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    RenderMirror mirror(*context, **heap, jobs, materials, nullptr, &models);
+    mirror.rebuild(doc);
+    REQUIRE(mirror.settle());
+    REQUIRE(models.state("models/props/metal_box.mdl") == assets::ModelState::Ready);
+    // A closed model seen from outside looks the same either way: culling only drops faces the
+    // depth test would hide. Culling the wrong side shows the inside instead (a real compiled
+    // model, since the synthetic fixture can't prove which way studiomdl winds).
+    const auto frame = [&](DVec3 forward, bool cull) {
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Flat;
+        options.cullBackFaces = cull;
+        const DVec3 up = std::abs(forward.z) > 0.9 ? DVec3(0, 1, 0) : DVec3(0, 0, 1);
+        options.view.cameraPosition = -forward * 80.0;
+        options.view.viewProjection = reversedZPerspective(glm::radians(60.0), 1.0, 1.0) *
+                                      rotationOnlyView(forward, glm::cross(forward, up), up);
+        auto list = mirror.buildDrawList(options);
+        list.worldSegments.clear(); list.labels.clear();
+        REQUIRE_FALSE(list.meshes.empty());
+        return draw(*context, **heap, list);
+    };
+    for (const DVec3 forward : {DVec3(1, 0, 0), DVec3(0, -1, 0), glm::normalize(DVec3(-1, 1, -1)), DVec3(0, 0, -1)}) {
+        CAPTURE(forward);
+        const auto culled = frame(forward, true), open = frame(forward, false);
+        int covered = 0, differing = 0;
+        for (int y = 0; y < 128; ++y) for (int x = 0; x < 128; ++x) {
+            if (channel(open, x, y, 0) + channel(open, x, y, 1) + channel(open, x, y, 2) > 0) ++covered;
+            for (int c = 0; c < 3; ++c)
+                if (std::abs(channel(culled, x, y, c) - channel(open, x, y, c)) > 2) { ++differing; break; }
+        }
+        CHECK(covered > 1000);
+        CHECK(differing < covered / 50);
+    }
 }

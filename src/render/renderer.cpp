@@ -846,11 +846,11 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
                 ((scenePass || list.mode == DisplayMode::Textured) &&
                  (kind == Kind::Textured || kind == Kind::GhostTextured) && (mesh.skySurface || mesh.sky != skyPass))) continue;
             if (cull) {
-                // Pipelines take counter-clockwise as front; a clockwise mesh or a mirroring preview
-                // transform flips which side is the back.
+                // Brushes and studio models share one winding; a mirroring preview transform flips
+                // which side is the back.
                 const bool mirrored = mesh.previewIndex != 0 &&
                                       glm::determinant(DMat3(list.previews[mesh.previewIndex - 1].matrix)) < 0.0;
-                vkCmdSetCullMode(commands, mirrored != mesh.clockwise ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT);
+                vkCmdSetCullMode(commands, mirrored ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_BACK_BIT);
             }
             const VkDeviceSize zero = 0;
             VkBuffer vb = mesh.vertices->handle();

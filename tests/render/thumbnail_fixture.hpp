@@ -18,7 +18,8 @@ inline assets::ModelData thumbnailModel() {
         const Vec2 uvs[] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
         int corner_index = 0;
         for (const auto corner : face) model.vertices.push_back({corners[corner], normal, uvs[corner_index++]});
-        for (const auto index : {0u, 1u, 2u, 0u, 2u, 3u}) model.indices.push_back(first + index);
+        // Loops run counter-clockwise from inside; triangles are emitted reversed, like a compiled model.
+        for (const auto index : {0u, 2u, 1u, 0u, 3u, 2u}) model.indices.push_back(first + index);
     }
     for (const auto& v : model.vertices) model.bounds.expand(DVec3(v.position));
     model.bodyParts.push_back({"body", 1, {{"wedge", model.bounds}, {"hidden", {}}}});

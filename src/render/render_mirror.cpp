@@ -2038,7 +2038,6 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 draw.firstEdgeIndex = range.firstIndex * 2;
                 draw.edgeIndexCount = range.indexCount * 2;
                 draw.edgeOverlay = options.modelEdgeOverlay;
-                draw.clockwise = true;
                 const auto material = mesh.materials.find(range.material);
                 if (material != mesh.materials.end() && !material->second.empty()) {
                     const auto& state = m.materials.at(material->second);
