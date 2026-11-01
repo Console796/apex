@@ -29,13 +29,16 @@ sudo apt install build-essential g++-15 clang-21 libclang-rt-21-dev cmake ninja-
 
 ```bash
 git clone <remote> apex && cd apex
-cmake --preset linux-asan
-cmake --build --preset linux-asan -j6
+cmake --preset linux-clang-release
+cmake --build --preset linux-clang-release -j6
 ```
 
 Presets are `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan` (GCC
 ASan+UBSan), `linux-fuzz` (Clang libFuzzer) and `windows-msvc-{debug,release}`. Build trees go
-under `build/<preset>/`.
+under `build/<preset>/`. Iterate on `linux-clang-release`: it builds several times faster than
+`linux-asan`, and the gate runs `linux-asan` anyway (§5), so memory errors still get caught before
+a tag. `RelWithDebInfo` defines `NDEBUG`, so when a change leans on `assert()`, use
+`linux-clang-debug` instead. Build `linux-asan` yourself only to chase a suspected memory bug.
 
 **Memory:** on a 15 GB host, cap jobs at `-j6`, especially for `linux-asan`. An unbounded ASan
 build runs out of memory, and only one build should run at a time.
@@ -43,12 +46,12 @@ build runs out of memory, and only one build should run at a time.
 ## 3. Tests
 
 ```bash
-ctest --preset linux-asan                       # everything registered
-ASAN_OPTIONS=detect_leaks=0 build/linux-asan/tests/apex_tests -tc='*face*'   # one area
+ctest --preset linux-clang-release                       # everything registered
+build/linux-clang-release/tests/apex_tests -tc='*face*'   # one area
 ```
 
 - **Watch the tests like CI:** `python3 tools/ci.py --tests [PRESET]` builds and runs `ctest` for one
-  preset (default `linux-asan`) and the layer check, with no BUILD number and no other stages. It
+  preset (default `linux-asan`; pass `linux-clang-release` while iterating) and the layer check, with no BUILD number and no other stages. It
   writes `build/ci/tests/`, so `tools/ci_top.py` (live stage table, ctest N/M progress, ETA from the
   gate's timings, log tail) and `tools/ci_status.py` follow it exactly as they follow the full gate.
 
@@ -58,13 +61,13 @@ ASAN_OPTIONS=detect_leaks=0 build/linux-asan/tests/apex_tests -tc='*face*'   # o
   latest run: bar, ETA, the running case, slowest cases, failures. `ctest` runs and query flags
   (`-ltc`, `-r=`) don't write it.
 
-- **Pick the tests your change touches.** The full ASan suite takes about 15 minutes, so leave it
-  to CI.
+- **Pick the tests your change touches.** Leave the full suite, and the ASan suite (about 15
+  minutes), to CI.
 - **UI tests** (`apex_ui_tests`) run offscreen. Run them by hand isolated from the desktop
   session, so they can't reach KWin or the session bus:
 
   ```bash
-  env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen ASAN_OPTIONS=detect_leaks=0 APEX_SKIP_RECOVERY=1 dbus-run-session -- build/linux-asan/apex_ui_tests -tc='*aterial*'
+  env -u DISPLAY -u WAYLAND_DISPLAY QT_QPA_PLATFORM=offscreen APEX_SKIP_RECOVERY=1 dbus-run-session -- build/linux-clang-release/apex_ui_tests -tc='*aterial*'
   ```
 
   Don't start a bare nested `kwin_wayland`.
@@ -272,8 +275,8 @@ Check that the guest has the toolchain from step 2 before relying on it. Then ru
    own branch again, work on that branch and check `git branch` first.
 2. **Plans:** each milestone has its plan in `docs/plans/`. Record decisions and *As built* notes
    there as the work lands.
-3. **Before each commit:** build `linux-asan` with `-j6`, run the targeted tests and the UI tests
-   for the area, then `check_layers.py` and `git diff --check`.
+3. **Before each commit:** build `linux-clang-release` with `-j6`, run the targeted tests and the
+   UI tests for the area, then `check_layers.py` and `git diff --check`. ASan runs at the gate (step 5).
 4. **Commits:** sign every commit (`git commit -s`), one per sub-milestone (`0.3.9: ...`), with
    the message saying what was built and why.
 5. **Before tagging or merging to `master`:** `python3 tools/ci.py --windows always` must be green.
