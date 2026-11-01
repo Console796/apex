@@ -14,6 +14,7 @@
 #include <QFile>
 #include <QImage>
 
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -34,13 +35,14 @@ struct Options {
     fs::path vmf, game, out, cubemaps;
     int width = 1920, height = 1080;
     double fov = 90;
+    int timeFrames = 0;
     std::string mode = "lit";
     std::vector<Pose> poses;
 };
 
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
-                 "  [--fov 90] [--mode lit|textured|fullbright] [--cubemaps DIR]\n"
+                 "  [--fov 90] [--mode lit|textured|fullbright] [--cubemaps DIR] [--time N]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
                  "Poses are Source cl_showpos eye positions and QAngles; negative pitch looks up.\n"
@@ -50,7 +52,9 @@ void help() {
                  "--cubemaps DIR gives each env_cubemap DIR/c<x>_<y>_<z>.hdr.vtf, else .vtf, named by its\n"
                  "origin rounded to integers as VBSP names them (e.g. files extracted from a compiled BSP's\n"
                  "pakfile). Prints one line per probe with the file used, or \"default\" for the default cube.\n"
-                 "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n";
+                 "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
+                 "--time N also renders each pose N more times after 3 warm-up frames and prints the mean frame\n"
+                 "time (submit + wait, no readback) with the cluster and shadow-budget overflow counts.\n";
 }
 
 double number(const std::string& text) {
@@ -81,6 +85,12 @@ Options parse(int argc, char** argv) {
         else if (flag == "--width") o.width = dimension();
         else if (flag == "--height") o.height = dimension();
         else if (flag == "--fov") o.fov = number(next());
+        else if (flag == "--time") {
+            const double value = number(next());
+            if (value < 1 || value > 10000 || std::floor(value) != value)
+                throw std::runtime_error("--time takes a frame count in [1, 10000]");
+            o.timeFrames = static_cast<int>(value);
+        }
         else if (flag == "--mode") o.mode = next();
         else if (flag == "--cubemaps") o.cubemaps = next();
         else if (flag == "--pose") {
@@ -231,12 +241,17 @@ int run(const Options& o) {
         list.fullbright = o.mode == "fullbright";
         // Leave exposure at DrawList's default, as ViewportPane does.
         constexpr float clear[] = {0.1f, 0.1f, 0.1f, 1.0f};
-        check(context->oneShot([&](VkCommandBuffer commands) {
-            renderer->prepare(commands, list, scene, clear);
-            target.begin(commands, clear);
-            renderer->record(commands, list);
-            target.end(commands);
-        }));
+        VkCommandBuffer slot = VK_NULL_HANDLE;
+        const auto render = [&] {
+            check(context->oneShot([&](VkCommandBuffer commands) {
+                slot = commands;
+                renderer->prepare(commands, list, scene, clear);
+                target.begin(commands, clear);
+                renderer->record(commands, list);
+                target.end(commands);
+            }));
+        };
+        render();
         const auto image = take(target.readback());
         const auto path = out / (fileName(pose, o));
         QFile file(QString::fromStdString(path.string()));
@@ -248,6 +263,16 @@ int run(const Options& o) {
                   << " lights=" << list.lights.size() << " materials=" << materialNames.size()
                   << " failed-materials=" << failedMaterials << " failed-models=" << failedModels
                   << " sky-grid-revision=" << mirror.skyVisibilityState().revision << '\n';
+        if (o.timeFrames) {
+            for (int warm = 0; warm < 3; ++warm) render();
+            const auto start = std::chrono::steady_clock::now();
+            for (int frame = 0; frame < o.timeFrames; ++frame) render();
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()
+                / o.timeFrames;
+            std::cout << fileName(pose, o) << " device=\"" << context->info().name << "\" frame-ms=" << ms
+                      << " frames=" << o.timeFrames << " cluster-overflow=" << renderer->clusterOverflow(slot)
+                      << " shadow-overflow=" << renderer->shadowOverflow(slot) << '\n';
+        }
     }
     context->waitIdle();
     if (context->validation().errorCount()) throw std::runtime_error("Vulkan validation errors");
