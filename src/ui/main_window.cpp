@@ -89,6 +89,22 @@
 static void initializeIcons() { Q_INIT_RESOURCE(icons); }
 
 namespace apex::ui {
+
+QIcon appIcon() {
+    initializeIcons();
+    QIcon icon;
+    for (const int size : {16, 24, 32, 48, 64, 128, 256}) {
+        QSvgRenderer renderer(size <= 24 ? QStringLiteral(":/icons/apex_small.svg") : QStringLiteral(":/icons/apex.svg"));
+        QPixmap pixmap(size, size);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        renderer.render(&painter);
+        painter.end();
+        icon.addPixmap(pixmap);
+    }
+    return icon;
+}
+
 namespace {
 constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
     "tool.vertex", "tool.primitive", "tool.apply", "tool.measure"};
@@ -163,6 +179,7 @@ MainWindow::MainWindow(QWidget* parent)
     session_.setOverlayPalette(overlayPalette(currentTokens()));
     session_.setPieSettings(loadPieSettings());
     initializeIcons();
+    setWindowIcon(appIcon());
     session_.setPieTrace([this](std::string_view event, std::string_view detail, std::chrono::milliseconds time) {
         // Once per refusal: pieRefusal() stays set until the next open, so an observer would repeat it.
         if (event == "refusal") statusBar()->showMessage(fromStd(detail), 4000);

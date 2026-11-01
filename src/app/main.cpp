@@ -9,6 +9,7 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("Apex"));
     QApplication::setOrganizationName(QStringLiteral("Apex"));
+    QApplication::setWindowIcon(apex::ui::appIcon());  // Dialogs and the taskbar, not just the main window.
     apex::log::init();
     QStringList themeErrors;
     apex::ui::loadCustomThemes(apex::ui::themesDir(), &themeErrors);

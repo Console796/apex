@@ -6,5 +6,7 @@
     <file>faces.svg</file>
     <file>ignore_groups.svg</file>
     <file>marquee.svg</file>
+    <file>apex.svg</file>
+    <file>apex_small.svg</file>
   </qresource>
 </RCC>

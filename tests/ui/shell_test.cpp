@@ -129,6 +129,19 @@ TEST_CASE("custom themes round-trip through files and inherit from a base") {
     CHECK(apex::ui::applyThemeId(a, "gone") == apex::ui::kDefaultThemeId);
 }
 
+TEST_CASE("the main window carries the Apex icon at every common size") {
+    app();
+    const QIcon icon = apex::ui::appIcon();
+    REQUIRE_FALSE(icon.isNull());
+    for (const int size : {16, 24, 32, 48, 64, 128, 256}) CHECK(icon.availableSizes().contains(QSize(size, size)));
+    // The tile is ink, so a corner-adjacent pixel is dark and the mark's centre column is not empty.
+    const QImage big = icon.pixmap(256, 256).toImage();
+    CHECK(big.pixelColor(20, 128).lightness() < 40);
+    CHECK(big.pixelColor(128, 70).lightness() > 200);
+    apex::ui::MainWindow window;
+    CHECK(window.windowIcon().availableSizes() == icon.availableSizes());
+}
+
 TEST_CASE("Pointfile is the default theme and brings its bundled font") {
     auto& a = app();
     CHECK(QString::fromLatin1(apex::ui::kDefaultThemeId) == "pointfile");

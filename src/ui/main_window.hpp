@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QIcon>
 #include <QMainWindow>
 #include <functional>
 #include <QMetaObject>
@@ -41,6 +42,10 @@ class ViewportArea;
 class WorkspaceBar;
 class MaterialsPanel;
 class AssetBrowserPanel;
+
+// The Apex mark on its ink tile, rendered at the usual window and taskbar sizes. Sizes of 24 px
+// and below use the small mark, whose leak line is a solid bar.
+QIcon appIcon();
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
