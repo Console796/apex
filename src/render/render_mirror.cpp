@@ -59,9 +59,11 @@ DVec3 entityVector(const kv1::Node& block, std::string_view key, DVec3 fallback 
 using ProbeKey = std::array<long long, 3>;
 ProbeKey probeKey(DVec3 p) { return {std::llround(p.x), std::llround(p.y), std::llround(p.z)}; }
 
-// Stable pastel colour per material for Flat mode.
+// Stable pastel colour per material for Flat mode. FNV-1a, not std::hash, which differs between
+// standard libraries and so gave MSVC builds other colours.
 Vec4 flatColour(const std::string& material) {
-    const std::size_t h = std::hash<std::string>{}(material);
+    std::uint64_t h = 14695981039346656037ull;
+    for (const unsigned char c : material) h = (h ^ c) * 1099511628211ull;
     const auto channel = [&](int shift) { return 0.35f + 0.55f * static_cast<float>((h >> shift) & 0xFF) / 255.0f; };
     return {channel(0), channel(8), channel(16), 1.0f};
 }
