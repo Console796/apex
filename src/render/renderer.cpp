@@ -550,7 +550,9 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
     const VkDeviceSize lightOffset = sizeof(FrameBlock);
     const VkDeviceSize previewOffset = lightOffset + list.lights.size() * sizeof(GpuLight);
     const VkDeviceSize cubemapOffset = previewOffset + list.previews.size() * sizeof(PreviewTransform);
-    const VkDeviceSize size = cubemapOffset + list.cubemaps.size() * sizeof(GpuCubemapProbe);
+    // At least one probe slot, so frame.cubemaps is never a null address: llvmpipe's JIT dereferences it in
+    // nearestCubemap even when cubemapCount is 0. The zeroed slot names the default cube.
+    const VkDeviceSize size = cubemapOffset + std::max<std::size_t>(list.cubemaps.size(), 1) * sizeof(GpuCubemapProbe);
     const auto* sky = list.skyVisibility.get();
     VkDeviceAddress skyAddress = 0;
     if (sky && sky->probeCount() > 0) {
@@ -619,7 +621,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
     frame.flags = list.fullbright ? 1u : 0u;
     frame.materials = materialAddress;
     frame.materialCount = materialAddress ? static_cast<std::uint32_t>(materials.size()) : 0;
-    frame.cubemaps = list.cubemaps.empty() ? 0 : buffer.deviceAddress() + cubemapOffset;
+    frame.cubemaps = buffer.deviceAddress() + cubemapOffset;
     frame.cubemapCount = static_cast<std::uint32_t>(list.cubemaps.size());
     frame.cameraRight = Vec4(list.view.cameraRight, 0);
     frame.cameraUp = Vec4(list.view.cameraUp, 0);
@@ -639,6 +641,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
         const GpuCubemapProbe probe{{position.x, position.y, position.z}, list.cubemaps[i].cube};
         std::memcpy(bytes + cubemapOffset + i * sizeof(GpuCubemapProbe), &probe, sizeof(probe));
     }
+    if (list.cubemaps.empty()) std::memset(bytes + cubemapOffset, 0, sizeof(GpuCubemapProbe));
     buffer.flush(0, size);
     return true;
 }
