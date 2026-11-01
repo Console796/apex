@@ -76,7 +76,7 @@ void main() {
             texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), refractUv, duvdx, duvdy);
         }
         vec3 albedo = max(texel.rgb * push.colour.rgb, vec3(0.0));
-        if ((material.flags & MATERIAL_LINEAR_BASE) == 0u) albedo = pow(albedo, vec3(2.2));
+        if ((material.flags & MATERIAL_LINEAR_BASE) == 0u) albedo = srgbToLinear(albedo);
         vec3 colour = albedo;
         bool pbr = (material.flags & MATERIAL_PBR) != 0u;
         vec3 mrao = vec3(0.0, 1.0, 1.0);

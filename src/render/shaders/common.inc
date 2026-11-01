@@ -10,3 +10,9 @@ layout(push_constant) uniform Push {
 
 // Tone map reuses offsetSlot.w for scene colour, p0.x for depth (uint bits), p0.y for exposure, p0.z bit 0 for SRGB attachment encoding.
 uint pushSlot() { return floatBitsToUint(push.offsetSlot.w); }
+
+// Gamma-encoded texture colour to linear: the piecewise sRGB decode, as hardware SRGB reads do. The
+// tone map encodes with the inverse, so Lit fullbright reproduces a texture exactly.
+vec3 srgbToLinear(vec3 c) {
+    return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, lessThanEqual(c, vec3(0.04045)));
+}

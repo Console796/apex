@@ -1,4 +1,5 @@
 #include "sky_fixture.hpp"
+#include "display_curve.hpp"
 #include "assets/vtf.hpp"
 #include "lighting/normal_map.hpp"
 #include "render/context.hpp"
@@ -1091,7 +1092,7 @@ TEST_CASE("renderer: Lit box room evaluates point spot and sun in linear space")
             for (const auto& light : list.lights) irradiance += lighting::irradiance(light, position, normal);
             const auto expected = [&](double exposure) {
                 const auto encode = [&](double value) {
-                    return static_cast<int>(std::lround(255 * std::pow(std::clamp(std::pow(128.0 / 255, 2.2) * value * exposure, 0.0, 1.0), 1 / 2.2)));
+                    return testing::displayCode(testing::srgbDecode(128.0 / 255) * value * exposure);
                 };
                 return Px{encode(irradiance.x), encode(irradiance.y), encode(irradiance.z)};
             };
@@ -1132,8 +1133,8 @@ TEST_CASE("renderer: Lit fullbright translucent albedo blends before gamma") {
         list.exposure = exposure;
         const auto image = drawLitFrame(*gpu, list, scene);
         const auto encode = [&](double colour) {
-            const double linear = 0.6 * std::pow(colour, 2.2) + 0.4 * std::pow(0.1, 2.2);
-            return static_cast<int>(std::lround(255 * std::pow(linear * exposure, 1 / 2.2)));
+            const double linear = 0.6 * testing::srgbDecode(colour) + 0.4 * testing::srgbDecode(0.1);
+            return testing::displayCode(linear * exposure);
         };
         CHECK(nearColour(at(image, 26, 38), {encode(128.0 / 255 * 0.5), encode(64.0 / 255 * 0.75),
                                            encode(192.0 / 255 * 0.25)}, 1));
@@ -1240,7 +1241,7 @@ TEST_CASE("renderer: Lit fullbright matches UNORM and SRGB attachment encoding")
             list.exposure = exposure;
             const auto unormImage = drawLitFrame(*gpu, list, scene);
             const auto srgbImage = drawLitFrame(srgb, list, scene);
-            // Both store the same placeholder display curve; hardware SRGB conversion may
+            // Both store the sRGB display curve; hardware SRGB conversion may
             // round to the neighbouring UNORM8 code compared with the shader's UNORM output.
             checkLitParity(unormImage, srgbImage);
         }
@@ -1300,7 +1301,8 @@ TEST_CASE("renderer: Lit transformed preview matches point and spot CPU irradian
     const auto image = drawLitFrame(*gpu, list, scene);
     const auto inverseView = glm::inverse(DMat4(list.view.viewProjection));
     const auto inversePreview = glm::inverse(preview);
-    const DVec3 albedo = glm::pow(DVec3(128, 180, 220) / 255.0 * DVec3(mesh.colour), DVec3(2.2));
+    const DVec3 tinted = DVec3(128, 180, 220) / 255.0 * DVec3(mesh.colour);
+    const DVec3 albedo(testing::srgbDecode(tinted.r), testing::srgbDecode(tinted.g), testing::srgbDecode(tinted.b));
     for (unsigned y : {29u, 32u, 35u}) {
         for (unsigned x : {29u, 32u, 35u}) {
             CAPTURE(x);
@@ -1317,10 +1319,9 @@ TEST_CASE("renderer: Lit transformed preview matches point and spot CPU irradian
             REQUIRE(std::abs(glm::dot(local, face.vAxis)) < 38);
             DVec3 irradiance(0);
             for (const auto& light : list.lights) irradiance += lighting::irradiance(light, position, normal);
-            const DVec3 display = glm::pow(glm::clamp(albedo * irradiance * double(list.exposure), DVec3(0), DVec3(1)),
-                                          DVec3(1 / 2.2));
-            const Px expected{int(std::lround(display.r * 255)), int(std::lround(display.g * 255)),
-                              int(std::lround(display.b * 255))};
+            const DVec3 linear = albedo * irradiance * double(list.exposure);
+            const Px expected{testing::displayCode(linear.r), testing::displayCode(linear.g),
+                              testing::displayCode(linear.b)};
             // Uniform albedo avoids filtering error. Float32 math and RGBA16F storage contribute
             // less than one UNORM8 code here, including the final half-code rounding error.
             CHECK(nearColour(at(image, x, y), expected, 1));
@@ -1445,7 +1446,7 @@ TEST_CASE("renderer: Lit normal material slopes face a grazing light and Texture
         const auto tangent = lighting::decodeNormal(ssbump ? DVec3(0, 1, 0) : DVec3(128, 230, 200) / 255.0, ssbump);
         const DVec3 normal(-tangent.z, -tangent.x, -tangent.y);
         const auto energy = lighting::irradiance(light, {0, 0, 0}, normal);
-        const int expected = int(std::lround(std::pow(energy.r, 1 / 2.2) * 255));
+        const int expected = testing::displayCode(energy.r);
         CHECK(std::abs(at(lit, 20, 32).r - expected) <= 1);
     }
     list.fullbright = true;
@@ -1479,9 +1480,7 @@ TEST_CASE("renderer: Lit float material preserves HDR energy without colour deco
     list.fullbright = true;
     list.exposure = 0.25f;
     const auto image = drawLitFrame(*gpu, list, scene);
-    const Px expected{int(std::lround(std::pow(0.5, 1 / 2.2) * 255)),
-                      int(std::lround(std::pow(0.125, 1 / 2.2) * 255)),
-                      int(std::lround(std::pow(0.03125, 1 / 2.2) * 255))};
+    const Px expected{testing::displayCode(0.5), testing::displayCode(0.125), testing::displayCode(0.03125)};
     CHECK(nearColour(at(image, 32, 32), expected, 1));
     gpu->heap->release(*slot);
     CHECK(gpu->context->validation().errorCount() == 0);
@@ -2000,7 +1999,7 @@ TEST_CASE("renderer: 2D sky in Lit and Textured leaves Flat and Wireframe unchan
         std::array<float, 4> pixel;
         std::memcpy(pixel.data(), capture->mips[0].data.data() + (face * 8 * 8 + 4 * 8 + 4) * sizeof(pixel), sizeof(pixel));
         for (int channel = 0; channel < 3; ++channel)
-            CHECK(pixel[channel] == doctest::Approx(std::pow(colours[face][channel] / 255.0f, 2.2f)).epsilon(0.002));
+            CHECK(pixel[channel] == doctest::Approx(testing::srgbDecode(colours[face][channel] / 255.0)).epsilon(0.002));
     }
     for (auto slot : list.sky.faces) gpu->heap->release(slot);
     gpu->heap->collectGarbage();

@@ -609,9 +609,10 @@ void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarg
     barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
     vkCmdPipelineBarrier2(commands, &dep);
     recordShadows(commands, list);
-    // The clear colour is display-space, like the caller's clear (D15).
-    const float linearClear[4] = {std::pow(clearColor[0], 2.2f), std::pow(clearColor[1], 2.2f),
-                                  std::pow(clearColor[2], 2.2f), clearColor[3]};
+    // The clear colour is display-space, like the caller's clear (D15); decode it with the sRGB curve
+    // the tone map encodes with, so it comes back unchanged.
+    const auto decode = [](float c) { return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f); };
+    const float linearClear[4] = {decode(clearColor[0]), decode(clearColor[1]), decode(clearColor[2]), clearColor[3]};
     scene.begin(commands, linearClear);
     recordPass(commands, list, true, scene.extent());
     scene.end(commands);

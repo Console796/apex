@@ -27,7 +27,7 @@ void main() {
     uv = clamp(uv * 0.5 + 0.5, 0.5 / vec2(size), 1.0 - 0.5 / vec2(size));
     vec3 colour = textureLod(sampler2D(textures[nonuniformEXT(slot)], samplers[0]), uv, 0.0).rgb;
     if (push.p0.x > 0.0) {
-        if ((frame.skyFaces[1].z & (1u << face)) == 0u) colour = pow(colour, vec3(2.2));
+        if ((frame.skyFaces[1].z & (1u << face)) == 0u) colour = srgbToLinear(colour);
         if (frame.fogParams.w > 0.0) colour = mix(colour, frame.fogColour.rgb, frame.fogParams.z);
     }
     outColor = vec4(colour, 1.0);

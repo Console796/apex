@@ -1,6 +1,7 @@
 #include "assets/fgd.hpp"
 #include <limits>
 #include "../assets/fixture.hpp"
+#include "display_curve.hpp"
 #include "golden_image.hpp"
 #include "shared_context.hpp"
 #include "render/render_mirror.hpp"
@@ -634,7 +635,7 @@ TEST_CASE("model mirror: Lit VertexLitGeneric normal material reaches the light 
     const auto image = target->readback(); REQUIRE(image);
     const auto mapped = lighting::decodeNormal(DVec3(230, 128, 200) / 255.0, false);
     const auto energy = lighting::irradiance(light, {0, 0, 0}, mapped);
-    const int expected = int(std::lround(std::pow(energy.r, 1 / 2.2) * 255));
+    const int expected = testing::displayCode(energy.r);
     CHECK(channel(*image, 64, 64, 0) > 120);
     CHECK(std::abs(channel(*image, 64, 64, 0) - expected) <= 1);
     CHECK(context->validation().errorCount() == 0);
