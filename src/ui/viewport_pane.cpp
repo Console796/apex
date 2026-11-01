@@ -212,6 +212,8 @@ void PaneWindow::destroySwapchain() {
     }
     host_.context()->waitIdle();
     swapchain_.reset();
+    clusterPending_ = false;
+    clusterOverflow_ = 0;
     depth_ = render::SwapchainDepth(*host_.context());
 }
 
@@ -506,6 +508,11 @@ void PaneWindow::applyNavigation(double dt) {
 }
 
 double PaneWindow::tick(bool forceDraw) {
+    if (clusterPending_ && swapchain_ && swapchain_->frameComplete()) {
+        if (auto* renderer = host_.renderer(swapchain_->format()))
+            clusterOverflow_ = renderer->clusterOverflow(clusterCommands_);
+        clusterPending_ = false;
+    }
     const double dt = std::min(static_cast<double>(sinceTick_.restart()) / 1000.0, kMaxDt);
     applyNavigation(dt);
     if (resizeDragging_ && !swapchain_) return -1.0;
@@ -616,6 +623,8 @@ double PaneWindow::draw() {
             }
         }
         renderer->prepare(cb, list, scene_, clear_);
+        clusterCommands_ = cb;
+        clusterPending_ = list.mode == render::DisplayMode::Lit;
         if (auto begun = depth_.begin(cb, frame, clear_); !begun) {
             log::error("viewports: depth target: {}", begun.error().what());
             failed_ = true;

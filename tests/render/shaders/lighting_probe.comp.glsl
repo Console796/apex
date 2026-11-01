@@ -44,7 +44,7 @@ void main() {
             phongBrdf(s.normal.xyz, s.dpdx.xyz, s.dpdy.xyz, exponent, m.phongParams.y,
                       m.phongFresnel.xyz, m.phongTint.xyz, s.texel.w);
         if (s.pad.y > 2u) brdf = specularIrradiance(
-            irradiance(s.light, s.point.xyz, s.normal.xyz, FrameBlock(s.frame)), dot(s.normal.xyz, s.dpdy.xyz), brdf);
+            specularLightIrradiance(s.light, s.point.xyz, s.normal.xyz, FrameBlock(s.frame)), dot(s.normal.xyz, s.dpdy.xyz), brdf);
         Output(probe.outputAddress).values[i] = vec4(brdf, 0.0);
         return;
     }
@@ -54,7 +54,7 @@ void main() {
         Output(probe.outputAddress).values[i] = vec4(normal, 0.0);
         return;
     }
-    Output(probe.outputAddress).values[i] = vec4(irradiance(s.light, s.point.xyz, s.normal.xyz, FrameBlock(s.frame)), 0.0);
+    Output(probe.outputAddress).values[i] = vec4(directIrradiance(s.light, s.point.xyz, s.normal.xyz, FrameBlock(s.frame)), 0.0);
 }
 
 float parallaxHeight(vec2 uv, uint slot, vec2 duvdx, vec2 duvdy) {

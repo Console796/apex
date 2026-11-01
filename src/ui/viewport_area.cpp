@@ -927,7 +927,11 @@ void ViewportArea::tick() {
         if (!f || !f->window()) continue;
         if (force) f->window()->requestRedraw();
         const double ms = f->window()->tick(false);
-        if (ms >= 0.0 && id == layout_.active()) emit frameTimeChanged(ms);
+        if (id == layout_.active()) {
+            if (ms >= 0.0) emit frameTimeChanged(ms);
+            const auto* vp = layout_.viewport(id);
+            emit lightingBudgetChanged(vp && vp->mode == viewport::DisplayMode::Lit, f->window()->clusterOverflow());
+        }
     }
     emitCamera();
 }

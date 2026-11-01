@@ -4,6 +4,7 @@
 #include "heap.inc"
 #include "frame.inc"
 #include "lighting.inc"
+#include "clusters.inc"
 #include "material.inc"
 #include "normal_map.inc"
 #include "specular.inc"
@@ -95,12 +96,16 @@ void main() {
             float mask = (material.flags & MATERIAL_BASE_ALPHA_PHONG_MASK) != 0u ? texel.a : bumpAlpha;
             vec3 specular = vec3(0.0);
             diffuse = vec3(0.0);
-            // Styles stay at full brightness. 0.6.6 hook: split direct/specular light_rt modes here.
-            for (uint i = 0u; i < frame.lightCount; ++i) {
+            uint cell = clusterIndex(frame, vPosition);
+            uint localCount = ClusterBuffer(frame.clusters).cells[cell].count;
+            // Styles stay at full brightness. Sun and ambient are a global prefix (D14).
+            for (uint entry = 0u; entry < frame.clusterDims.w + localCount; ++entry) {
+                uint i = entry < frame.clusterDims.w ? entry :
+                    ClusterBuffer(frame.clusters).cells[cell].indices[entry - frame.clusterDims.w];
                 Light light = LightBuffer(frame.lights).lights[i];
                 vec3 energy = irradiance(light, vPosition, normal, frame);
-                diffuse += energy * (light.kindMode.x == 5u ? mrao.b : 1.0);
-                if ((!pbr && !phong) || light.kindMode.x == 5u) continue;
+                if (hasDirect(light)) diffuse += energy * (light.kindMode.x == 5u ? mrao.b : 1.0);
+                if ((!pbr && !phong) || !hasSpecular(light)) continue;
                 vec3 delta = light.kindMode.x == 3u ? -light.directionInner.xyz : light.originRadius.xyz - vPosition;
                 if (dot(delta, delta) <= 1e-12) continue;
                 vec3 toLight = normalize(delta);

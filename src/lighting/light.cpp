@@ -204,4 +204,22 @@ double effectiveRange(const Light& light, double threshold) {
     return light.radius > 0 ? std::min(range, light.radius) : range;
 }
 
+double previewRange(const Light& light, double exposure) {
+    return effectiveRange(light, 1.0 / (256.0 * std::max(exposure, 1e-6)));
+}
+
+bool hasDirect(const Light& light) { return light.directMode == 1 || light.directMode == 2; }
+bool hasSpecular(const Light& light) {
+    return light.kind != LightKind::Ambient && light.specularMode == 2;
+}
+bool indirectOnly(const Light& light) {
+    return !hasDirect(light) && !hasSpecular(light) && light.indirectMode == 1;
+}
+DVec3 directIrradiance(const Light& light, DVec3 point, DVec3 normal) {
+    return hasDirect(light) ? irradiance(light, point, normal) : DVec3(0);
+}
+DVec3 specularLightIrradiance(const Light& light, DVec3 point, DVec3 normal) {
+    return hasSpecular(light) ? irradiance(light, point, normal) : DVec3(0);
+}
+
 } // namespace apex::lighting

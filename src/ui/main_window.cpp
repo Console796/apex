@@ -1108,6 +1108,10 @@ void MainWindow::buildAreas() {
     });
     connect(viewport_, &ViewportArea::frameTimeChanged, this,
             [this](double ms) { frameLabel_->setText(tr("%1 ms").arg(ms, 0, 'f', 1)); });
+    connect(viewport_, &ViewportArea::lightingBudgetChanged, this, [this](bool lit, std::uint32_t overflow) {
+        lightingBudgetLabel_->setVisible(lit);
+        lightingBudgetLabel_->setText(tr("Clusters: %1 overflow").arg(overflow));
+    });
     connect(viewport_, &ViewportArea::gpuNameChanged, this,
             [this](const QString& n) { gpuLabel_->setText(tr("GPU: %1").arg(n)); });
 }
@@ -1141,6 +1145,9 @@ void MainWindow::buildStatusBar() {
     statusBar()->addWidget(readoutLabel_);
     cameraLabel_ = new QLabel(tr("Cam: -"));
     frameLabel_ = new QLabel(tr("- ms"));
+    lightingBudgetLabel_ = new QLabel(tr("Clusters: 0 overflow"));
+    lightingBudgetLabel_->setObjectName(QStringLiteral("statusLightingBudget"));
+    lightingBudgetLabel_->setToolTip(tr("Dropped light entries across clusters (64 lights per cluster)."));
     gpuLabel_ = new QLabel(tr("GPU: -"));
     activeMaterialLabel_ = new QToolButton;
     activeMaterialLabel_->setObjectName(QStringLiteral("activeMaterialIndicator"));
@@ -1156,7 +1163,8 @@ void MainWindow::buildStatusBar() {
             statusBar()->showMessage(tr("Active material: %1").arg(value), 4000);
         });
     });
-    for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
+    for (auto* l : {gridLabel_, planeLabel_, cameraLabel_, frameLabel_, lightingBudgetLabel_, gpuLabel_}) statusBar()->addPermanentWidget(l);
+    lightingBudgetLabel_->hide();
     statusBar()->addPermanentWidget(activeMaterialLabel_);
     uvAlignmentAction_ = new QAction(tr("UV: Face"), this);
     uvAlignmentAction_->setObjectName(QStringLiteral("newSolidWorldUv"));

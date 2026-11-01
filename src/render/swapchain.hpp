@@ -55,6 +55,7 @@ class Swapchain {
                                     Clock::time_point now = Clock::now());
     // The UI's precise 16 ms tick controls drag cadence. Release forces a final resize.
     void setResizeDragging(bool dragging, Clock::time_point now = Clock::now());
+    bool frameComplete() const { return vkGetFenceStatus(context_->device(), inFlight_) == VK_SUCCESS; }
     bool hasRetiredSwapchains() const { return !retired_.empty(); }
     std::size_t retiredSwapchainCount() const { return retired_.size(); }
 

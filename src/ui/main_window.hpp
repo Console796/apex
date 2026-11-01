@@ -228,6 +228,7 @@ private:
     QLabel* readoutLabel_ = nullptr;
     QLabel* modeLabel_ = nullptr;
     QLabel* cameraLabel_ = nullptr;
+    QLabel* lightingBudgetLabel_ = nullptr;
     QLabel* frameLabel_ = nullptr;
     QLabel* gpuLabel_ = nullptr;
     QToolButton* activeMaterialLabel_ = nullptr;

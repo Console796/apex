@@ -79,7 +79,6 @@ float sampleSkyVisibility(FrameBlock frame, vec3 point, vec3 normal) {
 }
 
 vec3 irradiance(Light light, vec3 point, vec3 normal, FrameBlock frame) {
-    if (light.kindMode.y == 0u) return vec3(0.0);
     uint kind = light.kindMode.x;
     if (kind == 3u) return light.intensityExponent.xyz * surfaceResponse(dot(normal, -light.directionInner.xyz));
     if (kind == 5u) return light.intensityExponent.xyz * sampleSkyVisibility(frame, point, normal);
@@ -104,5 +103,13 @@ vec3 irradiance(Light light, vec3 point, vec3 normal, FrameBlock frame) {
         }
     }
     return light.intensityExponent.xyz * scale;
+}
+bool hasDirect(Light light) { return light.kindMode.y == 1u || light.kindMode.y == 2u; }
+bool hasSpecular(Light light) { return light.kindMode.x != 5u && light.kindMode.z == 2u; }
+vec3 directIrradiance(Light light, vec3 point, vec3 normal, FrameBlock frame) {
+    return hasDirect(light) ? irradiance(light, point, normal, frame) : vec3(0.0);
+}
+vec3 specularLightIrradiance(Light light, vec3 point, vec3 normal, FrameBlock frame) {
+    return hasSpecular(light) ? irradiance(light, point, normal, frame) : vec3(0.0);
 }
 #endif

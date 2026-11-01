@@ -2319,3 +2319,42 @@ TEST_CASE("mirror: env_cubemap brushes, top level and inside an instance, reflec
     CHECK(render("test/env_lmg", "probe-env.vmf", true).pixels == plain.pixels);
     CHECK(g->context->validation().errorCount() == 0);
 }
+
+TEST_CASE("mirror: light_rt helper flags indirect-only and shares the live cluster range") {
+    REQUIRE_GPU();
+    auto cls = helperClass("light_rt", {});
+    const auto classes = tableOf({cls});
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname light_rt origin "10 20 30" _light "255 255 255 255"
+                 _quadratic_attn 1 _directmode 0 _specularmode 0 _indirectmode 1 })"), &classes);
+    const auto id = idOf(*scene.doc, "light_rt");
+    Highlight highlight;
+    highlight.selected = {id};
+    scene.mirror.setHighlight(highlight);
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    const auto check = [&](const DrawList& list, bool baked) {
+        REQUIRE(list.lights.size() == 1);
+        const auto& light = list.lights.front();
+        CHECK(std::ranges::any_of(list.labels, [](const auto& label) { return label.text == "baked in 0.7"; }) == baked);
+        const double radius = lighting::previewRange(light, list.exposure);
+        unsigned checked = 0;
+        for (const auto& segment : list.worldSegments) {
+            if (segment.colour != Vec4(1, 0.65f, 0.2f, 1)) continue;
+            CHECK(glm::length(segment.a - light.origin) == doctest::Approx(radius));
+            CHECK(glm::length(segment.b - light.origin) == doctest::Approx(radius));
+            ++checked;
+        }
+        CHECK(checked == 144);
+    };
+    check(scene.mirror.buildDrawList(options), true);
+    options.exposure = 0.25f;
+    check(scene.mirror.buildDrawList(options), true);
+    PreviewGeometry preview;
+    preview.entityKeys[id] = {{"_directmode", "0"}, {"_specularmode", "2"}, {"_quadratic_attn", "0"},
+                              {"_fifty_percent_distance", "64"}, {"_zero_percent_distance", "256"}};
+    scene.mirror.setPreview({}, preview, 1);
+    check(scene.mirror.buildDrawList(options), false);
+    scene.mirror.setPreview({}, PreviewGeometry{}, 2);
+    check(scene.mirror.buildDrawList(options), true);
+}

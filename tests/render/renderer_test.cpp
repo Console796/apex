@@ -16,6 +16,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <chrono>
+#include <cstdlib>
+#include <random>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -1502,6 +1505,7 @@ TEST_CASE("renderer: Lit PBR spotlight mirror highlight follows camera and rough
     spot.origin = {-136, 0, 0};
     spot.direction = {1, 0, 0};
     spot.intensity = DVec3(0.02);
+    spot.specularMode = 2;
     spot.constant = 1;
     spot.stopdot = 0.95;
     spot.stopdot2 = 0.5;
@@ -1607,6 +1611,7 @@ TEST_CASE("renderer: Lit phong masks exponent texture and display modes") {
     light.kind = lighting::LightKind::Sun;
     light.direction = {1, 0, 0};
     light.intensity = DVec3(0.5);
+    light.specularMode = 2;
     list.lights = {light};
     constexpr std::array modes{DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe, DisplayMode::Lit};
     std::array<Rgba8Image, 4> before;
@@ -1837,4 +1842,124 @@ TEST_CASE("renderer: Lit $selfillum adds base colour by alpha or mask without li
     gpu->heap->setMaterial(*base, material);
     gpu->heap->release(*base);
     gpu->heap->release(*mask);
+}
+
+TEST_CASE("renderer: cluster overflow is clamped counted and reset on the next Lit frame") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    REQUIRE(scene.resize(kSize, kSize));
+    DrawList list;
+    list.mode = DisplayMode::Lit;
+    list.view = makeView({-100, 0, 0}, {0, 0, 0});
+    lighting::Light light;
+    light.constant = 1; light.intensity = DVec3(1);
+    list.lights.assign(79, light);
+    VkCommandBuffer slot = VK_NULL_HANDLE;
+    const auto render = [&] {
+        REQUIRE(gpu->context->oneShot([&](VkCommandBuffer commands) {
+            slot = commands;
+            gpu->renderer->prepare(commands, list, scene, kClear);
+            gpu->target.begin(commands, kClear);
+            gpu->renderer->record(commands, list);
+            gpu->target.end(commands);
+        }));
+        return gpu->renderer->clusterOverflow(slot);
+    };
+    CHECK(render() == 24 * 15);
+    list.lights.resize(16);
+    CHECK(render() == 0);
+    list.lights.clear();
+    CHECK(render() == 0);
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: light_rt specular is independent of direct and indirect modes in Lit") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const std::array<std::byte, 4> white{std::byte{255}, std::byte{255}, std::byte{255}, std::byte{255}};
+    const auto base = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, white);
+    REQUIRE(base);
+    const auto mrao = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, white);
+    REQUIRE(mrao); REQUIRE(gpu->heap->flush());
+    GpuMaterial material{*base, kNoTexture, kMaterialPbr, 0};
+    material.mraoSlot = *mrao;
+    material.mraoScale = {1, 0.4f, 1, 0};
+    gpu->heap->setMaterial(*base, material);
+    const Cube quad = makeCube(*gpu, 40, *base);
+    auto list = cubeList(quad, DisplayMode::Lit, *base);
+    list.meshes[0].indexCount = 6;
+    list.meshes[0].colour = Vec4(1);
+    list.view = makeView({-136, 0, 0}, {0, 0, 0});
+    lighting::Light light;
+    light.origin = {-136, 0, 0}; light.intensity = DVec3(0.2); light.constant = 1;
+    light.directMode = 0; light.specularMode = 2; light.indirectMode = 1;
+    list.lights = {light};
+    const auto specularOnly = drawLitFrame(*gpu, list, scene);
+    CHECK(at(specularOnly, 32, 32).r > 100);
+    list.lights[0].directMode = 2;
+    checkLitParity(specularOnly, drawLitFrame(*gpu, list, scene)); // Metal has no diffuse.
+    list.lights[0].directMode = 0;
+    list.lights[0].specularMode = 0;
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r == 0); // Indirect-only (D8).
+    list.lights[0].indirectMode = 0;
+    CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r == 0);
+    material.mraoScale.x = 0;
+    material.flags = 0;
+    gpu->heap->setMaterial(*base, material);
+    for (const unsigned mode : {1u, 2u}) {
+        list.lights[0].directMode = static_cast<std::uint8_t>(mode);
+        CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r > 50);
+    }
+    gpu->heap->release(*base);
+    gpu->heap->release(*mrao);
+}
+
+TEST_CASE("renderer: cluster frame time report for 16 256 and 1024 lights") {
+    if (!std::getenv("APEX_CLUSTER_MEASURE")) { MESSAGE("APEX_CLUSTER_MEASURE=1 is required"); return; }
+    REQUIRE_GPU();
+    auto output = RenderTarget::create(*gpu->context, 640, 360);
+    REQUIRE(output);
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    REQUIRE(scene.resize(640, 360));
+    const Cube room = makeCube(*gpu, 2048, gpu->checker, DMat4(1), true);
+    auto list = cubeList(room, DisplayMode::Lit, gpu->checker);
+    list.view = makeView({-1024, 0, 256}, {1024, 0, 0});
+    list.view.viewProjection = reversedZPerspective(glm::radians(75.0), 640.0 / 360, 1) *
+        rotationOnlyView(angleVectors(DVec3{7, 0, 0}));
+    std::mt19937 random(0x666);
+    std::uniform_real_distribution<double> position(-1900, 1900);
+    for (const unsigned count : {16u, 256u, 1024u}) {
+        list.lights.clear();
+        random.seed(0x666);
+        for (unsigned i = 0; i < count; ++i) {
+            lighting::Light light;
+            light.origin = {position(random), position(random), position(random)};
+            light.intensity = {1, 0.6, 0.3}; light.constant = 1; light.quadratic = 0.0025;
+            light.radius = 512;
+            if (i % 4 == 0) {
+                light.kind = lighting::LightKind::Spot;
+                light.direction = glm::normalize(-light.origin);
+                light.stopdot = 0.9; light.stopdot2 = 0.5;
+            }
+            list.lights.push_back(light);
+        }
+        VkCommandBuffer slot = VK_NULL_HANDLE;
+        const auto render = [&] {
+            REQUIRE(gpu->context->oneShot([&](VkCommandBuffer commands) {
+                slot = commands;
+                gpu->renderer->prepare(commands, list, scene, kClear);
+                output->begin(commands, kClear);
+                gpu->renderer->record(commands, list);
+                output->end(commands);
+            }));
+        };
+        for (int warm = 0; warm < 3; ++warm) render();
+        const auto start = std::chrono::steady_clock::now();
+        for (int sample = 0; sample < 10; ++sample) render();
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count() / 10;
+        std::cout << "[cluster frame time] " << gpu->context->info().name << ": " << count << " lights, " << ms
+                  << " ms/frame (640x360, 10 frames, submit + wait, no image readback), overflow="
+                  << gpu->renderer->clusterOverflow(slot) << '\n';
+    }
+    CHECK(gpu->context->validation().errorCount() == 0);
 }

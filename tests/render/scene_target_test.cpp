@@ -166,7 +166,8 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         light.stopdot = 0.875;
         light.stopdot2 = 0.5;
         light.exponent = i % 4 == 0 ? 0 : i % 4 == 1 ? 1 : i % 4 == 2 ? 2 : 4;
-        light.directMode = i % 17 == 0 ? 0 : 1;
+        light.directMode = static_cast<std::uint8_t>(i % 3);
+        light.indirectMode = static_cast<std::uint8_t>((i / 3) % 2);
         if (i % 5 == 0) {
             auto block = kv1::Node::block("entity");
             for (const auto& [key, value] : std::array<std::pair<const char*, const char*>, 4>{{
@@ -254,7 +255,9 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         light.stopdot = 0.9;
         light.stopdot2 = 0.5;
         light.exponent = 2;
-        light.directMode = i % 7 == 0 ? 0 : 1;
+        light.directMode = static_cast<std::uint8_t>(i % 3);
+        light.specularMode = i % 7 == 0 ? 0 : 2;
+        light.indirectMode = static_cast<std::uint8_t>((i / 3) % 2);
         s.light = packLight(light, DVec3(0));
         s.frame = frames->deviceAddress(); // Ambient without a grid contributes zero.
         const DVec3 n(s.normal), v(s.dpdx), l(s.dpdy);
@@ -265,7 +268,7 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
                 lighting::phongTextureExponent(s.uv.x), m.phongParams.y, DVec3(m.phongFresnel),
                 DVec3(m.phongTint), s.texel.w);
         if (s.pad[1] > 2) {
-            const auto energy = light.directMode == 0 || light.kind == lighting::LightKind::Ambient ? DVec3(0) :
+            const auto energy = !lighting::hasSpecular(light) ? DVec3(0) :
                 lighting::irradiance(light, DVec3(0), n);
             brdf = lighting::specularIrradiance(energy, glm::dot(n, l), brdf);
         }

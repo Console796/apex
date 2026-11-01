@@ -250,10 +250,13 @@ class Renderer {
     // Call between frames (it waits for the device to go idle).
     Result<bool> reloadChangedShaders();
 
+    // Caller must complete this frame slot before reading its GPU-written counter (D14).
+    std::uint32_t clusterOverflow(VkCommandBuffer commands) const;
+
     bool wireframeFill() const { return wireFill_; } // fillModeNonSolid pipelines available.
 
   private:
-    bool uploadFrame(VkCommandBuffer commands, const DrawList& list);
+    bool uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExtent2D extent = {});
     void recordPass(VkCommandBuffer commands, const DrawList& list, bool scenePass);
     struct Impl;
     explicit Renderer(std::unique_ptr<Impl> impl, bool wireFill);

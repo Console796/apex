@@ -27,8 +27,16 @@ struct alignas(16) FrameBlock {
     std::uint32_t materialCount = 0, materialPad = 0;
     VkDeviceAddress cubemaps = 0; // GpuCubemapProbe[cubemapCount]
     std::uint32_t cubemapCount = 0, cubemapPad = 0;
+    VkDeviceAddress clusters = 0;
+    VkDeviceAddress clusterStats = 0;
+    glm::uvec4 clusterDims{0}; // xyz dimensions; w global light count (prefix of lights).
+    Mat4 clusterProjection{1.0f}; // Camera-relative world to clip.
 };
-static_assert(sizeof(FrameBlock) == 160);
+static_assert(sizeof(FrameBlock) == 256);
+static_assert(offsetof(FrameBlock, clusters) == 160);
+static_assert(offsetof(FrameBlock, clusterStats) == 168);
+static_assert(offsetof(FrameBlock, clusterDims) == 176);
+static_assert(offsetof(FrameBlock, clusterProjection) == 192);
 static_assert(offsetof(FrameBlock, cubemaps) == 144);
 static_assert(offsetof(FrameBlock, cubemapCount) == 152);
 static_assert(offsetof(FrameBlock, materials) == 128);
@@ -82,10 +90,13 @@ struct alignas(16) GpuLight {
     Vec4 intensityExponent;
     Vec4 directionInner;
     Vec4 attenuationOuter; // constant, linear, quadratic, outer cone cosine
-    std::uint32_t kind = 0, directMode = 0, pad[2]{};
+    std::uint32_t kind = 0, directMode = 0, specularMode = 0, indirectMode = 0;
 };
 static_assert(sizeof(GpuLight) == 80);
 static_assert(offsetof(GpuLight, kind) == 64);
+static_assert(offsetof(GpuLight, directMode) == 68);
+static_assert(offsetof(GpuLight, specularMode) == 72);
+static_assert(offsetof(GpuLight, indirectMode) == 76);
 
 inline GpuLight packLight(const lighting::Light& light, DVec3 camera) {
     return {Vec4(Vec3(light.origin - camera), static_cast<float>(light.radius)),
@@ -93,7 +104,7 @@ inline GpuLight packLight(const lighting::Light& light, DVec3 camera) {
             Vec4(Vec3(light.direction), static_cast<float>(light.stopdot)),
             Vec4(static_cast<float>(light.constant), static_cast<float>(light.linear),
                  static_cast<float>(light.quadratic), static_cast<float>(light.stopdot2)),
-            static_cast<std::uint32_t>(light.kind), light.directMode, {}};
+            static_cast<std::uint32_t>(light.kind), light.directMode, light.specularMode, light.indirectMode};
 }
 
 } // namespace apex::render

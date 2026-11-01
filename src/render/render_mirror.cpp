@@ -178,6 +178,7 @@ struct RenderMirror::Impl {
     std::map<Handle<document::Entity>, NodeId> entityIds;
     std::map<NodeId, EntityState> entities;
     std::vector<lighting::Light> lights;
+    std::map<NodeId, std::vector<lighting::Light>> lightHelpers;
     bool lightsDirty = true;
     std::shared_ptr<const lighting::SkyVisibilityGrid> skyGrid;
     JobHandle skyJob;
@@ -804,6 +805,7 @@ struct RenderMirror::Impl {
         if (!lightsDirty) return;
         lightsDirty = false;
         lights.clear();
+        lightHelpers.clear();
         std::map<NodeId, kv1::Node> blocks;
         std::map<std::string, DVec3> targets;
         const auto transform = [&](NodeId id) {
@@ -836,6 +838,7 @@ struct RenderMirror::Impl {
             for (auto& light : built) {
                 light.origin = DVec3(matrix * DVec4(light.origin, 1));
                 if (glm::length(light.direction) > 0) light.direction = glm::normalize(DMat3(matrix) * light.direction);
+                lightHelpers[id].push_back(light);
                 lights.push_back(std::move(light));
             }
         }
@@ -1468,6 +1471,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     DrawList list;
     list.mode = options.mode;
     list.cullBackFaces = options.cullBackFaces;
+    list.exposure = options.exposure;
     list.view = options.view;
     list.grid = options.grid;
     list.edgeOverlay = options.edgeOverlay;
@@ -1678,6 +1682,26 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         for (const auto& content : m.instances) resolvedInstances.insert(content.instance);
         for (const auto& [id, entity] : m.entities) {
             const bool self = picked(id, entity);
+            if (self) if (const auto found = m.lightHelpers.find(id); found != m.lightHelpers.end()) {
+                for (const auto& light : found->second) {
+                    if (lighting::indirectOnly(light))
+                        list.labels.push_back({light.origin, "baked in 0.7", {8, 16}, {1, 0.65f, 0.2f, 1}});
+                    if (options.mode != DisplayMode::Lit) continue;
+                    const double range = lighting::previewRange(light, list.exposure);
+                    if (!(range > 0) || !std::isfinite(range)) continue;
+                    // The same exposure cutoff as the cluster sphere (D12/D14).
+                    for (int axis = 0; axis < 3; ++axis) for (int i = 0; i < 48; ++i) {
+                        const auto point = [&](int step) {
+                            const double angle = glm::radians(360.0 * step / 48);
+                            DVec3 p = light.origin;
+                            p[(axis + 1) % 3] += range * std::cos(angle);
+                            p[(axis + 2) % 3] += range * std::sin(angle);
+                            return p;
+                        };
+                        list.worldSegments.push_back({point(i), point(i + 1), {1, 0.65f, 0.2f, 1}, 1});
+                    }
+                }
+            }
             for (const HelperSegment& segment : entity.helpers.segments) {
                 const auto peerPicked = [&](const std::optional<NodeId>& peerId) {
                     if (!peerId) return false;

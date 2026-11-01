@@ -1,4 +1,5 @@
 #include "render/renderer.hpp"
+#include "render/clusters.hpp"
 
 #include "core/log.hpp"
 #include "render/render_target.hpp"
@@ -102,7 +103,7 @@ constexpr Spec kSpecs[kKindCount] = {
 };
 
 constexpr const char* kShaderIds[] = {"brush_vert", "brush_textured_frag", "brush_flat_frag", "solid_frag", "box_vert",
-                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag", "fullscreen_vert", "tonemap_frag"};
+                                      "vcolor_frag", "sprite_vert", "sprite_frag", "grid_vert", "grid_frag", "overlay_vert", "label_frag", "fullscreen_vert", "tonemap_frag", "cluster_comp"};
 
 struct OverlayVertex {
     Vec4 position;
@@ -225,6 +226,9 @@ struct Renderer::Impl {
     VkFormat colorFormat = VK_FORMAT_UNDEFINED;
     VkFormat depthFormat = VK_FORMAT_UNDEFINED;
     VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline clusterPipeline = VK_NULL_HANDLE;
+    struct ClusterSlot { Buffer lists, stats; };
+    std::map<VkCommandBuffer, ClusterSlot> clusterBuffers; // Same fence discipline as frameBuffers.
     VkPipeline pipelines[2][kKindCount]{}; // Caller signature, then RGBA16F/D32 scene signature.
     std::map<VkCommandBuffer, std::array<TextureSlot, 2>> preparedScenes;
     std::map<std::string, std::vector<std::uint32_t>> overrides; // Hot-reloaded SPIR-V.
@@ -255,6 +259,8 @@ struct Renderer::Impl {
     }
 
     void destroyPipelines() {
+        if (clusterPipeline) vkDestroyPipeline(context->device(), clusterPipeline, nullptr);
+        clusterPipeline = VK_NULL_HANDLE;
         for (auto& pass : pipelines) for (VkPipeline& pipeline : pass) {
             if (pipeline) vkDestroyPipeline(context->device(), pipeline, nullptr);
             pipeline = VK_NULL_HANDLE;
@@ -418,7 +424,26 @@ struct Renderer::Impl {
             }
             built[pass][i] = *pipeline;
         }
+        auto shader = module("cluster_comp");
+        VkPipeline compute = VK_NULL_HANDLE;
+        VkResult result = VK_ERROR_INITIALIZATION_FAILED;
+        if (shader) {
+            auto info = vkStruct<VkComputePipelineCreateInfo>(VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO);
+            info.layout = layout;
+            info.stage = vkStruct<VkPipelineShaderStageCreateInfo>(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
+            info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            info.stage.module = *shader;
+            info.stage.pName = "main";
+            result = vkCreateComputePipelines(context->device(), VK_NULL_HANDLE, 1, &info, nullptr, &compute);
+            vkDestroyShaderModule(context->device(), *shader, nullptr);
+        }
+        if (result != VK_SUCCESS) {
+            for (auto& batch : built) for (VkPipeline p : batch)
+                if (p) vkDestroyPipeline(context->device(), p, nullptr);
+            return std::unexpected(Error{ErrorCode::Internal, "cluster pipeline creation failed"});
+        }
         destroyPipelines();
+        clusterPipeline = compute;
         for (std::size_t pass = 0; pass < 2; ++pass)
             std::copy(std::begin(built[pass]), std::end(built[pass]), pipelines[pass]);
         return {};
@@ -538,7 +563,32 @@ Result<bool> Renderer::reloadChangedShaders() {
 
 void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarget& scene, const float clearColor[4]) {
     if (list.mode != DisplayMode::Lit) return;
-    if (!uploadFrame(commands, list)) return;
+    if (!uploadFrame(commands, list, scene.extent())) return;
+    Impl& s = *impl_;
+    const auto& buffer = s.clusterBuffers.at(commands).stats;
+    vkCmdFillBuffer(commands, buffer.handle(), 0, 16, 0);
+    auto barrier = vkStruct<VkMemoryBarrier2>(VK_STRUCTURE_TYPE_MEMORY_BARRIER_2);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+    auto dep = vkStruct<VkDependencyInfo>(VK_STRUCTURE_TYPE_DEPENDENCY_INFO);
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(commands, &dep);
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, s.clusterPipeline);
+    const VkDeviceAddress address = s.frameBuffers.at(commands).deviceAddress();
+    auto push = basePush(list);
+    push.p1.x = std::bit_cast<float>(static_cast<std::uint32_t>(address));
+    push.p1.y = std::bit_cast<float>(static_cast<std::uint32_t>(address >> 32));
+    s.pushAll(commands, push);
+    const auto dims = clusterDimensions(scene.extent());
+    vkCmdDispatch(commands, (dims.x * dims.y * dims.z + 63) / 64, 1, 1);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
+    vkCmdPipelineBarrier2(commands, &dep);
     // The clear colour is display-space, like the caller's clear (D15).
     const float linearClear[4] = {std::pow(clearColor[0], 2.2f), std::pow(clearColor[1], 2.2f),
                                   std::pow(clearColor[2], 2.2f), clearColor[3]};
@@ -553,7 +603,16 @@ void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
     recordPass(commands, list, false);
 }
 
-bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
+std::uint32_t Renderer::clusterOverflow(VkCommandBuffer commands) const {
+    const auto found = impl_->clusterBuffers.find(commands);
+    if (found == impl_->clusterBuffers.end()) return 0;
+    found->second.stats.invalidate(0, sizeof(std::uint32_t));
+    std::uint32_t value;
+    std::memcpy(&value, found->second.stats.mapped(), sizeof(value));
+    return value;
+}
+
+bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExtent2D extent) {
     Impl& s = *impl_;
     const VkDeviceSize lightOffset = sizeof(FrameBlock);
     const VkDeviceSize previewOffset = lightOffset + list.lights.size() * sizeof(GpuLight);
@@ -623,6 +682,28 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
     }
     auto* bytes = static_cast<std::byte*>(buffer.mapped());
     FrameBlock frame;
+    if (list.mode == DisplayMode::Lit) {
+        const auto dims = clusterDimensions(extent);
+        const VkDeviceSize clusterSize = VkDeviceSize(dims.x) * dims.y * dims.z * sizeof(GpuCluster);
+        auto& clusters = s.clusterBuffers[commands];
+        if (clusters.lists.size() < clusterSize) {
+            auto created = Buffer::create(*s.context, {clusterSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, MemoryUsage::GpuOnly});
+            if (!created) { log::error("cluster buffer: {}", created.error().what()); return false; }
+            clusters.lists = std::move(*created);
+        }
+        if (!clusters.stats) {
+            auto created = Buffer::create(*s.context, {16,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUsage::Readback});
+            if (!created) { log::error("cluster counter: {}", created.error().what()); return false; }
+            clusters.stats = std::move(*created);
+        }
+        frame.clusters = clusters.lists.deviceAddress();
+        frame.clusterStats = clusters.stats.deviceAddress();
+        frame.clusterDims = glm::uvec4(dims, 0);
+        frame.clusterProjection = list.view.viewProjection;
+    }
     frame.previews = buffer.deviceAddress() + previewOffset;
     frame.lights = buffer.deviceAddress() + lightOffset;
     frame.lightCount = static_cast<std::uint32_t>(list.lights.size());
@@ -634,11 +715,17 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list) {
     frame.cameraRight = Vec4(list.view.cameraRight, 0);
     frame.cameraUp = Vec4(list.view.cameraUp, 0);
     if (skyAddress) packSkyGrid(frame, *sky, skyAddress, list.view.cameraPosition);
-    std::memcpy(bytes, &frame, sizeof(frame));
-    for (std::size_t i = 0; i < list.lights.size(); ++i) {
-        const auto light = packLight(list.lights[i], list.view.cameraPosition);
-        std::memcpy(bytes + lightOffset + i * sizeof(GpuLight), &light, sizeof(light));
+    std::size_t lightIndex = 0;
+    for (const bool global : {true, false}) for (const auto& light : list.lights) {
+        const bool isGlobal = light.kind == lighting::LightKind::Sun || light.kind == lighting::LightKind::Ambient;
+        if (isGlobal != global) continue;
+        auto packed = packLight(light, list.view.cameraPosition);
+        if (!global && list.mode == DisplayMode::Lit)
+            packed.originRadius.w = static_cast<float>(lighting::previewRange(light, list.exposure));
+        std::memcpy(bytes + lightOffset + lightIndex++ * sizeof(GpuLight), &packed, sizeof(packed));
+        if (global) ++frame.clusterDims.w;
     }
+    std::memcpy(bytes, &frame, sizeof(frame));
     for (std::size_t i = 0; i < list.previews.size(); ++i) {
         const auto& preview = list.previews[i];
         const auto packed = cameraRelativePreview(preview.matrix, preview.origin, list.view.cameraPosition);

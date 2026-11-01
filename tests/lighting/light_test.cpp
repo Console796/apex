@@ -322,3 +322,40 @@ TEST_CASE("irradiance reproduces native VRAD's direct lightmaps on the parity re
         CHECK(worst < 0.01);
     }
 }
+
+TEST_CASE("light_rt channels independently select direct specular and baked-only light") {
+    for (unsigned direct = 0; direct <= 2; ++direct)
+        for (unsigned indirect = 0; indirect <= 1; ++indirect)
+            for (unsigned specular : {0u, 2u}) {
+                auto block = kv1::Node::block("entity");
+                for (auto [key, value] : std::vector<std::pair<std::string, std::string>>{
+                         {"classname", "light_rt"}, {"origin", "0 0 10"}, {"_light", "255 255 255 255"},
+                         {"_constant_attn", "1"}, {"_directmode", std::to_string(direct)},
+                         {"_indirectmode", std::to_string(indirect)}, {"_specularmode", std::to_string(specular)}})
+                    block.append(kv1::Node::value(key, value)).value();
+                const auto lights = lighting::lightsFromEntity(block);
+                REQUIRE(lights.size() == 1);
+                const auto& light = lights.front();
+                CAPTURE(direct); CAPTURE(indirect); CAPTURE(specular);
+                CHECK(lighting::directIrradiance(light, {0, 0, 0}, {0, 0, 1}).x == (direct ? 1.0 : 0.0));
+                CHECK(lighting::specularLightIrradiance(light, {0, 0, 0}, {0, 0, 1}).x == (specular ? 1.0 : 0.0));
+                CHECK(lighting::indirectOnly(light) == (direct == 0 && specular == 0 && indirect == 1));
+            }
+}
+
+TEST_CASE("cluster and helper preview range shares the exposure white cutoff") {
+    lighting::Light light;
+    light.intensity = {1, 0.5, 0.1};
+    light.quadratic = 1;
+    CHECK(lighting::previewRange(light, 1) == doctest::Approx(16));
+    CHECK(lighting::previewRange(light, 4) == doctest::Approx(32));
+    light.radius = 12;
+    CHECK(lighting::previewRange(light, 4) == 12);
+    light.radius = 0;
+    light.quadratic = 0;
+    light.constant = 1;
+    CHECK(std::isinf(lighting::previewRange(light, 1)));
+    light.intensity = DVec3(1.0 / 512);
+    CHECK(lighting::previewRange(light, 1) == 0);
+    CHECK(std::isinf(lighting::previewRange(light, 4)));
+}

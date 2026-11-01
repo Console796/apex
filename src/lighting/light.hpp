@@ -73,4 +73,13 @@ DVec3 irradiance(const Light& light, DVec3 point, DVec3 normal);
 // Infinite for the sun, ambient, and lights whose attenuation never grows.
 double effectiveRange(const Light& light, double threshold);
 
+// D14: linear HDR white after exposure; shared by clusters and helper spheres (D12).
+double previewRange(const Light& light, double exposure);
+// Mode 1 is static, 2 dynamic; both direct channels are previewed. Bounce waits for 0.7 (D8).
+bool hasDirect(const Light& light);
+bool hasSpecular(const Light& light);
+bool indirectOnly(const Light& light);
+DVec3 directIrradiance(const Light& light, DVec3 point, DVec3 normal);
+DVec3 specularLightIrradiance(const Light& light, DVec3 point, DVec3 normal);
+
 } // namespace apex::lighting

@@ -3579,3 +3579,20 @@ TEST_CASE("inspector light falloff controls accept precise numbers and ignore wh
     CHECK(strip.findChild<QScrollArea*>()->horizontalScrollBar()->maximum() > 0);
     if (const auto* image = std::getenv("APEX_LIGHT_CONTROLS_IMAGE")) CHECK(panel.grab().save(QString::fromUtf8(image)));
 }
+
+TEST_CASE("Lit status line displays cluster overflow beside the lighting budget") {
+    app();
+    apex::ui::MainWindow window;
+    auto* area = window.findChild<apex::ui::ViewportArea*>();
+    auto* label = window.findChild<QLabel*>(QStringLiteral("statusLightingBudget"));
+    REQUIRE(area);
+    REQUIRE(label);
+    CHECK(label->isHidden());
+    emit area->lightingBudgetChanged(true, 37);
+    CHECK_FALSE(label->isHidden());
+    CHECK(label->text() == QStringLiteral("Clusters: 37 overflow"));
+    emit area->lightingBudgetChanged(true, 0);
+    CHECK(label->text() == QStringLiteral("Clusters: 0 overflow"));
+    emit area->lightingBudgetChanged(false, 0);
+    CHECK(label->isHidden());
+}

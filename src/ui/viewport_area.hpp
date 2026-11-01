@@ -136,6 +136,7 @@ signals:
     // milliseconds, and the GPU name once a device is chosen.
     void cameraPositionChanged(double x, double y, double z);
     void frameTimeChanged(double milliseconds);
+    void lightingBudgetChanged(bool lit, std::uint32_t overflow);
     void gpuNameChanged(const QString& name);
     void layoutChanged();  // Structure or viewport settings changed (a persistence hint).
     void activeMaterialRequested(const QString& name);
