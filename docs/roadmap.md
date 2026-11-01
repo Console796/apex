@@ -39,8 +39,8 @@ its release was the sub-milestone 0.1.10 (tag `v0.1.10`).
 landed. 0.5.1–0.5.8 are committed on `master`, including addon authoring and compile targets (0.5.7)
 and Create Instance from Selection (0.5.8). The owner confirmed real playtests on `1f89631`. Release
 verification is still open: see [the 0.5 plan](plans/0.5.md) for the remaining gates. No 0.5 release
-is tagged yet. 0.6 is in progress: 0.6.1 to 0.6.5 have landed, and 0.6.6 to 0.6.8 and the 0.6 release
-have not started. See [the 0.6 plan](plans/0.6.md). `version.txt` still reads `0.5.8`.
+is tagged yet. 0.6.1 to 0.6.8 have landed, and the owner accepted the 0.6 release gates on 2026-11-01
+(parity, performance, Windows Lit goldens). See [the 0.6 plan](plans/0.6.md).
 
 ## Principles that hold across every milestone
 
@@ -131,7 +131,9 @@ with a shadow atlas, sun and sky ambient, HDR and tone mapping matched to the ga
 2D and 3D skybox preview, better LightmappedGeneric/PBR/WorldVertexTransition fidelity, cubemap
 preview.
 **Exit:** direct lighting matches in-game captures within an agreed per-pixel tolerance on
-reference scenes, and `light_rt` dynamic lights match the game.
+reference scenes, and `light_rt` dynamic lights match the game. *Agreed in 0.6:* irradiance against
+VRAD `-bounce 0` within a mean of 2% and a p99 of 6% on flat, unoccluded patches; in-game captures at
+pinned exposure reviewed by the owner (plan 0.6 D3).
 
 ### 0.7: Lighting II: baked preview
 Luxel charting matching VBSP (`lightmapscale`, face splits, BSP v25 limits), a progressive GPU
