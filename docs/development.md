@@ -181,8 +181,17 @@ let you reserve the VM so CI refuses to start it.
 
 ### A real Windows machine instead of the VM
 
-The stage can run on a physical Windows PC instead. Set it up the same way as the guest above (the
-toolchain, OpenSSH Server and the authorised key), then on this host:
+The stage can run on a physical Windows PC instead. Enable OpenSSH Server and authorise the key as
+for the guest above (steps 3 and 4), then install the toolchain from this host. The script is silent,
+accepts the Build Tools and Vulkan SDK licences, skips what is already installed, and prints a
+heartbeat while the large installers run (about 15 GB, 30-60 minutes on a fresh machine):
+
+```bash
+scp -i ~/.ssh/id_ed25519_apex_ci tools/winmachine_setup.ps1 <user>@<machine address>:
+ssh -i ~/.ssh/id_ed25519_apex_ci <user>@<machine address> powershell -NoProfile -ExecutionPolicy Bypass -File winmachine_setup.ps1
+```
+
+Then on this host:
 
 ```bash
 export APEX_WIN_TARGET=machine

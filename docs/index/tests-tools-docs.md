@@ -82,6 +82,7 @@ marker in their first lines. Never add Valve or Strata content. The
 | `light_probe.py`, `light_parity.py` | Lighting probes. `light_probe.py` measures how native VRAD turns light keys into worldlights. `light_parity.py` checks irradiance against native VRAD (plan 0.6, D3). Both need `APEX_P2CE_DIR` and write only to `/tmp`. |
 | `embed_spirv.py` | Turns compiled shaders into headers. See [repo-map.md](repo-map.md#where-generated-code-comes-from). |
 | `winvm.sh`, `winvm-lock.sh`, `winvm-unlock.sh`, `winvm_lock.py` | Start, lock and unlock the Windows VM used for the MSVC build and tests. Setup is in [../development.md](../development.md) section 6. |
+| `winmachine_setup.ps1` | Install the Windows CI toolchain on a real Windows machine (`APEX_WIN_TARGET=machine`); see [../development.md](../development.md) section 6. |
 | `ci_history.py` | Stage timing history and ETA prediction, shared by `ci.py` and `ci_top.py`. |
 | `test_ci.py`, `test_top.py` | Regression tests for the CI orchestration, and `test_top.py`, a terminal monitor for a direct run of `apex_tests` or `apex_ui_tests`. |
 | `input_trace_summary.py` | Summarises an `APEX_INPUT_LOG` input trace (JSONL). |
