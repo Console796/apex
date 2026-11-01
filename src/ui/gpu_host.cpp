@@ -82,6 +82,8 @@ bool GpuHost::ensure() {
     } else if (platform == QLatin1String("xcb")) {
         wanted.push_back("VK_KHR_xcb_surface");
         wanted.push_back("VK_KHR_xlib_surface");
+    } else if (platform == QLatin1String("windows")) {
+        wanted.push_back("VK_KHR_win32_surface");
     } else {
         error_ = tr("The \"%1\" Qt platform has no Vulkan surfaces.").arg(platform);
         log::warn("viewports: {}", error_.toStdString());
@@ -91,7 +93,8 @@ bool GpuHost::ensure() {
         if (render::Context::instanceExtensionSupported(name)) options.instanceExtensions.emplace_back(name);
         else if (std::string_view(name) == VK_KHR_SURFACE_EXTENSION_NAME ||
                  std::string_view(name) == "VK_KHR_wayland_surface" ||
-                 std::string_view(name) == "VK_KHR_xcb_surface") {
+                 std::string_view(name) == "VK_KHR_xcb_surface" ||
+                 std::string_view(name) == "VK_KHR_win32_surface") {
             error_ = tr("Vulkan instance extension %1 is missing.").arg(QString::fromLatin1(name));
             log::warn("viewports: {}", error_.toStdString());
             return false;

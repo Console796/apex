@@ -118,6 +118,19 @@ build/linux-gcc-release/apex path/to/map.vmf
 
 (The binary location depends on your preset and generator.)
 
+On Windows, get Qt with [aqtinstall](https://github.com/miurahr/aqtinstall), which needs no Qt
+account (the official online installer does):
+
+```bat
+py -m pip install aqtinstall
+```
+
+```bat
+py -m aqt install-qt windows desktop 6.10.2 win64_msvc2022_64 -m qtmultimedia -O C:\Qt
+```
+
+Then configure with `-DCMAKE_PREFIX_PATH=C:/Qt/6.10.2/msvc2022_64`.
+
 ## Testing and CI
 
 CI runs locally with `tools/ci.py` (`--fast` for a quick subset). It needs `APEX_P2CE_DIR` pointing
@@ -130,7 +143,8 @@ the `linux-fuzz` preset. The compile-chamber stage runs the real P2CE compile to
 ## Packaging
 
 `tools/package.py` builds a Linux `.tar.gz` or a Windows `.zip` from an existing release build.
-There is no AppImage or installer yet.
+There is no AppImage or installer yet. The Windows `.zip` carries the Qt DLLs next to `apex.exe`
+(through `windeployqt`), so running it needs no Qt install, only a GPU driver with Vulkan support.
 
 ## Repository layout
 

@@ -137,7 +137,11 @@ if(APEX_BUILD_APP)
       "  Debian/Ubuntu: sudo apt install qt6-base-dev qt6-svg-dev qt6-multimedia-dev\n"
       "  Fedora:        sudo dnf install qt6-qtbase-devel qt6-qtsvg-devel qt6-qtmultimedia-devel\n"
       "  Arch:          sudo pacman -S qt6-base qt6-svg qt6-multimedia\n"
-      "  Windows/other: install Qt 6.5+ from https://www.qt.io/download and set CMAKE_PREFIX_PATH to it.\n"
+      "  Windows (no Qt account needed, uses aqtinstall from PyPI):\n"
+      "                 py -m pip install aqtinstall\n"
+      "                 py -m aqt install-qt windows desktop 6.10.2 win64_msvc2022_64 -m qtmultimedia -O C:\\Qt\n"
+      "                 then configure with -DCMAKE_PREFIX_PATH=C:/Qt/6.10.2/msvc2022_64\n"
+      "  Other:         install Qt 6.5+ and set CMAKE_PREFIX_PATH to it.\n"
       "To build only the non-GUI libraries and tools, configure with -DAPEX_BUILD_APP=OFF.")
   endif()
   apex_layer(ui SOURCES src/ui/compile_panel.cpp src/ui/cordon_editor.cpp src/ui/profile_store.cpp src/ui/profile_editor.cpp src/ui/qprocess_runner.cpp src/ui/rename_confirmation.cpp src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/game_content.cpp src/ui/materials_panel.cpp src/ui/asset_browser_panel.cpp src/ui/models_panel.cpp src/ui/model_inspect_view.cpp src/ui/sounds_panel.cpp src/ui/particles_panel.cpp src/ui/face_properties_panel.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/tool_parameter_strip.cpp src/ui/gpu_host.cpp src/ui/model_pick.cpp
