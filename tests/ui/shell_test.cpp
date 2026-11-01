@@ -30,6 +30,8 @@
 #include <QAbstractItemView>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFontDatabase>
+#include <QFontInfo>
 #include <set>
 #include <tuple>
 
@@ -124,7 +126,29 @@ TEST_CASE("custom themes round-trip through files and inherit from a base") {
     CHECK(apex::ui::currentThemeId() == id);
     CHECK(apex::ui::removeCustomTheme(id, dir.path()));
     CHECK(apex::ui::findTheme(id) == nullptr);
-    CHECK(apex::ui::applyThemeId(a, "gone") == "dark");
+    CHECK(apex::ui::applyThemeId(a, "gone") == apex::ui::kDefaultThemeId);
+}
+
+TEST_CASE("Pointfile is the default theme and brings its bundled font") {
+    auto& a = app();
+    CHECK(QString::fromLatin1(apex::ui::kDefaultThemeId) == "pointfile");
+    const auto* dark = apex::ui::findTheme("pointfile");
+    const auto* paper = apex::ui::findTheme("pointfile-paper");
+    REQUIRE(dark);
+    REQUIRE(paper);
+    CHECK(dark->tokens.accent == QColor("#ff3b2f"));
+    CHECK(paper->tokens.window.lightness() >= 128);
+    // Red is the selection colour, so the X axis must not match it.
+    CHECK(dark->tokens.gizmoX != dark->tokens.accent);
+    CHECK(dark->tokens.gizmoX == paper->tokens.gizmoX);
+
+    const QString platformFamily = a.font().family();
+    apex::ui::applyThemeId(a, "pointfile");
+    CHECK(QFontDatabase::families().contains(QString::fromLatin1(apex::ui::kBundledFontFamily)));
+    CHECK(QFontInfo(a.font()).family() == QString::fromLatin1(apex::ui::kBundledFontFamily));
+    // A theme without a family puts the platform font back.
+    apex::ui::applyThemeId(a, "dark");
+    if (platformFamily != QString::fromLatin1(apex::ui::kBundledFontFamily)) CHECK(a.font().family() != QString::fromLatin1(apex::ui::kBundledFontFamily));
 }
 
 TEST_CASE("viewport overlay colours are theme tokens fed to the editor palette") {
@@ -136,10 +160,10 @@ TEST_CASE("viewport overlay colours are theme tokens fed to the editor palette")
         CHECK(names.contains(QLatin1StringView(name)));
     CHECK(names.indexOf(QLatin1StringView(apex::ui::kFirstViewportToken)) == 15);
 
-    // Built-ins carry the editor's default overlay colours.
+    // Built-ins carry the editor's default overlay colours, except the Pointfile pair, which retune them.
     const apex::editor::OverlayPalette defaults;
     for (const auto& theme : apex::ui::themes()) {
-        if (!theme.builtin) continue;
+        if (!theme.builtin || theme.id.startsWith(QStringLiteral("pointfile"))) continue;
         const auto palette = apex::ui::overlayPalette(theme.tokens);
         const auto near = [](apex::Vec4 a, apex::Vec4 b) { return glm::length(a - b) < 1.0f / 255; };
         CHECK(near(palette.vertexHandle, defaults.vertexHandle));

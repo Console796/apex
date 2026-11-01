@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QFont>
+#include <QFontDatabase>
 #include <QJsonDocument>
 #include <QPalette>
 #include <QSaveFile>
@@ -15,8 +16,22 @@
 #include <utility>
 #include <cstring>
 
+// Q_INIT_RESOURCE must be called outside a namespace; apex_ui is a static library.
+static void initializeFonts() { Q_INIT_RESOURCE(plex_fonts); }
+
 namespace apex::ui {
 namespace {
+
+// Adds the bundled IBM Plex Sans faces to the font database, once.
+void registerBundledFonts() {
+    static const bool done = [] {
+        initializeFonts();
+        for (const char* face : {"Regular", "Italic", "Medium", "SemiBold", "Bold", "BoldItalic"})
+            QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/IBMPlexSans-%1.ttf").arg(QLatin1StringView(face)));
+        return true;
+    }();
+    (void)done;
+}
 
 // Every colour token: its theme-file name and field, in editor order.
 struct ColourField {
@@ -142,6 +157,44 @@ Tokens makeSolarizedLight() {
     return makeColours(c);
 }
 
+// The Pointfile brand themes. Red means "selected", as in Hammer, so the viewport overlays move
+// out of its way: X turns coral and the hover and clip colours turn amber. Both share one overlay set.
+void setPointfileOverlays(Tokens& t) {
+    t.vertexHandle = QColor("#f2f0ed");
+    t.vertexSelected = QColor("#ff3b2f");
+    t.vertexInactive = QColor("#6b6966");
+    t.vertexEdge = QColor("#8e8b87");
+    t.vertexInvalid = QColor("#ff3b2f");
+    t.vertexSplit = QColor("#ff8f3d");
+    t.faceHover = QColor("#ffc23d");
+    t.gizmoX = QColor("#ff8f6b");
+    t.gizmoY = QColor("#62d48a");
+    t.gizmoZ = QColor("#5b9dff");
+    t.gizmoScreen = QColor("#d6d3cf");
+    t.gizmoHighlight = QColor("#ffc23d");
+    t.clip = QColor("#ffc23d");
+    t.clipDiscard = QColor("#ff3b2f");
+    t.block = QColor("#f2f0ed");
+    t.radius = 2;
+    t.fontFamily = QString::fromLatin1(kBundledFontFamily);
+}
+
+Tokens makePointfile() {
+    const char* const c[15] = {"#111111", "#171717", "#0b0b0b", "#232323", "#2c2c2c", "#383838", "#2a2a2a", "#f2f0ed",
+                               "#8e8b87", "#0b0b0b", "#ff3b2f", "#ff5e54", "#4a1310", "#ffc23d", "#ff3b2f"};
+    Tokens t = makeColours(c);
+    setPointfileOverlays(t);
+    return t;
+}
+
+Tokens makePointfilePaper() {
+    const char* const c[15] = {"#e9e8e4", "#f2f1ee", "#fbfaf8", "#e0dfda", "#d6d5cf", "#c9c8c1", "#cfcdc7", "#111111",
+                               "#63605b", "#ffffff", "#d92a1f", "#ec3a2e", "#f6cfcb", "#9a6400", "#c4231a"};
+    Tokens t = makeColours(c);
+    setPointfileOverlays(t);
+    return t;
+}
+
 Tokens makeHighContrast() {
     const char* const c[15] = {"#000000", "#0a0a0a", "#000000", "#1a1a1a", "#2e2e2e", "#454545", "#ffffff", "#ffffff",
                                "#c8c8c8", "#000000", "#ffd400", "#ffe45c", "#0b4fa8", "#ffd400", "#ff5c5c"};
@@ -154,6 +207,8 @@ QList<ThemeEntry>& registry() {
         const auto add = [&](const char* id, const char* name, Tokens t) {
             l.append({QString::fromLatin1(id), QString::fromLatin1(name), true, std::move(t)});
         };
+        add("pointfile", "Pointfile", makePointfile());
+        add("pointfile-paper", "Pointfile Paper", makePointfilePaper());
         add("dark", "Dark", makeDark());
         add("light", "Light", makeLight());
         add("midnight", "Midnight", makeMidnight());
@@ -166,10 +221,10 @@ QList<ThemeEntry>& registry() {
 }
 
 Tokens& current() {
-    static Tokens t = makeDark();
+    static Tokens t = makePointfile();
     return t;
 }
-QString g_themeId = QStringLiteral("dark");
+QString g_themeId = QString::fromLatin1(kDefaultThemeId);
 ApexStyle* g_style = nullptr;
 
 QString slugOf(const QString& name) {
@@ -185,7 +240,7 @@ const char* const kCustomPrefix = "custom:";
 
 }  // namespace
 
-const Tokens& tokens(Theme theme) { return registry()[theme == Theme::Dark ? 0 : 1].tokens; }
+const Tokens& tokens(Theme theme) { return findTheme(theme == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"))->tokens; }
 
 const Tokens& currentTokens() { return current(); }
 Theme currentTheme() { return current().window.lightness() < 128 ? Theme::Dark : Theme::Light; }
@@ -488,7 +543,7 @@ void applyTheme(QApplication& app, Theme theme) {
 
 QString applyThemeId(QApplication& app, const QString& id) {
     const ThemeEntry* e = findTheme(id);
-    if (!e) e = &registry().front();
+    if (!e) e = findTheme(QString::fromLatin1(kDefaultThemeId));
     applyTokens(app, e->tokens, e->id);
     return e->id;
 }
@@ -518,11 +573,13 @@ void applyTokens(QApplication& app, const Tokens& tokens, const QString& id) {
     p.setColor(QPalette::Disabled, QPalette::Text, t.textDim);
     p.setColor(QPalette::Disabled, QPalette::ButtonText, t.textDim);
     app.setPalette(p);
-    if (!t.fontFamily.isEmpty()) {
-        QFont f = app.font();
-        f.setFamily(t.fontFamily);
-        app.setFont(f);
-    }
+    // Remember the platform family before any theme changes it, so a theme with no family restores
+    // it. Only the name is kept: a static QFont would outlive QApplication.
+    static const QString platformFamily = app.font().family();
+    if (!t.fontFamily.isEmpty()) registerBundledFonts();
+    QFont f = app.font();
+    f.setFamily(t.fontFamily.isEmpty() ? platformFamily : t.fontFamily);
+    app.setFont(f);
     app.setStyleSheet(renderQss(t));
 }
 

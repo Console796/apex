@@ -192,7 +192,7 @@ void SettingsDialog::deleteTheme() {
     if (QMessageBox::question(this, tr("Delete theme"), tr("Delete the theme \"%1\"?").arg(t->name)) != QMessageBox::Yes) return;
     const bool wasCurrent = id == currentThemeId();
     removeCustomTheme(id);
-    if (wasCurrent) window_.setThemeId(QStringLiteral("dark"));
+    if (wasCurrent) window_.setThemeId(QString::fromLatin1(kDefaultThemeId));
     window_.refreshThemeMenu();
     refreshThemeCombo(currentThemeId());
     updateThemeButtons();

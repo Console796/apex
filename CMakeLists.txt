@@ -136,7 +136,7 @@ if(APEX_BUILD_APP)
                         src/ui/pie_menu_popup.cpp src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/prefab_dialog.cpp src/ui/prefab_thumbnail.cpp src/ui/find_panel.cpp src/ui/asset_report_builder.cpp src/ui/addons_panel.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets Qt6::Svg Qt6::Multimedia)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON AUTORCC ON)
-  target_sources(apex_ui PRIVATE src/ui/icons/icons.qrc)
+  target_sources(apex_ui PRIVATE src/ui/icons/icons.qrc third_party/ibm-plex-sans/plex_fonts.qrc)
   # Pointer lock is optional: other platforms and minimal Linux builds retain local input.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     find_package(PkgConfig QUIET)

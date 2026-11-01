@@ -38,8 +38,14 @@ struct Tokens {
     QString fontFamily;  // Empty keeps the platform font.
 };
 
+// The theme a fresh install starts with and an unknown theme id falls back to.
+inline constexpr const char* kDefaultThemeId = "pointfile";
+// The UI family bundled as a Qt resource (IBM Plex Sans, OFL-1.1); registered on first use.
+inline constexpr const char* kBundledFontFamily = "IBM Plex Sans";
+
+// The classic Dark and Light built-ins.
 const Tokens& tokens(Theme theme);
-// The tokens of the theme applied last (Dark before the first applyTheme).
+// The tokens of the theme applied last (the default theme before the first applyTheme).
 const Tokens& currentTokens();
 Theme currentTheme();
 
@@ -105,7 +111,7 @@ private:
 
 // Installs ApexStyle (once), the token palette and the expanded QSS on the application.
 void applyTheme(QApplication& app, Theme theme);
-// Applies a registry theme by id; an unknown id falls back to "dark". Returns the id applied.
+// Applies a registry theme by id; an unknown id falls back to kDefaultThemeId. Returns the id applied.
 QString applyThemeId(QApplication& app, const QString& id);
 // Applies explicit tokens (live preview in the theme editor); the id is reported as `id`.
 void applyTokens(QApplication& app, const Tokens& tokens, const QString& id = {});

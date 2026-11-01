@@ -30,7 +30,10 @@ inline QApplication& app() {
 #endif
     QCoreApplication::setOrganizationName(QStringLiteral("ApexTest"));
     QCoreApplication::setApplicationName(QStringLiteral("ApexTest"));
-    static QApplication application(argc, argv);
-    return application;
+    // Deliberately leaked. A static QApplication is destroyed at exit after Qt's own globals, and
+    // with application fonts registered (the Pointfile themes bundle IBM Plex Sans) its destructor
+    // reaches the already-destroyed font cache and crashes.
+    static QApplication* application = new QApplication(argc, argv);
+    return *application;
 }
 } // namespace apex::ui_test

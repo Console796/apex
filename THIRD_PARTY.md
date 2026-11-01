@@ -22,11 +22,16 @@ The row's first column is the exact name used in `deps.cmake` (CPM) or `find_pac
 | wayland-client | MIT | optional system package, dynamically linked on Linux | ui (pointer lock) |
 | wayland-scanner | MIT | optional system build tool, located through pkg-config | build (protocol glue) |
 | wayland-protocols | MIT | vendored upstream pointer-constraints and relative-pointer unstable v1 XMLs in `third_party/wayland-protocols/`, copyright/licence headers retained | ui (generated protocol glue) |
+| IBM Plex Sans | OFL-1.1 | vendored static TTFs (v1.1.0 release, six faces) in `third_party/ibm-plex-sans/` with its `LICENSE.txt`, embedded as a Qt resource | ui (Pointfile themes) |
 
 The protocol XMLs are copied from the [upstream Wayland protocol definitions](https://gitlab.freedesktop.org/wayland/wayland-protocols),
 `unstable/pointer-constraints/pointer-constraints-unstable-v1.xml` and
 `unstable/relative-pointer/relative-pointer-unstable-v1.xml` (retrieved 2026-10-22).
 They require no installed `wayland-protocols` package. `pkg-config` is used only as a build tool.
+
+The IBM Plex Sans faces are Regular, Italic, Medium, SemiBold, Bold and BoldItalic from the
+`@ibm/plex-sans@1.1.0` release of [IBM/plex](https://github.com/IBM/plex) (retrieved 2026-10-31),
+unmodified. Packages install the font licence as `LICENSE-IBM-Plex-Sans.txt`.
 
 Qt Multimedia uses Qt's FFmpeg backend on Windows (`ffmpegmediaplugin.dll` and the five
 FFmpeg DLLs); windeployqt also deploys `windowsmediaplugin.dll`. The reference Linux host's
