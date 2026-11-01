@@ -14,7 +14,9 @@ Result<std::vector<CompileProfile>> importWc(const std::filesystem::path& file) 
         CompileProfile profile;
         profile.name = sequence.name;
         for (const auto& source : sequence.commands) {
-            Command command{source.executable, source.arguments, source.enabled, !source.waitForKeypress, {}};
+            // The game step always runs detached (runner.cpp), and Hammer-saved cmdseq.wc omits no_wait for it.
+            const bool game = source.executable == "$game_exe";
+            Command command{source.executable, source.arguments, source.enabled, !game && !source.waitForKeypress, {}};
             const auto special = static_cast<int>(source.special);
             if (special != 0) {
                 switch (special) {
