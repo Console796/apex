@@ -27,15 +27,13 @@
 #include <QPushButton>
 #include <QTableWidget>
 #include <QTest>
+#include <bsppp/bsppp.h> // before windows.h, whose macros break its BSPLump enum
 #include <algorithm>
 #include <fstream>
 #include <cstdlib>
 #ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
-#endif
-#ifdef __linux__
-#include <bsppp/bsppp.h>
 #endif
 #ifdef __linux__
 #include <csignal>
@@ -52,7 +50,7 @@ bool until(const std::function<bool()>& condition, int timeout = 5000) {
 }
 }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
 TEST_CASE("compile_chamber profiles through real QProcessRunner" *
           doctest::skip([] {
               const auto* install = std::getenv("APEX_P2CE_DIR");
@@ -69,7 +67,7 @@ TEST_CASE("compile_chamber profiles through real QProcessRunner" *
     for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"},
              {"light_exe", "vrad"}, {"postcompiler_exe", "postcompiler"}, {"game_exe", "game"}})
         paths.tools[variable] = game.toolPath(tool).string();
-    QTemporaryDir directory(QStringLiteral("/tmp/apex-compile-chamber-XXXXXX"));
+    QTemporaryDir directory;
     REQUIRE(directory.isValid());
     const auto root = std::filesystem::canonical(directory.path().toStdString());
     const auto outsideInstall = [&](const std::filesystem::path& path) {
@@ -154,9 +152,10 @@ TEST_CASE("compile_chamber profiles through real QProcessRunner" *
             INFO(line);
             CHECK(line.find("LEAKED") == std::string::npos);
         }
-        if (profile.commands[i].executable == "$postcompiler_exe" ||
-            profile.commands[i].executable == "$game_exe")
+        if (profile.commands[i].executable == "$game_exe")
             CHECK(step.status == compile::Status::Skipped);
+        else if (profile.commands[i].executable == "$postcompiler_exe") // Skipped when the tool is absent
+            CHECK((step.status == compile::Status::Skipped || step.status == compile::Status::Ok));
         else
             CHECK(step.status == compile::Status::Ok);
     }
@@ -193,6 +192,7 @@ TEST_CASE("compile_chamber profiles through real QProcessRunner" *
             for (const auto& entity : compiled.getLumpData<bsppp::BSPLump::ENTITIES>()) {
                 std::vector<std::pair<std::string, std::string>> values;
                 for (const auto& pair : entity.getKeyValues()) values.emplace_back(pair.getKey(), pair.getValue());
+                std::ranges::sort(values); // Windows vrad writes worldspawn's classname first
                 result.push_back(std::move(values));
             }
             return result;

@@ -42,6 +42,59 @@ equal. This is the CI script's recipe re-run in-process, not the output file of
   scripted runner delivers the burst before the panel drains it, so this measures the batched refresh,
   not frame pacing against a live process.
 
-**Not covered here.** Gate 2 (Windows: native `.exe` tools and `p2ce.exe`): the real-tool test is still
-`#ifdef __linux__`. Hammer cordon thickness/material measurements. The owner's in-game judgment on the
-final tree.
+**Not covered here.** Hammer cordon thickness/material measurements. The owner's in-game judgment on
+the final tree. Gate 2's `p2ce.exe` launch was verified as a command line, not run (below).
+
+# Windows real-tool gate (gate 2) — 2026-11-01
+
+Tree `5f93819` plus the uncommitted working tree, built by `tools/winbuild.py --no-test` on the CI
+machine (Windows 10 19045, i5-9300H, MSVC 2022, preset `windows-msvc-release`, no GPU needed).
+Native tools from the Steam install `C:\Program Files (x86)\Steam\steamapps\common\Portal 2 Community
+Edition` (`bin\win64\vbsp.exe`, `vvis.exe`, `vrad.exe`, `postcompiler\postcompiler.exe`; P2CE
+`PatchVersion=0.0.8.2`, built Apr 23 2026). The chamber is `apex_tests -tc="*D17 scripted chamber*"` with
+`APEX_CHAMBER_OUT` (63,352 bytes, SHA-256 `ed012c38...b2f9`), the same VMF the Linux gate uses.
+
+The Linux test (`compile_chamber profiles through real QProcessRunner`, `tests/ui/compile_test.cpp`) is
+`#ifdef __linux__`. It was run unmodified in logic on Windows from a copy edited on the CI machine only
+(the repository is unchanged): the guard also accepts `_WIN32`; `bsppp` is included before `windows.h`
+(its `BSPLump` enum collides with a Windows macro); `QTemporaryDir` uses the system temp folder instead of
+`/tmp`; the postcompiler step may be Ok (it exists on Windows) instead of Skipped; and the entity
+comparison sorts each entity's key/value pairs (see below). Command:
+
+```bat
+set APEX_P2CE_DIR=C:\Program Files (x86)\Steam\steamapps\common\Portal 2 Community Edition
+set APEX_CHAMBER_VMF=C:\apex-ci\gate2\chamber.vmf
+apex_ui_tests.exe -tc="compile_chamber*"
+```
+
+Result: 1 test case, 1,712 assertions passed. Times from the passing run (the earlier run was 4,281 /
+3,237 / 2,276 / 2,757 / 3,123 ms):
+
+| Variant | Profile | Snapshot write | Compile wall | Result |
+|---|---|---|---|---|
+| baseline | Fast | 3.3 ms | 2,988 ms | Ok; BSP copied to `maps`, 268,464 bytes, SHA-256 `050bb674...6c84`; vbsp alone 393 ms |
+| final | Final | 3.7 ms | 3,249 ms | Ok; 268,464 bytes, SHA-256 `aa9aec16...676f`; no `LEAKED` line |
+| leak | Fast | — | 2,283 ms to stop | vbsp Ok, `.lin` read (2 points), `vbsp.leak` diagnostic; job Failed after vbsp |
+| cordon | Fast | 13.0 ms | 2,826 ms | Ok; 117,184 bytes; sealed cut |
+| instance-addon | Fast | 5.2 ms | 2,911 ms | Ok; compiled into the addon's `maps` |
+
+**Entity lump.** On Windows the Fast BSP's ENTITIES lump (after vrad) has the same 227 bytes and the same
+key/value pairs as vbsp alone, but `worldspawn` lists `classname` first instead of last, so the unmodified
+ordered comparison fails (one assertion). The test copy sorted each entity's pairs before comparing.
+
+**Launch.** The game step's command was not run: the CI machine is driven over SSH without an interactive
+desktop, and starting the game would need the BSP copied into the install. `p2ce.exe` exists at
+`...\Portal 2 Community Edition\bin\win64\p2ce.exe` (388,608 bytes). The Windows build of
+`apex_tests -tc="compile*,game launch*,addon campaign*"` (27 cases, 394 assertions) and `apex_ui_tests
+-tc="compile panel*,compile QProcess*"` (9 cases, 132 assertions) pass, including the detached launch's
+program (`game.toolPath("game")`, i.e. `bin\win64\p2ce.exe`) and arguments. The command line is
+`p2ce.exe -dev -console -allowdebug -game "<install>\p2ce" +map <name> -condebug` (the default
+arguments use `+map`).
+
+**Repository test.** The same edits are now in `tests/ui/compile_test.cpp` (the case builds on Linux and
+Windows, `bsppp` is included before `windows.h`, the temporary folder is the system default, the
+postcompiler step may be Ok or Skipped, and entities compare with their key/value pairs sorted on every
+platform). Linux (`tools/chamber_runner_check.py linux-asan`) passes with 732 assertions. The Windows
+rerun of the repository's test is pending: the CI machine stopped answering during the rebuild.
+
+**Not covered by this run.** A Windows launch that loads the map (owner playtest).
