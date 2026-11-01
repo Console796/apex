@@ -217,9 +217,10 @@ if(APEX_BUILD_APP)
     add_test(NAME apex_ui_tests COMMAND apex_ui_tests)
     set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;ASAN_OPTIONS=detect_leaks=0;APEX_SKIP_RECOVERY=1")
     if(WIN32)
-      # Shared Qt DLLs are not on the guest's PATH.
+      # Shared Qt DLLs are not on the guest's PATH, and windeployqt leaves only the windows
+      # platform plugin beside the exe.
       set_tests_properties(apex_ui_tests PROPERTIES ENVIRONMENT_MODIFICATION
-                           "PATH=path_list_prepend:${Qt6_DIR}/../../../bin")
+                           "PATH=path_list_prepend:${Qt6_DIR}/../../../bin;QT_PLUGIN_PATH=set:${Qt6_DIR}/../../../plugins")
     endif()
   endif()
 endif()
