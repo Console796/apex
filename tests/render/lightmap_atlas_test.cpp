@@ -1,12 +1,61 @@
 #include "render/lightmap_atlas.hpp"
 #include "render/solid_mesh.hpp"
+#include "render/bake_setup.hpp"
+#include "lighting/baker.hpp"
+#include "document/vmf.hpp"
 #include "geometry/solid_block.hpp"
+#include "../assets/fixture.hpp"
+#include "../assets/texture_fixture.hpp"
 #include "../geometry/fixtures.hpp"
 
 #include <doctest/doctest.h>
 
 using namespace apex;
 using namespace apex::render;
+
+TEST_CASE("bake setup: patched material reflectivity overrides VTF without changing direct light") {
+    GameTree tree;
+    tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    const auto bytes = whiteVtf().bake();
+    tree.put("materials/test/base.vtf", {reinterpret_cast<const char*>(bytes.data()), bytes.size()});
+    tree.put("materials/test/base.vmt", "LightmappedGeneric { $basetexture test/base }");
+    DVec3 expected{0.7, 0.6, 0.8};
+    std::string value = "[0.7 0.6 0.8]";
+    SUBCASE("patch override") {}
+    SUBCASE("black override") { value = "[0 0 0]"; expected = DVec3{0}; }
+    SUBCASE("uniform override") { value = "0.3"; expected = DVec3{0.3}; }
+    SUBCASE("out of range clamps") { value = "[-1 2 0.5]"; expected = {0, 1, 0.5}; }
+    SUBCASE("malformed falls back to VTF") { value = "bad"; expected = {0.125, 0.25, 0.5}; }
+    SUBCASE("absent falls back to VTF") { value.clear(); expected = {0.125, 0.25, 0.5}; }
+    tree.put("materials/test/patched.vmt", "patch { include test/base insert { " +
+        (value.empty() ? std::string{} : "$reflectivity \"" + value + "\"") + " } }");
+    auto file = vmf::parse("world { \"id\" \"1\" \"classname\" \"worldspawn\" }");
+    REQUIRE(file);
+    document::Document doc(*file);
+    const auto poly = geometry_test::build(geometry_test::boxSides());
+    auto tx = doc.begin("fixture");
+    tx.create(geometry::solidBlock(poly, {"test/patched"}), doc.handle(doc.roots()[0]));
+    tx.commit();
+    JobPool jobs(1);
+    assets::GameProfile profile;
+    profile.gameDirectory = tree.root;
+    auto vfs = assets::Vfs::load(profile, jobs);
+    REQUIRE(vfs);
+    auto setup = setupBake(doc, &*vfs);
+    REQUIRE(setup.failedMaterials == 0);
+    REQUIRE(setup.failedTextures == 0);
+    REQUIRE_FALSE(setup.scene.faces.empty());
+    for (const auto& face : setup.scene.faces)
+        for (int c = 0; c < 3; ++c) CHECK(face.albedo[c] == doctest::Approx(expected[c]));
+    auto light = lighting::Light{};
+    light.origin = {0, 0, 128}; light.constant = 1; light.intensity = DVec3{1};
+    setup.scene.lights = {light};
+    lighting::Baker overridden(setup.scene);
+    for (auto& face : setup.scene.faces) face.albedo = Vec3{0.125f, 0.25f, 0.5f};
+    lighting::Baker textureOnly(setup.scene);
+    overridden.step(); textureOnly.step();
+    CHECK(overridden.resolveLevel(0) == textureOnly.resolveLevel(0));
+}
 
 TEST_CASE("lightmap atlas: shelves are deterministic, guarded and nonoverlapping") {
     std::vector<lighting::BakeFace> faces(80);

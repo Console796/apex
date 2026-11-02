@@ -30,6 +30,7 @@ namespace apex::lighting { struct TriangleMesh; }
 namespace apex::render {
 
 enum class DisplayMode { Textured, Flat, Wireframe, Lit, Baked };
+inline constexpr float kDefaultBakedScale = 0.78f; // Set-2 rendered appearance fit; see bake_tuning_0_7_4.md.
 
 constexpr bool sceneMode(DisplayMode mode) { return mode == DisplayMode::Lit || mode == DisplayMode::Baked; }
 
@@ -214,7 +215,7 @@ inline std::size_t nearestCubemap(std::span<const CubemapProbe> probes, DVec3 po
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     TextureSlot lightmap = kNoTexture;
-    float bakedScale = 1.0f; // Display only; never changes bake accumulation.
+    float bakedScale = kDefaultBakedScale; // Display only; never changes bake accumulation.
     float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
     SkySettings sky;
     FogSettings fog;

@@ -56,6 +56,11 @@ BakeSetup setupBake(const document::Document& doc, const assets::Vfs* vfs) {
                         std::cerr << "texture-failed " << vmt->baseTexture << ": " << texture.error().what() << " (albedo 0.5)\n";
                     }
                 }
+                // VBSP stores the material's linear $reflectivity override in texdata. It can be
+                // much brighter than the base VTF (notably PBR black tiles); bounce uses that value.
+                const auto reflectivity = vmt->vector("$reflectivity", DVec3(result.albedo));
+                for (int c = 0; c < 3; ++c)
+                    result.albedo[c] = static_cast<float>(std::clamp(reflectivity[c], 0.0, 1.0));
             }
         }
         materials.emplace(key, result);

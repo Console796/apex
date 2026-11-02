@@ -248,7 +248,7 @@ QString GpuHost::bakeStatus() const {
     return bake_ ? bake_->status() + tr(" | Instances/other brush entities: black; props/displacements: Lit")
                  : tr("Baked: no document/GPU");
 }
-float GpuHost::bakeScale() const { return bake_ ? bake_->scale() : 1.0f; }
+float GpuHost::bakeScale() const { return bake_ ? bake_->scale() : render::kDefaultBakedScale; }
 
 void GpuHost::rebuildCubemaps() {
     if (mirror_) mirror_->requestCubemapRebuild();

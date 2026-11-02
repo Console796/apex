@@ -1684,6 +1684,13 @@ TEST_CASE("renderer: Lit phong masks exponent texture and display modes") {
     const auto narrow = drawLitFrame(*gpu, list, scene);
     CHECK(at(narrow, 44, 32).r + 70 < at(broad, 44, 32).r);
     CHECK(at(narrow, 20, 32).r == 0);
+    // Black albedo isolates phong: Baked keeps the same masks and exponent texture as Lit.
+    list.mode = DisplayMode::Baked;
+    list.meshes[0].bakedBrush = true;
+    CHECK(drawLitFrame(*gpu, list, scene).pixels == narrow.pixels);
+    material.phongExponentSlot = kNoTexture;
+    gpu->heap->setMaterial(*base, material);
+    CHECK(drawLitFrame(*gpu, list, scene).pixels == broad.pixels);
     gpu->heap->release(*base);
     gpu->heap->release(*bump);
     gpu->heap->release(*exponent);
@@ -1937,6 +1944,9 @@ TEST_CASE("renderer: light_rt specular is independent of direct and indirect mod
     list.lights = {light};
     const auto specularOnly = drawLitFrame(*gpu, list, scene);
     CHECK(at(specularOnly, 32, 32).r > 100);
+    list.mode = DisplayMode::Baked;
+    list.meshes[0].bakedBrush = true;
+    CHECK(drawLitFrame(*gpu, list, scene).pixels == specularOnly.pixels);
     list.lights[0].directMode = 2;
     checkLitParity(specularOnly, drawLitFrame(*gpu, list, scene)); // Metal has no diffuse.
     list.lights[0].directMode = 0;
@@ -1947,6 +1957,7 @@ TEST_CASE("renderer: light_rt specular is independent of direct and indirect mod
     material.mraoScale.x = 0;
     material.flags = 0;
     gpu->heap->setMaterial(*base, material);
+    list.mode = DisplayMode::Lit;
     for (const unsigned mode : {1u, 2u}) {
         list.lights[0].directMode = static_cast<std::uint8_t>(mode);
         CHECK(at(drawLitFrame(*gpu, list, scene), 32, 32).r > 50);
@@ -2283,11 +2294,24 @@ TEST_CASE("renderer: shadow spot pillar golden and reversed-Z PCF") {
 
 TEST_CASE("renderer: shadow spot wall blocks every receiver pixel without exclusion masks") {
     REQUIRE_GPU();
+    bool baked = false;
+    SUBCASE("Lit diffuse") {}
+    SUBCASE("Baked specular") { baked = true; }
     const auto slot = shadowWhite(*gpu);
     const auto floor = shadowFloorMesh(*gpu);
     const auto wall = makeCube(*gpu, 1, slot,
         editor::Transform::translate({0, 0, 40}).matrix() * editor::Transform::scale({256, 256, 2}, DMat3(1), DVec3(0)).matrix());
     auto list = shadowFloor(floor, slot);
+    if (baked) {
+        GpuMaterial material{slot, kNoTexture, kMaterialPbr, 0};
+        material.mraoSlot = slot;
+        material.mraoScale = {1, 0.5f, 1, 0};
+        gpu->heap->setMaterial(slot, material);
+        list.mode = DisplayMode::Baked;
+        list.meshes[0].bakedBrush = true;
+        list.lights[0].specularMode = 2;
+        list.lights[0].directMode = 0;
+    }
     // The camera sees the receiver from below the wall; the light is on the other side.
     list.view.cameraPosition.z = 32;
     auto caster = cubeList(wall, DisplayMode::Lit, slot).meshes[0];
@@ -2300,6 +2324,10 @@ TEST_CASE("renderer: shadow spot wall blocks every receiver pixel without exclus
     list.shadowCasters->clear();
     const auto open = drawLitFrame(*gpu, list, scene);
     CHECK(at(open, 32, 32).r > 100);
+    if (baked) {
+        list.mode = DisplayMode::Lit;
+        CHECK(drawLitFrame(*gpu, list, scene).pixels == open.pixels);
+    }
     gpu->heap->release(slot);
 }
 
@@ -2709,6 +2737,10 @@ TEST_CASE("renderer: Baked quad samples HDR atlas and selected-face updates") {
     list.lightmap = (*maps)->slot();
     list.exposure = 0.5f;
     list.bakedScale = 0.75f;
+    lighting::Light light;
+    light.origin = {0, 0, 8}; light.intensity = DVec3{1}; light.constant = 1;
+    list.lights = {light}; // Direct diffuse and the Lit fill must not be added a second time.
+    list.ambientFill = 0.5f;
     MeshDraw draw;
     draw.vertices = &*vb;
     draw.indices = &*ib;

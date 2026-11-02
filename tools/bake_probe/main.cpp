@@ -1,5 +1,7 @@
 #include "../common/bake_setup.hpp"
 #include "assets/game_profile.hpp"
+#include "assets/vmt.hpp"
+#include "assets/vtf.hpp"
 #include "core/strings.hpp"
 #include "lighting/baker.hpp"
 #include "viewport/camera.hpp"
@@ -18,6 +20,7 @@
 #include <iostream>
 #include <map>
 #include <numeric>
+#include <numbers>
 #include <sstream>
 #include <stdexcept>
 
@@ -31,7 +34,7 @@ struct Options {
     fs::path vmf, game, captures, out;
     unsigned passes = 16, bounces = 2, bounceRays = 32, threads = 3, stride = 8;
     std::uint64_t seed = 0;
-    bool noAssets = false;
+    bool noAssets = false, diagnostics = false, vtfReflectivity = false;
 };
 struct Pose { DVec3 position, angles; };
 const std::array<Pose, 4> poses{{
@@ -44,7 +47,7 @@ const std::array<Pose, 4> poses{{
 void help() {
     std::cout << "Usage: apex_bake_probe --vmf PATH --game DIR --captures DIR [--out DIR]\n"
                  "  [--passes 16 --bounces 2 --bounce-rays 32 --threads 3 --seed 0 --stride 8]\n"
-                 "  [--no-assets]\n\n"
+                 "  [--no-assets] [--diagnostics] [--vtf-reflectivity]\n\n"
                  "CPU-only set-2 probe: 11/12.png, 21/22.png, 31/32.png, 41/42.png (lit/fullbright).\n"
                  "Game DIR is the P2CE install root; defaults to APEX_P2CE_DIR. Mounts game addons.\n"
                  "--no-assets uses linear albedo 0.5 and material-name flags; game still locates instances.\n"
@@ -85,6 +88,8 @@ Options parse(int argc, char** argv) {
         else if (flag == "--stride") o.stride = static_cast<unsigned>(integer(1, 1080));
         else if (flag == "--seed") o.seed = integer(0, std::numeric_limits<std::uint64_t>::max());
         else if (flag == "--no-assets") o.noAssets = true;
+        else if (flag == "--diagnostics") o.diagnostics = true;
+        else if (flag == "--vtf-reflectivity") o.vtfReflectivity = true;
         else throw std::runtime_error("Unknown option: " + flag);
     }
     if (o.vmf.empty() || o.captures.empty() || (o.game.empty() && !o.noAssets))
@@ -172,7 +177,8 @@ DVec3 at(const BakeFace& face, const std::vector<Vec3>& values, DVec3 point) {
     return DVec3(values[static_cast<std::size_t>(st[1] * face.chart.dimensions[0] + st[0])]);
 }
 std::optional<Sample> sample(int pose, int x, int y, const Capture& capture,
-                             const BakeScene& scene, const Radiance& total, const Radiance& direct) {
+                             const BakeScene& scene, const Radiance& total, const Radiance& direct,
+                             std::span<const Vec3> captureAlbedo) {
     const auto direction = ray(capture.camera, x + 0.5, y + 0.5, capture.lit.width(), capture.lit.height());
     const auto hit = scene.occlusion.accel->closest(Vec3(capture.camera.position), Vec3(direction), 65536);
     if (!hit) return {};
@@ -181,7 +187,7 @@ std::optional<Sample> sample(int pose, int x, int y, const Capture& capture,
     const auto point = capture.camera.position + direction * double(hit->distance);
     const auto lit = pixel(capture.lit, x, y), full = pixel(capture.fullbright, x, y);
     if (glm::any(glm::lessThan(full, DVec3{0.02}))) return {};
-    const auto albedo = DVec3(scene.faces[*face].albedo);
+    const auto albedo = DVec3(captureAlbedo[scene.faces[*face].material]);
     const bool contaminated = glm::any(glm::greaterThan(full, 2.0 * albedo + DVec3{0.05})) ||
                               glm::any(glm::greaterThan(lit, DVec3{0.8}));
     return Sample{pose, x, y, *face, point, at(scene.faces[*face], total[*face], point),
@@ -256,18 +262,117 @@ void writeText(const fs::path& path, const std::string& bytes) {
     if (file.write(bytes.data(), static_cast<qint64>(bytes.size())) != static_cast<qint64>(bytes.size()) || !file.flush())
         throw std::runtime_error("Write failed: " + path.string());
 }
+
+// Counterfactuals at the pixel hit, not the nearest luxel: distinguish transport from sampling.
+void diagnosticColumns(std::ostream& csv, const Sample& s, const BakeScene& scene) {
+    const auto& face = scene.faces[s.face];
+    double distance = 1e30, spotDistance = 1e30, along = 0, ramp = 0, edge = 1e30;
+    std::uint64_t nearest = 0, spot = 0;
+    for (const auto& light : scene.lights) {
+        if (light.kind != LightKind::Point && light.kind != LightKind::Spot) continue;
+        const auto delta = s.point - light.origin;
+        const auto d = glm::length(delta);
+        if (d < distance) { distance = d; nearest = light.id; }
+        if (light.kind == LightKind::Spot && d > 0 && d < spotDistance) {
+            spotDistance = d; spot = light.id;
+            along = glm::dot(delta / d, light.direction);
+            ramp = along <= light.stopdot2 ? 0 : along >= light.stopdot ? 1 :
+                std::pow((along - light.stopdot2) / (light.stopdot - light.stopdot2),
+                         light.exponent == 0 ? 1 : light.exponent);
+        }
+    }
+    for (std::size_t i = 0; i < face.vertices.size(); ++i) {
+        const auto a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.size()];
+        edge = std::min(edge, glm::length(glm::cross(s.point - a, b - a)) / glm::length(b - a));
+    }
+    csv << ',' << nearest << ',' << distance << ',' << spot << ',' << spotDistance << ',' << along << ',' << ramp
+        << ',' << edge;
+    for (const double lift : {0.1, 1.0, 4.0}) {
+        DVec3 energy{0};
+        const auto p = s.point + face.normal * lift;
+        for (const auto& light : scene.lights)
+            if (scene.occlusion.visible(p, light.origin + light.shadowCastOffset))
+                energy += directIrradiance(light, p, face.normal);
+        csv << ',' << luminance(energy);
+    }
+    DVec3 pointSpots{0}, unoccluded{0};
+    for (auto light : scene.lights) {
+        const auto p = s.point + face.normal;
+        unoccluded += directIrradiance(light, p, face.normal);
+        if (light.kind == LightKind::Spot) light.kind = LightKind::Point;
+        if (scene.occlusion.visible(p, light.origin + light.shadowCastOffset))
+            pointSpots += directIrradiance(light, p, face.normal);
+    }
+    csv << ',' << luminance(pointSpots) << ',' << luminance(unoccluded);
+    // A fixed cosine hemisphere census: miss, sky, unmapped, backfacing, mapped front face.
+    std::array<unsigned, 5> hits{};
+    const auto tangent = glm::normalize(glm::cross(
+        std::abs(face.normal.z) < 0.9 ? DVec3{0, 0, 1} : DVec3{0, 1, 0}, face.normal));
+    const auto bitangent = glm::cross(face.normal, tangent);
+    for (unsigned i = 0; i < 128; ++i) {
+        const double u = (i + 0.5) / 128, phi = 2 * std::numbers::pi * i * 0.6180339887498949;
+        const Vec3 direction(tangent * (std::sqrt(u) * std::cos(phi)) +
+            bitangent * (std::sqrt(u) * std::sin(phi)) + face.normal * std::sqrt(1 - u));
+        const auto hit = scene.occlusion.accel->closest(Vec3(s.point + face.normal), direction, 65536);
+        if (!hit) { ++hits[0]; continue; }
+        if (scene.occlusion.isSky && scene.occlusion.isSky(*hit)) { ++hits[1]; continue; }
+        const auto index = scene.occlusion.faceOf(*hit);
+        if (!index) { ++hits[2]; continue; }
+        ++hits[glm::dot(scene.faces[*index].normal, DVec3(direction)) >= 0 ? 3 : 4];
+    }
+    for (const auto count : hits) csv << ',' << count;
+}
+
+void sceneDiagnostics(const Options& o, const BakeScene& scene, const assets::Vfs* vfs) {
+    std::ostringstream materials, lights;
+    materials << "material,vtf_r,vtf_g,vtf_b,override_r,override_g,override_b\n";
+    for (const auto& name : scene.materials) {
+        DVec3 raw{-1}, override{-1};
+        if (vfs) if (auto material = assets::loadMaterial(*vfs, name)) {
+            override = material->vector("$reflectivity", DVec3{-1});
+            if (auto texture = assets::loadTexture(*vfs, material->baseTexture))
+                raw = {texture->reflectivity[0], texture->reflectivity[1], texture->reflectivity[2]};
+        }
+        materials << name;
+        for (const auto v : {raw, override}) for (int c = 0; c < 3; ++c) materials << ',' << v[c];
+        materials << '\n';
+    }
+    lights << "id,kind,x,y,z,nx,ny,nz,inner_cos,outer_cos,exponent,direct_mode,indirect_mode,offset_x,offset_y,offset_z\n";
+    for (const auto& light : scene.lights) {
+        lights << light.id << ',' << int(light.kind);
+        for (const auto v : {light.origin, light.direction}) for (int c = 0; c < 3; ++c) lights << ',' << v[c];
+        lights << ',' << light.stopdot << ',' << light.stopdot2 << ',' << light.exponent
+               << ',' << int(light.directMode) << ',' << int(light.indirectMode);
+        for (int c = 0; c < 3; ++c) lights << ',' << light.shadowCastOffset[c];
+        lights << '\n';
+    }
+    writeText(o.out / "materials.csv", materials.str());
+    writeText(o.out / "lights.csv", lights.str());
+}
+
 void outputs(const Options& o, const std::array<Capture, 4>& captures, const BakeScene& scene,
-             const Radiance& total, const Radiance& direct, const std::vector<Sample>& samples, double scale) {
+             const Radiance& total, const Radiance& direct, const std::vector<Sample>& samples, double scale,
+             std::span<const Vec3> captureAlbedo) {
     for (int pose = 0; pose < 4; ++pose) {
         const auto stem = "pose" + std::to_string(pose + 1);
         std::ostringstream csv;
         csv << std::setprecision(9) << "x,y,face,solid,side,hit_x,hit_y,hit_z,baked_r,baked_g,baked_b,direct_r,direct_g,direct_b,"
-               "lit_r,lit_g,lit_b,fullbright_r,fullbright_g,fullbright_b,ratio_r,ratio_g,ratio_b,contaminated,shadow\n";
+               "lit_r,lit_g,lit_b,fullbright_r,fullbright_g,fullbright_b,ratio_r,ratio_g,ratio_b,contaminated,shadow,"
+               "normal_x,normal_y,normal_z,albedo_r,albedo_g,albedo_b,bounce_share";
+        if (o.diagnostics) csv << ",nearest_light,light_distance,nearest_spot,spot_distance,spot_along,spot_ramp,edge_distance,"
+            "direct_lift_01,direct_lift_1,direct_lift_4,spots_as_points,unoccluded_direct,"
+            "ray_miss,ray_sky,ray_unmapped,ray_backface,ray_mapped";
+        csv << '\n';
         for (const auto& s : samples) if (s.pose == pose) {
             csv << s.x << ',' << s.y << ',' << s.face << ',' << scene.faces[s.face].solidId << ',' << scene.faces[s.face].sideId;
             for (const auto v : {s.point, s.baked, s.direct, s.lit, s.fullbright, s.ratio})
                 for (int c = 0; c < 3; ++c) csv << ',' << v[c];
-            csv << ',' << s.contaminated << ',' << (luminance(s.direct) <= 1e-6) << '\n';
+            csv << ',' << s.contaminated << ',' << (luminance(s.direct) <= 1e-6);
+            for (const auto v : {scene.faces[s.face].normal, DVec3(scene.faces[s.face].albedo)})
+                for (int c = 0; c < 3; ++c) csv << ',' << v[c];
+            csv << ',' << (luminance(s.baked) > 0 ? luminance(s.baked - s.direct) / luminance(s.baked) : 0);
+            if (o.diagnostics) diagnosticColumns(csv, s, scene);
+            csv << '\n';
         }
         writeText(o.out / (stem + "-samples.csv"), csv.str());
         const auto& capture = captures[pose];
@@ -276,7 +381,7 @@ void outputs(const Options& o, const std::array<Capture, 4>& captures, const Bak
         image.fill(Qt::black);
         for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x) {
             put(image, x, y, pixel(capture.lit, x, y));
-            const auto s = sample(pose, x, y, capture, scene, total, direct);
+            const auto s = sample(pose, x, y, capture, scene, total, direct, captureAlbedo);
             if (!s) { put(image, 2*w + x, y, {0.2, 0, 0.2}); continue; }
             put(image, w + x, y, scale * s->baked * s->fullbright);
             if (s->contaminated) { put(image, 2*w + x, y, {0.2, 0, 0.2}); continue; }
@@ -309,6 +414,9 @@ int run(Options o) {
             if (fs::exists(o.out / ("pose" + std::to_string(pose) + suffix)))
                 throw std::runtime_error("Output already exists for pose " + std::to_string(pose));
     if (fs::exists(o.out / "summary.txt")) throw std::runtime_error("Output already exists: summary.txt");
+    if (o.diagnostics)
+        for (const auto* name : {"materials.csv", "lights.csv"})
+            if (fs::exists(o.out / name)) throw std::runtime_error("Output already exists: " + std::string(name));
     std::array<Capture, 4> captures;
     for (int pose = 0; pose < 4; ++pose) {
         const auto load = [&](int frame) {
@@ -339,6 +447,16 @@ int run(Options o) {
     }
     auto setup = tools::setupBake(*doc, vfs ? &*vfs : nullptr);
     auto scene = std::move(setup.scene);
+    // Keep the capture contamination mask tied to the base image, independently of bounce overrides.
+    std::vector<Vec3> captureAlbedo;
+    for (const auto& name : scene.materials) {
+        auto& albedo = captureAlbedo.emplace_back(0.5f);
+        if (vfs) if (auto material = assets::loadMaterial(*vfs, name))
+            if (auto texture = assets::loadTexture(*vfs, material->baseTexture))
+                for (int c = 0; c < 3; ++c) albedo[c] = std::clamp(texture->reflectivity[c], 0.0f, 1.0f);
+    }
+    if (o.vtfReflectivity)
+        for (auto& face : scene.faces) face.albedo = captureAlbedo[face.material];
     const auto failedMaterials = setup.failedMaterials, failedTextures = setup.failedTextures;
     std::map<std::string, std::pair<std::size_t, std::size_t>> classes;
     std::map<std::string, std::vector<document::NodeId>> ignored;
@@ -366,6 +484,7 @@ int run(Options o) {
     std::ostringstream summary;
     summary << std::setprecision(6) << "passes=" << o.passes << " bounces=" << o.bounces << " bounce-rays=" << o.bounceRays
             << " threads=" << o.threads << " seed=" << o.seed << " stride=" << o.stride
+            << " reflectivity=" << (o.vtfReflectivity ? "base-vtf" : "material-override-or-vtf")
             << " assets=" << (vfs ? "mounted" : "disabled") << " failed-materials=" << failedMaterials
             << " failed-textures=" << failedTextures << '\n';
     Baker baker(std::move(scene), {.seed = o.seed, .threads = o.threads, .bounces = o.bounces, .bounceRays = o.bounceRays});
@@ -396,7 +515,7 @@ int run(Options o) {
                 const auto direction = ray(capture.camera, x + 0.5, y + 0.5, capture.lit.width(), capture.lit.height());
                 const auto hit = occlusion.accel->closest(Vec3(capture.camera.position), Vec3(direction), 65536);
                 if (hit) { ++hits; mapped += occlusion.faceOf(*hit).has_value(); }
-                if (auto s = sample(pose, x, y, capture, baker.scene(), total, direct)) samples.push_back(*s);
+                if (auto s = sample(pose, x, y, capture, baker.scene(), total, direct, captureAlbedo)) samples.push_back(*s);
             }
         summary << "pose" << pose + 1 << " alignment grid=" << grid << " brush-hit-fraction=" << double(hits) / double(grid)
                 << " bake-face-fraction=" << double(mapped) / double(grid);
@@ -417,7 +536,8 @@ int run(Options o) {
     report(summary, "overall", samples, -1, scale);
     std::cout << summary.str() << std::flush;
     fs::create_directories(o.out);
-    outputs(o, captures, baker.scene(), total, direct, samples, scale);
+    if (o.diagnostics) sceneDiagnostics(o, baker.scene(), vfs ? &*vfs : nullptr);
+    outputs(o, captures, baker.scene(), total, direct, samples, scale, captureAlbedo);
     writeText(o.out / "summary.txt", summary.str());
     std::cout << "outputs=" << o.out << " total-seconds=" << std::chrono::duration<double>(Clock::now() - start).count() << '\n';
     return 0;

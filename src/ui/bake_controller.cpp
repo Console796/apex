@@ -45,7 +45,7 @@ void showBakeSettings(QWidget* parent) {
     auto* scale = new QDoubleSpinBox(&dialog);
     scale->setRange(0.01, 16);
     scale->setSingleStep(0.1);
-    scale->setValue(settings.value("bake/displayScale", 1.0).toDouble());
+    scale->setValue(settings.value("bake/displayScale", render::kDefaultBakedScale).toDouble());
     layout->addRow(QObject::tr("Display scale"), scale);
     const auto options = readOptions();
     const auto integer = [&](const QString& label, int value, int low, int high) {
@@ -93,7 +93,7 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                              const std::optional<std::filesystem::path>& extraRoot) {
     const auto options = readOptions();
     if (!sameOptions(options_, options)) { options_ = options; invalidate(); }
-    const auto scale = float(std::clamp(QSettings().value("bake/displayScale", 1.0).toDouble(), 0.01, 16.0));
+    const auto scale = float(std::clamp(QSettings().value("bake/displayScale", render::kDefaultBakedScale).toDouble(), 0.01, 16.0));
     if (scale_ != scale) { scale_ = scale; redraw_ = true; }
     if (active_ != active) {
         active_ = active;

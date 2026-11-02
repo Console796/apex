@@ -43,7 +43,7 @@ private:
     std::uint64_t revision_ = 0;
     std::chrono::steady_clock::time_point changed_{};
     QString status_;
-    float scale_ = 1;
+    float scale_ = render::kDefaultBakedScale;
     bool active_ = false, busy_ = false, redraw_ = false, failed_ = false;
     void accept(lighting::BakePublication publication);
 };

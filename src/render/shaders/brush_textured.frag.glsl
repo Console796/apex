@@ -105,9 +105,8 @@ void main() {
             diffuse = vec3(0.0); // Unmapped brush faces have black diffuse.
             if (atlas != NO_TEXTURE && all(greaterThanEqual(vLightmapUv, vec2(0.0))))
                 diffuse = textureLod(sampler2D(textures[nonuniformEXT(atlas)], samplers[3]), vLightmapUv, 0.0).rgb * frame.fill.y;
-            // No direct-light specular in Baked. Envmaps/self-illumination continue below.
-            colour = albedo * (1.0 - mrao.r) * diffuse;
-        } else if (!fullbright) {
+        }
+        if (baked || !fullbright) {
             bool phong = (material.flags & MATERIAL_PHONG) != 0u;
             float exponent = material.phongParams.x;
             if (phong && material.phongExponentSlot != NO_TEXTURE)
@@ -116,7 +115,7 @@ void main() {
                     uv, duvdx, duvdy).r);
             float mask = (material.flags & MATERIAL_BASE_ALPHA_PHONG_MASK) != 0u ? texel.a : bumpAlpha;
             vec3 specular = vec3(0.0);
-            diffuse = vec3(0.0);
+            if (!baked) diffuse = vec3(0.0);
             uint cell = clusterIndex(frame, vPosition);
             uint localCount = ClusterBuffer(frame.clusters).cells[cell].count;
             // Styles stay at full brightness. Sun and ambient are a global prefix (D14).
@@ -126,7 +125,7 @@ void main() {
                 Light light = LightBuffer(frame.lights).lights[i];
                 vec3 energy = irradiance(light, vPosition, normal, frame) *
                     shadowVisibility(frame, light, vPosition, geometricNormal);
-                if (hasDirect(light)) diffuse += energy * (light.kindMode.x == 5u ? mrao.b : 1.0);
+                if (!baked && hasDirect(light)) diffuse += energy * (light.kindMode.x == 5u ? mrao.b : 1.0);
                 if ((!pbr && !phong) || !hasSpecular(light)) continue;
                 vec3 delta = light.kindMode.x == 3u ? -light.directionInner.xyz : light.originRadius.xyz - vPosition;
                 if (dot(delta, delta) <= 1e-12) continue;
@@ -137,7 +136,7 @@ void main() {
                 specular += specularIrradiance(energy, dot(normal, toLight), brdf);
             }
             // Constant bounce stand-in, a touch brighter facing up; the AO in the display pass darkens it.
-            diffuse += vec3(frame.fill.x * (0.8 + 0.2 * normal.z)) * mrao.b;
+            if (!baked) diffuse += vec3(frame.fill.x * (0.8 + 0.2 * normal.z)) * mrao.b;
             colour = albedo * (1.0 - mrao.r) * diffuse + specular;
         }
         // Unlit: the cover shows its base texture through the tint; lighting still drives $envmaplightscale.
