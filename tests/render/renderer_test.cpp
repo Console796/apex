@@ -1117,6 +1117,44 @@ TEST_CASE("renderer: Lit box room evaluates point spot and sun in linear space")
     gpu->heap->release(*slot);
 }
 
+TEST_CASE("renderer: Lit ambient fill lifts an unlit room and AO darkens its corners") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const Cube room = makeCube(*gpu, 48, 0, DMat4(1), true);
+    const std::array<std::byte, 4> texel{std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}};
+    const auto slot = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel);
+    REQUIRE(slot); REQUIRE(gpu->heap->flush());
+    auto list = cubeList(room, DisplayMode::Lit, *slot);
+    list.meshes[0].colour = Vec4(1);
+    list.view = makeView({-24, 0, 0}, {0, 0, 0});
+    list.shadowCasters.emplace();
+
+    // Off by default: an unlit room stays black.
+    const auto black = drawLitFrame(*gpu, list, scene);
+    for (unsigned y = 0; y < kSize; y += 4)
+        for (unsigned x = 0; x < kSize; x += 4) CHECK(nearColour(at(black, x, y), {0, 0, 0}, 0));
+
+    list.ambientFill = 0.2f;
+    const auto flat = drawLitFrame(*gpu, list, scene);
+    list.aoStrength = 1.0f;
+    list.aoRadius = 24.0f;
+    const auto occluded = drawLitFrame(*gpu, list, scene);
+    long flatSum = 0, aoSum = 0;
+    int lifted = 0, darker = 0, same = 0, total = 0;
+    for (unsigned y = 0; y < kSize; y += 2) {
+        for (unsigned x = 0; x < kSize; x += 2) {
+            const int f = at(flat, x, y).g, o = at(occluded, x, y).g;
+            flatSum += f; aoSum += o;
+            lifted += f > 0; darker += o < f - 4; same += std::abs(o - f) <= 1; ++total;
+        }
+    }
+    CHECK(lifted == total);
+    CHECK(aoSum < flatSum);
+    CHECK(darker > total / 50);  // Corners and edges.
+    CHECK(same > total / 4);     // Open wall interiors are left alone.
+    gpu->heap->release(*slot);
+}
+
 TEST_CASE("renderer: Lit fullbright translucent albedo blends before gamma") {
     REQUIRE_GPU();
     SceneTarget scene(*gpu->context, *gpu->heap);

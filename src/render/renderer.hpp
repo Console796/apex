@@ -211,6 +211,11 @@ struct DrawList {
     FogSettings fog;
     bool buildingCubemap = false; // D16: all envmaps sample neutral black.
     bool fullbright = false; // Lit: unit irradiance, useful for inspecting albedo.
+    // Lit stand-in for bounce light until the 0.7 probes (plans/0.7-realtime-gi.md, option A): a constant
+    // fill irradiance, and a depth-based AO that darkens the dim, fill-dominated pixels. 0 disables each.
+    float ambientFill = 0.0f;
+    float aoStrength = 0.0f;
+    float aoRadius = 64.0f; // Map units.
     bool cullBackFaces = true; // Filled mesh kinds only; a mirroring preview culls the other side.
     std::vector<lighting::Light> lights; // World-space doubles; rebased at upload.
     std::shared_ptr<const lighting::SkyVisibilityGrid> skyVisibility; // Last finished world-space grid.

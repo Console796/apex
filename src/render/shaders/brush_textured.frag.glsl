@@ -127,6 +127,8 @@ void main() {
                               material.phongFresnel.xyz, material.phongTint.xyz, mask);
                 specular += specularIrradiance(energy, dot(normal, toLight), brdf);
             }
+            // Constant bounce stand-in, a touch brighter facing up; the AO in the display pass darkens it.
+            diffuse += vec3(frame.fill.x * (0.8 + 0.2 * normal.z)) * mrao.b;
             colour = albedo * (1.0 - mrao.r) * diffuse + specular;
         }
         // Unlit: the cover shows its base texture through the tint; lighting still drives $envmaplightscale.

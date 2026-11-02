@@ -9,6 +9,7 @@ layout(push_constant) uniform Push {
 } push;
 
 // Tone map reuses offsetSlot.w for scene colour, p0.x for depth (uint bits), p0.y for exposure, p0.z bit 0 for SRGB attachment encoding.
+// It also reads viewProj and colour.xy (AO strength, radius).
 uint pushSlot() { return floatBitsToUint(push.offsetSlot.w); }
 
 // Gamma-encoded texture colour to linear: the piecewise sRGB decode, as hardware SRGB reads do. The

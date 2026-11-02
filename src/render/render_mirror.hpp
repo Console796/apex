@@ -83,6 +83,9 @@ struct Highlight {
 struct MirrorViewOptions {
     DisplayMode mode = DisplayMode::Textured;
     float exposure = 1.0f; // Shared by Lit shading and the helper cutoff (D12/D14).
+    float ambientFill = 0.0f; // Lit bounce stand-ins, see DrawList.
+    float aoStrength = 0.0f;
+    float aoRadius = 64.0f;
     FrameView view;
     GridSettings grid;
     bool edgeOverlay = false;

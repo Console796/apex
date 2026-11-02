@@ -898,6 +898,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     frame.lightCount = static_cast<std::uint32_t>(list.lights.size());
     frame.flags = (list.fullbright ? 1u : 0u) | (list.buildingCubemap ? 2u : 0u);
     frame.fogColour = Vec4(list.fog.colour, 0);
+    frame.fill = Vec4(list.ambientFill, 0.0f, 0.0f, 0.0f);
     frame.fogParams = Vec4(list.fog.start, list.fog.end, list.fog.maxDensity, list.fog.enabled ? 1.0f : 0.0f);
     frame.skyInverseView = glm::inverse(list.view.viewProjection);
     for (std::size_t i = 0; i < 6; ++i) frame.skyFaces[i / 4][i % 4] = list.sky.faces[i];
@@ -1043,6 +1044,8 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
         assert(prepared != s.preparedScenes.end());
         if (prepared == s.preparedScenes.end()) return;
         PushConstants push{};
+        push.viewProjection = list.view.viewProjection; // The AO reads the projection's scale and near plane.
+        push.colour = Vec4(list.aoStrength, list.aoRadius, 0.0f, 0.0f);
         push.offsetSlot.w = std::bit_cast<float>(prepared->second[0]);
         push.p0.x = std::bit_cast<float>(prepared->second[1]);
         push.p0.y = list.exposure;

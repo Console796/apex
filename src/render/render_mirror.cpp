@@ -1722,6 +1722,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     list.cullBackFaces = options.cullBackFaces;
     if (options.mode == DisplayMode::Lit) list.shadowCasters.emplace();
     list.exposure = options.exposure;
+    list.ambientFill = options.ambientFill;
+    list.aoStrength = options.aoStrength;
+    list.aoRadius = options.aoRadius;
     list.view = options.view;
     list.grid = options.grid;
     list.edgeOverlay = options.edgeOverlay;

@@ -579,6 +579,10 @@ double PaneWindow::draw() {
     options.showEntities = vp->overlays.entityHelpers;
     options.showNodraw = vp->overlays.nodrawFaces;
     options.cullBackFaces = vp->overlays.backfaceCulling;
+    if (vp->overlays.approxBounce) {
+        options.ambientFill = 0.03f;
+        options.aoStrength = 1.0f;
+    }
     options.showEntityNames = vp->overlays.entityNames;
     options.iconNearest = session_ && session_->entityIconsNearest();
     options.grid = makeGridSettings(*vp, session_);
@@ -896,7 +900,8 @@ void PaneFrame::buildMenu() {
                                     {"Compile leak", &viewport::Overlays::leak},
                                     {"Compile portals", &viewport::Overlays::portals},
                                     {"Cordons", &viewport::Overlays::cordons},
-                                    {"Backface culling", &viewport::Overlays::backfaceCulling}};
+                                    {"Backface culling", &viewport::Overlays::backfaceCulling},
+                                    {"Approximate bounce (Lit)", &viewport::Overlays::approxBounce}};
     for (const auto& entry : entries) {
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);

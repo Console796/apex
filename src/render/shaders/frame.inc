@@ -3,7 +3,7 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require
 
-// FrameBlock in gpu_lighting.hpp; 416 bytes, one allocation per recording slot.
+// FrameBlock in gpu_lighting.hpp; 432 bytes, one allocation per recording slot.
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer FrameBlock {
     uvec2 previews;
     uvec2 lights;
@@ -35,6 +35,7 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     uvec2 shadows;
     uint shadowAtlas;
     uint shadowCount;
+    vec4 fill;
 };
 #ifndef APEX_FRAME_NO_PUSH
 FrameBlock frameBlock() { return FrameBlock(floatBitsToUint(push.p1.xy)); }

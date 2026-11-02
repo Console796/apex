@@ -38,8 +38,10 @@ struct alignas(16) FrameBlock {
     Vec4 skyTransform{0.0f}; // xyz translation, w scale.
     VkDeviceAddress shadows = 0;
     std::uint32_t shadowAtlas = 0, shadowCount = 0;
+    Vec4 fill{0.0f}; // x: constant ambient fill irradiance (linear, before albedo); yzw reserved.
 };
-static_assert(sizeof(FrameBlock) == 416);
+static_assert(sizeof(FrameBlock) == 432);
+static_assert(offsetof(FrameBlock, fill) == 416);
 static_assert(offsetof(FrameBlock, shadows) == 400);
 static_assert(offsetof(FrameBlock, shadowAtlas) == 408);
 static_assert(offsetof(FrameBlock, clusters) == 160);
