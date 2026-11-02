@@ -60,3 +60,8 @@ Images trace every pixel independently; statistics and CSVs use the subsampled g
 All outputs use exclusive creation. Preflight rejects existing named outputs and outputs under
 the source-map directory, captures, game install or Steam workshop. Interrupted runs can leave
 partial outputs; choose a new `--out` directory to rerun. Nothing is written to the input assets.
+
+For actual textured renderer output from these same four poses, see
+[render_pose's Baked recipe](../render_pose/README.md). Both tools share bake scene/material/caster
+setup and instance collapse in `tools/common/bake_setup.*`; the render tool defaults to display
+scale 1.0 and accepts `--bake-scale 2.02` to reproduce this probe's fitted set-2 multiplier.

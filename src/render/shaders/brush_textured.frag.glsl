@@ -15,6 +15,7 @@ layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUv;
 layout(location = 2) flat in uint vMaterial;
 layout(location = 3) in vec3 vPosition;
+layout(location = 4) in vec2 vLightmapUv;
 layout(location = 0) out vec4 outColor;
 
 void main() {
@@ -98,7 +99,15 @@ void main() {
         // Fragment positions and lights are camera-relative; camera is the origin.
         vec3 view = dot(eyePosition, eyePosition) > 1e-12 ? normalize(-eyePosition) : normal;
         vec3 diffuse = vec3(1.0); // Fullbright: unit irradiance.
-        if (!fullbright) {
+        bool baked = (frame.flags & 4u) != 0u && (floatBitsToUint(push.p1.w) & 32u) != 0u;
+        if (baked) {
+            uint atlas = floatBitsToUint(frame.fill.z);
+            diffuse = vec3(0.0); // Unmapped brush faces have black diffuse.
+            if (atlas != NO_TEXTURE && all(greaterThanEqual(vLightmapUv, vec2(0.0))))
+                diffuse = textureLod(sampler2D(textures[nonuniformEXT(atlas)], samplers[3]), vLightmapUv, 0.0).rgb * frame.fill.y;
+            // No direct-light specular in Baked. Envmaps/self-illumination continue below.
+            colour = albedo * (1.0 - mrao.r) * diffuse;
+        } else if (!fullbright) {
             bool phong = (material.flags & MATERIAL_PHONG) != 0u;
             float exponent = material.phongParams.x;
             if (phong && material.phongExponentSlot != NO_TEXTURE)

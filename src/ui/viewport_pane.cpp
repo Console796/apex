@@ -73,7 +73,8 @@ render::DisplayMode renderMode(viewport::DisplayMode mode) {
     case viewport::DisplayMode::Wireframe: return render::DisplayMode::Wireframe;
     case viewport::DisplayMode::Flat: return render::DisplayMode::Flat;
     case viewport::DisplayMode::Lit: return render::DisplayMode::Lit;
-    default: return render::DisplayMode::Textured;  // Baked arrives in 0.7.
+    case viewport::DisplayMode::Baked: return render::DisplayMode::Baked;
+    default: return render::DisplayMode::Textured;
     }
 }
 
@@ -621,7 +622,7 @@ double PaneWindow::draw() {
     QElapsedTimer timer;
     timer.start();
     auto status = swapchain_->renderFrame(extent, [&](VkCommandBuffer cb, const render::SwapchainFrame& frame) {
-        if (list.mode == render::DisplayMode::Lit) {
+        if (render::sceneMode(list.mode)) {
             // renderFrame has waited for this pane's previous frame before resizing/reusing slots.
             if (auto sized = scene_.resize(frame.extent.width, frame.extent.height); !sized) {
                 log::error("viewports: scene target: {}", sized.error().what());
@@ -631,7 +632,7 @@ double PaneWindow::draw() {
         }
         renderer->prepare(cb, list, scene_, clear_);
         clusterCommands_ = cb;
-        clusterPending_ = list.mode == render::DisplayMode::Lit;
+        clusterPending_ = render::sceneMode(list.mode);
         if (auto begun = depth_.begin(cb, frame, clear_); !begun) {
             log::error("viewports: depth target: {}", begun.error().what());
             failed_ = true;

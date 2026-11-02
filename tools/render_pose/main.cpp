@@ -1,3 +1,6 @@
+#include "../common/bake_setup.hpp"
+#include "lighting/baker.hpp"
+#include "render/lightmap_atlas.hpp"
 #include "assets/game_profile.hpp"
 #include "assets/material_cache.hpp"
 #include "assets/model_cache.hpp"
@@ -36,13 +39,17 @@ struct Options {
     int width = 1920, height = 1080;
     double fov = 90;
     int timeFrames = 0;
+    unsigned bakePasses = 16;
+    lighting::BakerOptions bakeOptions{.bounces = 2};
+    float bakeScale = 1.0f;
     std::string mode = "lit";
     std::vector<Pose> poses;
 };
 
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
-                 "  [--fov 90] [--mode lit|textured|fullbright] [--cubemaps DIR] [--time N]\n"
+                 "  [--fov 90] [--mode lit|textured|fullbright|baked] [--cubemaps DIR] [--time N]\n"
+                 "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
                  "Poses are Source cl_showpos eye positions and QAngles; negative pitch looks up.\n"
@@ -53,6 +60,8 @@ void help() {
                  "origin rounded to integers as VBSP names them (e.g. files extracted from a compiled BSP's\n"
                  "pakfile). Prints one line per probe with the file used, or \"default\" for the default cube.\n"
                  "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
+                 "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 1);\n"
+                 "set-2 probe fitted baker-to-display scale: 2.02 (pass --bake-scale 2.02 to compare).\n"
                  "--time N also renders each pose N more times after 3 warm-up frames and prints the mean frame\n"
                  "time (submit + wait, no readback) with the cluster and shadow-budget overflow counts.\n";
 }
@@ -79,7 +88,24 @@ Options parse(int argc, char** argv) {
                 throw std::runtime_error("Image dimensions must be integers in [1, 16384]");
             return static_cast<int>(value);
         };
-        if (flag == "--vmf") o.vmf = next();
+        const auto count = [&](unsigned low, unsigned high) {
+            const double value = number(next());
+            if (value < low || value > high || std::floor(value) != value)
+                throw std::runtime_error("Invalid count for " + flag);
+            return static_cast<unsigned>(value);
+        };
+        if (flag == "--bake-passes") o.bakePasses = count(1, 10000);
+        else if (flag == "--bake-bounces") o.bakeOptions.bounces = count(0, 32);
+        else if (flag == "--bake-bounce-rays") o.bakeOptions.bounceRays = count(1, 65536);
+        else if (flag == "--bake-threads") o.bakeOptions.threads = count(1, 256);
+        else if (flag == "--bake-seed") o.bakeOptions.seed = count(0, 0xFFFFFFFFu);
+        else if (flag == "--bake-scale") {
+            const double value = number(next());
+            if (value < 0 || value > std::numeric_limits<float>::max())
+                throw std::runtime_error("--bake-scale must be finite and nonnegative");
+            o.bakeScale = static_cast<float>(value);
+        }
+        else if (flag == "--vmf") o.vmf = next();
         else if (flag == "--game") o.game = next();
         else if (flag == "--out") o.out = next();
         else if (flag == "--width") o.width = dimension();
@@ -109,8 +135,8 @@ Options parse(int argc, char** argv) {
     if (!o.cubemaps.empty() && !fs::is_directory(o.cubemaps))
         throw std::runtime_error("--cubemaps must name a directory");
     if (!(o.fov > 0 && o.fov < 180)) throw std::runtime_error("FOV must be between 0 and 180 degrees");
-    if (o.mode != "lit" && o.mode != "textured" && o.mode != "fullbright")
-        throw std::runtime_error("Mode must be lit, textured or fullbright");
+    if (o.mode != "lit" && o.mode != "textured" && o.mode != "fullbright" && o.mode != "baked")
+        throw std::runtime_error("Mode must be lit, textured, fullbright or baked");
     return o;
 }
 
@@ -159,6 +185,7 @@ int run(const Options& o) {
     assets::ModelCache models(vfs, jobs);
     editor::InstanceTemplates templates;
     editor::InstanceExpansion instances(templates);
+    if (o.mode == "baked") tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
     instances.update(document, fs::canonical(o.vmf), profile.instanceSearchRoot());
     for (const auto& problem : instances.problems())
         std::cerr << "instance-failed " << problem.file << ": " << problem.message << '\n';
@@ -201,6 +228,21 @@ int run(const Options& o) {
     }
     // No FGD class table: entity models then come only from explicit model keys, so the
     // editor-only helper models (light_rt_spot cones, player start, etc.) stay out of the capture.
+    if (o.mode == "baked") {
+        auto setup = tools::setupBake(document, &vfs);
+        lighting::Baker baker(std::move(setup.scene), o.bakeOptions);
+        for (unsigned level = 0; level <= o.bakeOptions.bounces; ++level) {
+            for (unsigned pass = 0; pass < o.bakePasses; ++pass) {
+                const auto step = level == 0 ? baker.step() : baker.bounce(level);
+                if (!step.passComplete) throw std::runtime_error("Incomplete bake pass");
+            }
+            std::cout << "bake level=" << level << " passes=" << o.bakePasses << std::endl;
+        }
+        auto maps = take(render::BakedLightmaps::create(*context, *heap,
+            take(render::LightmapAtlas::pack(baker.scene().faces))));
+        check(maps->upload(baker.resolve()));
+        mirror.setLightmaps(std::move(maps));
+    }
     mirror.rebuild(document);
     mirror.setInstanceContents(instances.contents());
     // Lit draw-list construction requests the sky grid; settle must see that request.
@@ -228,7 +270,8 @@ int run(const Options& o) {
         camera.angles = pose.angles;
         camera.fovYDegrees = viewport::sourceFovYDegrees(o.fov);
         render::MirrorViewOptions options;
-        options.mode = o.mode == "textured" ? render::DisplayMode::Textured : render::DisplayMode::Lit;
+        options.mode = o.mode == "textured" ? render::DisplayMode::Textured :
+            o.mode == "baked" ? render::DisplayMode::Baked : render::DisplayMode::Lit;
         options.showEntityHelpers = false;
         options.showNodraw = false;
         options.showToolFaces = false; // The game draws no trigger, clip or hint faces.
@@ -238,6 +281,7 @@ int run(const Options& o) {
         options.view.cameraRight = Vec3(camera.basis().right);
         options.view.cameraUp = Vec3(camera.basis().up);
         auto list = mirror.buildDrawList(options);
+        list.bakedScale = o.bakeScale;
         list.fullbright = o.mode == "fullbright";
         // Leave exposure at DrawList's default, as ViewportPane does.
         constexpr float clear[] = {0.1f, 0.1f, 0.1f, 1.0f};

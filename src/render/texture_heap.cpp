@@ -112,17 +112,17 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
     heap->capacity_ = std::max<std::uint32_t>(2, std::min(desc.capacity,
         limit > heap->cubeCapacity_ ? limit - heap->cubeCapacity_ : 0u));
 
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         VkSamplerCreateInfo si = vkStruct<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
         const bool nearest = i == 1;
         const bool comparison = i == 2;
         si.magFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
         si.minFilter = si.magFilter;
         si.mipmapMode = nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        si.addressModeU = si.addressModeV = si.addressModeW = comparison ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.addressModeU = si.addressModeV = si.addressModeW = (comparison || i == 3) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
         si.compareEnable = comparison ? VK_TRUE : VK_FALSE;
         si.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
-        si.anisotropyEnable = !nearest && !comparison && context.info().anisotropy ? VK_TRUE : VK_FALSE;
+        si.anisotropyEnable = i == 0 && context.info().anisotropy ? VK_TRUE : VK_FALSE;
         si.maxAnisotropy = 16.0f;
         si.maxLod = VK_LOD_CLAMP_NONE;
         APEX_VK_TRY(vkCreateSampler(context.device(), &si, nullptr, &heap->samplers_[i]), "vkCreateSampler");
@@ -130,7 +130,7 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
 
     std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, heap->capacity_, VK_SHADER_STAGE_ALL, nullptr};
-    bindings[1] = {1, VK_DESCRIPTOR_TYPE_SAMPLER, 3, VK_SHADER_STAGE_ALL, heap->samplers_};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_SAMPLER, 4, VK_SHADER_STAGE_ALL, heap->samplers_};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, heap->cubeCapacity_, VK_SHADER_STAGE_ALL, nullptr};
     const std::array<VkDescriptorBindingFlags, 3> flags{
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, 0,
@@ -146,7 +146,7 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
     APEX_VK_TRY(vkCreateDescriptorSetLayout(context.device(), &li, nullptr, &heap->layout_), "texture heap layout");
 
     const std::array<VkDescriptorPoolSize, 2> sizes{{{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, heap->capacity_ + heap->cubeCapacity_},
-                                                     {VK_DESCRIPTOR_TYPE_SAMPLER, 3}}};
+                                                     {VK_DESCRIPTOR_TYPE_SAMPLER, 4}}};
     VkDescriptorPoolCreateInfo pi = vkStruct<VkDescriptorPoolCreateInfo>(VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
     pi.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     pi.maxSets = 1;

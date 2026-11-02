@@ -28,6 +28,7 @@ Result<BakeOcclusion> bakeCastersFromDocument(
     const auto walk = [&](const auto& self, document::NodeId id, bool eligible) -> Result<void> {
         const auto handle = *document.handle(id);
         const auto* node = document.get(handle);
+        if (ciEquals(node->block->key(), "hidden")) return {};
         if (std::holds_alternative<Handle<document::Entity>>(handle)) {
             const auto* cls = node->block->find("classname");
             const auto name = cls ? toLowerAscii(cls->decodedValue().value_or("")) : "";

@@ -1,5 +1,6 @@
 #include "document/entity_helpers.hpp"
 #include "render/render_mirror.hpp"
+#include "render/lightmap_atlas.hpp"
 
 #include "core/log.hpp"
 #include "assets/model_pose.hpp"
@@ -199,6 +200,7 @@ bool blocksSky(std::string_view name) {
 } // namespace
 
 struct RenderMirror::Impl {
+    std::shared_ptr<BakedLightmaps> lightmaps;
     Context& context;
     TextureHeap& heap;
     JobPool& jobs;
@@ -640,11 +642,11 @@ struct RenderMirror::Impl {
         const std::uint64_t version = solid.version;
         solid.job = jobs.submit(
             Priority::Normal,
-            [block = std::move(copy), sizes = std::move(sizes)](CancelToken) mutable -> Result<SolidMesh> {
+            [block = std::move(copy), sizes = std::move(sizes), layout = lightmaps ? lightmaps->layout() : nullptr, id](CancelToken) mutable -> Result<SolidMesh> {
                 return meshSolid(block, [&](std::string_view name) {
                     const auto found = sizes.find(name);
                     return found == sizes.end() ? TextureSize{} : found->second;
-                });
+                }, layout.get(), id);
             },
             [this, id, version](Result<SolidMesh> mesh) { complete(id, version, std::move(mesh)); });
     }
@@ -1306,7 +1308,7 @@ struct RenderMirror::Impl {
                 const auto records = heap.materials();
                 for (std::size_t face = 0; face < 6; ++face) {
                     const auto& material = resolveMaterial("skybox/" + name + suffix[face]);
-                    const bool hdr = list.mode == DisplayMode::Lit && material.skyHdrSlot != kNoTexture;
+                    const bool hdr = sceneMode(list.mode) && material.skyHdrSlot != kNoTexture;
                     list.sky.faces[face] = hdr ? material.skyHdrSlot : material.slot;
                     const bool linearBase = material.slot < records.size() &&
                         (records[material.slot].flags & kMaterialLinearBase) != 0u;
@@ -1481,6 +1483,15 @@ RenderMirror::RenderMirror(Context& context, TextureHeap& heap, JobPool& jobs, a
                            const assets::EntityClassTable* entityClasses, assets::ModelCache* models,
                            std::function<bool(const std::string&)> modelMaterialExists)
     : impl_(std::make_unique<Impl>(context, heap, jobs, materials, entityClasses, models, std::move(modelMaterialExists))) {}
+
+void RenderMirror::setLightmaps(std::shared_ptr<BakedLightmaps> maps) {
+    auto& m = *impl_;
+    if (m.lightmaps == maps) return;
+    m.lightmaps = std::move(maps);
+    for (const auto& [id, solid] : m.solids) m.requestMesh(id);
+    m.redraw = true;
+}
+
 RenderMirror::~RenderMirror() = default;
 
 void RenderMirror::setCubemapSource(CubemapSource source) {
@@ -1724,7 +1735,7 @@ std::size_t RenderMirror::pendingPreviewCount() const {
 void RenderMirror::clearPreview() { setPreview(PreviewTransforms{}); }
 
 DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
-    const bool textured = options.mode == DisplayMode::Textured || options.mode == DisplayMode::Lit;
+    const bool textured = options.mode == DisplayMode::Textured || sceneMode(options.mode);
     impl_->refreshHelpers(); // Brush entities move when their solids finish meshing, between apply() calls.
     Impl& m = *impl_;
     m.redraw = false;
@@ -1736,7 +1747,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     DrawList list;
     list.mode = options.mode;
     list.cullBackFaces = options.cullBackFaces;
-    if (options.mode == DisplayMode::Lit) list.shadowCasters.emplace();
+    if (sceneMode(options.mode)) list.shadowCasters.emplace();
+    if (m.lightmaps) list.lightmap = m.lightmaps->slot();
     list.exposure = options.exposure;
     list.ambientFill = options.ambientFill;
     list.aoStrength = options.aoStrength;
@@ -1823,6 +1835,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         const auto preview = previewIndex(id, solid.origin);
         for (const GpuBatch& batch : solid.batches) {
             MeshDraw draw;
+            draw.bakedBrush = true;
             draw.vertices = &batch.vertices;
             draw.cpuMesh = batch.cpuMesh;
             draw.indices = &batch.indices;
@@ -1848,6 +1861,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             if (list.shadowCasters && m.brushCasts(id) && blocksSky(batch.material) &&
                 !isSkyMaterial(batch.material, state && state->sky)) list.shadowCasters->push_back(draw);
             switch (options.mode) {
+            case DisplayMode::Baked:
             case DisplayMode::Lit:
             case DisplayMode::Textured: draw.colour = Vec4(1.0f); break;
             case DisplayMode::Flat: draw.colour = flatColour(batch.material); break;
@@ -1864,10 +1878,13 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             const auto records = m.heap.materials(); // By texture slot; a loading face has no record yet.
             const bool probeMaterial = state && state->slot < records.size() &&
                 (records[state->slot].flags & kMaterialEnvmapProbe) != 0u;
-            if (faceMode || (options.mode == DisplayMode::Lit && probeMaterial)) {
+            const bool displacementMode = options.mode == DisplayMode::Baked &&
+                std::ranges::any_of(batch.faces, [](const auto& face) { return face.displacement; });
+            if (faceMode || displacementMode || (sceneMode(options.mode) && probeMaterial)) {
                 // Split existing ranges so a face tint does not bleed into its material siblings.
                 for (const FaceRange& face : batch.faces) {
                     MeshDraw part = draw;
+                    part.bakedBrush = !face.displacement;
                     part.reflectionPoint = m.effectivePreview.contains(id) ?
                         DVec3(m.effectivePreview.at(id) * DVec4(face.centre, 1)) : face.centre;
                     if (probeMaterial) for (const auto& [probeId, entity] : m.entities) {
@@ -2024,7 +2041,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 for (const auto& light : found->second) {
                     if (lighting::indirectOnly(light))
                         list.labels.push_back({light.origin, "baked in 0.7", {8, 16}, {1, 0.65f, 0.2f, 1}});
-                    if (options.mode != DisplayMode::Lit) continue;
+                    if (!sceneMode(options.mode)) continue;
                     const double range = lighting::previewRange(light, list.exposure);
                     if (!(range > 0) || !std::isfinite(range)) continue;
                     // The same exposure cutoff as the cluster sphere (D12/D14).
@@ -2216,7 +2233,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         }
     }
     if (textured) m.environment(list);
-    if (options.mode == DisplayMode::Lit && !m.drawsInstanceContents) {
+    if (sceneMode(options.mode) && !m.drawsInstanceContents) {
         m.skyWanted = true;
         m.skyUsedSincePump = true;
     }
@@ -2225,9 +2242,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     });
     m.pumpSky();
     // Only Lit samples the grid; other modes must not pay for its upload.
-    if (options.mode == DisplayMode::Lit) list.skyVisibility = m.skyGrid;
+    if (sceneMode(options.mode)) list.skyVisibility = m.skyGrid;
     // Probe cubes are named by world origin, so only the outermost mirror resolves them.
-    if (options.mode == DisplayMode::Lit && !m.drawsInstanceContents && !list.cubemaps.empty()) {
+    if (sceneMode(options.mode) && !m.drawsInstanceContents && !list.cubemaps.empty()) {
         const auto cubes = m.heap.liveCubes();
         for (auto& probe : list.cubemaps) probe.cube = m.probeCube(probe.position);
         if (m.heap.liveCubes() != cubes) {
@@ -2242,7 +2259,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 list.labels.push_back({probe.position, "Cubemap stale", {12, -12}, {1, 0.65f, 0.1f, 1}});
         }
     }
-    if (options.mode != DisplayMode::Lit && !m.drawsInstanceContents) list.cubemaps.clear();
+    if (!sceneMode(options.mode) && !m.drawsInstanceContents) list.cubemaps.clear();
     return list;
 }
 

@@ -34,6 +34,8 @@
 
 namespace apex::render {
 
+class BakedLightmaps;
+
 // Render-owned input: no editor dependency. Container transforms cover descendants; a named
 // child overrides its ancestor, so overlapping selections never apply a transform twice.
 using PreviewTransforms = std::map<document::NodeId, DMat4>;
@@ -140,6 +142,9 @@ class RenderMirror {
     // probe reflects the heap's default cube. rebuild() also loads engine/defaultcubemap into
     // that default slot (through the MaterialCache's Vfs) until it succeeds once.
     void setCubemapSource(CubemapSource source);
+    // New layout remeshes brush UVs; upload() on the same maps changes radiance only.
+    // Bake and mirror must share one expanded document snapshot (NodeId/SideId identity).
+    void setLightmaps(std::shared_ptr<BakedLightmaps> maps);
     void requestCubemapRebuild();
     // Main-thread debounce/capture. Explicit requests wait for pending meshes/materials too.
     Result<std::size_t> rebuildCubemaps(Renderer& renderer, bool force = false,

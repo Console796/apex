@@ -29,18 +29,21 @@ namespace apex::lighting { struct TriangleMesh; }
 
 namespace apex::render {
 
-enum class DisplayMode { Textured, Flat, Wireframe, Lit };
+enum class DisplayMode { Textured, Flat, Wireframe, Lit, Baked };
+
+constexpr bool sceneMode(DisplayMode mode) { return mode == DisplayMode::Lit || mode == DisplayMode::Baked; }
 
 class SceneTarget;
 
-// Brush vertex, 36 bytes: camera-relative (draw-origin-relative) position, normal, uv, material.
+// Brush vertex, 44 bytes: camera-relative (draw-origin-relative) position, normal, uv, material.
 struct BrushVertex {
     float position[3];
     float normal[3];
     float uv[2];
     std::uint32_t material; // Texture slot, used when MeshDraw::texture == kVertexMaterial.
+    float lightmapUv[2] = {-1.0f, -1.0f}; // Negative: no chart, Baked brush diffuse is black.
 };
-static_assert(sizeof(BrushVertex) == 36);
+static_assert(sizeof(BrushVertex) == 44);
 
 // Per-instance data of an entity box, 88 bytes; local corners and draw-relative origin.
 struct BoxInstance {
@@ -89,6 +92,7 @@ struct MeshDraw {
     AlphaMode alpha = AlphaMode::Opaque; // Textured/Lit modes.
     std::uint32_t instanceCount = 1;
     bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
+    bool bakedBrush = false; // Baked uses atlas diffuse; models/displacements retain Lit shading.
     bool skySurface = false; // Aperture: no colour/depth in Textured or Lit.
     bool sky = false;
     std::optional<DVec3> reflectionPoint; // Brush-side centre; models use the fragment.
@@ -209,6 +213,8 @@ inline std::size_t nearestCubemap(std::span<const CubemapProbe> probes, DVec3 po
 
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
+    TextureSlot lightmap = kNoTexture;
+    float bakedScale = 1.0f; // Display only; never changes bake accumulation.
     float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
     SkySettings sky;
     FogSettings fog;

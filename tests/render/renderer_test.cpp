@@ -7,6 +7,7 @@
 #include "render/render_target.hpp"
 #include "render/scene_target.hpp"
 #include "render/renderer.hpp"
+#include "render/lightmap_atlas.hpp"
 #include "render/texture_heap.hpp"
 #include "render/view_math.hpp"
 #include "golden_image.hpp"
@@ -2666,5 +2667,79 @@ TEST_CASE("renderer: shadow frame time report for point and sun") {
             std::cout << "[shadow frame time] " << gpu->context->info().name << ": " << c.name << (shadowed ? " shadowed" : " unshadowed")
                       << ", " << ms << " ms/frame (640x360, 10 frames, submit + wait, no image readback)\n";
         }
+    CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: Baked quad samples HDR atlas and selected-face updates") {
+    REQUIRE_GPU();
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    std::vector<lighting::BakeFace> faces(2);
+    for (auto& face : faces) face.chart.dimensions = {2, 2};
+    auto atlas = LightmapAtlas::pack(faces);
+    REQUIRE(atlas);
+    const auto rect = atlas->rects[0];
+    const Vec2 uv = Vec2((DVec2(rect.x, rect.y) + 1.0) / double(atlas->size));
+    auto maps = BakedLightmaps::create(*gpu->context, *gpu->heap, std::move(*atlas));
+    REQUIRE(maps);
+    std::vector<std::vector<Vec3>> values(2, std::vector<Vec3>(4, {2.0f, 0.5f, 0.25f}));
+    REQUIRE((*maps)->upload(values));
+    const std::array<std::byte, 4> grey{std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}};
+    auto albedo = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, grey);
+    REQUIRE(albedo);
+    REQUIRE(gpu->heap->flush());
+    std::array<BrushVertex, 4> vertices{};
+    const Vec2 corners[] = {{-1, -1}, {1, -1}, {1, 1}, {-1, 1}};
+    for (int i = 0; i < 4; ++i) {
+        auto& v = vertices[std::size_t(i)];
+        v.position[0] = corners[i].x;
+        v.position[1] = corners[i].y;
+        v.position[2] = 0.5f;
+        v.normal[2] = 1;
+        v.lightmapUv[0] = uv.x;
+        v.lightmapUv[1] = uv.y;
+    }
+    const std::array<std::uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    auto vb = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{vertices}), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    auto ib = uploadBuffer(*gpu->context, gpu->heap->uploadRing(), std::as_bytes(std::span{indices}), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    REQUIRE(vb);
+    REQUIRE(ib);
+    DrawList list;
+    list.mode = DisplayMode::Baked;
+    list.cullBackFaces = false;
+    list.lightmap = (*maps)->slot();
+    list.exposure = 0.5f;
+    list.bakedScale = 0.75f;
+    MeshDraw draw;
+    draw.vertices = &*vb;
+    draw.indices = &*ib;
+    draw.indexCount = 6;
+    draw.texture = *albedo;
+    draw.bakedBrush = true;
+    list.meshes.push_back(draw);
+    const auto check = [&](Vec3 energy) {
+        const auto image = drawLitFrame(*gpu, list, scene);
+        const double base = testing::srgbDecode(128.0 / 255);
+        const auto expected = [&](float e) { return testing::displayCode(base * e * list.exposure * list.bakedScale); };
+        CHECK(nearColour(at(image, 32, 32), {expected(energy.r), expected(energy.g), expected(energy.b)}, 1));
+    };
+    check(values[0][0]);
+    // Updating face 1 must not change face 0, even though resolve's row 0 also changed.
+    values[0].assign(4, Vec3{0.25f, 1.5f, 0.75f});
+    values[1].assign(4, Vec3{16});
+    const std::array<std::size_t, 1> other{1}, first{0};
+    REQUIRE((*maps)->upload(values, other));
+    check({2.0f, 0.5f, 0.25f});
+    REQUIRE((*maps)->upload(values, first));
+    check(values[0][0]);
+    // Four different luxels must bilinearly average at the rect's centre.
+    values[0] = {{1, 0, 0}, {0, 2, 0}, {0, 0, 3}, {1, 2, 1}};
+    REQUIRE((*maps)->upload(values, first));
+    check({0.5f, 1.0f, 1.0f});
+    list.lightmap = kNoTexture;
+    check(Vec3{0});
+    values[0].clear();
+    CHECK_FALSE((*maps)->upload(values, first));
+    gpu->heap->release(*albedo);
+    gpu->heap->collectGarbage();
     CHECK(gpu->context->validation().errorCount() == 0);
 }

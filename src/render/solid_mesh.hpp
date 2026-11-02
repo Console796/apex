@@ -18,6 +18,8 @@
 
 namespace apex::render {
 
+struct LightmapAtlas;
+
 struct TextureSize {
     int width = 64;
     int height = 64;
@@ -29,6 +31,7 @@ struct TextureSize {
 struct FaceRange {
     DVec3 centre{0.0};
     document::SideId side = 0;
+    bool displacement = false; // Baked retains the existing Lit path for unsupported displacement sides.
     std::uint32_t firstIndex = 0, indexCount = 0;
     std::uint32_t firstEdgeIndex = 0, edgeIndexCount = 0;
 };
@@ -54,11 +57,13 @@ std::vector<std::string> solidMaterials(const kv1::Node& solidBlock);
 // `sizeOf` maps a lower-case material name to its texture size and material transform (for UV normalization and sampling).
 // Fails when the sides do not bound a valid convex solid.
 Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
-                            const std::function<TextureSize(std::string_view)>& sizeOf);
+                            const std::function<TextureSize(std::string_view)>& sizeOf,
+                            const LightmapAtlas* lightmaps = nullptr, std::uint64_t solidId = 0);
 
 // Same mesher for preview values and parsed committed solids. Face material and UV data are used
 // verbatim; invalid polyhedra fail before any vertices are emitted.
 Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
-                            const std::function<TextureSize(std::string_view)>& sizeOf);
+                            const std::function<TextureSize(std::string_view)>& sizeOf,
+                            const LightmapAtlas* lightmaps = nullptr, std::uint64_t solidId = 0);
 
 } // namespace apex::render

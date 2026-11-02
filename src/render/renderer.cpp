@@ -339,7 +339,8 @@ struct Renderer::Impl {
             attributes = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BrushVertex, position)},
                           {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BrushVertex, normal)},
                           {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(BrushVertex, uv)},
-                          {3, 0, VK_FORMAT_R32_UINT, offsetof(BrushVertex, material)}};
+                          {3, 0, VK_FORMAT_R32_UINT, offsetof(BrushVertex, material)},
+                          {4, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(BrushVertex, lightmapUv)}};
             break;
         case Input::Box:
             binding.stride = sizeof(BoxInstance);
@@ -586,7 +587,7 @@ Result<bool> Renderer::reloadChangedShaders() {
 }
 
 void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarget& scene, const float clearColor[4]) {
-    if (list.mode != DisplayMode::Lit) return;
+    if (!sceneMode(list.mode)) return;
     impl_->shadowOwner = &scene;
     const bool uploaded = uploadFrame(commands, list, scene.extent());
     impl_->shadowOwner = nullptr;
@@ -692,7 +693,7 @@ std::uint32_t Renderer::shadowOverflow(VkCommandBuffer commands) const {
 }
 
 void Renderer::record(VkCommandBuffer commands, const DrawList& list) {
-    if (list.mode != DisplayMode::Lit && !uploadFrame(commands, list)) return;
+    if (!sceneMode(list.mode) && !uploadFrame(commands, list)) return;
     recordPass(commands, list, false);
 }
 
@@ -803,7 +804,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     }
     VkDeviceAddress materialAddress = 0;
     const auto materials = s.heap->materials();
-    if (list.mode == DisplayMode::Lit && !materials.empty()) {
+    if (sceneMode(list.mode) && !materials.empty()) {
         auto& slot = s.materialBuffers[commands];
         if (slot.revision != s.heap->materialRevision()) {
             const auto bytes = materials.size_bytes();
@@ -845,7 +846,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
         return light.kind == lighting::LightKind::Sun || light.kind == lighting::LightKind::Ambient
             ? 0.0 : lighting::previewRange(light, list.exposure);
     };
-    if (list.mode == DisplayMode::Lit && !list.fullbright && s.shadowOwner &&
+    if (sceneMode(list.mode) && !list.fullbright && s.shadowOwner &&
         !(list.shadowCasters ? list.shadowCasters->empty() : list.meshes.empty())) {
         std::vector<ShadowRequest> requests;
         std::vector<std::size_t> requested;
@@ -871,7 +872,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
             shadow.atlas = std::move(atlas);
         }
     }
-    if (list.mode == DisplayMode::Lit) {
+    if (sceneMode(list.mode)) {
         const auto dims = clusterDimensions(extent);
         const VkDeviceSize clusterSize = VkDeviceSize(dims.x) * dims.y * dims.z * sizeof(GpuCluster);
         auto& clusters = s.clusterBuffers[commands];
@@ -896,9 +897,10 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     frame.previews = buffer.deviceAddress() + previewOffset;
     frame.lights = buffer.deviceAddress() + lightOffset;
     frame.lightCount = static_cast<std::uint32_t>(list.lights.size());
-    frame.flags = (list.fullbright ? 1u : 0u) | (list.buildingCubemap ? 2u : 0u);
+    frame.flags = (list.fullbright ? 1u : 0u) | (list.buildingCubemap ? 2u : 0u) |
+                  (list.mode == DisplayMode::Baked ? 4u : 0u);
     frame.fogColour = Vec4(list.fog.colour, 0);
-    frame.fill = Vec4(list.ambientFill, 0.0f, 0.0f, 0.0f);
+    frame.fill = Vec4(list.ambientFill, list.bakedScale, std::bit_cast<float>(list.lightmap), 0.0f);
     frame.fogParams = Vec4(list.fog.start, list.fog.end, list.fog.maxDensity, list.fog.enabled ? 1.0f : 0.0f);
     frame.skyInverseView = glm::inverse(list.view.viewProjection);
     for (std::size_t i = 0; i < 6; ++i) frame.skyFaces[i / 4][i % 4] = list.sky.faces[i];
@@ -919,7 +921,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
         const bool isGlobal = light.kind == lighting::LightKind::Sun || light.kind == lighting::LightKind::Ambient;
         if (isGlobal != global) continue;
         auto packed = packLight(light, list.view.cameraPosition);
-        if (!global && list.mode == DisplayMode::Lit)
+        if (!global && sceneMode(list.mode))
             packed.originRadius.w = static_cast<float>(lighting::previewRange(light, list.exposure));
         if (const auto& grant = grants[i]; grant.shadowed) {
             std::vector<GpuShadowTile> views;
@@ -1021,7 +1023,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             if (mesh.instancedTransforms) push.p1.z = std::bit_cast<float>(mesh.previewIndex | 0x80000000u);
             // Bit 2 asks brush_textured_frag for the tint alone (Lit's post-tone-map highlight pass).
             push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha) |
-                                            (kind == Kind::Highlight ? 4u : 0u) | (scenePass ? 8u : 0u) | (skyPass ? 16u : 0u));
+                                            (kind == Kind::Highlight ? 4u : 0u) | (scenePass ? 8u : 0u) | (skyPass ? 16u : 0u) | (mesh.bakedBrush ? 32u : 0u));
             // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
             const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
             for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;
@@ -1039,7 +1041,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             scenePass ? Vec4(0.0f) : m.highlight; // Lit tints after tone mapping (D15).
     };
 
-    if (!scenePass && list.mode == DisplayMode::Lit) {
+    if (!scenePass && sceneMode(list.mode)) {
         const auto prepared = s.preparedScenes.find(commands);
         assert(prepared != s.preparedScenes.end());
         if (prepared == s.preparedScenes.end()) return;
@@ -1084,6 +1086,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
         skyPass = false;
     }
     switch (list.mode) {
+    case DisplayMode::Baked:
     case DisplayMode::Lit:
         if (!scenePass) break;
         [[fallthrough]];
@@ -1121,7 +1124,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
     }
     if (scenePass) return;
     if (list.mode != DisplayMode::Wireframe)
-        drawMeshes(list.mode == DisplayMode::Textured || list.mode == DisplayMode::Lit ? Kind::GhostTextured : Kind::GhostFlat,
+        drawMeshes(list.mode == DisplayMode::Textured || sceneMode(list.mode) ? Kind::GhostTextured : Kind::GhostFlat,
                    list.ghosts, brushColour, trianglesOf, trianglesBuf, false);
     if (list.edgeOverlay && list.mode != DisplayMode::Wireframe && s.has(Kind::Edges)) {
         vkCmdSetDepthBias(commands, list.edgeDepthBias, 0.0f, 1.0f);

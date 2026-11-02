@@ -1,10 +1,6 @@
+#include "../common/bake_setup.hpp"
 #include "assets/game_profile.hpp"
-#include "assets/vmt.hpp"
-#include "assets/vtf.hpp"
 #include "core/strings.hpp"
-#include "document/instance_collapse.hpp"
-#include "editor/instance_templates.hpp"
-#include "lighting/bake_casters.hpp"
 #include "lighting/baker.hpp"
 #include "viewport/camera.hpp"
 
@@ -112,49 +108,6 @@ std::unique_ptr<document::Document> loadDocument(const fs::path& path) {
     auto parsed = vmf::parse(bytes.str());
     if (!parsed) parsed = vmf::parse(bytes.str(), {kv1::EscapeMode::Legacy});
     return std::make_unique<document::Document>(take(std::move(parsed)), 0);
-}
-
-// Reuse the editor's resolver and document collapse transform/fixups, with fresh document IDs.
-void expandInstances(document::Document& doc, const fs::path& map, const assets::GameProfile& profile) {
-    editor::InstanceTemplates templates;
-    std::map<const document::Document*, fs::path> paths{{&doc, map}};
-    const auto lookup = [&](const document::Document& referring, std::string_view file)
-        -> Result<const document::Document*> {
-        const auto path = editor::resolveInstanceFile(paths.at(&referring), file, profile.instanceSearchRoot());
-        if (!path) return std::unexpected(Error{ErrorCode::NotFound, "Unresolved instance: " + std::string(file)});
-        auto loaded = templates.load(*path);
-        if (!loaded) return std::unexpected(loaded.error());
-        paths[loaded->get()] = *path;
-        return loaded->get();
-    };
-    std::vector<document::NodeId> instances;
-    std::optional<document::NodeHandle> world;
-    const auto walk = [&](const auto& self, document::NodeId id) -> void {
-        const auto handle = *doc.handle(id);
-        const auto* node = doc.get(handle);
-        if (ciEquals(node->block->key(), "hidden")) return;
-        const auto cls = toLowerAscii(text(*node->block, "classname"));
-        if (cls == "func_instance") instances.push_back(id);
-        if (cls == "worldspawn") world = handle;
-        for (const auto child : node->children) self(self, child);
-    };
-    for (const auto root : doc.roots()) walk(walk, root);
-    document::InstanceCollapseOptions options;
-    for (const auto id : instances) {
-        const auto handle = *doc.handle(id);
-        const auto* templ = take(lookup(doc, text(*doc.get(handle)->block, "file")));
-        auto collapsed = take(document::collapseInstance(doc, id, *templ, lookup, options));
-        options.nextAutoName = collapsed.nextAutoName;
-        auto fragment = take(kv1::parse(collapsed.fragment));
-        auto tx = doc.begin("Probe instance expansion");
-        for (const auto& node : fragment.root().children()) {
-            const bool brush = ciEquals(node.key(), "solid") || ciEquals(node.key(), "group");
-            (void)tx.create(node, brush ? world : std::nullopt);
-        }
-        tx.destroy(handle);
-        tx.commit();
-    }
-    std::cout << "instances expanded=" << instances.size() << " (recursive collapse; no FGD table, as render_pose)\n";
 }
 
 void filterGeometry(document::Document& doc) {
@@ -375,7 +328,7 @@ int run(Options o) {
     assets::GameProfile profile;
     profile.gameDirectory = o.game / "p2ce";
     profile.addons.list = assets::AddonSettings::List::Game;
-    expandInstances(*doc, fs::canonical(o.vmf), profile);
+    tools::expandBakeInstances(*doc, fs::canonical(o.vmf), profile);
     filterGeometry(*doc);
     JobPool jobs(2);
     std::optional<assets::Vfs> vfs;
@@ -384,46 +337,9 @@ int run(Options o) {
         if (!loaded) throw std::runtime_error("Asset mount failed: " + std::string(loaded.error().what()) + "; retry with --no-assets");
         vfs.emplace(std::move(*loaded));
     }
-    std::map<std::string, BakeMaterial> materials;
-    std::size_t failedMaterials = 0, failedTextures = 0;
-    const auto material = [&](std::string_view name) -> BakeMaterial {
-        const auto key = toLowerAscii(name);
-        if (const auto found = materials.find(key); found != materials.end()) return found->second;
-        BakeMaterial result;
-        result.sky = key.starts_with("tools/toolsskybox");
-        result.nodraw = key == "tools/toolsnodraw";
-        result.noLight = key.starts_with("tools/") && !result.sky && !result.nodraw;
-        if (vfs) {
-            auto vmt = assets::loadMaterial(*vfs, key);
-            if (!vmt) {
-                ++failedMaterials;
-                std::cerr << "material-failed " << key << ": " << vmt.error().what() << " (using fallback)\n";
-            } else {
-                const auto flag = [&](const char* name) {
-                    const auto found = vmt->compileFlags.find(name);
-                    return found != vmt->compileFlags.end() && !found->second.empty() && found->second != "0";
-                };
-                result.sky = result.sky || flag("%compilesky");
-                result.nodraw = result.nodraw || flag("%compilenodraw");
-                result.noLight = result.noLight || flag("%compilenolight");
-                if (!vmt->baseTexture.empty()) {
-                    auto texture = assets::loadTexture(*vfs, vmt->baseTexture);
-                    if (texture) {
-                        for (int c = 0; c < 3; ++c) result.albedo[c] = std::clamp(texture->reflectivity[c], 0.0f, 1.0f);
-                    } else {
-                        ++failedTextures;
-                        std::cerr << "texture-failed " << vmt->baseTexture << ": " << texture.error().what() << " (albedo 0.5)\n";
-                    }
-                }
-            }
-        }
-        materials.emplace(key, result);
-        return result;
-    };
-    auto scene = take(bakeSceneFromDocument(*doc, {}, material));
-    scene.occlusion = take(bakeCastersFromDocument(*doc, scene.faces, material));
-    std::cout << "assets=" << (vfs ? "game VFS + addons" : "DISABLED: flat linear albedo 0.5, name flags")
-              << " materials=" << materials.size() << " failed-materials=" << failedMaterials << " failed-textures=" << failedTextures << '\n';
+    auto setup = tools::setupBake(*doc, vfs ? &*vfs : nullptr);
+    auto scene = std::move(setup.scene);
+    const auto failedMaterials = setup.failedMaterials, failedTextures = setup.failedTextures;
     std::map<std::string, std::pair<std::size_t, std::size_t>> classes;
     std::map<std::string, std::vector<document::NodeId>> ignored;
     const auto entities = [&](const auto& self, document::NodeId id) -> void {

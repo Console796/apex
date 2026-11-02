@@ -6,7 +6,7 @@
 //
 // Shader side (set number is the caller's choice):
 //   layout(set = N, binding = 0) uniform texture2D textures[];   // textures[nonuniformEXT(slot)]
-//   layout(set = N, binding = 1) uniform sampler samplers[3];    // 0 = linear/aniso repeat, 1 = nearest repeat, 2 = reversed-Z comparison
+//   layout(set = N, binding = 1) uniform sampler samplers[4];    // 0 = linear/aniso repeat, 1 = nearest repeat, 2 = reversed-Z comparison, 3 = linear clamp
 //   layout(set = N, binding = 2) uniform textureCube cubes[];    // cubes[nonuniformEXT(cubeSlot)]
 //
 // Slot 0 is a magenta/black checkerboard; every unused or released slot also shows it.
@@ -135,7 +135,7 @@ class TextureHeap {
     VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;
-    VkSampler samplers_[3]{};
+    VkSampler samplers_[4]{};
     std::uint32_t capacity_ = 0;
     std::vector<Image> images_;           // Indexed by slot; empty Image when free.
     std::vector<VkImageView> attachments_; // Borrowed images, owned sampled views, indexed by slot.

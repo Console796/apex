@@ -14,7 +14,7 @@ struct alignas(16) FrameBlock {
     VkDeviceAddress previews = 0;
     VkDeviceAddress lights = 0;
     std::uint32_t lightCount = 0;
-    std::uint32_t flags = 0; // Bit 0: fullbright; bit 1: cubemap capture.
+    std::uint32_t flags = 0; // Bit 0: fullbright; bit 1: cubemap capture; bit 2: baked mode.
     std::uint32_t pad[2]{};
     Vec4 cameraRight{0.0f};
     Vec4 cameraUp{0.0f};
@@ -38,7 +38,7 @@ struct alignas(16) FrameBlock {
     Vec4 skyTransform{0.0f}; // xyz translation, w scale.
     VkDeviceAddress shadows = 0;
     std::uint32_t shadowAtlas = 0, shadowCount = 0;
-    Vec4 fill{0.0f}; // x: constant ambient fill irradiance (linear, before albedo); yzw reserved.
+    Vec4 fill{0.0f}; // x: constant ambient fill irradiance (linear, before albedo); y: baked display scale; z: lightmap slot bits; w reserved.
 };
 static_assert(sizeof(FrameBlock) == 432);
 static_assert(offsetof(FrameBlock, fill) == 416);

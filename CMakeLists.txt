@@ -133,7 +133,7 @@ apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp sr
                          src/render/context.cpp src/render/resources.cpp src/render/accel.cpp src/render/scene_accel.cpp src/render/helper_shapes.cpp
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
                          src/render/render_target.cpp src/render/scene_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/model_inspector.cpp src/render/swapchain.cpp
-                         src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
+                         src/render/lightmap_atlas.cpp src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
            DEPS apex_document apex_assets apex_lighting volk::volk GPUOpen::VulkanMemoryAllocator
                 Vulkan::Headers)
 # GLSL in src/render/shaders is compiled to SPIR-V and embedded in gen/render/shaders_spv.hpp (D14).
@@ -239,9 +239,9 @@ if(APEX_BUILD_TESTS)
   add_executable(apex_instance_collapse tools/instance_collapse/main.cpp)
   target_link_libraries(apex_instance_collapse PRIVATE apex_document apex_geometry apex_core apex_warnings)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Gui)
-  add_executable(apex_render_pose tools/render_pose/main.cpp)
+  add_executable(apex_render_pose tools/render_pose/main.cpp tools/common/bake_setup.cpp)
   target_link_libraries(apex_render_pose PRIVATE apex_viewport apex_editor Qt6::Gui apex_warnings)
-  add_executable(apex_bake_probe tools/bake_probe/main.cpp)
+  add_executable(apex_bake_probe tools/bake_probe/main.cpp tools/common/bake_setup.cpp)
   target_link_libraries(apex_bake_probe PRIVATE apex_viewport apex_editor apex_lighting apex_assets Qt6::Gui apex_warnings)
   add_executable(apex_vtf_stats tools/vtf_stats/main.cpp)
   target_link_libraries(apex_vtf_stats PRIVATE sourcepp::vtfpp apex_warnings)
