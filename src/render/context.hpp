@@ -63,8 +63,8 @@ struct DeviceInfo {
     std::uint32_t apiVersion = 0;
     std::uint32_t vendorId = 0;
     std::uint32_t deviceId = 0;
-    bool rayQuery = false;              // VK_KHR_ray_query available (reported, not enabled).
-    bool accelerationStructure = false; // VK_KHR_acceleration_structure available (ditto).
+    bool rayQuery = false;              // VK_KHR_ray_query feature and extension enabled.
+    bool accelerationStructure = false; // VK_KHR_acceleration_structure enabled with rayQuery.
     bool swapchain = false;             // VK_KHR_swapchain enabled.
     bool anisotropy = false;            // samplerAnisotropy enabled.
     bool fillModeNonSolid = false;      // Wireframe polygon mode enabled.

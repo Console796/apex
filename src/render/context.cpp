@@ -262,9 +262,20 @@ Result<std::unique_ptr<Context>> Context::create(const ContextOptions& options) 
     ctx->info_.apiVersion = best.props.apiVersion;
     ctx->info_.vendorId = best.props.vendorID;
     ctx->info_.deviceId = best.props.deviceID;
-    ctx->info_.rayQuery = deviceHasExtension(best.device, VK_KHR_RAY_QUERY_EXTENSION_NAME);
-    ctx->info_.accelerationStructure =
-        deviceHasExtension(best.device, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+    // Ray queries are optional, and need both features plus the AS extension's dependency.
+    auto rayQuery = vkStruct<VkPhysicalDeviceRayQueryFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR);
+    auto acceleration = vkStruct<VkPhysicalDeviceAccelerationStructureFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);
+    const bool rayExtensions = deviceHasExtension(best.device, VK_KHR_RAY_QUERY_EXTENSION_NAME) &&
+        deviceHasExtension(best.device, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        deviceHasExtension(best.device, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    if (rayExtensions) {
+        auto features = vkStruct<VkPhysicalDeviceFeatures2>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
+        features.pNext = &rayQuery;
+        rayQuery.pNext = &acceleration;
+        vkGetPhysicalDeviceFeatures2(best.device, &features);
+        ctx->info_.rayQuery = rayQuery.rayQuery && acceleration.accelerationStructure;
+        ctx->info_.accelerationStructure = ctx->info_.rayQuery;
+    }
     // VK_KHR_swapchain requires VK_KHR_surface on the instance, i.e. a UI/surface context.
     const bool surfaceEnabled = std::ranges::any_of(extensions, [](const char* e) {
         return std::strcmp(e, VK_KHR_SURFACE_EXTENSION_NAME) == 0;
@@ -276,7 +287,7 @@ Result<std::unique_ptr<Context>> Context::create(const ContextOptions& options) 
     ctx->info_.anisotropy = supported.samplerAnisotropy == VK_TRUE;
     ctx->info_.fillModeNonSolid = supported.fillModeNonSolid == VK_TRUE;
 
-    // Logical device with exactly the baseline (plus anisotropy when present).
+    // Logical device with the baseline and supported optional features.
     VkPhysicalDeviceVulkan13Features f13 = vkStruct<VkPhysicalDeviceVulkan13Features>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES);
     f13.dynamicRendering = VK_TRUE;
     f13.synchronization2 = VK_TRUE;
@@ -296,6 +307,18 @@ Result<std::unique_ptr<Context>> Context::create(const ContextOptions& options) 
 
     std::vector<const char*> deviceExtensions;
     if (ctx->info_.swapchain) deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    if (ctx->info_.rayQuery) {
+        deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        deviceExtensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+        // Enable only the two features we use, not every supported AS subfeature.
+        rayQuery = vkStruct<VkPhysicalDeviceRayQueryFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR);
+        acceleration = vkStruct<VkPhysicalDeviceAccelerationStructureFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);
+        rayQuery.rayQuery = VK_TRUE;
+        acceleration.accelerationStructure = VK_TRUE;
+        f13.pNext = &rayQuery;
+        rayQuery.pNext = &acceleration;
+    }
 
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo qci = vkStruct<VkDeviceQueueCreateInfo>(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO);

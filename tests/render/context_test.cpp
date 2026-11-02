@@ -61,6 +61,27 @@ TEST_CASE("device selection reports capabilities") {
     CHECK(info.apiVersion >= VK_API_VERSION_1_3);
     CHECK(gpu->instance() != VK_NULL_HANDLE);
     CHECK(gpu->allocator() != nullptr);
+    std::uint32_t count = 0;
+    REQUIRE(vkEnumerateDeviceExtensionProperties(gpu->physicalDevice(), nullptr, &count, nullptr) == VK_SUCCESS);
+    std::vector<VkExtensionProperties> extensions(count);
+    REQUIRE(vkEnumerateDeviceExtensionProperties(gpu->physicalDevice(), nullptr, &count, extensions.data()) == VK_SUCCESS);
+    const auto has = [&](const char* name) {
+        return std::ranges::any_of(extensions, [&](const auto& e) { return std::strcmp(e.extensionName, name) == 0; });
+    };
+    bool rayQuery = false;
+    if (has(VK_KHR_RAY_QUERY_EXTENSION_NAME) && has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME)) {
+        auto query = vkStruct<VkPhysicalDeviceRayQueryFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR);
+        auto acceleration = vkStruct<VkPhysicalDeviceAccelerationStructureFeaturesKHR>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR);
+        auto features = vkStruct<VkPhysicalDeviceFeatures2>(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2);
+        features.pNext = &query;
+        query.pNext = &acceleration;
+        vkGetPhysicalDeviceFeatures2(gpu->physicalDevice(), &features);
+        rayQuery = query.rayQuery && acceleration.accelerationStructure;
+    }
+    CHECK(info.rayQuery == rayQuery);
+    CHECK(info.accelerationStructure == rayQuery);
+    CHECK(gpu->validation().errorCount() == 0);
 }
 
 TEST_CASE("buffers: upload, device address and readback") {
