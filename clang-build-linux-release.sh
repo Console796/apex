@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-cmake --build --preset linux-clang-release $@
+cmake --build --preset linux-clang-release $1
