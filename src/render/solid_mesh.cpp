@@ -28,7 +28,8 @@ double loopArea(std::span<const DVec3> loop) {
 }
 
 // A placed face cannot be compared chart-for-chart: the baker charted the rotated plane. The baked
-// fragments must instead lie on the face moved by the bake's transform and cover its area.
+// fragments must instead lie on the face moved by the bake's transform and cover its area. Compiled
+// fragments (vbsp's CSG removes the parts of a side that touch other brushes) may cover less, never more.
 bool placedMatch(const geometry::Face& face, const geometry::ConvexPolyhedron& poly, const LightmapAtlas& atlas,
                  std::span<const std::size_t> fragments, const DMat4& toWorld) {
     std::vector<DVec3> loop;
@@ -49,6 +50,7 @@ bool placedMatch(const geometry::Face& face, const geometry::ConvexPolyhedron& p
         area += loopArea(vertices);
     }
     const auto expected = loopArea(loop);
+    if (atlas.compiled) return area <= expected * 1.01 + kTolerance;
     return std::abs(area - expected) <= 0.01 * expected + kTolerance;
 }
 
@@ -118,8 +120,10 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
         if (lightmaps) if (const auto found = lightmaps->fragments.find(key);
                           found != lightmaps->fragments.end()) fragments = found->second;
         std::optional<std::size_t> retained;
-        if (!fragments.empty() && origin) {
-            if (!placedMatch(face, *polyhedron, *lightmaps, fragments, origin->transform)) fragments.clear();
+        if (!fragments.empty() && (origin || lightmaps->compiled)) {
+            // A compiled lattice is the compiler's own, so it is checked against the face only by position.
+            if (!placedMatch(face, *polyhedron, *lightmaps, fragments, origin ? origin->transform : DMat4(1.0)))
+                fragments.clear();
         } else if (!fragments.empty()) {
             // A stale bake must never substitute old geometry after a document edit.
             const auto current = lighting::chartFace(face, polyhedron->vertices);

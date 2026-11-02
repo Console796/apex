@@ -27,6 +27,17 @@ Bounds bounds(std::span<const DVec3> vertices, const LuxelChart& frame) {
     return result;
 }
 
+// Inverse of the frame on the face plane: luxel steps and the world position of local sample (0, 0).
+void solveInverse(LuxelChart& frame, const Plane& plane) {
+    const auto cross = glm::cross(frame.worldToLuxel[0], frame.worldToLuxel[1]);
+    const double det = glm::dot(cross, plane.normal);
+    frame.luxelToWorld[0] = glm::cross(frame.worldToLuxel[1], plane.normal) / det;
+    frame.luxelToWorld[1] = glm::cross(plane.normal, frame.worldToLuxel[0]) / det;
+    frame.origin = cross * (plane.dist / det) +
+                   frame.luxelToWorld[0] * (frame.mins[0] - frame.offset.x) +
+                   frame.luxelToWorld[1] * (frame.mins[1] - frame.offset.y);
+}
+
 LuxelChart chart(std::span<const DVec3> vertices, LuxelChart frame, const Plane& plane) {
     const auto b = bounds(vertices, frame);
     for (int i = 0; i < 2; ++i) {
@@ -39,13 +50,7 @@ LuxelChart chart(std::span<const DVec3> vertices, LuxelChart frame, const Plane&
         frame.extents[i] = static_cast<int>(hi - lo);
         frame.dimensions[i] = frame.extents[i] + 1;
     }
-    const auto cross = glm::cross(frame.worldToLuxel[0], frame.worldToLuxel[1]);
-    const double det = glm::dot(cross, plane.normal);
-    frame.luxelToWorld[0] = glm::cross(frame.worldToLuxel[1], plane.normal) / det;
-    frame.luxelToWorld[1] = glm::cross(plane.normal, frame.worldToLuxel[0]) / det;
-    frame.origin = cross * (plane.dist / det) +
-                   frame.luxelToWorld[0] * (frame.mins[0] - frame.offset.x) +
-                   frame.luxelToWorld[1] * (frame.mins[1] - frame.offset.y);
+    solveInverse(frame, plane);
     if (!finite(frame.origin) || !finite(frame.luxelToWorld[0]) || !finite(frame.luxelToWorld[1]))
         throw std::invalid_argument("invalid lightmap inverse");
     return frame;
@@ -70,6 +75,26 @@ std::array<std::vector<DVec3>, 2> clip(std::span<const DVec3> vertices, DVec3 no
 }
 
 } // namespace
+
+LuxelChart bspChart(std::array<DVec3, 2> worldToLuxel, DVec2 offset, std::array<int, 2> mins,
+                    std::array<int, 2> extents, const Plane& plane) {
+    if (!finite(worldToLuxel[0]) || !finite(worldToLuxel[1]) || !finite(plane.normal) ||
+        !std::isfinite(plane.dist) || !std::isfinite(offset.x) || !std::isfinite(offset.y) ||
+        extents[0] < 0 || extents[1] < 0 || extents[0] >= 1 << 20 || extents[1] >= 1 << 20)
+        throw std::invalid_argument("invalid BSP lightmap frame");
+    const double det = glm::dot(glm::cross(worldToLuxel[0], worldToLuxel[1]), plane.normal);
+    if (!std::isfinite(det) || std::abs(det) < 1e-12) throw std::invalid_argument("singular lightmap axes");
+    LuxelChart frame;
+    frame.worldToLuxel = worldToLuxel;
+    frame.offset = offset;
+    frame.mins = mins;
+    frame.extents = extents;
+    frame.dimensions = {extents[0] + 1, extents[1] + 1};
+    solveInverse(frame, plane);
+    if (!finite(frame.origin) || !finite(frame.luxelToWorld[0]) || !finite(frame.luxelToWorld[1]))
+        throw std::invalid_argument("invalid lightmap inverse");
+    return frame;
+}
 
 FaceCharting chartFace(const geometry::Face& face, std::span<const DVec3> vertices) {
     if (face.vertices.size() < 3 || !finite(face.plane.normal) || !std::isfinite(face.plane.dist) ||

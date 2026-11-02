@@ -19,6 +19,9 @@ struct LightmapRect {
 struct LightmapAtlas {
     // Live editor only: project retained radiance onto edited geometry until rebaked.
     bool retainStale = false;
+    // Faces are compiler (VRAD) fragments, not the baker's charts: the mesher keeps a side's fragments
+    // while they still lie on the side and cover no more than it, instead of requiring the baker's chart.
+    bool compiled = false;
     int size = 0;
     std::vector<lighting::BakeFace> faces;
     std::vector<LightmapRect> rects;

@@ -38,4 +38,9 @@ struct FaceCharting {
 // Invalid indices, nonfinite data, singular axes or unrepresentable extents throw invalid_argument.
 FaceCharting chartFace(const geometry::Face& face, std::span<const DVec3> vertices);
 
+// The chart of a compiled BSP face: texinfo lightmap vectors and offsets (already divided by the
+// lightmap scale), the face's stored mins and size in luxels, and its plane. Throws invalid_argument.
+LuxelChart bspChart(std::array<DVec3, 2> worldToLuxel, DVec2 offset, std::array<int, 2> mins,
+                    std::array<int, 2> extents, const Plane& plane);
+
 } // namespace apex::lighting

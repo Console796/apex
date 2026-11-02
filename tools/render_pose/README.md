@@ -25,7 +25,7 @@ QT_QPA_PLATFORM=offscreen build/linux-clang-release/apex_render_pose \
 ```
 
 Defaults: 16 passes per direct/bounce level, 2 bounces, 32 bounce rays, 3 threads, seed 0,
-display scale **1.0**, exposure 1. `--bake-scale 2.02` is the optional fitted set-2
+display scale **1.0**, exposure 1. `--bake-scale 2.02` was the earlier unscaled set-2 fit (the viewport default is now 0.62), the
 baker-to-display multiplier from `docs/plans/probe-results/bake_parity_set2_0_7_4.md`;
 no scale is applied to the baker's accumulation or uploaded radiance. Width/height/FOV defaults
 match the 1920x1080 game captures. Baked filenames are `11-baked.png` through `41-baked.png`.
@@ -157,3 +157,13 @@ the previous atlas and appear in the status line; edit, change bake settings, or
 to retry. Atlas allocation/upload still uses slice 4a's synchronous GPU transfer API and may stall
 between frames. No asynchronous transfers, denoising or expanded-instance lightmap mapping are
 implemented here.
+
+## VRAD mode
+
+`--mode vrad` runs the real VRAD round trip (native vbsp, `vvis -fast`, vrad in a temp dir; needs
+`APEX_P2CE_DIR`) and draws the BSP's HDR lightmaps on the document's faces. Options: `--vrad-flags "<text>"`
+(default `-noextra`), `--no-vis`, `--vrad-scale <x>` (display scale, default 1.0), `--keep-vrad` (keep the
+temp dir). Files are `11-vrad.png` and so on. Faces VRAD gave no data (displacements, nolight, unmapped)
+draw black. Compare with the same ratio recipe as above, using `-vrad.png`. Note light_rt entities are
+ignored by VRAD, so maps lit only by them render nearly black. Findings:
+`docs/plans/probe-results/vrad_roundtrip_0_7_5.md`.

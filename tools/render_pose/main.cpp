@@ -6,10 +6,13 @@
 #include "assets/model_cache.hpp"
 #include "assets/vfs.hpp"
 #include "document/document.hpp"
+#include "compile/blocking_runner.hpp"
 #include "document/vmf.hpp"
+#include "editor/vrad_roundtrip.hpp"
 #include "editor/instance_expansion.hpp"
 #include "render/context.hpp"
 #include "render/render_mirror.hpp"
+#include "render/vrad_lightmaps.hpp"
 #include "render/render_target.hpp"
 #include "render/scene_target.hpp"
 #include "viewport/camera.hpp"
@@ -42,6 +45,9 @@ struct Options {
     unsigned bakePasses = 16;
     lighting::BakerOptions bakeOptions{.bounces = 2};
     float bakeScale = render::kDefaultBakedScale;
+    std::optional<float> vradScale; // --vrad-scale; else --bake-scale.
+    editor::VradOptions vrad;
+    bool keepVrad = false;
     bool noSpecular = false;
     float toolBrightness = 0.0f; // --tool-fixed-brightness; 0 = off.
     std::string mode = "lit";
@@ -51,8 +57,9 @@ struct Options {
 
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
-                 "  [--fov 90] [--mode lit|textured|fullbright|baked] [--cubemaps DIR] [--time N]\n"
+                 "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.62]\n"
+                 "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
@@ -68,6 +75,11 @@ void help() {
                  "--instances mirror|expanded (Baked only): mirror (default) bakes an expanded copy and draws the\n"
                  "instances through the viewport's own instance path, as the editor does; expanded collapses the\n"
                  "instances into the document first and draws that.\n"
+                 "Vrad runs the editor's VRAD round trip (native vbsp, vvis -fast, vrad in a fresh temp directory) on\n"
+                 "the VMF with instances expanded, then draws VRAD's own lightmaps through the Baked path; faces VRAD\n"
+                 "gave no data (displacements, nolight, tools) are black. --vrad-flags replaces the extra vrad\n"
+                 "arguments (default -noextra), --no-vis skips vvis, --vrad-scale is the display scale (else\n"
+                 "--bake-scale), --keep-vrad keeps the temp directory and prints it.\n"
                  "--no-specular disables direct-light highlights for image comparisons in Lit or Baked.\n"
                  "--tool-fixed-brightness [VALUE] shows tools/* faces (normally hidden here) at a fixed linear\n"
                  "brightness in Lit or Baked instead of lighting (default VALUE 1, the Textured view's level).\n"
@@ -124,6 +136,15 @@ Options parse(int argc, char** argv) {
                 throw std::runtime_error("--bake-scale must be finite and nonnegative");
             o.bakeScale = static_cast<float>(value);
         }
+        else if (flag == "--vrad-flags") o.vrad.flags = next();
+        else if (flag == "--no-vis") o.vrad.vis = false;
+        else if (flag == "--keep-vrad") o.keepVrad = true;
+        else if (flag == "--vrad-scale") {
+            const double value = number(next());
+            if (value < 0 || value > std::numeric_limits<float>::max())
+                throw std::runtime_error("--vrad-scale must be finite and nonnegative");
+            o.vradScale = static_cast<float>(value);
+        }
         else if (flag == "--vmf") o.vmf = next();
         else if (flag == "--game") o.game = next();
         else if (flag == "--out") o.out = next();
@@ -159,8 +180,9 @@ Options parse(int argc, char** argv) {
     if (!o.cubemaps.empty() && !fs::is_directory(o.cubemaps))
         throw std::runtime_error("--cubemaps must name a directory");
     if (!(o.fov > 0 && o.fov < 180)) throw std::runtime_error("FOV must be between 0 and 180 degrees");
-    if (o.mode != "lit" && o.mode != "textured" && o.mode != "fullbright" && o.mode != "baked")
-        throw std::runtime_error("Mode must be lit, textured, fullbright or baked");
+    if (o.mode != "lit" && o.mode != "textured" && o.mode != "fullbright" && o.mode != "baked" &&
+        o.mode != "vrad")
+        throw std::runtime_error("Mode must be lit, textured, fullbright, baked or vrad");
     return o;
 }
 
@@ -209,7 +231,7 @@ int run(const Options& o) {
     assets::ModelCache models(vfs, jobs);
     editor::InstanceTemplates templates;
     editor::InstanceExpansion instances(templates);
-    if (o.mode == "baked" && o.expandedInstances) tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
+    if ((o.mode == "baked" || o.mode == "vrad") && o.expandedInstances) tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
     instances.update(document, fs::canonical(o.vmf), profile.instanceSearchRoot());
     for (const auto& problem : instances.problems())
         std::cerr << "instance-failed " << problem.file << ": " << problem.message << '\n';
@@ -275,6 +297,34 @@ int run(const Options& o) {
         check(maps->upload(baker.resolve()));
         mirror.setLightmaps(std::move(maps));
     }
+    if (o.mode == "vrad") {
+        compile::BlockingProcessRunner runner;
+        compile::FilesystemFileOps files;
+        editor::VradRoundTrip trip(runner, files);
+        if (o.keepVrad) trip.keepFiles();
+        editor::CompileGamePaths paths;
+        paths.gameDirectory = profile.gameDirectory;
+        paths.toolDirectory = profile.toolDirectory();
+        paths.instanceRoot = profile.instanceSearchRoot();
+        for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"}, {"light_exe", "vrad"}})
+            paths.tools[variable] = profile.toolPath(tool).string();
+        const auto started = std::chrono::steady_clock::now();
+        check(trip.start(document, fs::canonical(o.vmf), paths, o.vrad));
+        if (trip.poll() != editor::VradRoundTrip::State::Done)
+            throw std::runtime_error("VRAD round trip failed: " + trip.message());
+        auto loaded = take(render::loadVradLightmaps(trip.bsp(), *trip.exported(), trip.origins()));
+        const auto& stats = loaded.stats;
+        std::cout << "vrad flags=\"" << o.vrad.flags << "\" vis=" << o.vrad.vis << " seconds="
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+                  << " fragments=" << stats.fragments << " mapped=" << stats.mapped << " faces=" << stats.faces
+                  << " displacement=" << stats.displacement << " no-data=" << stats.noData
+                  << " unowned=" << stats.unowned << " shared=" << stats.shared
+                  << " mismatched=" << stats.mismatched << '\n';
+        if (o.keepVrad) std::cout << "vrad directory=" << trip.directory().string() << '\n';
+        auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(loaded.atlas)));
+        check(maps->upload(loaded.radiance));
+        mirror.setLightmaps(std::move(maps));
+    }
     mirror.rebuild(document);
     mirror.setInstanceContents(instances.contents());
     // Lit draw-list construction requests the sky grid; settle must see that request.
@@ -303,7 +353,7 @@ int run(const Options& o) {
         camera.fovYDegrees = viewport::sourceFovYDegrees(o.fov);
         render::MirrorViewOptions options;
         options.mode = o.mode == "textured" ? render::DisplayMode::Textured :
-            o.mode == "baked" ? render::DisplayMode::Baked : render::DisplayMode::Lit;
+            (o.mode == "baked" || o.mode == "vrad") ? render::DisplayMode::Baked : render::DisplayMode::Lit;
         options.showEntityHelpers = false;
         options.showNodraw = false;
         options.showToolFaces = o.toolBrightness > 0.0f; // The game draws no trigger, clip or hint faces.
@@ -314,7 +364,7 @@ int run(const Options& o) {
         options.view.cameraRight = Vec3(camera.basis().right);
         options.view.cameraUp = Vec3(camera.basis().up);
         auto list = mirror.buildDrawList(options);
-        list.bakedScale = o.bakeScale;
+        list.bakedScale = o.mode == "vrad" ? o.vradScale.value_or(o.bakeScale) : o.bakeScale;
         if (list.toolBrightness > 0.0f) list.toolBrightness = o.toolBrightness;
         if (o.noSpecular) for (auto& light : list.lights) light.specularMode = 0;
         list.fullbright = o.mode == "fullbright";
