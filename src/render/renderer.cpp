@@ -900,7 +900,9 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     frame.flags = (list.fullbright ? 1u : 0u) | (list.buildingCubemap ? 2u : 0u) |
                   (list.mode == DisplayMode::Baked ? 4u : 0u);
     frame.fogColour = Vec4(list.fog.colour, 0);
-    frame.fill = Vec4(list.ambientFill, list.bakedScale, std::bit_cast<float>(list.lightmap), 0.0f);
+    // Divide out exposure so the overlay's on-screen level stays fixed.
+    frame.fill = Vec4(list.ambientFill, list.bakedScale, std::bit_cast<float>(list.lightmap),
+                      list.toolBrightness / std::max(list.exposure, 1e-4f));
     frame.fogParams = Vec4(list.fog.start, list.fog.end, list.fog.maxDensity, list.fog.enabled ? 1.0f : 0.0f);
     frame.skyInverseView = glm::inverse(list.view.viewProjection);
     for (std::size_t i = 0; i < 6; ++i) frame.skyFaces[i / 4][i % 4] = list.sky.faces[i];
@@ -1023,7 +1025,7 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
             if (mesh.instancedTransforms) push.p1.z = std::bit_cast<float>(mesh.previewIndex | 0x80000000u);
             // Bit 2 asks brush_textured_frag for the tint alone (Lit's post-tone-map highlight pass).
             push.p1.w = std::bit_cast<float>(static_cast<std::uint32_t>(mesh.alpha) |
-                                            (kind == Kind::Highlight ? 4u : 0u) | (scenePass ? 8u : 0u) | (skyPass ? 16u : 0u) | (mesh.bakedBrush ? 32u : 0u));
+                                            (kind == Kind::Highlight ? 4u : 0u) | (scenePass ? 8u : 0u) | (skyPass ? 16u : 0u) | (mesh.bakedBrush ? 32u : 0u) | (mesh.toolFixed ? 64u : 0u));
             // Every pass of a mesh shares its layer's bias so its edges and outlines stay on its faces.
             const float layerScale = 1.0f + kLayerBias * static_cast<float>(mesh.alpha);
             for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= layerScale;

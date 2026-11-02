@@ -35,7 +35,7 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     uvec2 shadows;
     uint shadowAtlas;
     uint shadowCount;
-    vec4 fill; // ambient, baked scale, lightmap slot bits, reserved.
+    vec4 fill; // ambient, baked scale, lightmap slot bits, tool-texture overlay irradiance.
 };
 #ifndef APEX_FRAME_NO_PUSH
 FrameBlock frameBlock() { return FrameBlock(floatBitsToUint(push.p1.xy)); }

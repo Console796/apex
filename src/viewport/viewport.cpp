@@ -132,6 +132,7 @@ json::Value toJson(const Viewport& vp) {
     ov["cordons"] = boolean(vp.overlays.cordons);
     ov["backfaceCulling"] = boolean(vp.overlays.backfaceCulling);
     ov["approxBounce"] = boolean(vp.overlays.approxBounce);
+    ov["toolFixedBrightness"] = boolean(vp.overlays.toolFixedBrightness);
     json::Value::Object root;
     root["camera"].data = std::move(cam);
     root["mode"] = str(nameOf(vp.mode));
@@ -204,7 +205,8 @@ Result<Viewport> viewportFromJson(const json::Value& value) {
                                Field{"portals", &vp.overlays.portals},
                                Field{"cordons", &vp.overlays.cordons},
                                Field{"backfaceCulling", &vp.overlays.backfaceCulling},
-                               Field{"approxBounce", &vp.overlays.approxBounce}}) {
+                               Field{"approxBounce", &vp.overlays.approxBounce},
+                               Field{"toolFixedBrightness", &vp.overlays.toolFixedBrightness}}) {
             auto b = readBool(*o, f.key, *f.dst);
             if (!b) return std::unexpected(b.error());
             *f.dst = *b;

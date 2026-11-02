@@ -30,6 +30,9 @@ namespace apex::lighting { struct TriangleMesh; }
 namespace apex::render {
 
 enum class DisplayMode { Textured, Flat, Wireframe, Lit, Baked };
+// Tool-texture overlay brightness: linear irradiance on screen (post-exposure), so 1 shows a tool
+// texture's albedo exactly as the unlit Textured view does. See baked_tool_overlay_0_7_4.md.
+inline constexpr float kToolFixedBrightness = 1.0f;
 inline constexpr float kDefaultBakedScale = 0.78f; // Set-2 rendered appearance fit; see bake_tuning_0_7_4.md.
 
 constexpr bool sceneMode(DisplayMode mode) { return mode == DisplayMode::Lit || mode == DisplayMode::Baked; }
@@ -93,6 +96,7 @@ struct MeshDraw {
     AlphaMode alpha = AlphaMode::Opaque; // Textured/Lit modes.
     std::uint32_t instanceCount = 1;
     bool instancedTransforms = false; // Consecutive DrawList::previews, starting at previewIndex.
+    bool toolFixed = false;  // Lit/Baked: editor-only (tools/*) face shaded at DrawList::toolBrightness.
     bool bakedBrush = false; // Baked uses atlas diffuse; models/displacements retain Lit shading.
     bool skySurface = false; // Aperture: no colour/depth in Textured or Lit.
     bool sky = false;
@@ -216,6 +220,7 @@ struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     TextureSlot lightmap = kNoTexture;
     float bakedScale = kDefaultBakedScale; // Display only; never changes bake accumulation.
+    float toolBrightness = 0.0f; // Display-referred level for MeshDraw::toolFixed faces; 0 = overlay off.
     float exposure = 1.0f; // Lit tone-map multiplier; fixed per viewport.
     SkySettings sky;
     FogSettings fog;

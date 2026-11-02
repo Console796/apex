@@ -38,7 +38,7 @@ struct alignas(16) FrameBlock {
     Vec4 skyTransform{0.0f}; // xyz translation, w scale.
     VkDeviceAddress shadows = 0;
     std::uint32_t shadowAtlas = 0, shadowCount = 0;
-    Vec4 fill{0.0f}; // x: constant ambient fill irradiance (linear, before albedo); y: baked display scale; z: lightmap slot bits; w reserved.
+    Vec4 fill{0.0f}; // x: constant ambient fill irradiance (linear, before albedo); y: baked display scale; z: lightmap slot bits; w: tool-texture overlay irradiance (0 off).
 };
 static_assert(sizeof(FrameBlock) == 432);
 static_assert(offsetof(FrameBlock, fill) == 416);

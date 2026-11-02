@@ -106,7 +106,11 @@ void main() {
             if (atlas != NO_TEXTURE && all(greaterThanEqual(vLightmapUv, vec2(0.0))))
                 diffuse = textureLod(sampler2D(textures[nonuniformEXT(atlas)], samplers[3]), vLightmapUv, 0.0).rgb * frame.fill.y;
         }
-        if (baked || !fullbright) {
+        bool toolFixed = (floatBitsToUint(push.p1.w) & 64u) != 0u;
+        if (toolFixed) {
+            diffuse = vec3(frame.fill.w); // Tool texture overlay: fixed brightness, no lighting.
+            colour = albedo * diffuse;
+        } else if (baked || !fullbright) {
             bool phong = (material.flags & MATERIAL_PHONG) != 0u;
             float exponent = material.phongParams.x;
             if (phong && material.phongExponentSlot != NO_TEXTURE)

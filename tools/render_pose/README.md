@@ -63,6 +63,10 @@ PY
 These compare complete rendered surfaces, including texture detail, reflections, self-illumination
 and material differences. They are not the probe's isolated lit/fullbright irradiance statistics.
 
+`--tool-fixed-brightness [VALUE]` (Lit/Baked) draws tools/* faces, normally hidden here, at a
+fixed linear brightness (default `render::kToolFixedBrightness` = 1) instead of lighting/lightmaps.
+See `docs/plans/probe-results/baked_tool_overlay_0_7_4.md`.
+
 ## Renderer API and live editor
 
 `LightmapAtlas::pack` preserves `BakeScene::faces` indices (the exact row order of `Baker::resolve`).

@@ -1750,6 +1750,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     if (sceneMode(options.mode)) list.shadowCasters.emplace();
     if (m.lightmaps) list.lightmap = m.lightmaps->slot();
     list.exposure = options.exposure;
+    if (options.toolFixedBrightness && sceneMode(options.mode)) list.toolBrightness = kToolFixedBrightness;
     list.ambientFill = options.ambientFill;
     list.aoStrength = options.aoStrength;
     list.aoRadius = options.aoRadius;
@@ -1852,6 +1853,8 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             // Wireframe keeps every edge: 2D views would otherwise lose the nodraw faces' outline.
             const MaterialState* state = material != m.materials.end() ? &material->second : nullptr;
             draw.skySurface = isSkyMaterial(batch.material, state && state->sky);
+            draw.toolFixed = list.toolBrightness > 0.0f &&
+                             (isToolFace(batch.material, state) || isNodraw(batch.material, state));
             const bool hideFill = (textured && m.brushOwner.contains(id) &&
                                    lower(entityText(*m.entities.at(m.brushOwner.at(id)).block, "classname")) == "parallax_obb") ||
                                   (options.mode != DisplayMode::Wireframe &&

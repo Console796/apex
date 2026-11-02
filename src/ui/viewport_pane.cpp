@@ -580,6 +580,7 @@ double PaneWindow::draw() {
     options.modelEdgeOverlay = !session_ || session_->modelEdgeOverlay();
     options.showEntities = vp->overlays.entityHelpers;
     options.showNodraw = vp->overlays.nodrawFaces;
+    options.toolFixedBrightness = vp->overlays.toolFixedBrightness;
     options.cullBackFaces = vp->overlays.backfaceCulling;
     if (vp->overlays.approxBounce) {
         options.ambientFill = 0.03f;
@@ -911,6 +912,7 @@ void PaneFrame::buildMenu() {
                                     {"Bounds", &viewport::Overlays::bounds},
                                     {"Normals", &viewport::Overlays::normals},
                                     {"Nodraw faces", &viewport::Overlays::nodrawFaces},
+                                    {"Tool textures: fixed brightness", &viewport::Overlays::toolFixedBrightness},
                                     {"Entity names", &viewport::Overlays::entityNames},
                                     {"Compile leak", &viewport::Overlays::leak},
                                     {"Compile portals", &viewport::Overlays::portals},

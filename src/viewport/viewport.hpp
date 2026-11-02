@@ -21,6 +21,7 @@ struct Overlays {
     bool portals = true;      // The compile's portals, when there are any.
     bool cordons = true;      // The map's cordon boxes (0.5 D7).
     bool backfaceCulling = true; // False draws the back of every face too (Textured, Flat, Lit).
+    bool toolFixedBrightness = false; // Lit/Baked: tool textures drawn at a fixed brightness, not lit or baked.
     bool approxBounce = true;    // Lit: constant ambient fill plus screen-space AO, a stand-in for bounce light.
 
     bool operator==(const Overlays&) const = default;

@@ -43,6 +43,7 @@ struct Options {
     lighting::BakerOptions bakeOptions{.bounces = 2};
     float bakeScale = render::kDefaultBakedScale;
     bool noSpecular = false;
+    float toolBrightness = 0.0f; // --tool-fixed-brightness; 0 = off.
     std::string mode = "lit";
     std::vector<Pose> poses;
 };
@@ -51,7 +52,7 @@ void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
                  "  [--fov 90] [--mode lit|textured|fullbright|baked] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.78]\n"
-                 "  [--no-specular]\n"
+                 "  [--no-specular] [--tool-fixed-brightness [VALUE]]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
                  "Poses are Source cl_showpos eye positions and QAngles; negative pitch looks up.\n"
@@ -64,6 +65,8 @@ void help() {
                  "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
                  "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 0.78).\n"
                  "--no-specular disables direct-light highlights for image comparisons in Lit or Baked.\n"
+                 "--tool-fixed-brightness [VALUE] shows tools/* faces (normally hidden here) at a fixed linear\n"
+                 "brightness in Lit or Baked instead of lighting (default VALUE 1, the Textured view's level).\n"
                  "--time N also renders each pose N more times after 3 warm-up frames and prints the mean frame\n"
                  "time (submit + wait, no readback) with the cluster and shadow-budget overflow counts.\n";
 }
@@ -96,7 +99,16 @@ Options parse(int argc, char** argv) {
                 throw std::runtime_error("Invalid count for " + flag);
             return static_cast<unsigned>(value);
         };
-        if (flag == "--bake-passes") o.bakePasses = count(1, 10000);
+        if (flag == "--tool-fixed-brightness") {
+            o.toolBrightness = render::kToolFixedBrightness;
+            if (i + 1 < argc && std::string_view(argv[i + 1]).substr(0, 2) != "--") {
+                const double value = number(next());
+                if (value <= 0 || value > std::numeric_limits<float>::max())
+                    throw std::runtime_error("--tool-fixed-brightness must be positive");
+                o.toolBrightness = static_cast<float>(value);
+            }
+        }
+        else if (flag == "--bake-passes") o.bakePasses = count(1, 10000);
         else if (flag == "--no-specular") o.noSpecular = true;
         else if (flag == "--bake-bounces") o.bakeOptions.bounces = count(0, 32);
         else if (flag == "--bake-bounce-rays") o.bakeOptions.bounceRays = count(1, 65536);
@@ -277,7 +289,8 @@ int run(const Options& o) {
             o.mode == "baked" ? render::DisplayMode::Baked : render::DisplayMode::Lit;
         options.showEntityHelpers = false;
         options.showNodraw = false;
-        options.showToolFaces = false; // The game draws no trigger, clip or hint faces.
+        options.showToolFaces = o.toolBrightness > 0.0f; // The game draws no trigger, clip or hint faces.
+        options.toolFixedBrightness = o.toolBrightness > 0.0f;
         options.modelEdgeOverlay = false;
         options.view.cameraPosition = camera.position;
         options.view.viewProjection = camera.projectionMatrix(double(o.width) / o.height) * camera.viewMatrix();
@@ -285,6 +298,7 @@ int run(const Options& o) {
         options.view.cameraUp = Vec3(camera.basis().up);
         auto list = mirror.buildDrawList(options);
         list.bakedScale = o.bakeScale;
+        if (list.toolBrightness > 0.0f) list.toolBrightness = o.toolBrightness;
         if (o.noSpecular) for (auto& light : list.lights) light.specularMode = 0;
         list.fullbright = o.mode == "fullbright";
         // Leave exposure at DrawList's default, as ViewportPane does.

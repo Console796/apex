@@ -1033,6 +1033,29 @@ TEST_CASE("mirror: showToolFaces hides tools fills except sky") {
     }
 }
 
+TEST_CASE("mirror: toolFixedBrightness flags tools faces in Lit and Baked only") {
+    REQUIRE_GPU();
+    Scene scene(*g, boxesDocument({{"test/red", {0, 0, 0, 32, 32, 32}},
+                                   {"tools/toolstrigger", {64, 0, 0, 96, 32, 32}},
+                                   {"tools/toolsnodraw", {128, 0, 0, 160, 32, 32}},
+                                   {"tools/toolsskybox", {192, 0, 0, 224, 32, 32}}}));
+    MirrorViewOptions options;
+    for (const auto mode : {DisplayMode::Lit, DisplayMode::Baked, DisplayMode::Textured}) {
+        options.mode = mode;
+        options.toolFixedBrightness = false;
+        auto list = scene.mirror.buildDrawList(options);
+        CHECK(list.toolBrightness == 0.0f);
+        for (const auto& mesh : list.meshes) CHECK_FALSE(mesh.toolFixed);
+        options.toolFixedBrightness = true;
+        list = scene.mirror.buildDrawList(options);
+        const bool scene3d = mode != DisplayMode::Textured;
+        CHECK(list.toolBrightness == (scene3d ? kToolFixedBrightness : 0.0f));
+        std::size_t flagged = 0;
+        for (const auto& mesh : list.meshes) flagged += mesh.toolFixed ? 1u : 0u;
+        CHECK(flagged == (scene3d ? 2u : 0u)); // Trigger and nodraw; the red box and sky are not tool overlays.
+    }
+}
+
 TEST_CASE("mirror: translucent and alpha-tested textures render through the pass") {
     REQUIRE_GPU();
     // Camera at x = -100 looking down +x; the red wall is behind a front box in the middle.

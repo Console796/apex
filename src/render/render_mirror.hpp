@@ -103,6 +103,9 @@ struct MirrorViewOptions {
     // False also omits every other tools/* face except sky (trigger, clip, hint, skip...), as
     // the game draws them: for captures compared against in-game screenshots. Same Wireframe rule.
     bool showToolFaces = true;
+    // Lit and Baked: shades tools/* faces (nodraw included when shown) at kToolFixedBrightness
+    // instead of lighting or lightmaps. Other modes ignore it.
+    bool toolFixedBrightness = false;
     // Culls the back of filled faces; wireframe always shows every edge.
     bool cullBackFaces = true;
     // Labels each point entity with its targetname (entities without one are skipped).
