@@ -28,14 +28,22 @@ double unit(std::uint64_t key) {
 Baker::Baker(BakeScene scene, BakerOptions options) : scene_(std::move(scene)), options_(options) {
     if (options.threads == 0 || options.skyRays == 0)
         throw std::invalid_argument("Baker: threads and skyRays must be positive");
+    if (options.bounces > 0 && options.bounceRays == 0)
+        throw std::invalid_argument("Baker: bounceRays must be positive");
     for (const auto& face : scene_.faces) {
         const auto dims = face.chart.dimensions;
         if (dims[0] <= 0 || dims[1] <= 0 || !std::isfinite(glm::length(face.normal)) ||
             std::abs(glm::length(face.normal) - 1.0) > 1e-6)
             throw std::invalid_argument("Baker: invalid chart dimensions or face normal");
+        if (options.bounces > 0)
+            for (int c = 0; c < 3; ++c)
+                if (!std::isfinite(face.albedo[c]) || face.albedo[c] < 0 || face.albedo[c] > 1)
+                    throw std::invalid_argument("Baker: albedo must be finite and in [0,1]");
         const auto count = static_cast<std::size_t>(dims[0]) * static_cast<std::size_t>(dims[1]);
         buffers_.push_back({dims, std::vector<Vec3>(count, Vec3{0}), std::vector<std::uint64_t>(count, 0)});
     }
+    bounceBuffers_.resize(options.bounces, buffers_);
+    passes_.resize(static_cast<std::size_t>(options.bounces) + 1);
 }
 
 double Baker::skyVisibility(DVec3 point, DVec3 normal, std::uint64_t key) const {
@@ -82,7 +90,74 @@ DVec3 Baker::sample(std::size_t faceIndex, std::size_t luxel) const {
     return sum;
 }
 
+DVec3 Baker::sampleBounce(unsigned level, std::size_t faceIndex, std::size_t luxel) const {
+    const auto& occlusion = scene_.occlusion;
+    if (!occlusion.accel || !occlusion.faceOf) return DVec3{0};
+    const auto& face = scene_.faces[faceIndex];
+    const auto count = buffers(level)[faceIndex].samples[luxel];
+    const auto& source = passes_[level].source;
+    const DVec2 coordinate{static_cast<double>(luxel % static_cast<std::size_t>(face.chart.dimensions[0])),
+                           static_cast<double>(luxel / static_cast<std::size_t>(face.chart.dimensions[0]))};
+    const auto tangent = glm::normalize(glm::cross(
+        std::abs(face.normal.z) < 0.9 ? DVec3{0, 0, 1} : DVec3{0, 1, 0}, face.normal));
+    const auto bitangent = glm::cross(face.normal, tangent);
+    constexpr std::array<DVec2, 4> offsets{DVec2{-0.5, -0.5}, DVec2{0.5, -0.5},
+                                         DVec2{-0.5, 0.5}, DVec2{0.5, 0.5}};
+    DVec3 sum{0};
+    for (std::size_t i = 0; i < offsets.size(); ++i) {
+        // Use the same float ray origin/direction to reconstruct the actual acceleration hit.
+        const Vec3 point(face.chart.worldAt(coordinate + offsets[i]) + face.normal);
+        const auto key = mix(mix(mix(mix(options_.seed) ^ faceIndex) ^ luxel) ^ level) ^ mix(count + i + 1);
+        const double rotation = unit(key);
+        for (unsigned ray = 0; ray < options_.bounceRays; ++ray) {
+            const double u = (static_cast<double>(ray) + unit(key ^ mix(ray + 1))) / options_.bounceRays;
+            const double radius = std::sqrt(u);
+            const double phi = 2 * std::numbers::pi * (rotation + ray * 0.6180339887498949);
+            const Vec3 direction(tangent * (radius * std::cos(phi)) +
+                                 bitangent * (radius * std::sin(phi)) + face.normal * std::sqrt(1 - u));
+            const auto hit = occlusion.accel->closest(point, direction, std::numeric_limits<float>::max());
+            if (!hit || (occlusion.isSky && occlusion.isSky(*hit))) continue;
+            const auto index = occlusion.faceOf(*hit);
+            if (!index) continue;
+            if (*index >= scene_.faces.size()) throw std::out_of_range("Baker: invalid faceOf index");
+            const auto& hitFace = scene_.faces[*index];
+            if (glm::dot(hitFace.normal, DVec3(direction)) >= 0) continue; // One-sided diffuse surface.
+            const DVec3 position = DVec3(point) + DVec3(direction) * static_cast<double>(hit->distance);
+            std::array<int, 2> st{};
+            for (int axis = 0; axis < 2; ++axis) {
+                const double local = glm::dot(position, hitFace.chart.worldToLuxel[axis]) +
+                                     hitFace.chart.offset[axis] - hitFace.chart.mins[axis];
+                st[axis] = static_cast<int>(std::round(std::clamp(local, 0.0,
+                    static_cast<double>(hitFace.chart.dimensions[axis] - 1))));
+            }
+            const auto sample = static_cast<std::size_t>(st[1]) *
+                                static_cast<std::size_t>(hitFace.chart.dimensions[0]) +
+                                static_cast<std::size_t>(st[0]);
+            // Lambertian albedo/pi and cosine/pi sampling cancel: a normalized mean of E * albedo.
+            // Unlike the calibrated direct/sky surfaceResponse, this transport conserves energy.
+            sum += DVec3(source[*index][sample]) * DVec3(hitFace.albedo) /
+                   static_cast<double>(options_.bounceRays);
+        }
+    }
+    return sum;
+}
+
 BakeStep Baker::step(std::size_t budget, std::span<const std::size_t> faces) {
+    return stepLevel(0, budget, faces);
+}
+
+BakeStep Baker::bounce(unsigned level, std::size_t budget, std::span<const std::size_t> faces) {
+    if (level == 0 || level > options_.bounces) throw std::out_of_range("Baker: invalid bounce level");
+    return stepLevel(level, budget, faces);
+}
+
+const std::vector<BakeBuffer>& Baker::buffers(unsigned level) const {
+    return level == 0 ? buffers_ : bounceBuffers_.at(level - 1);
+}
+
+BakeStep Baker::stepLevel(unsigned level, std::size_t budget, std::span<const std::size_t> faces) {
+    auto& pass = passes_[level];
+    auto& buffers = level == 0 ? buffers_ : bounceBuffers_[level - 1];
     std::vector<std::size_t> selected(faces.begin(), faces.end());
     if (faces.empty()) {
         selected.resize(scene_.faces.size());
@@ -94,24 +169,25 @@ BakeStep Baker::step(std::size_t budget, std::span<const std::size_t> faces) {
         std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
         throw std::invalid_argument("Baker::step: invalid face selection");
     if (budget == 0) return {0, selected.empty()};
-    if (selected != selection_ || passComplete_) {
-        selection_ = std::move(selected);
-        nextFace_ = nextLuxel_ = 0;
-        passComplete_ = false;
+    if (selected != pass.selection || pass.complete) {
+        if (level > 0) pass.source = resolveLevel(level - 1);
+        pass.selection = std::move(selected);
+        pass.nextFace = pass.nextLuxel = 0;
+        pass.complete = false;
     }
 
     struct Work { std::size_t face, begin, end; };
     std::vector<Work> work;
     BakeStep result;
-    auto nextFace = nextFace_, nextLuxel = nextLuxel_;
-    while (nextFace < selection_.size() && result.luxels < budget) {
-        const auto face = selection_[nextFace];
-        const auto count = std::min({std::size_t{32}, buffers_[face].samples.size() - nextLuxel,
+    auto nextFace = pass.nextFace, nextLuxel = pass.nextLuxel;
+    while (nextFace < pass.selection.size() && result.luxels < budget) {
+        const auto face = pass.selection[nextFace];
+        const auto count = std::min({std::size_t{32}, buffers[face].samples.size() - nextLuxel,
                                      budget - result.luxels});
         work.push_back({face, nextLuxel, nextLuxel + count});
         result.luxels += count;
         nextLuxel += count;
-        if (nextLuxel == buffers_[face].samples.size()) {
+        if (nextLuxel == buffers[face].samples.size()) {
             ++nextFace;
             nextLuxel = 0;
         }
@@ -125,9 +201,9 @@ BakeStep Baker::step(std::size_t budget, std::span<const std::size_t> faces) {
                 const auto index = next.fetch_add(1, std::memory_order_relaxed);
                 if (index >= work.size()) break;
                 const auto& item = work[index];
-                auto& buffer = buffers_[item.face];
+                auto& buffer = buffers[item.face];
                 for (auto luxel = item.begin; luxel < item.end; ++luxel) {
-                    const auto value = sample(item.face, luxel);
+                    const auto value = level == 0 ? sample(item.face, luxel) : sampleBounce(level, item.face, luxel);
                     buffer.radiance[luxel] += Vec3(value);
                     buffer.samples[luxel] += 4;
                 }
@@ -144,18 +220,29 @@ BakeStep Baker::step(std::size_t budget, std::span<const std::size_t> faces) {
         run();
     }
     if (error) std::rethrow_exception(error);
-    nextFace_ = nextFace;
-    nextLuxel_ = nextLuxel;
-    result.passComplete = passComplete_ = nextFace_ == selection_.size();
+    pass.nextFace = nextFace;
+    pass.nextLuxel = nextLuxel;
+    result.passComplete = pass.complete = pass.nextFace == pass.selection.size();
+    return result;
+}
+
+std::vector<std::vector<Vec3>> Baker::resolveLevel(unsigned level) const {
+    std::vector<std::vector<Vec3>> result;
+    for (const auto& buffer : buffers(level)) {
+        auto& face = result.emplace_back(buffer.radiance.size(), Vec3{0});
+        for (std::size_t i = 0; i < face.size(); ++i)
+            if (buffer.samples[i] > 0) face[i] = buffer.radiance[i] / static_cast<float>(buffer.samples[i]);
+    }
     return result;
 }
 
 std::vector<std::vector<Vec3>> Baker::resolve() const {
-    std::vector<std::vector<Vec3>> result;
-    for (const auto& buffer : buffers_) {
-        auto& face = result.emplace_back(buffer.radiance.size(), Vec3{0});
-        for (std::size_t i = 0; i < face.size(); ++i)
-            if (buffer.samples[i] > 0) face[i] = buffer.radiance[i] / static_cast<float>(buffer.samples[i]);
+    auto result = resolveLevel(0);
+    for (unsigned level = 1; level <= options_.bounces; ++level) {
+        const auto bounce = resolveLevel(level);
+        for (std::size_t face = 0; face < result.size(); ++face)
+            for (std::size_t luxel = 0; luxel < result[face].size(); ++luxel)
+                result[face][luxel] += bounce[face][luxel];
     }
     return result;
 }

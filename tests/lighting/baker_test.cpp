@@ -49,13 +49,16 @@ std::vector<Light> environment() {
 struct Casters {
     TriangleMesh mesh;
     std::vector<bool> sky;
+    std::vector<std::optional<std::size_t>> faces;
 
-    void quad(DVec3 a, DVec3 b, DVec3 c, DVec3 d, bool isSky = false) {
+    void quad(DVec3 a, DVec3 b, DVec3 c, DVec3 d, bool isSky = false,
+              std::optional<std::size_t> face = {}) {
         const auto base = static_cast<std::uint32_t>(mesh.positions.size());
         for (const auto p : {a, b, c, d})
             mesh.positions.push_back({static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)});
         mesh.indices.insert(mesh.indices.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
         sky.insert(sky.end(), {isSky, isSky});
+        faces.insert(faces.end(), {face, face});
     }
 
     void box(DVec3 lo, DVec3 hi, bool skyCeiling = false) {
@@ -77,7 +80,7 @@ struct Casters {
         return {std::shared_ptr<const CpuAccel>(std::move(*accel)), [flags = sky](const RayHit& hit) {
             CHECK(hit.customIndex == 7);
             return flags.at(hit.primitive);
-        }};
+        }, [indices = faces](const RayHit& hit) { return indices.at(hit.primitive); }};
     }
 };
 
@@ -100,6 +103,62 @@ DVec3 fourPoint(const BakeFace& face, std::size_t index, std::span<const Light> 
 std::size_t centre(const BakeFace& face) {
     return static_cast<std::size_t>(face.chart.dimensions[1] / 2 * face.chart.dimensions[0] +
                                     face.chart.dimensions[0] / 2);
+}
+
+BakeFace quadFace(DVec3 origin, DVec3 u, DVec3 v, DVec3 normal) {
+    const std::vector<DVec3> vertices{origin, origin + 128.0 * u,
+        origin + 128.0 * (u + v), origin + 128.0 * v};
+    geometry::Face face;
+    face.vertices = {0, 1, 2, 3};
+    face.plane = {normal, glm::dot(normal, origin)};
+    face.uv.uaxis = u;
+    face.uv.vaxis = v;
+    face.uv.shiftU = 7;
+    face.uv.shiftV = -11; // Exercise nonzero chart offsets and mins in hit-to-luxel lookup.
+    auto result = bakeFaces(face, vertices);
+    REQUIRE(result.size() == 1);
+    return std::move(result[0]);
+}
+
+Casters faceCasters(const BakeScene& scene) {
+    Casters result;
+    for (std::size_t i = 0; i < scene.faces.size(); ++i) {
+        const auto& v = scene.faces[i].vertices;
+        REQUIRE(v.size() == 4);
+        result.quad(v[0], v[1], v[2], v[3], false, i);
+    }
+    return result;
+}
+
+BakeScene bounceCorner(Vec3 albedo = Vec3{0.5f}, bool blocked = false) {
+    BakeScene scene;
+    scene.faces = {quadFace({-64, -64, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}),
+                   quadFace({64, -64, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0})};
+    scene.faces[0].albedo = albedo;
+    auto light = pointLight();
+    light.kind = LightKind::Spot;
+    light.origin = {-32, 0, 96};
+    light.direction = {0, 0, -1};
+    light.intensity = DVec3{30000};
+    light.stopdot = 0.98;
+    light.stopdot2 = 0.95; // The floor is lit; every wall sample lies outside the cone.
+    scene.lights = {light};
+    auto casters = faceCasters(scene);
+    if (blocked)
+        casters.quad({16, -1e4, -32}, {16, 1e4, -32}, {16, 1e4, 160}, {16, -1e4, 160});
+    scene.occlusion = casters.build();
+    return scene;
+}
+
+DVec3 mean(const std::vector<std::vector<Vec3>>& level) {
+    DVec3 sum{0};
+    std::size_t count = 0;
+    for (const auto& face : level)
+        for (const auto value : face) {
+            sum += DVec3(value);
+            ++count;
+        }
+    return sum / static_cast<double>(count);
 }
 
 } // namespace
@@ -264,6 +323,176 @@ TEST_CASE("baker: subset passes touch only selected faces and resume within budg
     Baker empty({});
     CHECK(empty.step().passComplete);
     CHECK(empty.resolve().empty());
+}
+
+TEST_CASE("baker: bounce is opt-in and direct accumulators stay bit-identical") {
+    const auto scene = bounceCorner();
+    Baker direct(scene);
+    Baker enabled(scene, {.bounces = 1});
+    for (int pass = 0; pass < 3; ++pass) {
+        direct.step();
+        enabled.step();
+    }
+    CHECK(direct.resolve() == enabled.resolve());
+    CHECK(direct.resolve() == direct.resolveLevel(0));
+    enabled.bounce(1);
+    CHECK(direct.resolve() == enabled.resolveLevel(0));
+    for (std::size_t f = 0; f < scene.faces.size(); ++f) {
+        CHECK(direct.buffers()[f].radiance == enabled.buffers()[f].radiance);
+        CHECK(direct.buffers()[f].samples == enabled.buffers()[f].samples);
+    }
+    CHECK_THROWS_AS(direct.bounce(1), std::out_of_range);
+    CHECK_THROWS_AS(enabled.bounce(0), std::out_of_range);
+    CHECK_THROWS_AS(enabled.resolveLevel(2), std::out_of_range);
+}
+
+TEST_CASE("baker: floor reflectivity scales and tints bounce onto an unlit wall") {
+    const auto bake = [](Vec3 albedo) {
+        Baker baker(bounceCorner(albedo), {.seed = 73, .bounces = 1, .bounceRays = 512});
+        baker.step();
+        for (const auto value : baker.resolveLevel(0)[1]) CHECK(value == Vec3{0});
+        baker.bounce(1);
+        return baker.resolveLevel(1)[1];
+    };
+    const auto black = bake(Vec3{0});
+    const auto quarter = bake(Vec3{0.25f});
+    const auto half = bake(Vec3{0.5f});
+    const auto red = bake({0.5f, 0, 0});
+    CHECK(std::ranges::any_of(half, [](Vec3 v) { return v.x > 0; }));
+    for (std::size_t i = 0; i < half.size(); ++i) {
+        CHECK(black[i] == Vec3{0});
+        CHECK(half[i] == quarter[i] * 2.0f);
+        CHECK(red[i] == Vec3{half[i].x, 0, 0});
+    }
+}
+
+TEST_CASE("baker: bounce respects first-hit occlusion, sky and unmapped geometry") {
+    auto scene = bounceCorner();
+    SUBCASE("unmapped occluder blocks floor to wall transport") { scene = bounceCorner(Vec3{0.5f}, true); }
+    SUBCASE("missing face callback contributes zero") { scene.occlusion.faceOf = {}; }
+    SUBCASE("unmapped hits contribute zero") {
+        scene.occlusion.faceOf = [](const RayHit&) { return std::optional<std::size_t>{}; };
+    }
+    SUBCASE("sky takes precedence over bake face mapping") {
+        scene.occlusion.isSky = [](const RayHit&) { return true; };
+    }
+    SUBCASE("no acceleration means no bounce") { scene.occlusion.accel.reset(); }
+    Baker baker(scene, {.bounces = 1, .bounceRays = 256});
+    baker.step();
+    baker.bounce(1);
+    for (const auto value : baker.resolveLevel(1)[1]) CHECK(value == Vec3{0});
+}
+
+TEST_CASE("baker: bounce snapshots and seeds agree across threads and budgets") {
+    const auto scene = bounceCorner();
+    Baker serial(scene, {.seed = 125, .threads = 1, .bounces = 2, .bounceRays = 128});
+    Baker parallel(scene, {.seed = 125, .threads = 3, .bounces = 2, .bounceRays = 128});
+    serial.step();
+    while (!parallel.step(7).passComplete) {}
+    for (unsigned level = 1; level <= 2; ++level) {
+        for (int pass = 0; pass < 3; ++pass) {
+            serial.bounce(level);
+            while (!parallel.bounce(level, 7).passComplete) {}
+        }
+        CHECK(serial.resolveLevel(level) == parallel.resolveLevel(level));
+    }
+    CHECK(serial.resolve() == parallel.resolve());
+    const auto direct = serial.resolveLevel(0), first = serial.resolveLevel(1), second = serial.resolveLevel(2);
+    const auto total = serial.resolve();
+    for (std::size_t f = 0; f < total.size(); ++f)
+        for (std::size_t i = 0; i < total[f].size(); ++i)
+            CHECK(total[f][i] == direct[f][i] + first[f][i] + second[f][i]);
+
+    // Mutating the upstream buffer between budget chunks must not alter this traversal's source.
+    Baker frozen(scene, {.seed = 125, .bounces = 1});
+    Baker updated(scene, {.seed = 125, .bounces = 1});
+    const std::array<std::size_t, 1> floor{0}, wall{1};
+    frozen.step(40, floor);
+    updated.step(40, floor);
+    updated.bounce(1, 3, wall);
+    updated.step(1000, floor);
+    while (!updated.bounce(1, 7, wall).passComplete) {}
+    frozen.bounce(1, 1000, wall);
+    CHECK(frozen.resolveLevel(1) == updated.resolveLevel(1));
+    updated.bounce(1, 1000, wall);
+    CHECK(mean(updated.resolveLevel(1)).x > mean(frozen.resolveLevel(1)).x);
+}
+
+TEST_CASE("baker: sealed-room successive bounce energy decreases with reflectivity") {
+    BakeScene scene;
+    scene.faces = {
+        quadFace({-64, -64, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}),
+        quadFace({-64, -64, 128}, {1, 0, 0}, {0, 1, 0}, {0, 0, -1}),
+        quadFace({-64, -64, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 0}),
+        quadFace({64, -64, 0}, {0, 1, 0}, {0, 0, 1}, {-1, 0, 0}),
+        quadFace({-64, -64, 0}, {1, 0, 0}, {0, 0, 1}, {0, 1, 0}),
+        quadFace({-64, 64, 0}, {1, 0, 0}, {0, 0, 1}, {0, -1, 0})};
+    constexpr float albedo = 0.5f;
+    for (auto& face : scene.faces) face.albedo = Vec3{albedo};
+    auto light = pointLight();
+    light.origin = {0, 0, 64};
+    scene.lights = {light};
+    scene.occlusion = faceCasters(scene).build();
+    Baker baker(scene, {.seed = 911, .bounces = 2, .bounceRays = 512});
+    baker.step();
+    baker.bounce(1);
+    baker.bounce(2);
+    auto previous = baker.resolveLevel(0);
+    for (unsigned level = 1; level <= 2; ++level) {
+        const auto current = baker.resolveLevel(level);
+        const auto before = mean(previous), after = mean(current);
+        CHECK(after.x > 0);
+        for (int c = 0; c < 3; ++c) {
+            CHECK(after[c] <= before[c] * albedo * 1.1); // Finite chart/sample boundary noise.
+            float maximum = 0;
+            for (const auto& face : previous)
+                for (const auto value : face) maximum = std::max(maximum, value[c]);
+            for (const auto& face : current)
+                for (const auto value : face) {
+                    CHECK(std::isfinite(value[c]));
+                    CHECK(value[c] >= 0.0f);
+                    CHECK(value[c] <= maximum * albedo + 1e-5f);
+                }
+        }
+        previous = current;
+    }
+}
+
+TEST_CASE("baker: bounce subset passes touch only selected faces and resume within budget") {
+    Baker baker(bounceCorner(), {.bounces = 1});
+    baker.step();
+    const std::array<std::size_t, 1> subset{1};
+    CHECK(baker.bounce(1, 0, subset).luxels == 0);
+    CHECK(baker.bounce(1, 3, subset).luxels == 3);
+    CHECK(std::count(baker.buffers(1)[1].samples.begin(), baker.buffers(1)[1].samples.end(), 4) == 3);
+    const auto rest = baker.bounce(1, 1000, subset);
+    CHECK(rest.passComplete);
+    CHECK(rest.luxels == baker.buffers(1)[1].samples.size() - 3);
+    for (const auto count : baker.buffers(1)[0].samples) CHECK(count == 0);
+    for (const auto value : baker.resolveLevel(1)[0]) CHECK(value == Vec3{0});
+    for (const auto count : baker.buffers(1)[1].samples) CHECK(count == 4);
+    const std::array<std::size_t, 2> duplicate{1, 1};
+    const std::array<std::size_t, 1> invalid{2};
+    CHECK_THROWS_AS(baker.bounce(1, 1, duplicate), std::invalid_argument);
+    CHECK_THROWS_AS(baker.bounce(1, 1, invalid), std::invalid_argument);
+    baker.bounce(1, 1000, subset);
+    for (const auto count : baker.buffers(1)[1].samples) CHECK(count == 8);
+    baker.bounce(1);
+    for (const auto count : baker.buffers(1)[0].samples) CHECK(count == 4);
+    for (const auto count : baker.buffers(1)[1].samples) CHECK(count == 12);
+    Baker empty({}, {.bounces = 1});
+    CHECK(empty.bounce(1).passComplete);
+    CHECK(empty.resolveLevel(1).empty());
+}
+
+TEST_CASE("baker: bounce validates reflectivity and ray counts") {
+    auto scene = bounceCorner();
+    CHECK_THROWS_AS(Baker(scene, {.bounces = 1, .bounceRays = 0}), std::invalid_argument);
+    for (const auto invalid : {-0.1f, 1.1f, std::numeric_limits<float>::infinity(),
+                               std::numeric_limits<float>::quiet_NaN()}) {
+        scene.faces[0].albedo.x = invalid;
+        CHECK_THROWS_AS(Baker(scene, {.bounces = 1}), std::invalid_argument);
+    }
 }
 
 TEST_CASE("baker: document adapter charts brush sides and filters compile materials and displacement") {

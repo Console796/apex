@@ -13,7 +13,7 @@ namespace apex::lighting {
 
 struct BakeMaterial {
     bool sky = false, nodraw = false, noLight = false;
-    Vec3 albedo{0.5f}; // Placeholder reflectivity for later bounce; unused by direct lighting.
+    Vec3 albedo{0.5f}; // Linear RGB reflectivity in [0,1]; unused by direct lighting.
 };
 
 struct BakeFace {
@@ -31,6 +31,9 @@ struct BakeOcclusion {
     std::shared_ptr<const CpuAccel> accel;
     // First-hit classification, including primitive for mixed-material instances. Called concurrently.
     std::function<bool(const RayHit&)> isSky;
+    // Optional hit-to-BakeScene::faces mapping, including chart fragments. Concurrent read-only.
+    // Unmapped hits (props/non-bake geometry) still occlude but contribute no bounce radiance.
+    std::function<std::optional<std::size_t>(const RayHit&)> faceOf;
 
     bool reachesSky(DVec3 point, DVec3 direction) const;
     bool visible(DVec3 point, DVec3 endpoint) const;
@@ -49,9 +52,12 @@ std::vector<BakeFace> bakeFaces(const geometry::Face& face, std::span<const DVec
 
 // Unexpanded document snapshot, using the same solidGeometry as the render mirror. Sky/nodraw name
 // fallbacks always apply; the optional lookup supplies compiled VMT flags (including NOLIGHT) and
-// albedo without an assets-layer dependency. Displacement sides are omitted. Invalid solids fail.
+// albedo without an assets-layer dependency; the caller fills albedo from Texture::reflectivity
+// (linear). Displacement sides are omitted. Invalid solids fail.
 // The caller supplies the caster snapshot (world/func_detail, nodraw included, clip/trigger excluded)
-// and its sky classifier. This adapter does not build casters, expand instances or bake props.
+// and its sky classifier. For bounce, also supply faceOf matching the returned faces (solidId/sideId
+// identify source sides; subdivided sides need primitive-to-fragment mapping). This adapter does
+// not build casters, expand instances or bake props.
 // Optional FGD classes supply compile defaults to lightsFromEntity; entity targets are resolved.
 Result<BakeScene> bakeSceneFromDocument(
     const document::Document& document, BakeOcclusion occlusion,
