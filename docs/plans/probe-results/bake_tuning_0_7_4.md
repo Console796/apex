@@ -22,3 +22,10 @@ energy the earlier fit had folded into the scale.
 The baked branch of `brush_textured.frag.glsl` now runs the Lit light loop for specular only (same
 shadows), adds it to lightmap diffuse and keeps envmap/self-illumination. `apex_render_pose --no-specular`
 disables highlights for image comparisons. Verified on llvmpipe only; not checked on the RX 6600.
+
+## Display scale recalibration (rendered view)
+
+The 0.78 fit was taken in lightmap space. In the rendered view (set 2 poses 1 and 2, 960x540, 32 passes,
+4 bounces, 64 bounce rays, HUD not masked) Baked at 0.78 read about 1.27x the game. `kDefaultBakedScale` is now
+0.62; the same poses read 1.03x and 1.01x the game (mean linear luminance). Display only: accumulation is
+unchanged.

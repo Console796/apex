@@ -33,7 +33,7 @@ enum class DisplayMode { Textured, Flat, Wireframe, Lit, Baked };
 // Tool-texture overlay brightness: linear irradiance on screen (post-exposure), so 1 shows a tool
 // texture's albedo exactly as the unlit Textured view does. See baked_tool_overlay_0_7_4.md.
 inline constexpr float kToolFixedBrightness = 1.0f;
-inline constexpr float kDefaultBakedScale = 0.78f; // Set-2 rendered appearance fit; see bake_tuning_0_7_4.md.
+inline constexpr float kDefaultBakedScale = 0.62f; // Set-2 rendered-view fit (0.78 read 1.27x game); see bake_tuning_0_7_4.md.
 
 constexpr bool sceneMode(DisplayMode mode) { return mode == DisplayMode::Lit || mode == DisplayMode::Baked; }
 

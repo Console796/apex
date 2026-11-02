@@ -52,7 +52,7 @@ struct Options {
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
                  "  [--fov 90] [--mode lit|textured|fullbright|baked] [--cubemaps DIR] [--time N]\n"
-                 "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.78]\n"
+                 "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.62]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
@@ -64,7 +64,7 @@ void help() {
                  "origin rounded to integers as VBSP names them (e.g. files extracted from a compiled BSP's\n"
                  "pakfile). Prints one line per probe with the file used, or \"default\" for the default cube.\n"
                  "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
-                 "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 0.78).\n"
+                 "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 0.62).\n"
                  "--instances mirror|expanded (Baked only): mirror (default) bakes an expanded copy and draws the\n"
                  "instances through the viewport's own instance path, as the editor does; expanded collapses the\n"
                  "instances into the document first and draws that.\n"
