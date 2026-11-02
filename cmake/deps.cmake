@@ -81,6 +81,25 @@ CPMAddPackage(
 target_include_directories(VulkanMemoryAllocator SYSTEM INTERFACE
                            "${VulkanMemoryAllocator_SOURCE_DIR}/include")
 
+# Embree v4.4.1 (0.7.3, D3): CPU ray tracing for the baker's fallback when VK_KHR_ray_query is absent.
+# Static, internal tasking (no TBB), no ISPC, no tutorials.
+set(EMBREE_STATIC_LIB ON CACHE BOOL "" FORCE)
+set(EMBREE_ISPC_SUPPORT OFF CACHE BOOL "" FORCE)
+set(EMBREE_TASKING_SYSTEM INTERNAL CACHE STRING "" FORCE)
+set(EMBREE_TUTORIALS OFF CACHE BOOL "" FORCE)
+set(EMBREE_INSTALL_DEPENDENCIES OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_CURVE OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_POINT OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_SUBDIVISION OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_USER OFF CACHE BOOL "" FORCE)
+set(EMBREE_GEOMETRY_GRID OFF CACHE BOOL "" FORCE)
+set(EMBREE_MAX_ISA AVX2 CACHE STRING "" FORCE)
+CPMAddPackage(
+  NAME embree
+  GITHUB_REPOSITORY RenderKit/embree
+  GIT_TAG f590db83ef6559387df7f6d8725c34fb7acf851d
+)
+
 if(APEX_BUILD_APP)
   # Qt Multimedia (qt6-multimedia-dev) is required by apex_ui (root CMakeLists.txt).
   # Qt GuiPrivate (qt6-base-private-dev) for Wayland pointer lock. Qt-ADS was dropped in 0.2.12:
