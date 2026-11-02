@@ -23,6 +23,14 @@ std::string text(const kv1::Node& node, std::string_view key) {
     const auto* value = node.find(key);
     return value ? value->decodedValue().value_or("") : "";
 }
+// Brush entity classes whose faces VBSP gives no lightmap: they compile to tool volumes or portals, never
+// to drawn surfaces. Every other brush entity (func_detail, func_brush, func_door, func_illusionary...)
+// is lit by VRAD with its own lightmap at its authored position; whether it casts is bake_casters' rule.
+bool lightmapped(const std::string& cls) {
+    return !cls.starts_with("trigger_") && cls != "func_areaportal" && cls != "func_areaportalwindow" &&
+           cls != "func_occluder" && cls != "func_viscluster" && cls != "func_clip_vphysics" &&
+           cls != "func_precipitation";
+}
 }
 BakeSetup setupBake(const document::Document& doc, const assets::Vfs* vfs) {
     std::map<std::string, BakeMaterial> materials;
@@ -75,7 +83,7 @@ BakeSetup setupBake(const document::Document& doc, const assets::Vfs* vfs) {
         if (std::holds_alternative<Handle<document::Entity>>(handle)) {
             entities.insert(id);
             const auto cls = toLowerAscii(text(*node->block, "classname"));
-            eligible = cls == "worldspawn" || cls == "func_detail";
+            eligible = lightmapped(cls);
         }
         if (eligible && std::holds_alternative<Handle<document::Solid>>(handle)) solids.insert(id);
         for (const auto child : node->children) self(self, child, eligible);

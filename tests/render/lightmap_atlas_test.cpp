@@ -9,6 +9,8 @@
 #include "../geometry/fixtures.hpp"
 
 #include <doctest/doctest.h>
+#include <map>
+#include <set>
 
 using namespace apex;
 using namespace apex::render;
@@ -250,4 +252,91 @@ TEST_CASE("lightmap atlas: plain faces' keys equal lighting::faceKeys") {
     auto atlas = LightmapAtlas::pack(faces);
     REQUIRE(atlas);
     CHECK(atlas->faceKeys() == lighting::faceKeys(atlas->faces));
+}
+
+namespace {
+// worldspawn plus brush entities of the given classes, one 64-unit box each, under one point light.
+// A `nolight` material has no VMT here, so the name-based tools/ fallback stands in for NOLIGHT.
+struct BrushEntityFixture {
+    document::Document doc{[] {
+        auto parsed = vmf::parse(R"(world { id 1 classname worldspawn }
+            entity { id 2 classname light origin "0 0 300" _light "255 255 255 20000" })");
+        REQUIRE(parsed);
+        return std::move(*parsed);
+    }()};
+    std::map<std::string, document::NodeId> solidOf;
+    document::NodeId add(const std::string& cls, const std::string& material, double x) {
+        auto entity = kv1::Node::block("entity");
+        entity.append(kv1::Node::value("classname", cls)).value();
+        auto tx = doc.begin("add " + cls);
+        const auto owner = tx.create(std::move(entity));
+        const auto solid = tx.create(geometry::solidBlock(geometry_test::build(geometry_test::boxSides({x, 0, 0}, {x + 64, 64, 64})),
+                                                        {material}), owner);
+        tx.commit();
+        const auto id = doc.get(solid)->id;
+        solidOf[cls] = id;
+        return id;
+    }
+    std::size_t fragmentsOf(const BakeSetup& setup, document::NodeId solid) const {
+        return std::ranges::count(setup.scene.faces, std::uint64_t(solid), &lighting::BakeFace::solidId);
+    }
+};
+}
+
+TEST_CASE("bake setup: lightmapped brush entities get faces and atlas slots, tool volumes do not") {
+    BrushEntityFixture f;
+    f.add("func_detail", "brick/test", 0);
+    f.add("func_brush", "brick/test", 128);
+    f.add("func_illusionary", "brick/test", 256);
+    f.add("func_door", "brick/test", 384);
+    f.add("trigger_multiple", "brick/test", 512);
+    f.add("func_areaportal", "brick/test", 640);
+    f.add("func_wall", "tools/toolsnolight", 768);
+    const auto setup = setupBake(f.doc, nullptr);
+    auto atlas = LightmapAtlas::pack(setup.scene.faces);
+    REQUIRE(atlas);
+    for (const auto* cls : {"func_detail", "func_brush", "func_illusionary", "func_door"}) {
+        CAPTURE(cls);
+        const auto solid = f.solidOf.at(cls);
+        CHECK(f.fragmentsOf(setup, solid) >= 6);
+        std::set<std::uint32_t> sides;
+        for (const auto& face : setup.scene.faces) if (face.solidId == solid) sides.insert(face.sideId);
+        CHECK(sides.size() == 6);
+        for (const auto side : sides) CHECK(atlas->fragments.contains({solid, side}));
+    }
+    for (const auto* cls : {"trigger_multiple", "func_areaportal", "func_wall"}) {
+        CAPTURE(cls);
+        CHECK(f.fragmentsOf(setup, f.solidOf.at(cls)) == 0); // Unmapped, as before.
+    }
+}
+
+TEST_CASE("bake setup: brush-entity face keys are stable across an unrelated edit") {
+    BrushEntityFixture f;
+    const auto solid = f.add("func_brush", "brick/test", 0);
+    const auto keysOf = [&] {
+        const auto setup = setupBake(f.doc, nullptr);
+        auto atlas = LightmapAtlas::pack(setup.scene.faces);
+        REQUIRE(atlas);
+        std::set<lighting::FaceKey> mine;
+        const auto keys = atlas->faceKeys();
+        for (std::size_t i = 0; i < keys.size(); ++i)
+            if (atlas->faces[i].solidId == solid) mine.insert(keys[i]);
+        return mine;
+    };
+    const auto before = keysOf();
+    CHECK(before.size() >= 6);
+    f.add("func_door", "brick/test", 512); // Unrelated: a new entity and solid.
+    CHECK(keysOf() == before);
+}
+
+TEST_CASE("bake setup: a brush entity is lit but does not cast") {
+    BrushEntityFixture f;
+    f.add("func_brush", "brick/test", 0);
+    const auto setup = setupBake(f.doc, nullptr);
+    REQUIRE_FALSE(setup.scene.faces.empty());
+    // Only the entity box is in the map, and it is not a caster: a segment through it is unoccluded.
+    CHECK(setup.scene.occlusion.visible({-10, 32, 32}, {74, 32, 32}));
+    lighting::Baker baker(setup.scene);
+    baker.step();
+    CHECK(baker.resolve().size() == setup.scene.faces.size());
 }
