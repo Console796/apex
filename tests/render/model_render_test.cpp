@@ -6,6 +6,7 @@
 #include "shared_context.hpp"
 #include "render/render_mirror.hpp"
 #include "render/scene_target.hpp"
+#include "render/scene_accel.hpp"
 #include "lighting/normal_map.hpp"
 #include "render/view_math.hpp"
 #include "render/model_thumbnail_scheduler.hpp"
@@ -739,6 +740,7 @@ TEST_CASE("model mirror: only explicit compile-time prop models cast shadows") {
     RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, &classes, fixture.models.get());
     mirror.rebuild(doc); REQUIRE(mirror.settle());
     auto options = view(); options.mode = DisplayMode::Lit;
+    SceneAccel accel(context);
     const auto check = [&](std::size_t expectedCasters) {
         const auto list = mirror.buildDrawList(options);
         std::size_t drawn = 0, casting = 0;
@@ -747,6 +749,12 @@ TEST_CASE("model mirror: only explicit compile-time prop models cast shadows") {
         for (const auto& mesh : *list.shadowCasters) casting += mesh.instanceCount;
         CHECK(drawn == 6);
         CHECK(casting == expectedCasters);
+        REQUIRE(accel.sync(*list.shadowCasters, list.previews));
+        CHECK(accel.instanceCount() == casting);
+        std::size_t triangles = 0;
+        for (const auto& mesh : *list.shadowCasters) triangles += mesh.indexCount / 3 * mesh.instanceCount;
+        CHECK(accel.triangleCount() == triangles);
+        CHECK(accel.blasCount() == 1); // The two casting props share their uploaded model range.
     };
     check(1);
     auto model = doc.begin("replace helper with explicit model");

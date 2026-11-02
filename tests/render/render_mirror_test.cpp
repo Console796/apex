@@ -7,6 +7,7 @@
 #include "render/scene_target.hpp"
 #include "render/renderer.hpp"
 #include "render/solid_mesh.hpp"
+#include "render/scene_accel.hpp"
 #include "render/texture_heap.hpp"
 #include "render/view_math.hpp"
 #include "editor/preview.hpp"
@@ -2610,6 +2611,10 @@ TEST_CASE("mirror: shadow casters keep nodraw and detail but omit noncompile and
     auto list = scene.mirror.buildDrawList(options);
     REQUIRE(list.shadowCasters);
     CHECK(list.shadowCasters->size() == 3);
+    SceneAccel accel(g->context);
+    REQUIRE(accel.rebuild(*list.shadowCasters, list.previews));
+    CHECK(accel.instanceCount() == 3);
+    CHECK(accel.triangleCount() == 36); // All faces of the three boxes, including nodraw.
     const auto solid = findSolid(*scene.doc, "test/red");
     REQUIRE(solid);
     const auto hidden = kv1::parse("hidden {}");
@@ -2622,6 +2627,9 @@ TEST_CASE("mirror: shadow casters keep nodraw and detail but omit noncompile and
     list = scene.mirror.buildDrawList(options);
     REQUIRE(list.shadowCasters);
     CHECK(list.shadowCasters->size() == 2);
+    REQUIRE(accel.sync(*list.shadowCasters, list.previews) == SceneAccelChange::Rebuilt);
+    CHECK(accel.instanceCount() == 2);
+    CHECK(accel.triangleCount() == 24);
     REQUIRE(scene.doc->undo());
     REQUIRE(scene.mirror.settle());
     CHECK(scene.mirror.buildDrawList(options).shadowCasters->size() == 3);

@@ -12,7 +12,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
-               lighting/light_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp lighting/charting_test.cpp
+               lighting/light_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp lighting/charting_test.cpp lighting/cpu_accel_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
@@ -23,7 +23,7 @@ editor/cordon_test.cpp editor/compile_snapshot_test.cpp editor/diagnostic_lookup
                editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/hide_corpus_test.cpp editor/history_property_test.cpp editor/work_plane_test.cpp
                editor/transform_test.cpp editor/vector_key_test.cpp editor/preview_test.cpp editor/preview_geometry_test.cpp
                editor/gizmo_test.cpp editor/modal_transform_test.cpp editor/session_transform_test.cpp editor/clipboard_test.cpp editor/clipboard_corpus_test.cpp editor/prefab_test.cpp editor/asset_report_test.cpp editor/map_problems_test.cpp editor/entity_report_test.cpp editor/find_replace_test.cpp
-               render/cluster_test.cpp render/shadow_test.cpp render/view_math_test.cpp render/helper_shapes_test.cpp render/context_test.cpp render/rayquery_test.cpp render/renderer_test.cpp render/scene_target_test.cpp render/render_mirror_test.cpp
+               render/cluster_test.cpp render/shadow_test.cpp render/view_math_test.cpp render/helper_shapes_test.cpp render/context_test.cpp render/rayquery_test.cpp render/scene_accel_test.cpp render/renderer_test.cpp render/scene_target_test.cpp render/render_mirror_test.cpp
                ../src/ui/model_pick.cpp render/model_render_test.cpp render/model_thumbnail_test.cpp render/p0_point_data_test.cpp render/preview_overlay_test.cpp
                viewport/pick_math_test.cpp viewport/viewport_test.cpp viewport/layout_test.cpp viewport/map_views_test.cpp viewport/workspace_test.cpp)
 target_link_libraries(apex_tests PRIVATE apex_compile apex_viewport apex_render apex_assets sourcepp::vpkpp sourcepp::steampp
@@ -41,7 +41,7 @@ doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
-add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp)
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp)
 target_link_libraries(apex_measure_tests PRIVATE apex_render apex_editor apex_assets sourcepp::vpkpp sourcepp::steampp apex_warnings doctest::doctest)
 doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")

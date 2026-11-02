@@ -7,7 +7,7 @@ layout(local_size_x = 1) in;
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 
 struct Ray { vec4 origin; vec4 direction; uvec4 options; };
-struct Hit { uint hit; float distance; uint customIndex; uint padding; };
+struct Hit { uint hit; float distance; uint customIndex; uint primitive; };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Rays { Ray values[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) writeonly buffer Hits { Hit values[]; };
 layout(push_constant) uniform Probe { uvec2 rays; uvec2 hits; } probe;
@@ -22,5 +22,6 @@ void main() {
     bool hit = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionTriangleEXT;
     Hits(probe.hits).values[i] = Hit(hit ? 1u : 0u,
         hit ? rayQueryGetIntersectionTEXT(query, true) : -1.0,
-        hit ? rayQueryGetIntersectionInstanceCustomIndexEXT(query, true) : 0xFFFFFFFFu, 0u);
+        hit ? rayQueryGetIntersectionInstanceCustomIndexEXT(query, true) : 0xFFFFFFFFu,
+        hit ? rayQueryGetIntersectionPrimitiveIndexEXT(query, true) : 0xFFFFFFFFu);
 }

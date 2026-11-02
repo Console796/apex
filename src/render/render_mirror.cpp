@@ -5,6 +5,7 @@
 #include "assets/model_pose.hpp"
 #include "document/entity_transform.hpp"
 #include "geometry/solid_geometry.hpp"
+#include "lighting/cpu_accel.hpp"
 #include "render/helper_shapes.hpp"
 #include "render/solid_mesh.hpp"
 
@@ -68,11 +69,22 @@ Vec4 flatColour(const std::string& material) {
     return {channel(0), channel(8), channel(16), 1.0f};
 }
 
+std::shared_ptr<const lighting::TriangleMesh> retainMesh(std::span<const BrushVertex> vertices,
+                                                       std::span<const std::uint32_t> indices) {
+    auto mesh = std::make_shared<lighting::TriangleMesh>();
+    mesh->positions.reserve(vertices.size());
+    for (const auto& vertex : vertices)
+        mesh->positions.push_back({vertex.position[0], vertex.position[1], vertex.position[2]});
+    mesh->indices.assign(indices.begin(), indices.end());
+    return mesh;
+}
+
 struct GpuBatch {
     std::string material;
     Buffer vertices, indices, edges;
     std::uint32_t indexCount = 0, edgeCount = 0;
     std::vector<FaceRange> faces;
+    std::shared_ptr<const lighting::TriangleMesh> cpuMesh;
 };
 
 struct SolidState {
@@ -95,6 +107,7 @@ struct ModelMesh {
     std::shared_ptr<const assets::ModelData> data;
     Buffer vertices, indices, edges;
     std::map<std::int32_t, std::string> materials;
+    std::shared_ptr<const lighting::TriangleMesh> cpuMesh;
 };
 
 constexpr float kSpriteHalfSize = 8.0f; // World units; Hammer draws icons about 16 across.
@@ -690,6 +703,7 @@ struct RenderMirror::Impl {
             gpu.edges = std::move(*edges);
             gpu.indexCount = static_cast<std::uint32_t>(batch.indices.size());
             gpu.edgeCount = static_cast<std::uint32_t>(batch.edges.size());
+            gpu.cpuMesh = retainMesh(batch.vertices, batch.indices);
             solid.batches.push_back(std::move(gpu));
         }
         solid.meshed = true;
@@ -1154,6 +1168,7 @@ struct RenderMirror::Impl {
             mesh.vertices = std::move(*vb);
             mesh.indices = std::move(*ib);
             mesh.edges = std::move(*eb);
+            mesh.cpuMesh = retainMesh(vertices, data->indices);
             mesh.data = std::move(data);
             if (errorSlot == kCheckerboardSlot && mesh.data == modelCache->errorModel()) {
                 const std::array<std::byte, 16> pixels = {
@@ -1809,6 +1824,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         for (const GpuBatch& batch : solid.batches) {
             MeshDraw draw;
             draw.vertices = &batch.vertices;
+            draw.cpuMesh = batch.cpuMesh;
             draw.indices = &batch.indices;
             draw.indexCount = batch.indexCount;
             draw.edgeIndices = &batch.edges;
@@ -1914,6 +1930,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         for (const auto& batch : state.mesh.batches) {
             MeshDraw draw;
             draw.vertices = &batch.vertices;
+            draw.cpuMesh = batch.cpuMesh;
             draw.indices = &batch.indices;
             draw.indexCount = batch.indexCount;
             draw.edgeIndices = &batch.edges;
@@ -2065,6 +2082,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 if (range.indexCount == 0) continue;
                 MeshDraw draw;
                 draw.vertices = &mesh.vertices;
+                draw.cpuMesh = mesh.cpuMesh;
                 draw.indices = &mesh.indices;
                 draw.edgeIndices = &mesh.edges;
                 draw.firstIndex = range.firstIndex;

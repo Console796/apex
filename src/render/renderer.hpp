@@ -25,6 +25,8 @@
 #include <string>
 #include <vector>
 
+namespace apex::lighting { struct TriangleMesh; }
+
 namespace apex::render {
 
 enum class DisplayMode { Textured, Flat, Wireframe, Lit };
@@ -92,6 +94,7 @@ struct MeshDraw {
     std::optional<DVec3> reflectionPoint; // Brush-side centre; models use the fragment.
     bool edgeOverlay = true;          // False skips this mesh in the Textured/Lit/Flat edge overlay pass.
     AABB bounds;                      // Draw-local (vertex space); culls shadow casters. Empty always casts.
+    std::shared_ptr<const lighting::TriangleMesh> cpuMesh; // Same geometry as the uploaded buffers.
 };
 
 struct BoxDraw {
