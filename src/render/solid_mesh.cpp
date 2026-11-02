@@ -21,6 +21,37 @@ std::unexpected<Error> fail(std::string message) {
     return std::unexpected(Error{ErrorCode::ParseError, std::move(message)});
 }
 
+double loopArea(std::span<const DVec3> loop) {
+    DVec3 sum{0.0};
+    for (std::size_t i = 1; i + 1 < loop.size(); ++i) sum += glm::cross(loop[i] - loop[0], loop[i + 1] - loop[0]);
+    return 0.5 * glm::length(sum);
+}
+
+// A placed face cannot be compared chart-for-chart: the baker charted the rotated plane. The baked
+// fragments must instead lie on the face moved by the bake's transform and cover its area.
+bool placedMatch(const geometry::Face& face, const geometry::ConvexPolyhedron& poly, const LightmapAtlas& atlas,
+                 std::span<const std::size_t> fragments, const DMat4& toWorld) {
+    std::vector<DVec3> loop;
+    AABB bounds;
+    for (const auto index : face.vertices) {
+        loop.push_back(DVec3(toWorld * DVec4(poly.vertices[index], 1.0)));
+        bounds.expand(loop.back());
+    }
+    const auto normal = glm::normalize(DMat3(toWorld) * face.plane.normal);
+    constexpr double kTolerance = 0.05;
+    double area = 0.0;
+    for (const auto fragment : fragments) {
+        const auto& vertices = atlas.faces[fragment].vertices;
+        for (const auto& p : vertices)
+            if (std::abs(glm::dot(normal, p - loop[0])) > kTolerance ||
+                glm::any(glm::lessThan(p, bounds.min - kTolerance)) ||
+                glm::any(glm::greaterThan(p, bounds.max + kTolerance))) return false;
+        area += loopArea(vertices);
+    }
+    const auto expected = loopArea(loop);
+    return std::abs(area - expected) <= 0.01 * expected + kTolerance;
+}
+
 } // namespace
 
 std::vector<std::string> solidMaterials(const kv1::Node& solidBlock) {
@@ -35,10 +66,19 @@ std::vector<std::string> solidMaterials(const kv1::Node& solidBlock) {
 
 Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
                             const std::function<TextureSize(std::string_view)>& sizeOf,
-                            const LightmapAtlas* lightmaps, std::uint64_t solidId) {
+                            const LightmapAtlas* lightmaps, std::uint64_t solidId,
+                            const LightmapPlacement* placement) {
     auto geometry = geometry::solidGeometry(solidBlock);
     if (!geometry) return std::unexpected(geometry.error());
-    auto mesh = meshSolid(geometry->poly, sizeOf, lightmaps, solidId);
+    const document::InstanceSolidOrigin* origin = nullptr;
+    if (placement) {
+        // A placed template solid without baked sides (props, other entities) stays unmapped.
+        const auto* id = solidBlock.find("id");
+        const auto found = id ? placement->find(int(id->asInt().value_or(0))) : placement->end();
+        if (found == placement->end()) lightmaps = nullptr;
+        else origin = &found->second;
+    }
+    auto mesh = meshSolid(geometry->poly, sizeOf, lightmaps, solidId, origin);
     if (!mesh) return mesh;
     std::set<document::SideId> displacements;
     for (const auto* side : solidBlock.findAll("side"))
@@ -51,7 +91,8 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
 
 Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                             const std::function<TextureSize(std::string_view)>& sizeOf,
-                            const LightmapAtlas* lightmaps, std::uint64_t solidId) {
+                            const LightmapAtlas* lightmaps, std::uint64_t solidId,
+                            const document::InstanceSolidOrigin* origin) {
     const auto problems = poly.validate();
     if (!problems.empty()) return fail(problems.front().message);
     const auto* polyhedron = &poly;
@@ -68,10 +109,18 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
         BatchMesh& batch = mesh.batches[it->second];
         const TextureSize size = sizeOf(it->first);
         std::vector<std::size_t> fragments;
-        if (lightmaps) if (const auto found = lightmaps->fragments.find({solidId, face.sideId});
+        std::pair<std::uint64_t, std::uint32_t> key{solidId, face.sideId};
+        if (origin) {
+            const auto side = origin->sides.find(int(face.sideId));
+            key = side == origin->sides.end() ? std::pair<std::uint64_t, std::uint32_t>{0, 0} :
+                std::pair<std::uint64_t, std::uint32_t>{origin->solid, side->second};
+        }
+        if (lightmaps) if (const auto found = lightmaps->fragments.find(key);
                           found != lightmaps->fragments.end()) fragments = found->second;
         std::optional<std::size_t> retained;
-        if (!fragments.empty()) {
+        if (!fragments.empty() && origin) {
+            if (!placedMatch(face, *polyhedron, *lightmaps, fragments, origin->transform)) fragments.clear();
+        } else if (!fragments.empty()) {
             // A stale bake must never substitute old geometry after a document edit.
             const auto current = lighting::chartFace(face, polyhedron->vertices);
             bool matches = current.fragments.size() == fragments.size();
@@ -88,9 +137,12 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
             }
         }
         // Use the exact baker loops, so subdivision boundaries cannot interpolate across atlas rects.
-        const auto emit = [&](std::span<const DVec3> loop, std::optional<std::size_t> fragment, bool triangles = true) {
+        // `world` (placed faces) is the loop in the baked snapshot's space, for the lightmap lookup only.
+        const auto emit = [&](std::span<const DVec3> loop, std::optional<std::size_t> fragment, bool triangles = true,
+                              std::span<const DVec3> world = {}) {
             const auto base = static_cast<std::uint32_t>(batch.vertices.size());
-            for (const DVec3 p : loop) {
+            for (std::size_t vertex = 0; vertex < loop.size(); ++vertex) {
+                const DVec3 p = loop[vertex];
                 const DVec2 uv = DVec2(size.uvTransform * DVec3{geometry::uvAt(face, p, size.width, size.height), 1.0});
                 const DVec3 relative = p - mesh.origin;
                 BrushVertex v{};
@@ -104,7 +156,7 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                 v.uv[1] = static_cast<float>(uv.y);
                 v.material = 0;
                 if (fragment) {
-                    auto lm = lightmaps->uv(*fragment, p);
+                    auto lm = lightmaps->uv(*fragment, world.empty() ? p : world[vertex]);
                     if (retained) {
                         const auto& rect = lightmaps->rects[*fragment];
                         lm = glm::clamp(lm, (DVec2(rect.x, rect.y) + 0.5) / double(lightmaps->size),
@@ -131,7 +183,15 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
         std::uint32_t edgeBase = 0;
         if (fragments.empty()) edgeBase = emit(loop, retained);
         else {
-            for (const auto fragment : fragments) emit(lightmaps->faces[fragment].vertices, fragment);
+            for (const auto fragment : fragments) {
+                const auto& baked = lightmaps->faces[fragment].vertices;
+                if (!origin) { emit(baked, fragment); continue; }
+                // Template-local positions for the instance's own transform at draw time.
+                const auto inverse = glm::inverse(origin->transform);
+                std::vector<DVec3> local;
+                for (const DVec3 p : baked) local.push_back(DVec3(inverse * DVec4(p, 1.0)));
+                emit(local, fragment, true, baked);
+            }
             edgeBase = emit(loop, {}, false); // Original perimeter only; no subdivision seams in wire/overlays.
         }
         const auto count = static_cast<std::uint32_t>(loop.size());

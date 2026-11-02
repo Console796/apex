@@ -166,8 +166,9 @@ struct Collapse {
     int objectId = 1;
     int sideId = 1;
     std::vector<const Document*> ancestors;
+    std::map<int, InstanceFragmentSolid> origins;
 
-    Result<Content> expand(Kv instance, const Document& templ, std::vector<Kv>& siblings) {
+    Result<Content> expand(Kv instance, const Document& templ, std::vector<Kv>& siblings, const std::vector<int>& outer = {}) {
         if (ancestors.size() >= 8) return std::unexpected(invalid("instance depth limit (8) exceeded"));
         if (std::ranges::find(ancestors, &templ) != ancestors.end()) return std::unexpected(invalid("instance template cycle: " + text(instance, "file")));
         ancestors.push_back(&templ);
@@ -193,19 +194,23 @@ struct Collapse {
             }
         };
         for (auto& obj : content.objects) remap(remap, obj);
-        std::map<int, int> sides;
-        const auto remapIds = [&](auto&& self, Kv& node) -> void {
+        std::map<int, int> sides, entityOld;
+        const auto remapIds = [&](auto&& self, Kv& node, InstanceFragmentSolid* solid) -> void {
             if (block(node, "entity") || block(node, "solid") || block(node, "side")) {
                 if (auto* id = node.find("id")) {
                     const int old = id->asInt().value_or(0);
                     const int fresh = block(node, "side") ? sideId++ : objectId++;
-                    if (block(node, "side")) sides[old] = fresh;
+                    if (block(node, "side")) {
+                        sides[old] = fresh;
+                        if (solid) solid->sides[fresh] = old;
+                    } else if (block(node, "entity")) entityOld[fresh] = old;
+                    else solid = &(origins[fresh] = {outer, old, {}, entityTransform(pose)});
                     (void)id->setValue(std::to_string(fresh));
                 }
             }
-            for (auto& child : node.children()) if (child.kind() == kv1::NodeKind::Block) self(self, child);
+            for (auto& child : node.children()) if (child.kind() == kv1::NodeKind::Block) self(self, child, solid);
         };
-        for (auto& obj : content.objects) remapIds(remapIds, obj);
+        for (auto& obj : content.objects) remapIds(remapIds, obj, nullptr);
 
         using Command = std::pair<std::string, std::string>;
         std::map<Command, std::vector<Connection>> inputs;
@@ -299,7 +304,9 @@ struct Collapse {
             const auto objectCount = content.objects.size();
             auto nestedSiblings = content.objects;
             nestedSiblings.insert(nestedSiblings.end(), siblings.begin(), siblings.end());
-            auto expanded = expand(obj, **nested, nestedSiblings);
+            auto chain = outer;
+            if (const auto* id = obj.find("id")) chain.push_back(entityOld[id->asInt().value_or(0)]);
+            auto expanded = expand(obj, **nested, nestedSiblings, chain);
             if (!expanded) return std::unexpected(expanded.error());
             std::copy_n(nestedSiblings.begin(), objectCount, content.objects.begin());
             std::copy(nestedSiblings.begin() + static_cast<std::ptrdiff_t>(objectCount), nestedSiblings.end(), siblings.begin());
@@ -340,11 +347,12 @@ Result<InstanceCollapseResult> collapseInstance(const Document& parent, NodeId i
         for (auto child : parent.get(*h)->children) self(self, child);
     };
     for (auto root : parent.roots()) walk(walk, root);
-    Collapse collapse{lookup, options, options.nextAutoName, 1, 1, 1, {}};
+    Collapse collapse{lookup, options, options.nextAutoName, 1, 1, 1, {}, {}};
     auto content = collapse.expand(instance, instanceTemplate, siblings);
     if (!content) return std::unexpected(content.error());
     InstanceCollapseResult result;
     result.nextAutoName = collapse.autoName;
+    result.origins = std::move(collapse.origins);
     result.objectCount = content->objects.size();
     if (const auto* editor = instance.find("editor")) {
         for (const auto& value : editor->children())

@@ -58,6 +58,20 @@ DVec2 LightmapAtlas::uv(std::size_t face, DVec3 world) const {
     return (DVec2(rect.x, rect.y) + local + 0.5) / double(size);
 }
 
+void LightmapAtlas::bindInstances(std::span<const document::InstanceSolidOrigin> origins) {
+    for (const auto& origin : origins) {
+        bool baked = false;
+        for (const auto& [side, expanded] : origin.sides) {
+            if (!fragments.contains({origin.solid, expanded})) continue;
+            baked = true;
+            const TemplateSide identity{origin.placement, origin.templateSolid, side};
+            templateOfSide[{origin.solid, expanded}] = identity;
+            sideOfTemplate[identity] = {origin.solid, expanded};
+        }
+        if (baked) instances[origin.placement][origin.templateSolid] = origin;
+    }
+}
+
 std::vector<std::vector<Vec3>> LightmapAtlas::retainRadiance(
     const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const {
     std::vector<std::vector<Vec3>> retained(faces.size());
@@ -66,7 +80,14 @@ std::vector<std::vector<Vec3>> LightmapAtlas::retainRadiance(
         const auto dims = face.chart.dimensions;
         retained[i].resize(std::size_t(dims[0]) * std::size_t(dims[1]), Vec3{0});
         if (!previous) continue;
-        const auto found = previous->fragments.find({face.solidId, face.sideId});
+        std::pair<std::uint64_t, std::uint32_t> key{face.solidId, face.sideId};
+        // Expansion ids are renumbered by edits: instance faces follow their template identity.
+        if (const auto own = templateOfSide.find(key); own != templateOfSide.end()) {
+            const auto old = previous->sideOfTemplate.find(own->second);
+            if (old == previous->sideOfTemplate.end()) continue;
+            key = old->second;
+        } else if (previous->templateOfSide.contains(key)) continue;
+        const auto found = previous->fragments.find(key);
         if (found == previous->fragments.end()) continue;
         for (int y = 0; y < dims[1]; ++y) for (int x = 0; x < dims[0]; ++x) {
             const auto world = face.chart.worldAt({x, y});

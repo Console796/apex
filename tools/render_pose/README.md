@@ -1,7 +1,9 @@
 # Offscreen poses with CPU baked lightmaps
 
-`apex_render_pose --mode baked` expands instances into the document before both baking and
-rendering, retaining identical document NodeId/SideId keys. It shares instance resolution,
+`apex_render_pose --mode baked` bakes a snapshot with instances expanded (`--instances mirror`, the
+default) and renders the unexpanded document, so each placement's faces find their lightmap through
+the bake's template-to-expanded-id record, as the live editor does; `--instances expanded` expands the
+rendered document too (identical NodeId/SideId keys; the reference for the mapping). It shares instance resolution,
 material compile flags, VTF linear reflectivity and caster setup with `apex_bake_probe` via
 `tools/common/bake_setup.*` (production helpers in `src/editor/bake_instances.*` and
 `src/render/bake_setup.*`). Neither tool uses an FGD table. Bake scope is visible world and
@@ -81,8 +83,11 @@ UV pair). The mesher uses the exact bake fragment polygons and original surface 
 Faces retain their source SideId/selection ranges. Unmatched/edited charts use current geometry
 and negative UVs. Fragment matching uses the source NodeId, SideId and the ordered chart loops;
 bake and mirror must use the **same expanded document snapshot**, not independently assigned IDs.
-This slice's tool collapses instances for that reason. Live instance mirrors still need an explicit
-expanded-instance identity mapping; the live editor retains the unmapped black brush fallback.
+Instance contents are drawn by child mirrors from the template, so they cannot share ids: the bake
+records, per expanded solid, its placement and template solid/side ids and transform
+(`InstanceSolidOrigin`, bound with `LightmapAtlas::bindInstances`). Each baked placement gets its own
+child mirror, whose faces take the fragments of that placement, validated against the face moved by
+the bake's transform. A placement moved after the bake keeps its old lightmap until the rebake.
 
 `maps->upload(resolve, selectedFaceIndices)` uploads only selected rows and their guard texels,
 without repacking, reallocating or changing UVs/texture slot. Unselected rectangles retain their
@@ -140,10 +145,9 @@ uses current vertex positions. Live atlases alone opt into a temporary clamped p
 first old chart fragment until the new layout arrives; subdivided edited faces may look stretched
 during that interval. Non-live stale-layout rejection remains unchanged.
 
-Instance expansion includes their brushes/lights in CPU transport, but live instance child mirrors
-have separate local identities/transforms. Mapping their expanded lightmap fragments back to those
-mirrors is deferred: instance brushes and other unsupported brush entities remain black, as noted
-in the HUD. Props and displacement sides retain Lit shading. Scope, material fallback and lack of
+Instance brushes (world and func_detail, including nested instances) are mapped as above. Other
+brush entities (func_brush etc., in the map or in an instance) are not baked and remain black, as
+noted in the HUD. Props and displacement sides retain Lit shading. Scope, material fallback and lack of
 FGD defaults match render_pose; this slice adds no baker numerical or shader changes.
 
 Leaving all Baked panes cancels work promptly and releases the CPU session. Returning starts a fresh

@@ -119,12 +119,13 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                 } result;
                 try {
                     if (cancel.cancelled()) return result;
-                    editor::expandBakeInstances(*snapshot, map, extraRoot);
+                    const auto origins = editor::expandBakeInstances(*snapshot, map, extraRoot);
                     if (cancel.cancelled()) return result;
                     auto setup = render::setupBake(*snapshot, vfs.get());
                     if (cancel.cancelled()) return result;
                     auto atlas = render::LightmapAtlas::pack(setup.scene.faces);
                     if (!atlas) { result.error = QString::fromStdString(atlas.error().what()); return result; }
+                    atlas->bindInstances(origins);
                     result.radiance = atlas->retainRadiance(previous.get(), radiance);
                     atlas->retainStale = true;
                     result.atlas = std::move(*atlas);

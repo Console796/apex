@@ -1,5 +1,6 @@
 #pragma once
 
+#include "document/instance_contents.hpp"
 #include "lighting/bake_scene.hpp"
 #include "render/texture_heap.hpp"
 
@@ -21,9 +22,24 @@ struct LightmapAtlas {
     std::vector<lighting::BakeFace> faces;
     std::vector<LightmapRect> rects;
     std::map<std::pair<std::uint64_t, std::uint32_t>, std::vector<std::size_t>> fragments;
+    // Baked faces made from instance contents, by placement then template solid id. The viewport
+    // draws the template itself, so it finds a face by template ids; `fragments` stays keyed by the
+    // expanded snapshot's ids. Only solids with at least one baked side are present.
+    std::map<document::InstancePlacement, std::map<int, document::InstanceSolidOrigin>> instances;
+    // Expanded (solid, side) <-> template identity, so a restart after an edit (which renumbers the
+    // expansion) still finds the previous radiance of the same placed face.
+    struct TemplateSide {
+        document::InstancePlacement placement;
+        int solid = 0, side = 0;
+        auto operator<=>(const TemplateSide&) const = default;
+    };
+    std::map<std::pair<std::uint64_t, std::uint32_t>, TemplateSide> templateOfSide;
+    std::map<TemplateSide, std::pair<std::uint64_t, std::uint32_t>> sideOfTemplate;
 
     static Result<LightmapAtlas> pack(std::span<const lighting::BakeFace> faces, int maxSize = 4096);
     DVec2 uv(std::size_t face, DVec3 world) const;
+    // Record where each expanded instance solid came from (expandBakeInstances); call after pack.
+    void bindInstances(std::span<const document::InstanceSolidOrigin> origins);
     // CPU-only restart seed: nearest old luxel of the same source side, black for new sides.
     std::vector<std::vector<Vec3>> retainRadiance(
         const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const;

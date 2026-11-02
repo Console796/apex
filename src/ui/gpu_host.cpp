@@ -245,7 +245,7 @@ bool GpuHost::updateBake(bool active, DVec3 camera, const std::filesystem::path&
     return bake_->update(active, camera, map, extraRoot);
 }
 QString GpuHost::bakeStatus() const {
-    return bake_ ? bake_->status() + tr(" | Instances/other brush entities: black; props/displacements: Lit")
+    return bake_ ? bake_->status() + tr(" | Other brush entities: black; props/displacements: Lit")
                  : tr("Baked: no document/GPU");
 }
 float GpuHost::bakeScale() const { return bake_ ? bake_->scale() : render::kDefaultBakedScale; }

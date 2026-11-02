@@ -44,7 +44,8 @@ void InstanceExpansion::update(const document::Document& document, const std::fi
     std::vector<std::filesystem::path> ancestors;
     unsigned autoName = 1;
     const auto expand = [&](const auto& self, const kv1::Node& instance, document::NodeId owner,
-                            const std::filesystem::path& referring, const DMat4& parent) -> void {
+                            const std::filesystem::path& referring, const DMat4& parent,
+                            const std::vector<int>& nested) -> void {
         const auto file = text(instance, "file");
         const auto path = resolveInstanceFile(referring, file, extraRoot);
         if (!path) {
@@ -91,14 +92,17 @@ void InstanceExpansion::update(const document::Document& document, const std::fi
         }
         used.emplace(key, keys);
         const auto transform = parent * document::entityTransform(document::entityPose(instance));
-        contents_.push_back({owner, *loaded, keys, transform, fixup, ancestors.size() + 1, *path});
+        contents_.push_back({owner, *loaded, keys, transform, fixup, ancestors.size() + 1, *path, nested});
         ancestors.push_back(*path);
         const auto walk = [&](const auto& visit, document::NodeId id) -> void {
             const auto h = *keys->handle(id);
             const auto* node = keys->get(h);
             if (ciEquals(node->block->key(), "hidden")) return;
-            if (std::holds_alternative<Handle<document::Entity>>(h) && ciEquals(text(*node->block, "classname"), "func_instance"))
-                self(self, *node->block, owner, *path, transform);
+            if (std::holds_alternative<Handle<document::Entity>>(h) && ciEquals(text(*node->block, "classname"), "func_instance")) {
+                auto chain = nested;
+                if (const auto* entityId = node->block->find("id")) chain.push_back(entityId->asInt().value_or(0));
+                self(self, *node->block, owner, *path, transform, chain);
+            }
             for (auto child : node->children) visit(visit, child);
         };
         for (auto root : keys->roots()) walk(walk, root);
@@ -108,7 +112,7 @@ void InstanceExpansion::update(const document::Document& document, const std::fi
         const auto h = *document.handle(id);
         const auto* node = document.get(h);
         if (std::holds_alternative<Handle<document::Entity>>(h) && ciEquals(text(*node->block, "classname"), "func_instance"))
-            expand(expand, *node->block, id, map, DMat4(1.0));
+            expand(expand, *node->block, id, map, DMat4(1.0), {});
         for (auto child : node->children) self(self, child);
     };
     for (auto root : document.roots()) walk(walk, root);

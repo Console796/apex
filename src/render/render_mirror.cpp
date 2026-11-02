@@ -200,7 +200,13 @@ bool blocksSky(std::string_view name) {
 } // namespace
 
 struct RenderMirror::Impl {
+    // Shared by every placement of a template. A placement whose faces were baked gets a mirror of its
+    // own (keyed by its identity), because each placement has its own lightmap UVs.
+    using InstanceKey = std::pair<std::shared_ptr<const Document>, document::InstancePlacement>;
     std::shared_ptr<BakedLightmaps> lightmaps;
+    // Set on a mirror that draws one baked placement: its solids are looked up in the atlas by
+    // template ids (see LightmapPlacement). Without it the atlas ids are the mirror's own NodeIds.
+    std::optional<document::InstancePlacement> placed;
     Context& context;
     TextureHeap& heap;
     JobPool& jobs;
@@ -211,7 +217,7 @@ struct RenderMirror::Impl {
     std::function<bool(const std::string&)> modelMaterialExists;
     std::map<std::string, ModelMesh> models;
     std::vector<document::InstanceContent> instances;
-    std::map<std::shared_ptr<const Document>, std::unique_ptr<RenderMirror>> instanceMirrors;
+    std::map<InstanceKey, std::unique_ptr<RenderMirror>> instanceMirrors;
     document::InstanceVisibility instanceVisibility = document::InstanceVisibility::Normal;
     std::size_t drawnInstanceSolids = 0;
     // Set by the parent on a mirror that draws an instance's contents: the instances inside it
@@ -233,7 +239,7 @@ struct RenderMirror::Impl {
     std::chrono::steady_clock::time_point skyChanged = std::chrono::steady_clock::now();
     std::map<NodeId, std::string> skyEntityClasses;
     std::map<NodeId, std::shared_ptr<const kv1::Node>> environmentBlocks;
-    std::map<std::shared_ptr<const Document>, std::uint64_t> skyInstanceRevisions;
+    std::map<InstanceKey, std::uint64_t> skyInstanceRevisions;
 
     void invalidateSky() {
         ++skyRequested;
@@ -640,13 +646,21 @@ struct RenderMirror::Impl {
         solid.inFlight = true;
         ++stats.jobsSubmitted;
         const std::uint64_t version = solid.version;
+        auto layout = lightmaps ? lightmaps->layout() : nullptr;
+        const LightmapPlacement* place = nullptr;
+        if (layout && placed) {
+            // The placement lives in the atlas the job holds; without it the atlas cannot be used here.
+            const auto found = layout->instances.find(*placed);
+            if (found != layout->instances.end()) place = &found->second;
+            else layout.reset();
+        }
         solid.job = jobs.submit(
             Priority::Normal,
-            [block = std::move(copy), sizes = std::move(sizes), layout = lightmaps ? lightmaps->layout() : nullptr, id](CancelToken) mutable -> Result<SolidMesh> {
+            [block = std::move(copy), sizes = std::move(sizes), layout = std::move(layout), place, id](CancelToken) mutable -> Result<SolidMesh> {
                 return meshSolid(block, [&](std::string_view name) {
                     const auto found = sizes.find(name);
                     return found == sizes.end() ? TextureSize{} : found->second;
-                }, layout.get(), id);
+                }, layout.get(), id, place);
             },
             [this, id, version](Result<SolidMesh> mesh) { complete(id, version, std::move(mesh)); });
     }
@@ -961,7 +975,7 @@ struct RenderMirror::Impl {
         collectSkyBrushes(brushes, skyMaterials);
         for (const auto& content : instances) {
             if (!content.keys || instanceVisibility == document::InstanceVisibility::Hidden) continue;
-            const auto& child = *instanceMirrors.at(content.keys)->impl_;
+            const auto& child = *instanceMirrors.at(keyOf(content))->impl_;
             if (std::ranges::any_of(child.materials, [](const auto& entry) { return entry.second.loading; })) return;
             child.collectSkyBrushes(brushes, skyMaterials, content.transform);
         }
@@ -1437,12 +1451,12 @@ struct RenderMirror::Impl {
                 }
                 if (mirror.instanceVisibility == document::InstanceVisibility::Hidden) return;
                 for (const auto& content : mirror.instances) {
-                    const auto found = mirror.instanceMirrors.find(content.keys);
+                    const auto found = mirror.instanceMirrors.find(mirror.keyOf(content));
                     if (found != mirror.instanceMirrors.end()) self(self, *found->second->impl_, transform * content.transform);
                 }
             };
             if (instanceVisibility != document::InstanceVisibility::Hidden) for (const auto& content : instances) {
-                const auto found = instanceMirrors.find(content.keys);
+                const auto found = instanceMirrors.find(keyOf(content));
                 if (found != instanceMirrors.end()) instanceInputs(instanceInputs, *found->second->impl_, content.transform);
             }
             auto& state = probeStates[key];
@@ -1462,6 +1476,63 @@ struct RenderMirror::Impl {
             }
             it = probeStates.erase(it);
         }
+    }
+
+    // Whether the bake saw this placement's contents (any solid with a baked side).
+    bool placementBaked(const document::InstanceContent& content) const {
+        return lightmaps && lightmaps->atlas().instances.contains(content.placement());
+    }
+    InstanceKey keyOf(const document::InstanceContent& content) const {
+        return {content.keys, placementBaked(content) ? content.placement() : document::InstancePlacement{}};
+    }
+
+    // A baked placement has its own mirror (it meshes its own lightmap UVs); others share by template.
+    void bindPlacement(std::shared_ptr<BakedLightmaps> maps, std::optional<document::InstancePlacement> placement) {
+        if (lightmaps == maps && placed == placement) return;
+        lightmaps = std::move(maps);
+        placed = std::move(placement);
+        for (const auto& [id, solid] : solids) requestMesh(id);
+        redraw = true;
+    }
+
+    // Make instanceMirrors match `instances` and the current lightmaps. A mirror whose template
+    // document was just reloaded (same file and fixups, new keys) is carried over, not rebuilt.
+    void syncInstanceMirrors(const std::vector<document::InstanceContent>& previous) {
+        std::set<InstanceKey> used;
+        for (const auto& content : instances) {
+            if (!content.keys) continue;
+            const auto key = keyOf(content);
+            used.insert(key);
+            const bool baked = placementBaked(content);
+            const auto binding = [&](Impl& child) {
+                child.bindPlacement(baked ? lightmaps : nullptr,
+                                    baked ? std::optional(content.placement()) : std::nullopt);
+            };
+            if (const auto found = instanceMirrors.find(key); found != instanceMirrors.end()) {
+                binding(*found->second->impl_);
+                continue;
+            }
+            const auto old = std::ranges::find_if(previous, [&](const auto& item) {
+                return item.path == content.path && item.fixup.name == content.fixup.name &&
+                    item.fixup.style == content.fixup.style && item.fixup.variables == content.fixup.variables &&
+                    item.keys != content.keys && instanceMirrors.contains(keyOf(item)) &&
+                    keyOf(item).second == key.second;
+            });
+            if (old != previous.end()) {
+                const auto oldKey = keyOf(*old);
+                auto mirror = std::move(instanceMirrors.at(oldKey));
+                instanceMirrors.erase(oldKey);
+                mirror->replaceSnapshot(*old->keys, *content.keys);
+                binding(*mirror->impl_);
+                instanceMirrors.emplace(key, std::move(mirror));
+                continue;
+            }
+            auto mirror = std::make_unique<RenderMirror>(context, heap, jobs, cache, classes, modelCache, modelMaterialExists);
+            binding(*mirror->impl_);
+            mirror->rebuild(*content.keys);
+            instanceMirrors.emplace(key, std::move(mirror));
+        }
+        std::erase_if(instanceMirrors, [&](const auto& item) { return !used.contains(item.first); });
     }
 
     bool pending() const {
@@ -1487,8 +1558,8 @@ RenderMirror::RenderMirror(Context& context, TextureHeap& heap, JobPool& jobs, a
 void RenderMirror::setLightmaps(std::shared_ptr<BakedLightmaps> maps) {
     auto& m = *impl_;
     if (m.lightmaps == maps) return;
-    m.lightmaps = std::move(maps);
-    for (const auto& [id, solid] : m.solids) m.requestMesh(id);
+    m.bindPlacement(std::move(maps), std::nullopt);
+    m.syncInstanceMirrors(m.instances);
     m.redraw = true;
 }
 
@@ -1608,29 +1679,7 @@ void RenderMirror::setInstanceContents(std::span<const document::InstanceContent
     m.instanceVisibility = visibility;
     const auto previous = std::move(m.instances);
     m.instances.assign(contents.begin(), contents.end());
-    std::set<std::shared_ptr<const Document>> used;
-    for (const auto& content : contents) {
-        if (!content.keys) continue;
-        used.insert(content.keys);
-        if (m.instanceMirrors.contains(content.keys)) continue;
-        const auto old = std::ranges::find_if(previous, [&](const auto& item) {
-            return item.path == content.path && item.fixup.name == content.fixup.name &&
-                item.fixup.style == content.fixup.style && item.fixup.variables == content.fixup.variables &&
-                item.keys != content.keys && m.instanceMirrors.contains(item.keys);
-        });
-        if (old != previous.end()) {
-            auto mirror = std::move(m.instanceMirrors.at(old->keys));
-            m.instanceMirrors.erase(old->keys);
-            mirror->replaceSnapshot(*old->keys, *content.keys);
-            m.instanceMirrors.emplace(content.keys, std::move(mirror));
-            continue;
-        }
-        auto mirror = std::make_unique<RenderMirror>(m.context, m.heap, m.jobs, m.cache, m.classes,
-                                                    m.modelCache, m.modelMaterialExists);
-        mirror->rebuild(*content.keys);
-        m.instanceMirrors.emplace(content.keys, std::move(mirror));
-    }
-    std::erase_if(m.instanceMirrors, [&](const auto& item) { return !used.contains(item.first); });
+    m.syncInstanceMirrors(previous);
     m.redraw = true;
 }
 
@@ -2154,7 +2203,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         for (const auto& content : m.instances) {
             // The parent's entity state is also its visibility gate (hidden containers etc.).
             if (!content.keys || !m.entities.contains(content.instance)) continue;
-            auto& mirror = *m.instanceMirrors.at(content.keys);
+            auto& mirror = *m.instanceMirrors.at(m.keyOf(content));
             Highlight highlight = m.highlight;
             highlight.selected.clear();
             highlight.selectedSides.clear();

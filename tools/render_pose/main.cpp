@@ -45,6 +45,7 @@ struct Options {
     bool noSpecular = false;
     float toolBrightness = 0.0f; // --tool-fixed-brightness; 0 = off.
     std::string mode = "lit";
+    bool expandedInstances = false; // --instances expanded: bake and draw the collapsed document.
     std::vector<Pose> poses;
 };
 
@@ -52,7 +53,7 @@ void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
                  "  [--fov 90] [--mode lit|textured|fullbright|baked] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.78]\n"
-                 "  [--no-specular] [--tool-fixed-brightness [VALUE]]\n"
+                 "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
                  "Poses are Source cl_showpos eye positions and QAngles; negative pitch looks up.\n"
@@ -64,6 +65,9 @@ void help() {
                  "pakfile). Prints one line per probe with the file used, or \"default\" for the default cube.\n"
                  "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
                  "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 0.78).\n"
+                 "--instances mirror|expanded (Baked only): mirror (default) bakes an expanded copy and draws the\n"
+                 "instances through the viewport's own instance path, as the editor does; expanded collapses the\n"
+                 "instances into the document first and draws that.\n"
                  "--no-specular disables direct-light highlights for image comparisons in Lit or Baked.\n"
                  "--tool-fixed-brightness [VALUE] shows tools/* faces (normally hidden here) at a fixed linear\n"
                  "brightness in Lit or Baked instead of lighting (default VALUE 1, the Textured view's level).\n"
@@ -133,6 +137,11 @@ Options parse(int argc, char** argv) {
             o.timeFrames = static_cast<int>(value);
         }
         else if (flag == "--mode") o.mode = next();
+        else if (flag == "--instances") {
+            const auto value = next();
+            if (value != "mirror" && value != "expanded") throw std::runtime_error("--instances takes mirror or expanded");
+            o.expandedInstances = value == "expanded";
+        }
         else if (flag == "--cubemaps") o.cubemaps = next();
         else if (flag == "--pose") {
             Pose pose;
@@ -200,7 +209,7 @@ int run(const Options& o) {
     assets::ModelCache models(vfs, jobs);
     editor::InstanceTemplates templates;
     editor::InstanceExpansion instances(templates);
-    if (o.mode == "baked") tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
+    if (o.mode == "baked" && o.expandedInstances) tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
     instances.update(document, fs::canonical(o.vmf), profile.instanceSearchRoot());
     for (const auto& problem : instances.problems())
         std::cerr << "instance-failed " << problem.file << ": " << problem.message << '\n';
@@ -244,7 +253,11 @@ int run(const Options& o) {
     // No FGD class table: entity models then come only from explicit model keys, so the
     // editor-only helper models (light_rt_spot cones, player start, etc.) stay out of the capture.
     if (o.mode == "baked") {
-        auto setup = tools::setupBake(document, &vfs);
+        // The bake sees the expansion; the mirror keeps the original and draws the instances itself.
+        auto bakeDocument = document.snapshot();
+        const auto origins = o.expandedInstances ? std::vector<document::InstanceSolidOrigin>{} :
+            tools::expandBakeInstances(*bakeDocument, fs::canonical(o.vmf), profile);
+        auto setup = tools::setupBake(*bakeDocument, &vfs);
         lighting::Baker baker(std::move(setup.scene), o.bakeOptions);
         for (unsigned level = 0; level <= o.bakeOptions.bounces; ++level) {
             for (unsigned pass = 0; pass < o.bakePasses; ++pass) {
@@ -253,8 +266,12 @@ int run(const Options& o) {
             }
             std::cout << "bake level=" << level << " passes=" << o.bakePasses << std::endl;
         }
-        auto maps = take(render::BakedLightmaps::create(*context, *heap,
-            take(render::LightmapAtlas::pack(baker.scene().faces))));
+        auto atlas = take(render::LightmapAtlas::pack(baker.scene().faces));
+        atlas.bindInstances(origins);
+        std::size_t placedSolids = 0;
+        for (const auto& [placement, solids] : atlas.instances) placedSolids += solids.size();
+        std::cout << "bake instances placements=" << atlas.instances.size() << " baked-solids=" << placedSolids << '\n';
+        auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(atlas)));
         check(maps->upload(baker.resolve()));
         mirror.setLightmaps(std::move(maps));
     }
