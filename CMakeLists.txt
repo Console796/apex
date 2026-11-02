@@ -112,7 +112,7 @@ apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.c
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp
                             src/document/instance_fixup.cpp src/document/instance_collapse.cpp src/document/cordon.cpp
            DEPS apex_geometry apex_core)
-apex_layer(lighting SOURCES src/lighting/light.cpp src/lighting/sky_visibility.cpp src/lighting/charting.cpp src/lighting/cpu_accel.cpp src/lighting/bake_scene.cpp src/lighting/baker.cpp DEPS apex_geometry apex_document apex_core)
+apex_layer(lighting SOURCES src/lighting/light.cpp src/lighting/sky_visibility.cpp src/lighting/charting.cpp src/lighting/cpu_accel.cpp src/lighting/bake_scene.cpp src/lighting/bake_casters.cpp src/lighting/baker.cpp DEPS apex_geometry apex_document apex_core)
 target_link_libraries(apex_lighting PRIVATE embree)
 apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_lookup.cpp src/editor/compile_overlay.cpp src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/light_edit.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp src/editor/pick_model.cpp
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
@@ -241,6 +241,8 @@ if(APEX_BUILD_TESTS)
   find_package(Qt6 6.5 REQUIRED COMPONENTS Gui)
   add_executable(apex_render_pose tools/render_pose/main.cpp)
   target_link_libraries(apex_render_pose PRIVATE apex_viewport apex_editor Qt6::Gui apex_warnings)
+  add_executable(apex_bake_probe tools/bake_probe/main.cpp)
+  target_link_libraries(apex_bake_probe PRIVATE apex_viewport apex_editor apex_lighting apex_assets Qt6::Gui apex_warnings)
   add_executable(apex_vtf_stats tools/vtf_stats/main.cpp)
   target_link_libraries(apex_vtf_stats PRIVATE sourcepp::vtfpp apex_warnings)
   add_executable(apex_vmf_dump tools/vmf_dump/main.cpp)
