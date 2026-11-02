@@ -1,5 +1,8 @@
 include(doctest)
 
+add_executable(apex_chart_reference lighting/chart_reference.cpp)
+target_link_libraries(apex_chart_reference PRIVATE apex_lighting sourcepp::bsppp apex_warnings)
+
 add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cpp core/math_test.cpp core/handle_test.cpp
                core/entity_helpers_test.cpp core/result_test.cpp core/strings_test.cpp core/paths_test.cpp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp core/kv3_test.cpp
@@ -9,7 +12,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
-               lighting/light_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp
+               lighting/light_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp lighting/charting_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
