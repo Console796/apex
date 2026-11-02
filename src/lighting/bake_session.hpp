@@ -56,6 +56,11 @@ struct BakeState {
 // Order: direct K0, each bounce K0, direct maximum, each bounce maximum, idle. A traversal at a level
 // visits only faces whose own pass count there is below the target, in camera order, so faces kept
 // from a previous bake (counts already at target) are skipped.
+// After an incremental restart the order is led by the edit: first the dirty faces alone run direct and
+// the first bounce level (both at K0 and at the maximum; the first bounce reads only direct, which is final
+// for every face by then), then the usual order follows with dirty faces ahead of the rest in each traversal,
+// which refreshes the bounce-dirty neighbours and the deeper bounce levels. Clean faces keep showing their old
+// radiance meanwhile.
 class BakeSession {
 public:
     BakeSession(BakeScene scene, BakeSessionOptions options = {}, std::uint64_t revision = 0,
@@ -91,6 +96,8 @@ private:
     std::vector<std::vector<unsigned>> facePasses_; // [level][face]
     std::size_t nextFace_ = 0, budget_ = 16;
     bool refining_ = false, ordered_ = false;
+    bool focusing_ = false;    // Incremental restart: first converge the dirty faces alone (direct and first bounce).
+    std::vector<char> focus_;  // [face]: dirty in the last incremental restart; those lead every later traversal.
     std::set<std::size_t> changed_;
     void nextStage();
     void advanceLocked(std::size_t budget);

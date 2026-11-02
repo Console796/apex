@@ -105,3 +105,36 @@ across, so a 512-unit coupling radius around dirty faces re-runs bounce on every
 shrinking the radius does not help here. Direct-only restarts (bounces=0) skip all clean faces and do scale with the
 dirty fraction. A larger map, fewer bounces, or a smarter bounce criterion (e.g. weighting by the size of the direct
 change) would be needed for a real win on bounced scenes; left as follow-up.
+
+## 7b: edit-first scheduling
+
+Time-to-idle is the wrong metric on a map where everything is bounce-coupled, so after an incremental restart the
+scheduler converges what the edit changed first:
+
+1. Dirty faces alone run direct and bounce level 1, each at K0 and then at the maximum (clean and bounce-only-dirty
+   faces keep displaying their old radiance). Level 1 reads only direct radiance, which is final for every face by then,
+   so this phase is exact. Levels 2 and up are not in this phase: they would read the still-unrefreshed level 1 of
+   bounce-dirty neighbours.
+2. The ordinary schedule then runs over all faces, with dirty faces ahead of the rest in every traversal (camera order
+   inside each group). This refreshes the bounce-dirty neighbours and the deeper levels.
+
+Consequences: with bounces=0 the result is unchanged (bit-equal to a full bake). The dirty face's own level 1 is bit-equal
+to a full bake; a bounce-dirty neighbour's level 1 is drawn after the dirty face's direct has refined, so it agrees only
+statistically (test tolerance 2 % of the peak). Publication is unchanged: dirty faces appear in the next tick's
+publication as soon as they have samples.
+
+The delta-based bounce criterion (skip bounce refresh where the dirty faces' direct change is negligible) was not
+attempted: it needs old and new direct per face and a tolerance that is hard to bound; the 512-unit coupling stays.
+
+Measured on test1.vmf (same setup as above), seconds; "full" is a full restart observed on the same dirty faces:
+
+| light, move | dirty | first visible change (inc / full) | dirty direct+bounce1 converged (inc / full) | dirty all levels converged (inc / full) | map idle (inc / full) |
+|---|---|---|---|---|---|
+| 0, 16 | 174 | 0.0002 / 0.0032 | 2.78 / 7.32 | 10.62 / 10.92 | 10.80 / 10.92 |
+| 0, 128 | 181 | 0.0002 / 0.0028 | 2.70 / 7.05 | 10.03 / 10.72 | 10.20 / 10.72 |
+| 11, 16 | 96 | 0.0002 / 0.0026 | 2.29 / 6.99 | 9.84 / 10.61 | 10.03 / 10.64 |
+| 11, 128 | 107 | 0.0002 / 0.0027 | 2.49 / 6.88 | 9.91 / 10.48 | 10.08 / 10.51 |
+
+The first visible change is immediate and the dirty faces' direct plus first bounce converge about 2.8-3.1x sooner. Bounce
+level 2 of the dirty faces still waits for the neighbours' level 1 refresh, so full convergence of everything is
+unchanged (about 1.05x).

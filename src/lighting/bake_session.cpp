@@ -1,6 +1,7 @@
 #include "lighting/bake_session.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <stdexcept>
 
@@ -29,7 +30,8 @@ void BakeSession::reset(BakeScene scene, const BakeSessionOptions& options, std:
     order_.clear();
     nextFace_ = 0;
     budget_ = 16;
-    refining_ = ordered_ = false;
+    refining_ = ordered_ = focusing_ = false;
+    focus_.clear();
     changed_.clear();
 }
 
@@ -88,6 +90,11 @@ BakeDiff BakeSession::restart(BakeState previous, BakeScene scene, BakeSessionOp
         }
         if (previous.unpublished[std::size_t(old)]) changed_.insert(i);
     }
+    const auto dirtyFaces = std::count(diff.dirty.begin(), diff.dirty.end(), char(1));
+    if (dirtyFaces && std::size_t(dirtyFaces) < faces) {
+        focus_.assign(diff.dirty.begin(), diff.dirty.end());
+        focusing_ = true;
+    }
     for (unsigned level = 0; level < levels; ++level)
         progress_.passes[level] = facePasses_[level].empty() ? 0
             : *std::min_element(facePasses_[level].begin(), facePasses_[level].end());
@@ -111,17 +118,25 @@ std::vector<std::size_t> BakeSession::cameraOrder(std::span<const BakeFace> face
 
 void BakeSession::nextStage() {
     if (progress_.passes[progress_.level] < progress_.target) return;
-    if (progress_.level < options_.baker.bounces) ++progress_.level;
+    const unsigned top = focusing_ ? std::min(1u, options_.baker.bounces) : options_.baker.bounces;
+    if (progress_.level < top) ++progress_.level;
     else if (!refining_ && progress_.target < options_.maxPasses) {
         refining_ = true;
         progress_.level = 0;
         progress_.target = options_.maxPasses;
+    } else if (focusing_) { // Dirty faces done: restart the ordinary schedule over every face.
+        focusing_ = refining_ = false;
+        progress_.level = 0;
+        progress_.target = std::min(options_.initialPasses, options_.maxPasses);
     } else progress_.idle = true;
 }
 
 void BakeSession::finishTraversal() {
     const auto& counts = facePasses_[progress_.level];
-    progress_.passes[progress_.level] = *std::min_element(counts.begin(), counts.end());
+    unsigned lowest = std::numeric_limits<unsigned>::max();
+    for (std::size_t face = 0; face < counts.size(); ++face)
+        if (!focusing_ || focus_[face]) lowest = std::min(lowest, counts[face]);
+    progress_.passes[progress_.level] = lowest;
     nextFace_ = 0;
     order_.clear();
     ordered_ = false;
@@ -139,7 +154,11 @@ void BakeSession::advanceLocked(std::size_t budget) {
         if (progress_.idle) return;
         order_ = cameraOrder(scene().faces, camera_);
         const auto& done = facePasses_[progress_.level];
-        std::erase_if(order_, [&](auto face) { return done[face] >= progress_.target; });
+        std::erase_if(order_, [&](auto face) {
+            return done[face] >= progress_.target || (focusing_ && !focus_[face]);
+        });
+        if (!focusing_ && !focus_.empty())
+            std::stable_partition(order_.begin(), order_.end(), [&](auto face) { return focus_[face] != 0; });
         nextFace_ = 0;
         ordered_ = true;
         if (order_.empty()) finishTraversal(); // Every face already at this level's target: next stage.

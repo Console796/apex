@@ -23,6 +23,28 @@ double settle(lighting::BakeSession& session) {
     while (!session.progress().idle) session.advance(1u << 16);
     return std::chrono::duration<double>(Clock::now() - start).count();
 }
+
+struct Timings { double visible = 0, direct = 0, dirty = 0, idle = 0; };
+// Runs to idle, noting when (a) any of `faces` first has a completed direct pass, (b) all of them have finished
+// every level through bounce 1, (c) all of them have reached the maximum at every level.
+Timings run(lighting::BakeSession& session, const std::vector<std::size_t>& faces, unsigned maxPasses, unsigned levels) {
+    Timings t;
+    bool visible = false, direct = false, converged = false;
+    const auto start = Clock::now();
+    const auto now = [&] { return std::chrono::duration<double>(Clock::now() - start).count(); };
+    const auto all = [&](unsigned top) {
+        for (unsigned l = 0; l <= top; ++l) for (const auto f : faces) if (session.facePasses(l)[f] < maxPasses) return false;
+        return true;
+    };
+    while (!session.progress().idle) {
+        session.advance(1u << 16);
+        if (!visible) for (const auto f : faces) if (session.facePasses(0)[f]) { visible = true; t.visible = now(); break; }
+        if (!direct && all(std::min(1u, levels - 1))) { direct = true; t.direct = now(); }
+        if (!converged && all(levels - 1)) { converged = true; t.dirty = now(); }
+    }
+    t.idle = now();
+    return t;
+}
 } // namespace
 
 TEST_CASE("incremental bake: measure re-convergence after moving one point light on test1.vmf") {
@@ -74,22 +96,26 @@ TEST_CASE("incremental bake: measure re-convergence after moving one point light
     lighting::BakeSession base(setup.scene, options, 1, keys);
     const auto baseSeconds = settle(base);
     std::cout << "[incremental bake] initial full bake " << baseSeconds << " s\n";
+    const unsigned levels = options.baker.bounces + 1;
     for (const auto which : candidates) for (const double dx : {16.0, 128.0}) {
         light = which;
-        // Fresh baselines per distance: a full restart on the moved scene, and an incremental one from `base`'s state.
-        lighting::BakeSession full(moved(dx), options, 2, keys);
-        const auto fullSeconds = settle(full);
         lighting::BakeSession first(setup.scene, options, 1, keys);
         settle(first);
         lighting::BakeSession incremental(lighting::BakeScene{}, options, 2);
-        const auto start = Clock::now();
+        const auto begin = Clock::now();
         const auto diff = incremental.restart(first.takeState(), moved(dx), options, 2, keys);
-        const auto diffSeconds = std::chrono::duration<double>(Clock::now() - start).count();
-        const auto incrementalSeconds = settle(incremental);
-        std::cout << "[incremental bake] light " << which << " moved " << dx << " units: full=" << diff.full << " dirty=" << diff.dirtyCount
-                  << " bounceDirty=" << diff.bounceDirtyCount << " of " << setup.scene.faces.size()
-                  << "; diff+adopt " << diffSeconds << " s, incremental re-converge " << incrementalSeconds
-                  << " s, full restart " << fullSeconds << " s, speedup " << fullSeconds / (diffSeconds + incrementalSeconds) << "x\n";
-        CHECK(incrementalSeconds + diffSeconds > 0);
+        const auto diffSeconds = std::chrono::duration<double>(Clock::now() - begin).count();
+        std::vector<std::size_t> dirty;
+        for (std::size_t i = 0; i < diff.dirty.size(); ++i) if (diff.dirty[i]) dirty.push_back(i);
+        const auto inc = run(incremental, dirty, options.maxPasses, levels);
+        lighting::BakeSession full(moved(dx), options, 2, keys);
+        const auto ref = run(full, dirty, options.maxPasses, levels);
+        std::cout << "[incremental bake] light " << which << " moved " << dx << " units: dirty=" << diff.dirtyCount
+                  << " bounceDirty=" << diff.bounceDirtyCount << " of " << setup.scene.faces.size() << " (diff " << diffSeconds
+                  << " s)\n    first visible change: incremental " << inc.visible << " s, full " << ref.visible
+                  << " s\n    dirty faces direct+bounce1 converged: incremental " << inc.direct << " s, full " << ref.direct
+                  << " s\n    dirty faces all levels converged: incremental " << inc.dirty << " s, full " << ref.dirty
+                  << " s\n    whole map idle: incremental " << inc.idle << " s, full " << ref.idle << " s\n";
+        CHECK(inc.idle > 0);
     }
 }

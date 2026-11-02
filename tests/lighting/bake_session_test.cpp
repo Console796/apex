@@ -392,13 +392,38 @@ TEST_CASE("incremental bake: with bounce, faces in reach match a full bake and f
     CHECK(next.facePasses(1) == std::vector<unsigned>{0, 0, 8});
     CHECK(next.facePasses(0) == std::vector<unsigned>{0, 8, 8});
     settle(next);
-    // Everything the dirty set can reach in one hop reproduces the full bake exactly.
-    for (std::size_t face : {0, 1}) {
-        CHECK(sameBuffers(next, reference, face, 0));
-        CHECK(sameBuffers(next, reference, face, 1));
-    }
+    // The dirty face reproduces the full bake exactly. Its bounce neighbour keeps the same direct, but its
+    // first bounce samples are drawn after the dirty face's direct has refined (dirty faces lead), so it
+    // agrees only statistically.
+    CHECK(sameBuffers(next, reference, 0, 0));
+    CHECK(sameBuffers(next, reference, 0, 1));
+    CHECK(sameBuffers(next, reference, 1, 0));
     // The far wall keeps its old bounce: the documented approximation. Tolerance: 2% of the brightest face.
     const double peak = std::max({meanOf(reference, 0), meanOf(reference, 1), meanOf(reference, 2)});
     MESSAGE("far wall: incremental " << meanOf(next, 2) << " full " << meanOf(reference, 2) << " peak " << peak);
     CHECK(std::abs(meanOf(next, 2) - meanOf(reference, 2)) < 0.02 * peak);
+    CHECK(std::abs(meanOf(next, 1) - meanOf(reference, 1)) < 0.02 * peak);
+}
+
+TEST_CASE("incremental bake: dirty faces finish their bounce levels before other faces get new bounce passes") {
+    BakeSession first(bounceRoom(-32), withBounce());
+    settle(first);
+    BakeSession next(bounceRoom(-32), withBounce());
+    const auto diff = next.restart(first.takeState(), bounceRoom(0), withBounce(), 2);
+    REQUIRE_FALSE(diff.full);
+    REQUIRE(diff.dirty == std::vector<char>{1, 0, 0});
+    REQUIRE(diff.bounceDirty == std::vector<char>{1, 1, 0});
+    bool dirtyDone = false;
+    for (int i = 0; i < 100000 && !next.progress().idle; ++i) {
+        next.advance(1000);
+        const bool done = next.facePasses(0)[0] == 8 && next.facePasses(1)[0] == 8;
+        dirtyDone = dirtyDone || done;
+        // The neighbour's bounce stays untouched until the dirty face has fully converged both levels.
+        if (!dirtyDone) CHECK(next.facePasses(1)[1] == 0);
+        // The clean face's direct is never touched.
+        CHECK(next.facePasses(0)[1] == 8);
+    }
+    CHECK(dirtyDone);
+    CHECK(next.progress().idle);
+    CHECK(next.facePasses(1) == std::vector<unsigned>{8, 8, 8});
 }
