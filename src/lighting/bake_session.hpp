@@ -1,9 +1,11 @@
 #pragma once
 
 #include "core/job_pool.hpp"
+#include "lighting/bake_diff.hpp"
 #include "lighting/baker.hpp"
 
 #include <chrono>
+#include <mutex>
 #include <set>
 
 namespace apex::lighting {
@@ -16,7 +18,7 @@ struct BakeSessionOptions {
 
 struct BakeProgress {
     std::uint64_t revision = 0;
-    std::vector<unsigned> passes; // Completed whole-scene traversals, direct then bounce levels.
+    std::vector<unsigned> passes; // Completed traversals per level (the minimum over faces), direct then bounces.
     unsigned level = 0;
     unsigned target = 0;
     bool idle = false;
@@ -32,14 +34,41 @@ struct BakePublication {
     std::vector<BakeFaceUpdate> faces; // Only rows touched by this slice.
 };
 
-// Worker-owned, no Qt/GPU. All methods exclusive, just like Baker. Restart replaces the entire
-// immutable scene/accel. Camera order is centre-distance, index breaks ties; it changes only at
-// whole-scene pass boundaries so moving the camera cannot starve a traversal.
-// Order: direct K0, each bounce K0, direct maximum, each bounce maximum, idle.
+// What a retired session hands to its successor: the converged sums and per-face pass counts, plus
+// the scene description needed to diff against (no occlusion data).
+struct BakeState {
+    std::vector<BakeFace> faces;
+    std::vector<Light> lights;
+    std::vector<std::string> materials;
+    std::vector<FaceKey> keys;
+    std::vector<std::vector<BakeBuffer>> buffers; // [level][face]
+    std::vector<std::vector<unsigned>> passes; // [level][face]: completed traversals of that face.
+    std::vector<char> unpublished; // [face]: advanced since the last publication.
+    BakerOptions baker;
+    bool empty() const { return faces.empty(); }
+    BakeSceneView view() const { return {faces, lights, materials, keys}; }
+};
+
+// Worker-owned, no Qt/GPU. Methods are serialised by an internal mutex, so a cancelled tick can
+// still be finishing while takeState waits. Restart replaces the entire immutable scene/accel.
+// Camera order is centre-distance, index breaks ties; it changes only at traversal boundaries so
+// moving the camera cannot starve a traversal.
+// Order: direct K0, each bounce K0, direct maximum, each bounce maximum, idle. A traversal at a level
+// visits only faces whose own pass count there is below the target, in camera order, so faces kept
+// from a previous bake (counts already at target) are skipped.
 class BakeSession {
 public:
-    BakeSession(BakeScene scene, BakeSessionOptions options = {}, std::uint64_t revision = 0);
-    void restart(BakeScene scene, BakeSessionOptions options, std::uint64_t revision);
+    BakeSession(BakeScene scene, BakeSessionOptions options = {}, std::uint64_t revision = 0,
+                std::vector<FaceKey> keys = {});
+    // Everything from zero. Keys default to faceKeys(scene.faces).
+    void restart(BakeScene scene, BakeSessionOptions options, std::uint64_t revision, std::vector<FaceKey> keys = {});
+    // Incremental restart: diff against `previous`, keep sums and counts of clean faces (all levels) and of
+    // bounce-only-dirty faces (direct only), restart the rest from zero. Falls back to a full restart (diff.full)
+    // when the diff says so or baker settings differ. Returns the diff used.
+    BakeDiff restart(BakeState previous, BakeScene scene, BakeSessionOptions options, std::uint64_t revision,
+                     std::vector<FaceKey> keys = {});
+    // Moves the converged state out and retires this session (idle, empty). Safe against a concurrent tick.
+    BakeState takeState();
     void setCamera(DVec3 camera) { camera_ = camera; }
     static std::vector<std::size_t> cameraOrder(std::span<const BakeFace> faces, DVec3 camera);
     // One bounded luxel operation, useful for deterministic scheduling/tests.
@@ -48,17 +77,25 @@ public:
     BakePublication tick(CancelToken cancel = CancelToken{}, std::chrono::milliseconds time = std::chrono::milliseconds(40));
     const BakeProgress& progress() const { return progress_; }
     const BakeScene& scene() const { return baker_->scene(); }
+    const Baker& baker() const { return *baker_; }
+    const std::vector<unsigned>& facePasses(unsigned level) const { return facePasses_.at(level); }
 
 private:
+    std::mutex mutex_;
     std::unique_ptr<Baker> baker_;
     BakeSessionOptions options_;
     BakeProgress progress_;
     DVec3 camera_{0};
     std::vector<std::size_t> order_;
+    std::vector<FaceKey> keys_;
+    std::vector<std::vector<unsigned>> facePasses_; // [level][face]
     std::size_t nextFace_ = 0, budget_ = 16;
-    bool refining_ = false;
+    bool refining_ = false, ordered_ = false;
     std::set<std::size_t> changed_;
     void nextStage();
+    void advanceLocked(std::size_t budget);
+    void finishTraversal();
+    void reset(BakeScene scene, const BakeSessionOptions& options, std::uint64_t revision, std::vector<FaceKey> keys);
 };
 
 } // namespace apex::lighting

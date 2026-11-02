@@ -5,21 +5,93 @@
 #include <stdexcept>
 
 namespace apex::lighting {
-BakeSession::BakeSession(BakeScene scene, BakeSessionOptions options, std::uint64_t revision) {
-    restart(std::move(scene), options, revision);
+BakeSession::BakeSession(BakeScene scene, BakeSessionOptions options, std::uint64_t revision,
+                         std::vector<FaceKey> keys) {
+    reset(std::move(scene), options, revision, std::move(keys));
 }
 
-void BakeSession::restart(BakeScene scene, BakeSessionOptions options, std::uint64_t revision) {
+void BakeSession::restart(BakeScene scene, BakeSessionOptions options, std::uint64_t revision,
+                          std::vector<FaceKey> keys) {
+    std::lock_guard lock(mutex_);
+    reset(std::move(scene), options, revision, std::move(keys));
+}
+
+void BakeSession::reset(BakeScene scene, const BakeSessionOptions& options, std::uint64_t revision,
+                        std::vector<FaceKey> keys) {
     if (!options.maxPasses || !options.initialPasses) throw std::invalid_argument("BakeSession: zero passes");
     options_ = options;
+    keys_ = keys.empty() ? faceKeys(scene.faces) : std::move(keys);
+    if (keys_.size() != scene.faces.size()) throw std::invalid_argument("BakeSession: key count mismatch");
     baker_ = std::make_unique<Baker>(std::move(scene), options.baker);
     progress_ = {revision, std::vector<unsigned>(options.baker.bounces + 1, 0), 0,
                  std::min(options.initialPasses, options.maxPasses), baker_->scene().faces.empty()};
+    facePasses_.assign(options.baker.bounces + 1, std::vector<unsigned>(baker_->scene().faces.size(), 0));
     order_.clear();
     nextFace_ = 0;
     budget_ = 16;
-    refining_ = false;
+    refining_ = ordered_ = false;
     changed_.clear();
+}
+
+BakeState BakeSession::takeState() {
+    std::lock_guard lock(mutex_);
+    BakeState state;
+    if (!baker_) return state;
+    const auto& scene = baker_->scene();
+    state.faces = scene.faces;
+    state.lights = scene.lights;
+    state.materials = scene.materials;
+    state.keys = std::move(keys_);
+    state.baker = options_.baker;
+    state.passes = std::move(facePasses_);
+    state.unpublished.assign(scene.faces.size(), 0);
+    for (const auto face : changed_) state.unpublished[face] = 1;
+    for (unsigned level = 0; level <= options_.baker.bounces; ++level)
+        state.buffers.push_back(baker_->releaseBuffers(level));
+    baker_.reset();
+    keys_.clear();
+    facePasses_.clear();
+    order_.clear();
+    changed_.clear();
+    progress_.idle = true;
+    return state;
+}
+
+BakeDiff BakeSession::restart(BakeState previous, BakeScene scene, BakeSessionOptions options,
+                              std::uint64_t revision, std::vector<FaceKey> keys) {
+    std::lock_guard lock(mutex_);
+    if (keys.empty()) keys = faceKeys(scene.faces);
+    const BakeSceneView next{scene.faces, scene.lights, scene.materials, keys};
+    const auto& a = previous.baker;
+    const auto& b = options.baker;
+    const bool sameSettings = a.seed == b.seed && a.skyRays == b.skyRays && a.bounces == b.bounces &&
+                              a.bounceRays == b.bounceRays;
+    BakeDiff diff;
+    if (previous.empty() || previous.buffers.size() != std::size_t(b.bounces) + 1 || !sameSettings) {
+        diff = diffScenes({}, next); // Sized all-dirty, full.
+        diff.reason = previous.empty() ? "no previous state" : "baker settings changed";
+    } else diff = diffScenes(previous.view(), next);
+    reset(std::move(scene), options, revision, std::move(keys));
+    if (diff.full) return diff;
+
+    const auto faces = baker_->scene().faces.size();
+    const unsigned levels = options.baker.bounces + 1;
+    for (std::size_t i = 0; i < faces; ++i) {
+        const auto old = diff.oldOfNew[i];
+        if (old < 0 || diff.dirty[i]) continue;
+        for (unsigned level = 0; level < levels; ++level) {
+            if (level > 0 && diff.bounceDirty[i]) break; // Direct stays, bounce restarts.
+            auto& buffer = previous.buffers[level][std::size_t(old)];
+            try { baker_->adopt(level, i, std::move(buffer)); }
+            catch (const std::invalid_argument&) { break; } // Charts disagree: keep this face fresh.
+            facePasses_[level][i] = previous.passes[level][std::size_t(old)];
+        }
+        if (previous.unpublished[std::size_t(old)]) changed_.insert(i);
+    }
+    for (unsigned level = 0; level < levels; ++level)
+        progress_.passes[level] = facePasses_[level].empty() ? 0
+            : *std::min_element(facePasses_[level].begin(), facePasses_[level].end());
+    return diff;
 }
 
 std::vector<std::size_t> BakeSession::cameraOrder(std::span<const BakeFace> faces, DVec3 camera) {
@@ -47,33 +119,56 @@ void BakeSession::nextStage() {
     } else progress_.idle = true;
 }
 
+void BakeSession::finishTraversal() {
+    const auto& counts = facePasses_[progress_.level];
+    progress_.passes[progress_.level] = *std::min_element(counts.begin(), counts.end());
+    nextFace_ = 0;
+    order_.clear();
+    ordered_ = false;
+    nextStage();
+}
+
 void BakeSession::advance(std::size_t budget) {
-    if (progress_.idle || budget == 0) return;
-    if (order_.empty()) order_ = cameraOrder(scene().faces, camera_);
+    std::lock_guard lock(mutex_);
+    advanceLocked(budget);
+}
+
+void BakeSession::advanceLocked(std::size_t budget) {
+    if (budget == 0) return;
+    while (!ordered_) {
+        if (progress_.idle) return;
+        order_ = cameraOrder(scene().faces, camera_);
+        const auto& done = facePasses_[progress_.level];
+        std::erase_if(order_, [&](auto face) { return done[face] >= progress_.target; });
+        nextFace_ = 0;
+        ordered_ = true;
+        if (order_.empty()) finishTraversal(); // Every face already at this level's target: next stage.
+    }
+    if (progress_.idle) return;
     const auto face = order_[nextFace_];
     const std::array selection{face};
     const auto step = progress_.level == 0 ? baker_->step(budget, selection)
                                          : baker_->bounce(progress_.level, budget, selection);
     if (step.luxels) changed_.insert(face);
-    if (step.passComplete && ++nextFace_ == order_.size()) {
-        ++progress_.passes[progress_.level];
-        nextFace_ = 0;
-        order_.clear();
-        nextStage();
+    if (step.passComplete) {
+        ++facePasses_[progress_.level][face];
+        if (++nextFace_ == order_.size()) finishTraversal();
     }
 }
 
 BakePublication BakeSession::tick(CancelToken cancel, std::chrono::milliseconds time) {
+    std::lock_guard lock(mutex_);
     const auto end = std::chrono::steady_clock::now() + time;
     while (!cancel.cancelled() && !progress_.idle && std::chrono::steady_clock::now() < end) {
         const auto start = std::chrono::steady_clock::now();
-        advance(budget_);
+        advanceLocked(budget_);
         const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         // Aim below the full slice duration to bound cancellation latency, even at expensive levels.
         budget_ = std::clamp(std::size_t(double(budget_) * 5.0 / std::max(ms, 0.01)), std::size_t{1}, std::size_t{256});
     }
     BakePublication publication{progress_, {}};
-    if (cancel.cancelled()) { changed_.clear(); return publication; }
+    // A cancelled tick publishes nothing; its faces stay in changed_ for takeState to report as unpublished.
+    if (cancel.cancelled() || !baker_) return publication;
     if (!changed_.empty()) {
         auto resolved = baker_->resolve();
         for (const auto face : changed_) {

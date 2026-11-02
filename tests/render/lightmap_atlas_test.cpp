@@ -237,3 +237,17 @@ TEST_CASE("lightmap atlas: restart retains same-side radiance with resized chart
     CHECK(retained[1] == std::vector<Vec3>(3, Vec3{0}));
     CHECK(current->retainRadiance(nullptr, {}) == std::vector<std::vector<Vec3>>(2, std::vector<Vec3>(3, Vec3{0})));
 }
+
+TEST_CASE("lightmap atlas: plain faces' keys equal lighting::faceKeys") {
+    auto planes = geometry_test::boxSides({-32, -32, -32}, {512, 32, 32});
+    for (auto& side : planes) side.material = "test/one";
+    const auto poly = geometry_test::build(planes);
+    std::vector<lighting::BakeFace> faces;
+    for (const auto& face : poly.faces) for (auto& fragment : lighting::bakeFaces(face, poly.vertices)) {
+        fragment.solidId = 7;
+        faces.push_back(std::move(fragment));
+    }
+    auto atlas = LightmapAtlas::pack(faces);
+    REQUIRE(atlas);
+    CHECK(atlas->faceKeys() == lighting::faceKeys(atlas->faces));
+}

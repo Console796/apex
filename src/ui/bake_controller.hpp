@@ -37,12 +37,16 @@ private:
     JobPool& jobs_;
     JobHandle job_;
     std::shared_ptr<lighting::BakeSession> session_;
+    // The session that produced maps_/radiance_, kept across invalidate() so its converged state can seed the
+    // next one; the rebuild job takes its state (a retired session yields none, which means a full restart).
+    std::shared_ptr<lighting::BakeSession> previous_;
     std::shared_ptr<render::BakedLightmaps> maps_;
     std::vector<std::vector<Vec3>> radiance_;
     lighting::BakeSessionOptions options_;
     std::uint64_t revision_ = 0;
     std::chrono::steady_clock::time_point changed_{};
     QString status_;
+    unsigned incremental_ = 0; // Consecutive incremental restarts since the last full one.
     float scale_ = render::kDefaultBakedScale;
     bool active_ = false, busy_ = false, redraw_ = false, failed_ = false;
     void accept(lighting::BakePublication publication);

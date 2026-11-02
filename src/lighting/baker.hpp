@@ -46,6 +46,10 @@ public:
     std::vector<std::vector<Vec3>> resolve() const; // Direct + bounce means; zero if unsampled.
     std::vector<std::vector<Vec3>> resolveLevel(unsigned level) const; // 0 is direct.
     const BakeScene& scene() const { return scene_; }
+    // Incremental restart support. adopt installs previously accumulated sums/counts for one face at one
+    // level (dimensions must match). releaseBuffers moves a level out and leaves the baker unusable.
+    void adopt(unsigned level, std::size_t face, BakeBuffer buffer);
+    std::vector<BakeBuffer> releaseBuffers(unsigned level);
 
 private:
     DVec3 sample(std::size_t face, std::size_t luxel) const;

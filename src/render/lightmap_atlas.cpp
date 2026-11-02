@@ -7,6 +7,7 @@
 #include <limits>
 #include <numeric>
 #include <set>
+#include <tuple>
 
 namespace apex::render {
 namespace {
@@ -70,6 +71,23 @@ void LightmapAtlas::bindInstances(std::span<const document::InstanceSolidOrigin>
         }
         if (baked) instances[origin.placement][origin.templateSolid] = origin;
     }
+}
+
+std::vector<lighting::FaceKey> LightmapAtlas::faceKeys() const {
+    std::vector<lighting::FaceKey> keys;
+    keys.reserve(faces.size());
+    std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint32_t>, std::uint32_t> ordinal;
+    for (const auto& face : faces) {
+        lighting::FaceKey key{0, face.solidId, face.sideId, 0};
+        if (const auto found = templateOfSide.find({face.solidId, face.sideId}); found != templateOfSide.end()) {
+            std::uint64_t hash = (0xcbf29ce484222325ULL ^ found->second.placement.owner) * 0x100000001b3ULL;
+            for (const auto id : found->second.placement.nested) hash = (hash ^ std::uint64_t(id)) * 0x100000001b3ULL;
+            key = {hash | 1, std::uint64_t(found->second.solid), std::uint32_t(found->second.side), 0};
+        }
+        key.fragment = ordinal[{key.scope, key.solid, key.side}]++;
+        keys.push_back(key);
+    }
+    return keys;
 }
 
 std::vector<std::vector<Vec3>> LightmapAtlas::retainRadiance(

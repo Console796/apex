@@ -151,6 +151,18 @@ BakeStep Baker::bounce(unsigned level, std::size_t budget, std::span<const std::
     return stepLevel(level, budget, faces);
 }
 
+void Baker::adopt(unsigned level, std::size_t face, BakeBuffer buffer) {
+    auto& target = level == 0 ? buffers_ : bounceBuffers_.at(level - 1);
+    if (face >= target.size() || buffer.dimensions != target[face].dimensions ||
+        buffer.radiance.size() != target[face].radiance.size() || buffer.samples.size() != target[face].samples.size())
+        throw std::invalid_argument("Baker::adopt: buffer does not match the face");
+    target[face] = std::move(buffer);
+}
+
+std::vector<BakeBuffer> Baker::releaseBuffers(unsigned level) {
+    return std::move(level == 0 ? buffers_ : bounceBuffers_.at(level - 1));
+}
+
 const std::vector<BakeBuffer>& Baker::buffers(unsigned level) const {
     return level == 0 ? buffers_ : bounceBuffers_.at(level - 1);
 }

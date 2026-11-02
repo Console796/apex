@@ -35,6 +35,9 @@ QString progressText(const lighting::BakeProgress& p, unsigned maximum) {
         text += QStringLiteral(", bounce %1 %2/%3").arg(i).arg(p.passes[i]).arg(maximum);
     return text;
 }
+// Drift guard: bounce reach and light range are cut off at fixed bounds, so after this many incremental
+// restarts in a row the next one bakes everything again.
+constexpr unsigned kMaxIncrementalRestarts = 16;
 }
 
 void showBakeSettings(QWidget* parent) {
@@ -80,6 +83,7 @@ BakeController::~BakeController() { job_.cancel(); }
 
 void BakeController::invalidate() {
     job_.cancel();
+    if (session_) previous_ = std::move(session_);
     session_.reset();
     busy_ = false;
     failed_ = false;
@@ -97,7 +101,7 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
     if (scale_ != scale) { scale_ = scale; redraw_ = true; }
     if (active_ != active) {
         active_ = active;
-        if (!active) { job_.cancel(); session_.reset(); busy_ = false; }
+        if (!active) { job_.cancel(); session_.reset(); previous_.reset(); busy_ = false; }
         else { failed_ = false; status_ = QStringLiteral("Baked: preparing snapshot"); redraw_ = true; }
     }
     if (!active_ || busy_ || failed_ || std::chrono::steady_clock::now() - changed_ < std::chrono::milliseconds(250))
@@ -108,11 +112,13 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
         const auto revision = revision_;
         busy_ = true;
         auto previous = maps_ ? maps_->layout() : nullptr;
+        auto earlier = incremental_ < kMaxIncrementalRestarts ? previous_ : nullptr;
         job_ = jobs_.submit(Priority::Low,
             [snapshot = std::move(snapshot), vfs = vfs_, map, extraRoot, options, revision,
-             previous = std::move(previous), radiance = radiance_](CancelToken cancel) {
+             previous = std::move(previous), radiance = radiance_, earlier = std::move(earlier)](CancelToken cancel) {
                 struct Prepared {
                     std::shared_ptr<lighting::BakeSession> session;
+                    bool incremental = false;
                     std::optional<render::LightmapAtlas> atlas;
                     std::vector<std::vector<Vec3>> radiance;
                     QString error;
@@ -128,8 +134,15 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                     atlas->bindInstances(origins);
                     result.radiance = atlas->retainRadiance(previous.get(), radiance);
                     atlas->retainStale = true;
+                    // Last cancellable point: after takeState the old state lives only in the new session.
+                    if (cancel.cancelled()) return result;
+                    auto state = earlier ? earlier->takeState() : lighting::BakeState{};
+                    auto keys = atlas->faceKeys();
+                    result.session = std::make_shared<lighting::BakeSession>(lighting::BakeScene{}, options, revision);
                     result.atlas = std::move(*atlas);
-                    result.session = std::make_shared<lighting::BakeSession>(std::move(setup.scene), options, revision);
+                    const auto diff = result.session->restart(std::move(state), std::move(setup.scene), options, revision,
+                                                              std::move(keys));
+                    result.incremental = !diff.full;
                 } catch (const std::exception& e) { result.error = QString::fromUtf8(e.what()); }
                 return result;
             }, [this](auto prepared) {
@@ -159,6 +172,8 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                 maps_ = std::move(*maps);
                 radiance_ = std::move(retained);
                 session_ = std::move(prepared.session);
+                previous_.reset();
+                incremental_ = prepared.incremental ? incremental_ + 1 : 0;
                 mirror_.setLightmaps(maps_);
                 status_ = progressText(session_->progress(), options_.maxPasses);
                 redraw_ = true;

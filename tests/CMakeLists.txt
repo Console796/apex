@@ -12,7 +12,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
-               lighting/light_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp lighting/charting_test.cpp lighting/cpu_accel_test.cpp lighting/baker_test.cpp lighting/bake_session_test.cpp lighting/bake_casters_test.cpp
+               lighting/light_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp lighting/charting_test.cpp lighting/cpu_accel_test.cpp lighting/baker_test.cpp lighting/bake_session_test.cpp lighting/bake_diff_test.cpp lighting/bake_casters_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp
@@ -41,7 +41,7 @@ doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
-add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp)
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp)
 target_link_libraries(apex_measure_tests PRIVATE apex_render apex_editor apex_assets sourcepp::vpkpp sourcepp::steampp apex_warnings doctest::doctest)
 doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "document/instance_contents.hpp"
+#include "lighting/bake_diff.hpp"
 #include "lighting/bake_scene.hpp"
 #include "render/texture_heap.hpp"
 
@@ -40,6 +41,9 @@ struct LightmapAtlas {
     DVec2 uv(std::size_t face, DVec3 world) const;
     // Record where each expanded instance solid came from (expandBakeInstances); call after pack.
     void bindInstances(std::span<const document::InstanceSolidOrigin> origins);
+    // Incremental-bake identity per face: instance faces by template placement/solid/side (stable across
+    // edits, unlike the expansion's ids), the rest by source solid/side; plus the fragment ordinal.
+    std::vector<lighting::FaceKey> faceKeys() const;
     // CPU-only restart seed: nearest old luxel of the same source side, black for new sides.
     std::vector<std::vector<Vec3>> retainRadiance(
         const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const;

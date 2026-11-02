@@ -172,3 +172,23 @@ TEST_CASE("a live bake session over instances publishes lit instance faces") {
     }
     CHECK(seen.size() == 2); // Both placements have published, lit faces.
 }
+
+TEST_CASE("atlas face keys follow template identity for instance faces and are unique per fragment") {
+    Fixture f;
+    const auto keys = f.atlas.faceKeys();
+    REQUIRE(keys.size() == f.atlas.faces.size());
+    CHECK(std::set<lighting::FaceKey>(keys.begin(), keys.end()).size() == keys.size());
+    std::set<std::uint64_t> scopes;
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        const auto& face = f.atlas.faces[i];
+        const auto found = f.atlas.templateOfSide.find({face.solidId, face.sideId});
+        if (found == f.atlas.templateOfSide.end()) { CHECK(keys[i].scope == 0); continue; }
+        CHECK(keys[i].scope != 0);
+        CHECK(keys[i].solid == std::uint64_t(found->second.solid));
+        CHECK(keys[i].side == std::uint32_t(found->second.side));
+        scopes.insert(keys[i].scope);
+    }
+    CHECK(scopes.size() == 2); // One scope per placement of the file.
+    // Unchanged expansion gives identical keys on a second pack: the identity does not depend on layout.
+    CHECK(Fixture().atlas.faceKeys() == keys);
+}
