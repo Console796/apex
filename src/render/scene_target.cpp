@@ -1,10 +1,13 @@
 #include "render/scene_target.hpp"
+#include "render/probe_volume.hpp"
 
 #include <cassert>
 #include <cstring>
 #include <glm/gtc/packing.hpp>
 
 namespace apex::render {
+
+SceneTarget::SceneTarget(Context& context, TextureHeap& heap) : context_(&context), heap_(&heap) {}
 
 SceneTarget::~SceneTarget() {
     if (color_ || depth_) context_->waitIdle();

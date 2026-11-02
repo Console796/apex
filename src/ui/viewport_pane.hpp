@@ -62,6 +62,7 @@ public:
     std::uint32_t clusterOverflow() const { return clusterOverflow_; }
     std::uint32_t shadowOverflow() const { return shadowOverflow_; }
     bool failed() const { return failed_; }
+    bool realtimeIndirectAvailable() const;
     std::uint32_t recreateCount() const { return swapchain_ ? swapchain_->recreateCount() : 0; }
 
     void releaseCapture();

@@ -217,6 +217,15 @@ inline std::size_t nearestCubemap(std::span<const CubemapProbe> probes, DVec3 po
     return nearest;
 }
 
+struct ProbeSettings {
+    glm::uvec3 dims{32, 32, 16};
+    float spacing = 64.0f;
+    std::uint32_t probesPerFrame = 256;
+    float hysteresis = 0.9f;
+    float normalBias = 2.0f;
+    bool operator==(const ProbeSettings&) const = default;
+};
+
 struct DrawList {
     DisplayMode mode = DisplayMode::Textured;
     TextureSlot lightmap = kNoTexture;
@@ -229,6 +238,8 @@ struct DrawList {
     bool fullbright = false; // Lit: unit irradiance, useful for inspecting albedo.
     // Lit stand-in for bounce light until the 0.7 probes (plans/0.7-realtime-gi.md, option A): a constant
     // fill irradiance, and a depth-based AO that darkens the dim, fill-dominated pixels. 0 disables each.
+    bool realtimeIndirect = false; // Lit only; requires ray query.
+    ProbeSettings probeSettings;
     float ambientFill = 0.0f;
     float aoStrength = 0.0f;
     float aoRadius = 64.0f; // Map units.
@@ -301,6 +312,7 @@ class Renderer {
     // record once per recording, and finish its previous submission before reusing it (as
     // Swapchain does). Frame buffers are retained per slot, including across preview clears.
     void record(VkCommandBuffer commands, const DrawList& list);
+    void resetIndirect(SceneTarget& scene); // Discard temporal history before an independent capture.
     // Blocking six-face linear HDR capture, before tone mapping or editor overlays (D16).
     Result<assets::Texture> buildCubemap(DrawList list, DVec3 origin, std::uint32_t size = 32);
     // The atlas may be shared by renderers with different attachment formats.

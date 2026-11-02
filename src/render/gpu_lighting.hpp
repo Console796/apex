@@ -39,8 +39,17 @@ struct alignas(16) FrameBlock {
     VkDeviceAddress shadows = 0;
     std::uint32_t shadowAtlas = 0, shadowCount = 0;
     Vec4 fill{0.0f}; // x: constant ambient fill irradiance (linear, before albedo); y: baked display scale; z: lightmap slot bits; w: tool-texture overlay irradiance (0 off).
+    VkDeviceAddress indirectProbes = 0;
+    std::uint32_t indirectPad[2]{};
+    glm::uvec4 indirectDims{0};
+    Vec4 indirectOrigin{0}; // Camera-relative centre of the first probe.
+    Vec4 indirectParams{0}; // spacing, normal bias; zw reserved.
 };
-static_assert(sizeof(FrameBlock) == 432);
+static_assert(sizeof(FrameBlock) == 496);
+static_assert(offsetof(FrameBlock, indirectProbes) == 432);
+static_assert(offsetof(FrameBlock, indirectDims) == 448);
+static_assert(offsetof(FrameBlock, indirectOrigin) == 464);
+static_assert(offsetof(FrameBlock, indirectParams) == 480);
 static_assert(offsetof(FrameBlock, fill) == 416);
 static_assert(offsetof(FrameBlock, shadows) == 400);
 static_assert(offsetof(FrameBlock, shadowAtlas) == 408);

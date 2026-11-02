@@ -25,6 +25,7 @@ struct Overlays {
     bool backfaceCulling = true; // False draws the back of every face too (Textured, Flat, Lit).
     bool toolFixedBrightness = false; // Lit/Baked: tool textures drawn at a fixed brightness, not lit or baked.
     bool luxelDensity = false;   // Baked/Vrad: the lightmap lattice as a checker, one cell per luxel (0.7.5 D7).
+    bool realtimeIndirect = false; // Lit: ray-traced irradiance probes (approximation).
     bool approxBounce = true;    // Lit: constant ambient fill plus screen-space AO, a stand-in for bounce light.
 
     bool operator==(const Overlays&) const = default;

@@ -45,6 +45,8 @@ struct Options {
     int width = 1920, height = 1080;
     double fov = 90;
     int timeFrames = 0;
+    bool indirectProbes = false;
+    int indirectFrames = 1;
     unsigned bakePasses = 16;
     lighting::BakerOptions bakeOptions{.bounces = 2};
     float bakeScale = render::kDefaultBakedScale;
@@ -64,6 +66,7 @@ struct Options {
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
                  "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad]\n"
+                 "  [--indirect off|probes] [--indirect-frames N]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.62]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad]\n"
@@ -87,6 +90,7 @@ void help() {
                  "gave no data (displacements, nolight, tools) are black. --vrad-flags replaces the extra vrad\n"
                  "arguments (default -noextra), --no-vis skips vvis, --vrad-scale is the display scale (else\n"
                  "--bake-scale), --keep-vrad keeps the temp directory and prints it.\n"
+                 "--indirect probes enables realtime diffuse probes in Lit; --indirect-frames N accumulates N frames per pose.\n"
                  "--no-specular disables direct-light highlights for image comparisons in Lit or Baked.\n"
                  "--tool-fixed-brightness [VALUE] shows tools/* faces (normally hidden here) at a fixed linear\n"
                  "brightness in Lit or Baked instead of lighting (default VALUE 1, the Textured view's level).\n"
@@ -163,6 +167,17 @@ Options parse(int argc, char** argv) {
             if (value < 1 || value > 10000 || std::floor(value) != value)
                 throw std::runtime_error("--time takes a frame count in [1, 10000]");
             o.timeFrames = static_cast<int>(value);
+        }
+        else if (flag == "--indirect") {
+            const auto value = next();
+            if (value != "off" && value != "probes") throw std::runtime_error("--indirect takes off or probes");
+            o.indirectProbes = value == "probes";
+        }
+        else if (flag == "--indirect-frames") {
+            const double value = number(next());
+            if (value < 1 || value > 10000 || std::floor(value) != value)
+                throw std::runtime_error("--indirect-frames takes a frame count in [1, 10000]");
+            o.indirectFrames = static_cast<int>(value);
         }
         else if (flag == "--mode") o.mode = next();
         else if (flag == "--density") o.density = true;
@@ -333,6 +348,7 @@ int run(const Options& o) {
         paths.gameDirectory = profile.gameDirectory;
         paths.toolDirectory = profile.toolDirectory();
         paths.instanceRoot = profile.instanceSearchRoot();
+        paths.contentGameInfo = take(vfs.compileGameInfo());
         for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"}, {"light_exe", "vrad"}})
             paths.tools[variable] = profile.toolPath(tool).string();
         const auto started = std::chrono::steady_clock::now();
@@ -347,7 +363,6 @@ int run(const Options& o) {
                   << " displacement=" << stats.displacement << " no-data=" << stats.noData
                   << " unowned=" << stats.unowned << " shared=" << stats.shared
                   << " mismatched=" << stats.mismatched << '\n';
-        paths.contentGameInfo = take(vfs.compileGameInfo());
         if (o.keepVrad) std::cout << "vrad directory=" << trip.directory().string() << '\n';
         auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(loaded.atlas)));
         check(maps->upload(o.density ? render::densityRadiance(maps->atlas()) : loaded.radiance));
@@ -417,6 +432,12 @@ int run(const Options& o) {
         if (list.toolBrightness > 0.0f) list.toolBrightness = o.toolBrightness;
         if (o.noSpecular) for (auto& light : list.lights) light.specularMode = 0;
         list.fullbright = mode == "fullbright";
+        list.realtimeIndirect = o.indirectProbes && mode == "lit";
+        if (list.realtimeIndirect) {
+            if (!context->info().rayQuery) throw std::runtime_error("--indirect probes requires a ray-query device");
+            renderer->resetIndirect(scene);
+            std::cout << "indirect: probes (approximation), frames=" << o.indirectFrames << '\n';
+        }
         // Leave exposure at DrawList's default, as ViewportPane does.
         constexpr float clear[] = {0.1f, 0.1f, 0.1f, 1.0f};
         VkCommandBuffer slot = VK_NULL_HANDLE;
@@ -429,7 +450,7 @@ int run(const Options& o) {
                 target.end(commands);
             }));
         };
-        render();
+        for (int frame = 0; frame < (list.realtimeIndirect ? o.indirectFrames : 1); ++frame) render();
         const auto image = take(target.readback());
         const QImage png = QImage(image.pixels.data(), o.width, o.height, o.width * 4, QImage::Format_RGBA8888).copy();
         if (o.sources.empty()) write(png, fileName(pose, o));

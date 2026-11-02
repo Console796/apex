@@ -46,8 +46,9 @@ struct alignas(16) GpuMaterial {
     Vec4 refractParams{0, 0, 0, 0}; // $refractamount, $localrefract depth (world units), eta; w reserved
     Vec4 parallaxParams{0, 0, 1, 0}; // $parallaxdepth, $parallaxcenter, $parallaxscale; w reserved
     Vec4 colour2{1, 1, 1, 0};        // $color2 decoded by 2.2, applied with kMaterialColour2
+    Vec4 bounce{0.5f, 0.5f, 0.5f, 0}; // Linear bake reflectivity; w: 1 sky, 2 non-emitting tool.
 };
-static_assert(sizeof(GpuMaterial) == 208);
+static_assert(sizeof(GpuMaterial) == 224);
 static_assert(alignof(GpuMaterial) == 16);
 static_assert(offsetof(GpuMaterial, mraoSlot) == 16);
 static_assert(offsetof(GpuMaterial, phongExponentSlot) == 20);
@@ -66,5 +67,6 @@ static_assert(offsetof(GpuMaterial, refractTint) == 144);
 static_assert(offsetof(GpuMaterial, refractParams) == 160);
 static_assert(offsetof(GpuMaterial, parallaxParams) == 176);
 static_assert(offsetof(GpuMaterial, colour2) == 192);
+static_assert(offsetof(GpuMaterial, bounce) == 208);
 
 } // namespace apex::render

@@ -129,7 +129,7 @@ void main() {
                 Light light = LightBuffer(frame.lights).lights[i];
                 vec3 energy = irradiance(light, vPosition, normal, frame) *
                     shadowVisibility(frame, light, vPosition, geometricNormal);
-                if (!baked && hasDirect(light)) diffuse += energy * (light.kindMode.x == 5u ? mrao.b : 1.0);
+                if (!baked && hasDirect(light) && (light.kindMode.x != 5u || frame.indirectDims.x == 0u)) diffuse += energy * (light.kindMode.x == 5u ? mrao.b : 1.0);
                 if ((!pbr && !phong) || !hasSpecular(light)) continue;
                 vec3 delta = light.kindMode.x == 3u ? -light.directionInner.xyz : light.originRadius.xyz - vPosition;
                 if (dot(delta, delta) <= 1e-12) continue;
@@ -139,6 +139,8 @@ void main() {
                               material.phongFresnel.xyz, material.phongTint.xyz, mask);
                 specular += specularIrradiance(energy, dot(normal, toLight), brdf);
             }
+            if ((frame.flags & 4u) == 0u && !fullbright && frame.indirectDims.x != 0u)
+                diffuse += sampleIndirect(frame, vPosition, normal) * mrao.b;
             // Constant bounce stand-in, a touch brighter facing up; the AO in the display pass darkens it.
             if (!baked) diffuse += vec3(frame.fill.x * (0.8 + 0.2 * normal.z)) * mrao.b;
             colour = albedo * (1.0 - mrao.r) * diffuse + specular;

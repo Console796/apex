@@ -131,6 +131,7 @@ json::Value toJson(const Viewport& vp) {
     ov["portals"] = boolean(vp.overlays.portals);
     ov["cordons"] = boolean(vp.overlays.cordons);
     ov["backfaceCulling"] = boolean(vp.overlays.backfaceCulling);
+    ov["realtimeIndirect"] = boolean(vp.overlays.realtimeIndirect);
     ov["approxBounce"] = boolean(vp.overlays.approxBounce);
     ov["toolFixedBrightness"] = boolean(vp.overlays.toolFixedBrightness);
     ov["luxelDensity"] = boolean(vp.overlays.luxelDensity);
@@ -206,6 +207,7 @@ Result<Viewport> viewportFromJson(const json::Value& value) {
                                Field{"portals", &vp.overlays.portals},
                                Field{"cordons", &vp.overlays.cordons},
                                Field{"backfaceCulling", &vp.overlays.backfaceCulling},
+                               Field{"realtimeIndirect", &vp.overlays.realtimeIndirect},
                                Field{"approxBounce", &vp.overlays.approxBounce},
                                Field{"toolFixedBrightness", &vp.overlays.toolFixedBrightness},
                                Field{"luxelDensity", &vp.overlays.luxelDensity}}) {

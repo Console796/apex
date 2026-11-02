@@ -4,6 +4,7 @@
 #extension GL_EXT_buffer_reference_uvec2 : require
 
 #include "frame.inc"
+#include "probes.inc"
 
 // GpuLight in gpu_lighting.hpp; std430, 96-byte stride.
 struct Light {
@@ -79,10 +80,9 @@ float sampleSkyVisibility(FrameBlock frame, vec3 point, vec3 normal) {
     return weight > 1e-9 ? skyAmbientResponse(normal.z) * sum / weight : 0.0;
 }
 
-vec3 irradiance(Light light, vec3 point, vec3 normal, FrameBlock frame) {
+vec3 localIrradiance(Light light, vec3 point, vec3 normal) {
     uint kind = light.kindMode.x;
     if (kind == 3u) return light.intensityExponent.xyz * surfaceResponse(dot(normal, -light.directionInner.xyz));
-    if (kind == 5u) return light.intensityExponent.xyz * sampleSkyVisibility(frame, point, normal);
     if (kind != 1u && kind != 2u) return vec3(0.0);
     vec3 delta = light.originRadius.xyz - point;
     float distance = length(delta);
@@ -104,6 +104,10 @@ vec3 irradiance(Light light, vec3 point, vec3 normal, FrameBlock frame) {
         }
     }
     return light.intensityExponent.xyz * scale;
+}
+vec3 irradiance(Light light, vec3 point, vec3 normal, FrameBlock frame) {
+    if (light.kindMode.x == 5u) return light.intensityExponent.xyz * sampleSkyVisibility(frame, point, normal);
+    return localIrradiance(light, point, normal);
 }
 bool hasDirect(Light light) { return light.kindMode.y == 1u || light.kindMode.y == 2u; }
 bool hasSpecular(Light light) { return light.kindMode.x != 5u && light.kindMode.z == 2u; }

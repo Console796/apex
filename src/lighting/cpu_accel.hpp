@@ -16,6 +16,7 @@ namespace apex::lighting {
 struct TriangleMesh {
     std::vector<std::array<float, 3>> positions;
     std::vector<std::uint32_t> indices;
+    std::vector<std::uint32_t> materials; // Optional per-vertex source material IDs; interpreted by the caller.
 };
 
 using RayTransform = std::array<std::array<float, 4>, 3>; // Row-major object-to-world.

@@ -1,5 +1,6 @@
 #include "render/renderer.hpp"
 #include "render/clusters.hpp"
+#include "render/probe_volume.hpp"
 
 #include "core/log.hpp"
 #include "render/render_target.hpp"
@@ -588,6 +589,21 @@ Result<bool> Renderer::reloadChangedShaders() {
 
 void Renderer::prepare(VkCommandBuffer commands, const DrawList& list, SceneTarget& scene, const float clearColor[4]) {
     if (!sceneMode(list.mode)) return;
+    if (list.realtimeIndirect && list.mode == DisplayMode::Lit && !list.fullbright &&
+        !list.buildingCubemap && impl_->context->info().rayQuery) {
+        // History belongs to the viewport, while upload slots belong to command buffers.
+        // SceneAccel mutations and descriptor rewrites require completed previous uses.
+        impl_->context->waitIdle();
+        auto& volume = scene.indirect_;
+        if (!volume) {
+            auto created = ProbeVolume::create(*impl_->context);
+            if (!created) { log::error("indirect probes: {}", created.error().what()); return; }
+            volume = std::move(*created);
+        }
+        auto updated = volume->update(list, impl_->heap->materials());
+        if (!updated) { log::error("indirect probes: {}", updated.error().what()); return; }
+        volume->record(commands);
+    }
     impl_->shadowOwner = &scene;
     const bool uploaded = uploadFrame(commands, list, scene.extent());
     impl_->shadowOwner = nullptr;
@@ -764,6 +780,11 @@ Result<assets::Texture> Renderer::buildCubemap(DrawList list, DVec3 origin, std:
     return result;
 }
 
+void Renderer::resetIndirect(SceneTarget& scene) {
+    impl_->context->waitIdle();
+    if (scene.indirect_) scene.indirect_->reset();
+}
+
 bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExtent2D extent) {
     Impl& s = *impl_;
     const VkDeviceSize lightOffset = sizeof(FrameBlock);
@@ -835,6 +856,10 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     }
     auto* bytes = static_cast<std::byte*>(buffer.mapped());
     FrameBlock frame;
+    if (list.realtimeIndirect && list.mode == DisplayMode::Lit && !list.fullbright && !list.buildingCubemap) {
+        if (s.shadowOwner && s.shadowOwner->indirect_)
+            s.shadowOwner->indirect_->pack(frame, list.view.cameraPosition);
+    }
     auto& shadow = s.shadowSlots[commands];
     shadow.tiles.clear();
     shadow.rects.clear();

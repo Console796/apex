@@ -2,7 +2,10 @@
 
 #include "render/texture_heap.hpp"
 
+#include <memory>
+
 namespace apex::render {
+class ProbeVolume;
 
 // Viewport-sized HDR scene and reversed-Z depth, both sampled by the display pass. The heap and
 // context must outlive the target. Resize requires completion of every prior use: the UI calls it
@@ -12,7 +15,7 @@ class SceneTarget {
     static constexpr VkFormat kColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
     static constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
 
-    SceneTarget(Context& context, TextureHeap& heap) : context_(&context), heap_(&heap) {}
+    SceneTarget(Context& context, TextureHeap& heap);
     ~SceneTarget(); // Waits idle before releasing registrations and images.
     SceneTarget(const SceneTarget&) = delete;
     SceneTarget& operator=(const SceneTarget&) = delete;
@@ -31,6 +34,8 @@ class SceneTarget {
     Result<std::vector<float>> readback(); // Linear RGBA, after completion.
 
   private:
+    friend class Renderer;
+    std::unique_ptr<ProbeVolume> indirect_; // One viewport history, released with its target.
     Context* context_;
     TextureHeap* heap_;
     Image color_, depth_;

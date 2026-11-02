@@ -513,6 +513,10 @@ void PaneWindow::applyNavigation(double dt) {
     scroll_ = 0.0;
 }
 
+bool PaneWindow::realtimeIndirectAvailable() const {
+    return host_.context() && host_.context()->info().rayQuery;
+}
+
 double PaneWindow::tick(bool forceDraw) {
     if (clusterPending_ && swapchain_ && swapchain_->frameComplete()) {
         if (auto* renderer = host_.renderer(swapchain_->format())) {
@@ -525,7 +529,10 @@ double PaneWindow::tick(bool forceDraw) {
     applyNavigation(dt);
     if (resizeDragging_ && !swapchain_) return -1.0;
     const bool retiring = swapchain_ && swapchain_->hasRetiredSwapchains();
-    if ((!dirty_ && !forceDraw && !retiring) || !isExposed() || failed_) return -1.0;
+    const auto* vp = accessor_();
+    const bool accumulating = vp && vp->mode == viewport::DisplayMode::Lit && vp->overlays.realtimeIndirect &&
+                              host_.context() && host_.context()->info().rayQuery;
+    if ((!dirty_ && !forceDraw && !retiring && !accumulating) || !isExposed() || failed_) return -1.0;
     return draw();
 }
 
@@ -585,6 +592,7 @@ double PaneWindow::draw() {
     options.showNodraw = vp->overlays.nodrawFaces;
     options.toolFixedBrightness = vp->overlays.toolFixedBrightness;
     options.cullBackFaces = vp->overlays.backfaceCulling;
+    options.realtimeIndirect = vp->overlays.realtimeIndirect;
     if (vp->overlays.approxBounce) {
         options.ambientFill = 0.03f;
         options.aoStrength = 1.0f;
@@ -810,6 +818,9 @@ void PaneFrame::refreshTitle() {
     const auto* vp = accessor_();
     if (!vp) return;
     QString text = viewName(*vp) + QStringLiteral("  |  ") + modeName(vp->mode);
+    if (vp->mode == viewport::DisplayMode::Lit && vp->overlays.realtimeIndirect)
+        text += window_ && window_->realtimeIndirectAvailable() ? tr("  |  indirect: probes (approximation)") :
+                                                               tr("  |  indirect: unavailable (requires ray query)");
     if (vp->compare) text += tr("  (A/B: swaps with %1)").arg(modeName(*vp->compare));
     if (maximized_) text += tr("  (maximized)");
     title_->setText(text);
@@ -943,11 +954,16 @@ void PaneFrame::buildMenu() {
                                     {"Luxel density (Baked, VRAD)", &viewport::Overlays::luxelDensity},
                                     {"Approximate bounce (Lit)", &viewport::Overlays::approxBounce}};
     for (const auto& entry : entries) {
+                                    {"Realtime indirect", &viewport::Overlays::realtimeIndirect},
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);
         a->setChecked(vp->overlays.*(entry.field));
         connect(a, &QAction::toggled, this, [edit, field = entry.field](bool on) {
             edit([field, on](viewport::Viewport& v) { v.overlays.*field = on; });
+        if (entry.field == &viewport::Overlays::realtimeIndirect) {
+            a->setEnabled(window_ && window_->realtimeIndirectAvailable());
+            a->setToolTip(tr("Ray-traced diffuse approximation; requires ray query support."));
+        }
         });
     }
 

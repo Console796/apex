@@ -1,6 +1,7 @@
 #include "document/entity_helpers.hpp"
 #include "render/render_mirror.hpp"
 #include "render/lightmap_atlas.hpp"
+#include "render/bake_setup.hpp"
 
 #include "core/log.hpp"
 #include "assets/model_pose.hpp"
@@ -74,8 +75,10 @@ std::shared_ptr<const lighting::TriangleMesh> retainMesh(std::span<const BrushVe
                                                        std::span<const std::uint32_t> indices) {
     auto mesh = std::make_shared<lighting::TriangleMesh>();
     mesh->positions.reserve(vertices.size());
-    for (const auto& vertex : vertices)
+    for (const auto& vertex : vertices) {
         mesh->positions.push_back({vertex.position[0], vertex.position[1], vertex.position[2]});
+        mesh->materials.push_back(vertex.material);
+    }
     mesh->indices.assign(indices.begin(), indices.end());
     return mesh;
 }
@@ -481,6 +484,22 @@ struct RenderMirror::Impl {
             }
         }
         GpuMaterial record{state.slot, state.bumpSlot, flags, kNoTexture};
+        Vec3 baseReflectivity(0.5f);
+        if (!vmt.baseTexture.empty()) {
+            if (vmt.previewTexture() == vmt.baseTexture) {
+                for (int c = 0; c < 3; ++c) baseReflectivity[c] = std::clamp(texture.reflectivity[c], 0.0f, 1.0f);
+            } else if (auto base = cache.loadTexture(vmt.baseTexture)) {
+                for (int c = 0; c < 3; ++c) baseReflectivity[c] = std::clamp(base->reflectivity[c], 0.0f, 1.0f);
+            }
+        }
+        record.bounce = Vec4(bakeReflectivity(vmt, baseReflectivity), 0);
+        const auto compileFlag = [&](const char* key) {
+            const auto found = vmt.compileFlags.find(key);
+            return found != vmt.compileFlags.end() && !found->second.empty() && found->second != "0";
+        };
+        if (name.starts_with("tools/toolsskybox") || compileFlag("%compilesky")) record.bounce.w = 1;
+        else if (name.starts_with("tools/") || compileFlag("%compilenolight") || compileFlag("%compilenodraw"))
+            record.bounce.w = 2;
         if (const DVec3 colour2 = vmt.color2(); colour2 != DVec3(1)) {
             // A VMT colour like $envmaptint: decoded by Source's 2.2 rule.
             record.flags |= kMaterialColour2;
@@ -1800,6 +1819,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     if (m.lightmaps) list.lightmap = m.lightmaps->slot();
     list.exposure = options.exposure;
     if (options.toolFixedBrightness && sceneMode(options.mode)) list.toolBrightness = kToolFixedBrightness;
+    list.realtimeIndirect = options.realtimeIndirect;
     list.ambientFill = options.ambientFill;
     list.aoStrength = options.aoStrength;
     list.aoRadius = options.aoRadius;

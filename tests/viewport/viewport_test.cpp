@@ -101,6 +101,7 @@ TEST_CASE("viewport JSON round trip and validation") {
     vp.overlays.backfaceCulling = false;
     vp.overlays.toolFixedBrightness = true;
     vp.overlays.luxelDensity = true;
+    vp.overlays.realtimeIndirect = true;
     vp.mode = DisplayMode::Vrad;
     vp.compare = DisplayMode::Baked; // Session only: never saved.
     const auto text = json::write(toJson(vp));
@@ -113,6 +114,7 @@ TEST_CASE("viewport JSON round trip and validation") {
     CHECK(back->mode == DisplayMode::Vrad);
     CHECK_FALSE(back->compare);
     CHECK(back->overlays.luxelDensity);
+    CHECK(back->overlays.realtimeIndirect);
     CHECK(back->overlays.normals);
     CHECK_FALSE(back->overlays.nodrawFaces);
     CHECK(back->overlays.entityNames);
@@ -127,6 +129,7 @@ TEST_CASE("viewport JSON round trip and validation") {
     CHECK(older->overlays.backfaceCulling);
     CHECK_FALSE(older->overlays.toolFixedBrightness);
     CHECK_FALSE(older->overlays.luxelDensity);
+    CHECK_FALSE(older->overlays.realtimeIndirect);
 
     CHECK_FALSE(viewportFromJson(*json::parse(R"({"mode":"nope"})")));
     CHECK_FALSE(viewportFromJson(*json::parse(R"({"camera":{"fov":0}})")));

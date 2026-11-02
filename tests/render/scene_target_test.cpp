@@ -116,7 +116,7 @@ TEST_CASE("render: light normal and specular material GLSL transcription matches
         Vec4 texel{}, dpdx{}, dpdy{}, uv{};
         GpuMaterial material{};
     };
-    static_assert(sizeof(Sample) == 416);
+    static_assert(sizeof(Sample) == 432);
     static_assert(offsetof(Sample, material) == 208);
     const auto grid = testing::skyRoomGrid();
     REQUIRE(grid.validCount() > 0);

@@ -18,7 +18,7 @@ const uint MATERIAL_LOCAL_REFRACT = 4096u;
 const uint MATERIAL_PARALLAX = 8192u;
 const uint MATERIAL_COLOUR2 = 16384u;
 const uint NO_TEXTURE = 0xFFFFFFFFu;
-// GpuMaterial in gpu_material.hpp; std430, 208-byte stride.
+// GpuMaterial in gpu_material.hpp; std430, 224-byte stride.
 struct Material {
     uint baseSlot; uint bumpSlot; uint flags; uint selfIllumMaskSlot;
     uint mraoSlot; uint phongExponentSlot; uint envmapSlot; uint envmapMaskSlot;
@@ -33,6 +33,7 @@ struct Material {
     vec4 refractParams; // x = $refractamount, y = $localrefract depth (world units), z = eta
     vec4 parallaxParams; // x = $parallaxdepth, y = $parallaxcenter, z = $parallaxscale
     vec4 colour2; // $color2, linear; applied with MATERIAL_COLOUR2
+    vec4 bounce;
 };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer MaterialBuffer {
     Material records[];
@@ -44,7 +45,7 @@ Material materialRecord(FrameBlock frame, uint slot) {
                     vec4(0.0, 0.5, 1.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0),
                     vec4(1.0, 1.0, 1.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0),
                     vec4(0.0, 1.0, 0.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0), vec4(0.0),
-                    vec4(0.0, 0.0, 1.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0));
+                    vec4(0.0, 0.0, 1.0, 0.0), vec4(1.0, 1.0, 1.0, 0.0), vec4(0.5, 0.5, 0.5, 0.0));
 }
 
 // GpuCubemapProbe in gpu_lighting.hpp; std430, 80-byte stride. Camera-relative positions.

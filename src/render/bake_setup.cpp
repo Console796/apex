@@ -14,6 +14,13 @@
 
 namespace apex::render {
 using namespace lighting;
+Vec3 bakeReflectivity(const assets::Material& material, Vec3 baseReflectivity) {
+    const auto reflectivity = material.vector("$reflectivity", DVec3(baseReflectivity));
+    Vec3 result;
+    for (int c = 0; c < 3; ++c)
+        result[c] = static_cast<float>(std::clamp(reflectivity[c], 0.0, 1.0));
+    return result;
+}
 namespace {
 template <typename T> T take(Result<T> result) {
     if (!result) throw std::runtime_error(result.error().what());
@@ -66,9 +73,7 @@ BakeSetup setupBake(const document::Document& doc, const assets::Vfs* vfs) {
                 }
                 // VBSP stores the material's linear $reflectivity override in texdata. It can be
                 // much brighter than the base VTF (notably PBR black tiles); bounce uses that value.
-                const auto reflectivity = vmt->vector("$reflectivity", DVec3(result.albedo));
-                for (int c = 0; c < 3; ++c)
-                    result.albedo[c] = static_cast<float>(std::clamp(reflectivity[c], 0.0, 1.0));
+                result.albedo = bakeReflectivity(*vmt, result.albedo);
             }
         }
         materials.emplace(key, result);
