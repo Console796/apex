@@ -1,4 +1,5 @@
 #include "document/entity_transform.hpp"
+#include "document/entity_helpers.hpp"
 
 #include "core/strings.hpp"
 
@@ -104,5 +105,55 @@ TEST_CASE("entity transform origin uses KV1 vector parsing") {
         auto block = kv1::Node::block("entity");
         block.append(kv1::Node::value("origin", origin)).value();
         checkVector(document::entityPose(block).origin, DVec3{0.0});
+    }
+}
+
+TEST_CASE("document entity display model reports key and helper sources") {
+    using document::EntityModelSource;
+    for (const auto helper : {"studio", "studioprop", "lightprop"}) {
+        CAPTURE(helper);
+        assets::EntityClass cls;
+        cls.helpers = {{helper, "\"models/helper.mdl\""}};
+        for (const auto model : {"", "models/explicit.mdl", "*1"}) {
+            CAPTURE(model);
+            auto block = kv1::Node::block("entity");
+            block.append(kv1::Node::value("model", model)).value();
+            auto source = EntityModelSource::Key;
+            const auto name = document::entityDisplayModel(block, &cls, &source);
+            CHECK(document::entityDisplayModel(block, &cls) == name);
+            if (std::string_view(model).empty()) {
+                CHECK(name == "models/helper.mdl");
+                CHECK(source == EntityModelSource::Helper);
+            } else if (std::string_view(model) == "*1") {
+                CHECK(name.empty());
+                CHECK(source == EntityModelSource::None);
+            } else {
+                CHECK(name == model);
+                CHECK(source == EntityModelSource::Key);
+            }
+        }
+        auto block = kv1::Node::block("entity");
+        auto source = EntityModelSource::Key;
+        CHECK(document::entityDisplayModel(block, &cls, &source) == "models/helper.mdl");
+        CHECK(source == EntityModelSource::Helper);
+        CHECK(document::entityDisplayModel(block, nullptr, &source).empty());
+        CHECK(source == EntityModelSource::None);
+    }
+}
+
+TEST_CASE("document entity model shadow predicate uses compile caster rule") {
+    using document::EntityModelSource;
+    for (const auto classname : {"prop_static", "PrOp_StAtIc", "prop_dynamic", "prop_physics", "light_spot", "info_player_start", ""}) {
+        for (const auto disabled : {"", "0", "1", "2"}) {
+            for (const auto source : {EntityModelSource::None, EntityModelSource::Key, EntityModelSource::Helper}) {
+                CAPTURE(classname); CAPTURE(disabled); CAPTURE(static_cast<int>(source));
+                auto block = kv1::Node::block("entity");
+                if (*classname) block.append(kv1::Node::value("classname", classname)).value();
+                if (*disabled) block.append(kv1::Node::value("disableshadows", disabled)).value();
+                CHECK(document::entityModelCastsShadow(block, source) ==
+                      (ciEquals(classname, "prop_static") && source == EntityModelSource::Key &&
+                       (std::string_view(disabled).empty() || std::string_view(disabled) == "0")));
+            }
+        }
     }
 }

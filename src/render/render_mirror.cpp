@@ -135,7 +135,8 @@ struct EntityState {
     bool brush = false;
     std::vector<NodeId> brushSolids;
     bool cubemap = false; // env_cubemap: a reflection probe at `position`.
-    bool castsShadow = true; // Static props: false for `disableshadows` (D7).
+    document::EntityModelSource modelSource = document::EntityModelSource::None;
+    bool castsShadow = false;
 };
 
 struct MaterialState {
@@ -747,7 +748,6 @@ struct RenderMirror::Impl {
         state.transform = document::entityTransform(pose);
         state.skin = entityUint(*entity->block, "skin");
         state.body = entityUint(*entity->block, "body");
-        state.castsShadow = entityUint(*entity->block, "disableshadows") == 0;
         state.position = pose.origin;
         state.basis = pose.basis;
         state.block = entity->block;
@@ -777,7 +777,8 @@ struct RenderMirror::Impl {
             }
         }
         if (modelCache) {
-            const auto name = document::entityDisplayModel(*entity->block, state.cls);
+            const auto name = document::entityDisplayModel(*entity->block, state.cls, &state.modelSource);
+            state.castsShadow = document::entityModelCastsShadow(*entity->block, state.modelSource);
             if (!name.empty()) {
                 const auto path = assets::modelPath(name);
                 std::string sequence;

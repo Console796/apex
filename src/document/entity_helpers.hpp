@@ -18,7 +18,10 @@ std::vector<std::pair<std::string, std::string>> missingEntityDefaults(
 // Helpers show every FGD default, read-only ones included, without changing the VMF. What the compiler
 // sees is narrower: missingEntityDefaults.
 kv1::Node entityHelperValues(const kv1::Node& block, const assets::EntityClass& cls);
-std::string entityDisplayModel(const kv1::Node& block, const assets::EntityClass* cls);
+enum class EntityModelSource { None, Key, Helper };
+std::string entityDisplayModel(const kv1::Node& block, const assets::EntityClass* cls,
+                               EntityModelSource* source = nullptr);
+bool entityModelCastsShadow(const kv1::Node& block, EntityModelSource source);
 bool hasEntityHelper(const assets::EntityClass& cls, std::string_view name);
 EntityPose spotlightPose(const kv1::Node& block, EntityPose pose,
                          std::optional<DVec3> target = {});

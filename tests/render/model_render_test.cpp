@@ -715,3 +715,46 @@ TEST_CASE("model mirror: disableshadows props are drawn but never cast") {
     for (const auto& mesh : *list.shadowCasters) casting += mesh.instanceCount;
     CHECK(casting == 2);
 }
+
+TEST_CASE("model mirror: only explicit compile-time prop models cast shadows") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    Fixture fixture;
+    assets::EntityClassTable classes;
+    for (const auto& [name, helper] : {std::pair{"light_spot", "lightprop"},
+                                      std::pair{"info_player_start", "studio"},
+                                      std::pair{"prop_static", "studioprop"}}) {
+        auto& cls = classes.classes[name];
+        cls.name = name;
+        cls.helpers = {{helper, "\"models/fixture.mdl\""}};
+    }
+    auto parsed = vmf::parse(R"(entity { id 1 classname PrOp_StAtIc model models/fixture.mdl body 1 }
+                               entity { id 2 classname prop_static model models/fixture.mdl body 1 disableshadows 1 }
+                               entity { id 3 classname prop_dynamic model models/fixture.mdl body 1 }
+                               entity { id 4 classname light_spot body 1 }
+                               entity { id 5 classname info_player_start body 1 }
+                               entity { id 6 classname prop_static body 1 })");
+    REQUIRE(parsed); document::Document doc(*parsed);
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, &classes, fixture.models.get());
+    mirror.rebuild(doc); REQUIRE(mirror.settle());
+    auto options = view(); options.mode = DisplayMode::Lit;
+    const auto check = [&](std::size_t expectedCasters) {
+        const auto list = mirror.buildDrawList(options);
+        std::size_t drawn = 0, casting = 0;
+        for (const auto& mesh : list.meshes) drawn += mesh.instanceCount;
+        REQUIRE(list.shadowCasters);
+        for (const auto& mesh : *list.shadowCasters) casting += mesh.instanceCount;
+        CHECK(drawn == 6);
+        CHECK(casting == expectedCasters);
+    };
+    check(1);
+    auto model = doc.begin("replace helper with explicit model");
+    model.setKeyValue(*doc.handle(6), "model", "models/fixture.mdl");
+    mirror.apply(doc, model.commit()); REQUIRE(mirror.settle());
+    check(2);
+    auto classname = doc.begin("change caster class");
+    classname.setKeyValue(*doc.handle(1), "classname", "prop_dynamic");
+    mirror.apply(doc, classname.commit()); REQUIRE(mirror.settle());
+    check(1);
+}
