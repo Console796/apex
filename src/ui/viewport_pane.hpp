@@ -151,6 +151,7 @@ public:
     QWidget* container() const { return container_; }
     void setActive(bool active);
     void refreshTitle();
+    void setBakeStatus(const QString& text);
     void setTool(editor::Tool& tool);
     void setModeText(const QString& text, bool entityTool);
     void setEditorSession(editor::EditorSession* session);
@@ -175,6 +176,7 @@ private:
     PaneWindow* window_;
     QWidget* container_ = nullptr;
     QLabel* title_ = nullptr;
+    QLabel* bakeStatus_ = nullptr;
     QLabel* mode_ = nullptr;
     ToolParameterStrip* parameters_ = nullptr;
     QToolButton* menuButton_ = nullptr;

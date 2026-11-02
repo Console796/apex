@@ -31,6 +31,7 @@
 #include "render/render_mirror.hpp"
 #include "render/view_math.hpp"
 #include "ui/gpu_host.hpp"
+#include "ui/bake_controller.hpp"
 #include "ui/input_log.hpp"
 #include "ui/key_chord.hpp"
 #include "viewport/pick_math.hpp"
@@ -592,6 +593,7 @@ double PaneWindow::draw() {
     render::DrawList list;
     if (auto* mirror = host_.mirror()) {
         list = mirror->buildDrawList(options);
+        list.bakedScale = host_.bakeScale();
     } else {
         list.mode = options.mode;
         list.cullBackFaces = options.cullBackFaces;
@@ -713,6 +715,10 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
                                   [this](viewport::AreaRole role) { emit roleRequested(pane_, role); }, header));
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("PaneTitle"));
+    bakeStatus_ = new QLabel(this);
+    bakeStatus_->setObjectName(QStringLiteral("BakeStatus"));
+    bakeStatus_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    bakeStatus_->hide();
     title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);  // A long title must not set the pane's minimum width.
     row->addWidget(title_, 1);
     mode_ = new QLabel;
@@ -748,6 +754,7 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     connect(menu_, &QMenu::aboutToShow, this, &PaneFrame::buildMenu);
     row->addWidget(menuButton_);
     column->addWidget(header);
+    column->addWidget(bakeStatus_);
     parameters_ = new ToolParameterStrip(this);
     column->addWidget(parameters_);
 
@@ -801,6 +808,12 @@ void PaneFrame::refreshTitle() {
     QString text = viewName(*vp) + QStringLiteral("  |  ") + modeName(vp->mode);
     if (maximized_) text += tr("  (maximized)");
     title_->setText(text);
+}
+
+void PaneFrame::setBakeStatus(const QString& text) {
+    bakeStatus_->setText(text);
+    bakeStatus_->setToolTip(text);
+    bakeStatus_->setVisible(!text.isEmpty());
 }
 
 void PaneFrame::setTool(editor::Tool& tool) { parameters_->update(tool); }
@@ -882,13 +895,14 @@ void PaneFrame::buildMenu() {
     auto* mode = menu_->addMenu(tr("Display mode"));
     auto* modeGroup = new QActionGroup(mode);
     for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat, viewport::DisplayMode::Textured,
-                         viewport::DisplayMode::Lit}) {
+                         viewport::DisplayMode::Lit, viewport::DisplayMode::Baked}) {
         auto* a = mode->addAction(modeName(m), this, [edit, m] { edit([m](viewport::Viewport& v) { v.mode = m; }); });
         a->setCheckable(true);
         a->setChecked(vp->mode == m);
         modeGroup->addAction(a);
     }
-    mode->addAction(modeName(viewport::DisplayMode::Baked) + tr(" (later)"))->setEnabled(false);
+    mode->addSeparator();
+    mode->addAction(tr("Bake settings..."), this, [this] { showBakeSettings(this); });
 
     auto* overlays = menu_->addMenu(tr("Overlays"));
     struct OverlayEntry { const char* label; bool viewport::Overlays::*field; };

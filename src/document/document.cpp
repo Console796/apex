@@ -232,6 +232,25 @@ Document::Document(const vmf::VmfFile& file, std::size_t undoCap)
     indexSides();
 }
 
+std::unique_ptr<Document> Document::snapshot() const {
+    auto copy = std::unique_ptr<Document>(new Document(nullptr));
+    copy->pools_ = pools_;
+    copy->source_ = source_;
+    copy->viewSettings_ = viewSettings_;
+    copy->handles_ = handles_;
+    copy->roots_ = roots_;
+    copy->originalRoots_ = originalRoots_;
+    copy->nextObject_ = nextObject_;
+    copy->nextSide_ = nextSide_;
+    copy->nextGroup_ = nextGroup_;
+    copy->nextVisgroup_ = nextVisgroup_;
+    copy->nextNode_ = nextNode_;
+    copy->historyState_ = historyState_;
+    copy->nextHistoryState_ = nextHistoryState_;
+    copy->indexSides();
+    return copy;
+}
+
 NodeId Document::import(const kv1::Node& block, NodeId parent) {
     auto value = typed(block.key());
     auto& n = base(value);

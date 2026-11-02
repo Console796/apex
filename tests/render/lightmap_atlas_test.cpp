@@ -129,6 +129,31 @@ TEST_CASE("lightmap atlas: stale layout leaves edited brush geometry intact") {
     CHECK(mesh->origin == DVec3(32, 16, 8));
     for (const auto& batch : mesh->batches) for (const auto& vertex : batch.vertices)
         CHECK(vertex.lightmapUv[0] < 0.0f);
+
+    SUBCASE("live retention samples old radiance but always uses current geometry") {
+        atlas->retainStale = true;
+        auto retained = meshSolid(poly, [](std::string_view) { return TextureSize{}; }, &*atlas, 42);
+        REQUIRE(retained);
+        CHECK(retained->origin == mesh->origin);
+        const auto& rect = atlas->rects[0];
+        unsigned mapped = 0;
+        for (const auto& batch : retained->batches) for (const auto& vertex : batch.vertices) {
+            if (vertex.lightmapUv[0] < 0) continue;
+            ++mapped;
+            CHECK(vertex.lightmapUv[0] >= float((rect.x + 0.5) / atlas->size));
+            CHECK(vertex.lightmapUv[0] <= float((rect.x + rect.width - 0.5) / atlas->size));
+            CHECK(vertex.lightmapUv[1] >= float((rect.y + 0.5) / atlas->size));
+            CHECK(vertex.lightmapUv[1] <= float((rect.y + rect.height - 0.5) / atlas->size));
+        }
+        CHECK(mapped == poly.faces[0].vertices.size());
+        REQUIRE(retained->batches.size() == mesh->batches.size());
+        for (std::size_t b = 0; b < mesh->batches.size(); ++b) {
+            REQUIRE(retained->batches[b].vertices.size() == mesh->batches[b].vertices.size());
+            for (std::size_t v = 0; v < mesh->batches[b].vertices.size(); ++v)
+                for (int axis = 0; axis < 3; ++axis)
+                    CHECK(retained->batches[b].vertices[v].position[axis] == mesh->batches[b].vertices[v].position[axis]);
+        }
+    }
 }
 
 TEST_CASE("lightmap atlas: displacement sides retain their separate shading flag") {
@@ -141,4 +166,25 @@ TEST_CASE("lightmap atlas: displacement sides retain their separate shading flag
     REQUIRE(mesh);
     REQUIRE(mesh->batches[0].faces.size() == 6);
     for (const auto& face : mesh->batches[0].faces) CHECK(face.displacement == (face.side == 5));
+}
+
+TEST_CASE("lightmap atlas: restart retains same-side radiance with resized charts") {
+    lighting::BakeFace face;
+    face.solidId = 42;
+    face.sideId = 7;
+    face.chart.dimensions = {2, 1};
+    face.chart.worldToLuxel = {DVec3{1, 0, 0}, DVec3{0, 1, 0}};
+    face.chart.luxelToWorld = face.chart.worldToLuxel;
+    auto previous = LightmapAtlas::pack(std::array{face});
+    REQUIRE(previous);
+    face.chart.dimensions = {3, 1};
+    auto added = face;
+    added.sideId = 8;
+    auto current = LightmapAtlas::pack(std::array{face, added});
+    REQUIRE(current);
+    const std::vector<std::vector<Vec3>> radiance{{Vec3{1}, Vec3{2}}};
+    const auto retained = current->retainRadiance(&*previous, radiance);
+    CHECK(retained[0] == std::vector<Vec3>{Vec3{1}, Vec3{2}, Vec3{2}});
+    CHECK(retained[1] == std::vector<Vec3>(3, Vec3{0}));
+    CHECK(current->retainRadiance(nullptr, {}) == std::vector<std::vector<Vec3>>(2, std::vector<Vec3>(3, Vec3{0})));
 }

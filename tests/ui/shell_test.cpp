@@ -57,6 +57,10 @@
 #include "ui/theme.hpp"
 #include "ui/viewport_area.hpp"
 #include "ui/gpu_host.hpp"
+#include "ui/bake_controller.hpp"
+#include "geometry/solid_block.hpp"
+#include "assets/material_cache.hpp"
+#include "../render/shared_context.hpp"
 #include "ui/viewport_pane.hpp"
 #include <QMenu>
 #include <QSplitter>
@@ -308,6 +312,17 @@ TEST_CASE("pane menu offers the full set of view controls") {
     for (const char* want : {"Preset", "Projection", "Axis", "Display mode", "Overlays", "Maximize", "Close area"})
         CHECK(titles.contains(QString::fromLatin1(want)));
     CHECK(titles.filter("Split").size() == 2);
+    QMenu* display = nullptr;
+    for (auto* action : frame->menu()->actions())
+        if (action->text() == "Display mode") display = action->menu();
+    REQUIRE(display != nullptr);
+    QAction* baked = nullptr;
+    for (auto* action : display->actions()) if (action->text() == "Baked") baked = action;
+    REQUIRE(baked != nullptr);
+    CHECK(baked->isEnabled());
+    CHECK(baked->isCheckable());
+    baked->trigger();
+    CHECK(area.viewportLayout().viewport(frame->paneId())->mode == apex::viewport::DisplayMode::Baked);
 }
 
 TEST_CASE("map views load into and save from the open viewports") {
@@ -3606,4 +3621,72 @@ TEST_CASE("shell: cubemap rebuild command is available and safe without a GPU") 
     action->trigger();
     application.processEvents();
     CHECK(window.statusBar()->currentMessage() == QStringLiteral("Cubemap rebuild requested"));
+}
+
+TEST_CASE("live bake completes offscreen and restarts after document edits") {
+    app();
+    auto* context = apex::render::testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan 1.3 device"); return; }
+    GameTree tree;
+    tree.put("gameinfo.txt", "GameInfo { FileSystem { SearchPaths { game |gameinfo_path|. } } }");
+    apex::JobPool jobs(2);
+    apex::assets::GameProfile profile;
+    profile.gameDirectory = tree.root;
+    auto loaded = apex::assets::Vfs::load(profile, jobs);
+    REQUIRE(loaded);
+    auto vfs = std::make_shared<apex::assets::Vfs>(std::move(*loaded));
+    apex::assets::MaterialCache materials(*vfs, jobs, 1024 * 1024);
+    auto heap = apex::render::TextureHeap::create(*context);
+    REQUIRE(heap);
+    apex::document::Document document(editor_test::parsed("world { \"id\" \"1\" \"classname\" \"worldspawn\" }"));
+    const auto world = *document.handle(document.roots().front());
+    {
+        auto tx = document.begin("complete brush");
+        (void)tx.create(apex::geometry::solidBlock(
+            geometry_test::build(geometry_test::boxSides({-16, -16, -16}, {16, 16, 16})), {"test/white"}), world);
+        tx.commit();
+    }
+    apex::render::RenderMirror mirror(*context, **heap, jobs, materials);
+    mirror.rebuild(document);
+    QSettings settings;
+    const auto saved = settings.value("bake/maxPasses");
+    const auto savedBounces = settings.value("bake/bounces");
+    settings.setValue("bake/maxPasses", 1);
+    settings.setValue("bake/bounces", 0);
+    {
+        apex::ui::BakeController bake(document, vfs, *context, **heap, mirror, jobs);
+        const auto observer = document.observe([&](const auto&) { bake.invalidate(); });
+        const auto converge = [&] {
+            QElapsedTimer timer;
+            timer.start();
+            while (timer.elapsed() < 5000 && bake.status() != "Baking (idle)") {
+                bake.update(true, {0, 0, 128}, {}, {});
+                mirror.pump();
+                QThread::msleep(1);
+            }
+            CHECK(bake.status().toStdString() == "Baking (idle)");
+        };
+        converge();
+        apex::render::MirrorViewOptions options;
+        options.mode = apex::render::DisplayMode::Baked;
+        const auto firstSlot = mirror.buildDrawList(options).lightmap;
+        CHECK(firstSlot != apex::render::kNoTexture);
+        auto edit = document.begin("light keys");
+        edit.setKeyValue(world, "skyname", "changed");
+        edit.commit();
+        CHECK(bake.status() == "Baked: waiting for edits");
+        CHECK(mirror.buildDrawList(options).lightmap == firstSlot);
+        converge();
+        bake.update(false, {}, {}, {});
+        bake.update(true, {0, 0, 128}, {}, {}); // New setup is queued or running.
+        QElapsedTimer cancel;
+        cancel.start();
+        bake.update(false, {}, {}, {});
+        CHECK(cancel.elapsed() < 100);
+        document.unobserve(observer);
+    }
+    // Canceled completions must not call into the destroyed controller.
+    jobs.drainCompletions();
+    if (saved.isValid()) settings.setValue("bake/maxPasses", saved); else settings.remove("bake/maxPasses");
+    if (savedBounces.isValid()) settings.setValue("bake/bounces", savedBounces); else settings.remove("bake/bounces");
 }

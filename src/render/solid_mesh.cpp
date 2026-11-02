@@ -70,6 +70,7 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
         std::vector<std::size_t> fragments;
         if (lightmaps) if (const auto found = lightmaps->fragments.find({solidId, face.sideId});
                           found != lightmaps->fragments.end()) fragments = found->second;
+        std::optional<std::size_t> retained;
         if (!fragments.empty()) {
             // A stale bake must never substitute old geometry after a document edit.
             const auto current = lighting::chartFace(face, polyhedron->vertices);
@@ -81,7 +82,10 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                     a.chart.mins == b.chart.mins && a.chart.offset == b.chart.offset &&
                     a.chart.worldToLuxel == b.chart.worldToLuxel;
             }
-            if (!matches) fragments.clear();
+            if (!matches) {
+                if (lightmaps->retainStale) retained = fragments.front();
+                fragments.clear();
+            }
         }
         // Use the exact baker loops, so subdivision boundaries cannot interpolate across atlas rects.
         const auto emit = [&](std::span<const DVec3> loop, std::optional<std::size_t> fragment, bool triangles = true) {
@@ -100,7 +104,12 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                 v.uv[1] = static_cast<float>(uv.y);
                 v.material = 0;
                 if (fragment) {
-                    const auto lm = lightmaps->uv(*fragment, p);
+                    auto lm = lightmaps->uv(*fragment, p);
+                    if (retained) {
+                        const auto& rect = lightmaps->rects[*fragment];
+                        lm = glm::clamp(lm, (DVec2(rect.x, rect.y) + 0.5) / double(lightmaps->size),
+                            (DVec2(rect.x + rect.width, rect.y + rect.height) - 0.5) / double(lightmaps->size));
+                    }
                     v.lightmapUv[0] = static_cast<float>(lm.x);
                     v.lightmapUv[1] = static_cast<float>(lm.y);
                 }
@@ -120,7 +129,7 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
         std::vector<DVec3> loop;
         for (const auto index : face.vertices) loop.push_back(polyhedron->vertices[index]);
         std::uint32_t edgeBase = 0;
-        if (fragments.empty()) edgeBase = emit(loop, {});
+        if (fragments.empty()) edgeBase = emit(loop, retained);
         else {
             for (const auto fragment : fragments) emit(lightmaps->faces[fragment].vertices, fragment);
             edgeBase = emit(loop, {}, false); // Original perimeter only; no subdivision seams in wire/overlays.

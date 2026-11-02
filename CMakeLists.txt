@@ -112,7 +112,7 @@ apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.c
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp
                             src/document/instance_fixup.cpp src/document/instance_collapse.cpp src/document/cordon.cpp
            DEPS apex_geometry apex_core)
-apex_layer(lighting SOURCES src/lighting/light.cpp src/lighting/sky_visibility.cpp src/lighting/charting.cpp src/lighting/cpu_accel.cpp src/lighting/bake_scene.cpp src/lighting/bake_casters.cpp src/lighting/baker.cpp DEPS apex_geometry apex_document apex_core)
+apex_layer(lighting SOURCES src/lighting/light.cpp src/lighting/sky_visibility.cpp src/lighting/charting.cpp src/lighting/cpu_accel.cpp src/lighting/bake_scene.cpp src/lighting/bake_casters.cpp src/lighting/baker.cpp src/lighting/bake_session.cpp DEPS apex_geometry apex_document apex_core)
 target_link_libraries(apex_lighting PRIVATE embree)
 apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_lookup.cpp src/editor/compile_overlay.cpp src/editor/autosave.cpp src/editor/editor_session.cpp src/editor/tool.cpp src/editor/select_tool.cpp src/editor/light_edit.cpp src/editor/entity_tool.cpp src/editor/draw_extrude_tool.cpp src/editor/primitive_tool.cpp src/editor/clip_tool.cpp src/editor/face_edit.cpp src/editor/apply_tool.cpp src/editor/measure_tool.cpp src/editor/topology_ops.cpp src/editor/vertex_edit.cpp src/editor/vertex_tool.cpp src/editor/visibility.cpp src/editor/pick_index.cpp src/editor/pick_model.cpp
                           src/editor/pie_menu.cpp src/editor/pie_menus.cpp
@@ -121,7 +121,7 @@ apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_
                           src/editor/snapper.cpp src/editor/work_plane.cpp src/editor/group_ops.cpp src/editor/hide_ops.cpp src/editor/visgroups.cpp src/editor/clipboard.cpp src/editor/prefab.cpp src/editor/asset_report.cpp src/editor/map_problems.cpp src/editor/entity_report.cpp src/editor/find_replace.cpp src/editor/instance_collapse_command.cpp src/editor/instance_create.cpp src/editor/instance_key_types.cpp
                           src/editor/transform.cpp src/editor/preview.cpp src/editor/preset_io.cpp
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
-                          src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
+                          src/editor/bake_instances.cpp src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
                           src/editor/connection_model.cpp src/editor/incoming_connections.cpp src/editor/rename_propagation.cpp src/editor/inspector_model.cpp src/editor/placement.cpp
            DEPS apex_document apex_geometry apex_core apex_compile)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/addon_authoring.cpp src/assets/unmounted_addons.cpp
@@ -133,7 +133,7 @@ apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp sr
                          src/render/context.cpp src/render/resources.cpp src/render/accel.cpp src/render/scene_accel.cpp src/render/helper_shapes.cpp
                          src/render/upload_ring.cpp src/render/texture_heap.cpp
                          src/render/render_target.cpp src/render/scene_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/model_inspector.cpp src/render/swapchain.cpp
-                         src/render/lightmap_atlas.cpp src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
+                         src/render/bake_setup.cpp src/render/lightmap_atlas.cpp src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
            DEPS apex_document apex_assets apex_lighting volk::volk GPUOpen::VulkanMemoryAllocator
                 Vulkan::Headers)
 # GLSL in src/render/shaders is compiled to SPIR-V and embedded in gen/render/shaders_spv.hpp (D14).
@@ -159,7 +159,7 @@ if(APEX_BUILD_APP)
       "  Other:         install Qt 6.5+ and set CMAKE_PREFIX_PATH to it.\n"
       "To build only the non-GUI libraries and tools, configure with -DAPEX_BUILD_APP=OFF.")
   endif()
-  apex_layer(ui SOURCES src/ui/compile_panel.cpp src/ui/cordon_editor.cpp src/ui/profile_store.cpp src/ui/profile_editor.cpp src/ui/qprocess_runner.cpp src/ui/rename_confirmation.cpp src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/game_content.cpp src/ui/materials_panel.cpp src/ui/asset_browser_panel.cpp src/ui/models_panel.cpp src/ui/model_inspect_view.cpp src/ui/sounds_panel.cpp src/ui/particles_panel.cpp src/ui/face_properties_panel.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/tool_parameter_strip.cpp src/ui/gpu_host.cpp src/ui/model_pick.cpp
+  apex_layer(ui SOURCES src/ui/bake_controller.cpp src/ui/compile_panel.cpp src/ui/cordon_editor.cpp src/ui/profile_store.cpp src/ui/profile_editor.cpp src/ui/qprocess_runner.cpp src/ui/rename_confirmation.cpp src/ui/recovery_dialog.cpp src/ui/main_window.cpp src/ui/game_content.cpp src/ui/materials_panel.cpp src/ui/asset_browser_panel.cpp src/ui/models_panel.cpp src/ui/model_inspect_view.cpp src/ui/sounds_panel.cpp src/ui/particles_panel.cpp src/ui/face_properties_panel.cpp src/ui/theme.cpp src/ui/theme_editor.cpp src/ui/viewport_area.cpp src/ui/viewport_pane.cpp src/ui/tool_parameter_strip.cpp src/ui/gpu_host.cpp src/ui/model_pick.cpp
                         src/ui/sound_preview.cpp src/ui/uv_view.cpp src/ui/pointer_lock.cpp src/ui/input_log.cpp
                         src/ui/pie_menu_popup.cpp src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/prefab_dialog.cpp src/ui/prefab_thumbnail.cpp src/ui/find_panel.cpp src/ui/asset_report_builder.cpp src/ui/addons_panel.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
              DEPS apex_viewport apex_editor Qt6::Widgets Qt6::Svg Qt6::Multimedia)

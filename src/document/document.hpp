@@ -100,6 +100,9 @@ public:
     Document(const Document&) = delete;
     Document& operator=(const Document&) = delete;
 
+    // Independent worker snapshot: retains node/side identities, omits undo and observers.
+    std::unique_ptr<Document> snapshot() const;
+
     Transaction begin(std::string label);
     const Node* get(NodeHandle handle) const;
     template <typename T> const T* get(Handle<T> h) const { return pool<T>().get(h); }
@@ -136,6 +139,7 @@ public:
     void unobserve(std::size_t token);
 
 private:
+    explicit Document(std::nullptr_t) : cap_(0) {}
     friend class Transaction;
     using Pools = std::tuple<Pool<Entity>, Pool<Solid>, Pool<Group>, Pool<Visgroup>,
                              Pool<Camera>, Pool<Cordon>, Pool<UnknownBlock>>;

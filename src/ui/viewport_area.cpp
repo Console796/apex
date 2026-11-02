@@ -918,6 +918,22 @@ void ViewportArea::tick() {
         if (window) if (auto* models = qobject_cast<ModelsPanel*>(window->panel())) models->syncThumbnails(interacting);
     if (modelPicker_) modelPicker_->syncThumbnails(interacting);
     host_->tickModelThumbnails(gameContent_ ? gameContent_->thumbnails() : nullptr, interacting);
+    bool baked = false;
+    DVec3 bakeCamera{0};
+    // Prefer the active Baked pane; otherwise the first Baked pane in layout order.
+    for (const auto id : layout_.viewportIds()) {
+        const auto* view = layout_.viewport(id);
+        if (view && view->mode == viewport::DisplayMode::Baked && (!baked || id == layout_.active())) {
+            baked = true;
+            bakeCamera = view->camera.position;
+        }
+    }
+    if (session_ && host_->updateBake(baked, bakeCamera, session_->connectionMapPath(),
+                                     session_->connectionExtraRoot(), session_->instances().contents())) forceDraw_ = true;
+    for (auto& [id, frame] : frames_) if (frame) {
+        const auto* view = layout_.viewport(id);
+        frame->setBakeStatus(view && view->mode == viewport::DisplayMode::Baked ? host_->bakeStatus() : QString());
+    }
     const auto pickRevision = host_->modelPickRevision();
     if (gpuReady_ && host_->pump()) forceDraw_ = true;
     if (session_ && pickRevision != host_->modelPickRevision()) session_->refreshEntityBounds();

@@ -1,6 +1,7 @@
 #include "render/vk.hpp"  // volk first: Qt's Vulkan header must not bring in prototypes.
 
 #include "ui/gpu_host.hpp"
+#include "ui/bake_controller.hpp"
 
 #include <algorithm>
 
@@ -158,6 +159,8 @@ void GpuHost::unbind() {
     observerToken_ = 0;
     if (context_) context_->waitIdle();
     clearModelThumbnails();
+    bake_.reset();
+    bakeInstances_.clear();
     mirror_.reset();
     modelPicks_.reset();
     if (models_) models_->clear();
@@ -209,8 +212,12 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
     mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get(),
         models_.get(), [this](const std::string& path) { return vfs_->exists(path); });
     mirror_->rebuild(*document);
+    bake_ = std::make_unique<BakeController>(*document, vfs_, *context_, *heap_, *mirror_, *jobs_);
     observerToken_ = document->observe([this](const document::ChangeSet& changes) {
         if (mirror_ && document_) mirror_->apply(*document_, changes);
+        // Conservative whole restart: keys include light targets, material and instance fixups.
+        // Selection/view settings do not issue document ChangeSets.
+        if (bake_ && !changes.empty()) bake_->invalidate();
     });
 }
 
@@ -224,6 +231,24 @@ bool GpuHost::pump() {
     if (modelPicks_ && modelPicks_->pump()) ++modelPickRevision_;
     return mirror_->needsRedraw();
 }
+
+bool GpuHost::updateBake(bool active, DVec3 camera, const std::filesystem::path& map,
+                         const std::optional<std::filesystem::path>& extraRoot,
+                         const std::vector<document::InstanceContent>& instances) {
+    if (!bake_) return false;
+    std::vector<std::pair<std::shared_ptr<const document::Document>, DMat4>> identity;
+    for (const auto& instance : instances) identity.emplace_back(instance.keys, instance.transform);
+    if (identity != bakeInstances_) {
+        bakeInstances_ = std::move(identity);
+        bake_->invalidate(); // Includes external instance reloads without a parent document edit.
+    }
+    return bake_->update(active, camera, map, extraRoot);
+}
+QString GpuHost::bakeStatus() const {
+    return bake_ ? bake_->status() + tr(" | Instances/other brush entities: black; props/displacements: Lit")
+                 : tr("Baked: no document/GPU");
+}
+float GpuHost::bakeScale() const { return bake_ ? bake_->scale() : 1.0f; }
 
 void GpuHost::rebuildCubemaps() {
     if (mirror_) mirror_->requestCubemapRebuild();

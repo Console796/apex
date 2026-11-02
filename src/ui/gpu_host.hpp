@@ -39,6 +39,8 @@ namespace apex::ui {
 // one Renderer per swapchain format, and the RenderMirror of the open document. Created lazily on
 // the first pane; unavailable (with an explanation) on platforms without Vulkan surfaces, such as
 // the offscreen QPA plugin, so the shell still runs headless.
+class BakeController;
+
 class GpuHost : public QObject {
     Q_OBJECT
 public:
@@ -70,6 +72,12 @@ public:
     // Delivers finished mesh/texture jobs; returns true when the scene needs redrawing.
     bool pump();
     void rebuildCubemaps();
+    bool updateBake(bool active, DVec3 camera, const std::filesystem::path& map,
+                    const std::optional<std::filesystem::path>& extraRoot,
+                    const std::vector<document::InstanceContent>& instances);
+    QString bakeStatus() const;
+    float bakeScale() const;
+
     void requestModelThumbnail(const QObject* owner, const QString& path, bool visible);
     void clearModelThumbnails();
     void tickModelThumbnails(assets::ThumbnailCache* cache, bool interacting);
@@ -107,6 +115,8 @@ private:
     std::uint64_t modelPickRevision_ = 0;
     std::unique_ptr<assets::EntityClassTable> classes_;
     std::unique_ptr<render::RenderMirror> mirror_;
+    std::unique_ptr<BakeController> bake_;
+    std::vector<std::pair<std::shared_ptr<const document::Document>, DMat4>> bakeInstances_;
     document::Document* document_ = nullptr;
     std::size_t observerToken_ = 0;
     bool tried_ = false;

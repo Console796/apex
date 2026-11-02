@@ -3,6 +3,8 @@
 #include <glm/gtc/packing.hpp>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <numeric>
 #include <set>
 
@@ -54,6 +56,40 @@ DVec2 LightmapAtlas::uv(std::size_t face, DVec3 world) const {
     for (int axis = 0; axis < 2; ++axis)
         local[axis] = glm::dot(world, chart.worldToLuxel[axis]) + chart.offset[axis] - chart.mins[axis];
     return (DVec2(rect.x, rect.y) + local + 0.5) / double(size);
+}
+
+std::vector<std::vector<Vec3>> LightmapAtlas::retainRadiance(
+    const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const {
+    std::vector<std::vector<Vec3>> retained(faces.size());
+    for (std::size_t i = 0; i < faces.size(); ++i) {
+        const auto& face = faces[i];
+        const auto dims = face.chart.dimensions;
+        retained[i].resize(std::size_t(dims[0]) * std::size_t(dims[1]), Vec3{0});
+        if (!previous) continue;
+        const auto found = previous->fragments.find({face.solidId, face.sideId});
+        if (found == previous->fragments.end()) continue;
+        for (int y = 0; y < dims[1]; ++y) for (int x = 0; x < dims[0]; ++x) {
+            const auto world = face.chart.worldAt({x, y});
+            double best = std::numeric_limits<double>::max();
+            Vec3 value{0};
+            for (const auto old : found->second) {
+                const auto& chart = previous->faces[old].chart;
+                DVec2 local;
+                for (int axis = 0; axis < 2; ++axis)
+                    local[axis] = glm::dot(world, chart.worldToLuxel[axis]) + chart.offset[axis] - chart.mins[axis];
+                const int sx = int(std::round(std::clamp(local.x, 0.0, double(chart.dimensions[0] - 1))));
+                const int sy = int(std::round(std::clamp(local.y, 0.0, double(chart.dimensions[1] - 1))));
+                const auto delta = chart.worldAt({sx, sy}) - world;
+                const auto distance = glm::dot(delta, delta);
+                if (distance < best) {
+                    best = distance;
+                    value = radiance[old][std::size_t(sy * chart.dimensions[0] + sx)];
+                }
+            }
+            retained[i][std::size_t(y * dims[0] + x)] = value;
+        }
+    }
+    return retained;
 }
 
 BakedLightmaps::BakedLightmaps(Context& context, TextureHeap& heap, LightmapAtlas atlas)

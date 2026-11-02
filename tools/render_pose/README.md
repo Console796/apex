@@ -3,7 +3,8 @@
 `apex_render_pose --mode baked` expands instances into the document before both baking and
 rendering, retaining identical document NodeId/SideId keys. It shares instance resolution,
 material compile flags, VTF linear reflectivity and caster setup with `apex_bake_probe` via
-`tools/common/bake_setup.*`. Neither tool uses an FGD table. Bake scope is visible world and
+`tools/common/bake_setup.*` (production helpers in `src/editor/bake_instances.*` and
+`src/render/bake_setup.*`). Neither tool uses an FGD table. Bake scope is visible world and
 func_detail brush faces; sky/nodraw occlude, other tools faces do not. Props, displacements and
 other brush entities do not contribute baked transport.
 
@@ -62,7 +63,7 @@ PY
 These compare complete rendered surfaces, including texture detail, reflections, self-illumination
 and material differences. They are not the probe's isolated lit/fullbright irradiance statistics.
 
-## Renderer API and next editor slice
+## Renderer API and live editor
 
 `LightmapAtlas::pack` preserves `BakeScene::faces` indices (the exact row order of `Baker::resolve`).
 Each fragment gets a separate interior rectangle surrounded by a duplicated one-texel guard.
@@ -77,7 +78,7 @@ Faces retain their source SideId/selection ranges. Unmatched/edited charts use c
 and negative UVs. Fragment matching uses the source NodeId, SideId and the ordered chart loops;
 bake and mirror must use the **same expanded document snapshot**, not independently assigned IDs.
 This slice's tool collapses instances for that reason. Live instance mirrors still need an explicit
-expanded-instance identity mapping in the next slice.
+expanded-instance identity mapping; the live editor retains the unmapped black brush fallback.
 
 `maps->upload(resolve, selectedFaceIndices)` uploads only selected rows and their guard texels,
 without repacking, reallocating or changing UVs/texture slot. Unselected rectangles retain their
@@ -85,13 +86,66 @@ previous values. This implementation is synchronous: call on the main thread bet
 it waits for in-flight draws and completes staging copies before returning. Context/heap must
 outlive maps; CPU meshing jobs retain only the immutable layout. Replace the layout and call
 `setLightmaps` again when charts change; call with nullptr to clear it. A radiance-only update
-requires a redraw, but no geometry upload. Dirty-face scheduling, revision tracking, redraw
-notification, invalidation of changed lights/materials, and asynchronous transfer fences remain
-for the live editor slice. Do not reuse the bake snapshot across document reloads.
+requires a redraw, but no geometry upload. The live editor schedules changed-face uploads, revision tracking, redraw notification and
+whole-scene invalidation. Asynchronous transfer fences remain future work. Do not reuse the bake
+snapshot across document reloads.
 
 Baked brushes sample RGBA16F with bilinear clamp-to-edge (no anisotropy or mipmaps), multiply
 diffuse by `DrawList::bakedScale` (default 1), and share Lit's HDR target, tonemap, exposure,
 material normals/parallax, envmaps, self-illumination, alpha and fog. Direct-light specular is off
 for baked brushes. Unmapped brush diffuse is black. Models/props, displacements and tool previews
 use the existing Lit path, including its lights/shadows. Other brush entities are unmapped brushes.
-The editor's Baked menu action stays disabled; this slice only provides renderer plumbing.
+The editor enables Baked in the viewport's Display mode menu.
+
+## Live Baked view (0.7.4 slice 4b)
+
+Choose **Display mode > Baked** in a viewport menu. **Display mode > Bake settings...** sets
+persisted global display scale (default 1), bounces (2), bounce rays (32), sky rays (64), and maximum
+passes per level (64). Display scale only changes `DrawList::bakedScale`; the other controls restart
+the bake. Defaults use seed 0 and three CPU threads. The status line below the viewport header
+shows completed whole-scene passes, preparation/errors, or `Baking (idle)` after convergence.
+
+A single document bake feeds all Baked panes. The active Baked pane supplies the camera; if it is
+not Baked, the first Baked pane in layout order supplies it. The pure `lighting::BakeSession`
+sorts face centres by squared distance, breaking ties by face index, at each whole-scene pass
+boundary. It steps one face subset at a time, retaining that subset until its traversal completes;
+camera motion cannot repeatedly restart the traversal or starve distant faces. Work targets 40 ms
+per job, using adaptive luxel operations targeting 5 ms (1..256 luxels). This is a soft time budget:
+an individual Baker operation and its internal resolve cannot be interrupted. Setup checks
+cancellation between expansion/material/caster stages; a canceled setup can finish its current stage. Cancellation is checked between
+operations, and job cancellation suppresses stale GUI completions without waiting on the UI.
+
+Schedule: direct to K0=min(4, maximum), then each bounce level to K0 in order; direct to maximum,
+then each bounce level to maximum in order; idle. Bootstrap contributions remain accumulated during
+refinement; each downstream traversal snapshots its settled upstream level, per the Baker contract.
+This keeps the baker's numerical implementation unchanged, though the bootstrap schedule differs
+from render_pose's single fully-settled sweep. Radiance publications contain only touched face rows,
+plus direct-sample validity so partial first passes preserve prior luxels.
+
+Every nonempty document ChangeSet conservatively cancels and restarts the whole scene after 250 ms
+without edits. This includes geometry, face material, light/helper keys, hierarchy and instances;
+external instance reloads are detected through immutable instance-content identity changes. Selection
+and camera/view preferences do not issue those ChangeSets. Per-face invalidation is a later slice.
+The worker owns an identity-preserving document snapshot, expands instances using the same shared
+resolver/collapse helper as the tools, loads compile flags/VTF reflectivity, builds Embree casters,
+and owns all exclusive Baker calls. Only job completions upload the GPU atlas, between frames.
+
+Previous lightmaps remain visible through restart. New atlas layouts are seeded on the worker from
+the nearest old luxel of the same source node/side; new sides start black. Edited geometry always
+uses current vertex positions. Live atlases alone opt into a temporary clamped projection of the
+first old chart fragment until the new layout arrives; subdivided edited faces may look stretched
+during that interval. Non-live stale-layout rejection remains unchanged.
+
+Instance expansion includes their brushes/lights in CPU transport, but live instance child mirrors
+have separate local identities/transforms. Mapping their expanded lightmap fragments back to those
+mirrors is deferred: instance brushes and other unsupported brush entities remain black, as noted
+in the HUD. Props and displacement sides retain Lit shading. Scope, material fallback and lack of
+FGD defaults match render_pose; this slice adds no baker numerical or shader changes.
+
+Leaving all Baked panes cancels work promptly and releases the CPU session. Returning starts a fresh
+bake while retaining the atlas. Closing/rebinding the document cancels work and releases its atlas;
+late jobs own their snapshots and cannot publish into the next document. Setup/atlas errors retain
+the previous atlas and appear in the status line; edit, change bake settings, or leave/re-enter Baked
+to retry. Atlas allocation/upload still uses slice 4a's synchronous GPU transfer API and may stall
+between frames. No asynchronous transfers, denoising or expanded-instance lightmap mapping are
+implemented here.

@@ -15,6 +15,8 @@ struct LightmapRect {
 // Indices are BakeScene::faces / Baker::resolve() indices, including separate chart fragments.
 // Source identity is (document NodeId, SideId); fragment order is retained from BakeScene.
 struct LightmapAtlas {
+    // Live editor only: project retained radiance onto edited geometry until rebaked.
+    bool retainStale = false;
     int size = 0;
     std::vector<lighting::BakeFace> faces;
     std::vector<LightmapRect> rects;
@@ -22,6 +24,9 @@ struct LightmapAtlas {
 
     static Result<LightmapAtlas> pack(std::span<const lighting::BakeFace> faces, int maxSize = 4096);
     DVec2 uv(std::size_t face, DVec3 world) const;
+    // CPU-only restart seed: nearest old luxel of the same source side, black for new sides.
+    std::vector<std::vector<Vec3>> retainRadiance(
+        const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const;
 };
 
 class BakedLightmaps {
