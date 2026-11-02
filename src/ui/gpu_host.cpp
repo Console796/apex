@@ -298,6 +298,11 @@ bool GpuHost::updateVrad(bool active, const std::filesystem::path& map) {
     paths.instanceRoot = profile_.instanceSearchRoot();
     paths.classes = classes_.get();
     paths.escapeMode = profile_.escapeMode;
+    // The tools see the editor's mounted content (addons, other games), as a real compile's gameinfo gives them.
+    if (vfs_) {
+        if (auto info = vfs_->compileGameInfo()) paths.contentGameInfo = std::move(*info);
+        else log::error("viewports: VRAD gameinfo: {}", info.error().what());
+    }
     for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"}, {"light_exe", "vrad"}})
         paths.tools[variable] = profile_.toolPath(tool).string();
     return vrad_->update(active, map, paths);

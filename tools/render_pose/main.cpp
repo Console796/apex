@@ -347,6 +347,7 @@ int run(const Options& o) {
                   << " displacement=" << stats.displacement << " no-data=" << stats.noData
                   << " unowned=" << stats.unowned << " shared=" << stats.shared
                   << " mismatched=" << stats.mismatched << '\n';
+        paths.contentGameInfo = take(vfs.compileGameInfo());
         if (o.keepVrad) std::cout << "vrad directory=" << trip.directory().string() << '\n';
         auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(loaded.atlas)));
         check(maps->upload(o.density ? render::densityRadiance(maps->atlas()) : loaded.radiance));
