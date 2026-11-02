@@ -2284,7 +2284,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
         }
     }
-    if (textured) m.environment(list);
+    if (textured && !m.drawsInstanceContents) m.environment(list); // A template's own sky and fog never apply.
     if (sceneMode(options.mode) && !m.drawsInstanceContents) {
         m.skyWanted = true;
         m.skyUsedSincePump = true;
