@@ -1,2 +1,2 @@
 #!/usr/bin/env sh
-cmake --build --preset linux-gcc-release $1
+cmake --build --preset linux-gcc-release $@
