@@ -167,3 +167,13 @@ temp dir). Files are `11-vrad.png` and so on. Faces VRAD gave no data (displacem
 draw black. Compare with the same ratio recipe as above, using `-vrad.png`. Note light_rt entities are
 ignored by VRAD, so maps lit only by them render nearly black. Findings:
 `docs/plans/probe-results/vrad_roundtrip_0_7_5.md`.
+
+## Compare and luxel density (0.7.5 D7)
+
+`--compare A,B[,split]` renders the same poses with two light sources (`lit`, `baked`, `vrad`) and writes one
+`NAME-compare.png`: source A fills the left `split` fraction of the width (default 0.5), B the rest, with a
+two pixel white divider. `--density` draws the lattice instead of baked or VRAD light (one checker cell per
+luxel; green is 16 units/luxel within 10%, red is coarser, blue finer; display scale forced to 1) and writes
+`NAME-baked-density.png` or `NAME-vrad-density.png`; it has no effect on `lit`. The editor's compare is a
+toggle on one viewport (the render mirror holds one lightmap set), so the split exists only here.
+`tests/render_pose_compare.py` checks both by image (needs `APEX_P2CE_DIR`, skips without it).

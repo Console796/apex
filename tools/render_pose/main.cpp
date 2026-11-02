@@ -20,7 +20,10 @@
 #include <QFile>
 #include <QImage>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -51,13 +54,17 @@ struct Options {
     bool noSpecular = false;
     float toolBrightness = 0.0f; // --tool-fixed-brightness; 0 = off.
     std::string mode = "lit";
+    std::vector<std::string> sources; // --compare A,B: the light sources written side by side as N-compare.png.
+    double split = 0.5;               // --compare ...,split: the fraction of the width that shows source A.
+    bool density = false;             // --density: the lattice checker in place of baked/VRAD radiance.
     bool expandedInstances = false; // --instances expanded: bake and draw the collapsed document.
     std::vector<Pose> poses;
 };
 
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
-                 "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad] [--cubemaps DIR] [--time N]\n"
+                 "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad]\n"
+                 "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.62]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
@@ -158,6 +165,21 @@ Options parse(int argc, char** argv) {
             o.timeFrames = static_cast<int>(value);
         }
         else if (flag == "--mode") o.mode = next();
+        else if (flag == "--density") o.density = true;
+        else if (flag == "--compare") {
+            std::stringstream list(next());
+            for (std::string item; std::getline(list, item, ',');) o.sources.push_back(item);
+            if (o.sources.size() == 3) {
+                o.split = number(o.sources.back());
+                o.sources.pop_back();
+                if (!(o.split > 0 && o.split < 1)) throw std::runtime_error("--compare split must be in (0, 1)");
+            }
+            if (o.sources.size() != 2) throw std::runtime_error("--compare takes A,B[,split]");
+            for (const auto& source : o.sources)
+                if (source != "lit" && source != "baked" && source != "vrad")
+                    throw std::runtime_error("--compare sources are lit, baked or vrad");
+            o.mode = "compare";
+        }
         else if (flag == "--instances") {
             const auto value = next();
             if (value != "mirror" && value != "expanded") throw std::runtime_error("--instances takes mirror or expanded");
@@ -181,13 +203,13 @@ Options parse(int argc, char** argv) {
         throw std::runtime_error("--cubemaps must name a directory");
     if (!(o.fov > 0 && o.fov < 180)) throw std::runtime_error("FOV must be between 0 and 180 degrees");
     if (o.mode != "lit" && o.mode != "textured" && o.mode != "fullbright" && o.mode != "baked" &&
-        o.mode != "vrad")
+        o.mode != "vrad" && o.mode != "compare")
         throw std::runtime_error("Mode must be lit, textured, fullbright, baked or vrad");
     return o;
 }
 
 std::string fileName(const Pose& pose, const Options& o) {
-    return o.mode == "lit" ? pose.name + ".png" : pose.name + "-" + o.mode + ".png";
+    return pose.name + (o.mode == "lit" ? "" : "-" + o.mode) + (o.density ? "-density" : "") + ".png";
 }
 
 template <typename T> T take(Result<T> result) {
@@ -231,7 +253,10 @@ int run(const Options& o) {
     assets::ModelCache models(vfs, jobs);
     editor::InstanceTemplates templates;
     editor::InstanceExpansion instances(templates);
-    if ((o.mode == "baked" || o.mode == "vrad") && o.expandedInstances) tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
+    const auto uses = [&](const char* source) {
+        return o.mode == source || std::ranges::find(o.sources, source) != o.sources.end();
+    };
+    if ((uses("baked") || uses("vrad")) && o.expandedInstances) tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
     instances.update(document, fs::canonical(o.vmf), profile.instanceSearchRoot());
     for (const auto& problem : instances.problems())
         std::cerr << "instance-failed " << problem.file << ": " << problem.message << '\n';
@@ -274,7 +299,8 @@ int run(const Options& o) {
     }
     // No FGD class table: entity models then come only from explicit model keys, so the
     // editor-only helper models (light_rt_spot cones, player start, etc.) stay out of the capture.
-    if (o.mode == "baked") {
+    std::shared_ptr<render::BakedLightmaps> bakeMaps, vradMaps;
+    if (uses("baked")) {
         // The bake sees the expansion; the mirror keeps the original and draws the instances itself.
         auto bakeDocument = document.snapshot();
         const auto origins = o.expandedInstances ? std::vector<document::InstanceSolidOrigin>{} :
@@ -295,9 +321,10 @@ int run(const Options& o) {
         std::cout << "bake instances placements=" << atlas.instances.size() << " baked-solids=" << placedSolids << '\n';
         auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(atlas)));
         check(maps->upload(baker.resolve()));
-        mirror.setLightmaps(std::move(maps));
+        if (o.density) check(maps->upload(render::densityRadiance(maps->atlas())));
+        bakeMaps = std::move(maps);
     }
-    if (o.mode == "vrad") {
+    if (uses("vrad")) {
         compile::BlockingProcessRunner runner;
         compile::FilesystemFileOps files;
         editor::VradRoundTrip trip(runner, files);
@@ -322,9 +349,15 @@ int run(const Options& o) {
                   << " mismatched=" << stats.mismatched << '\n';
         if (o.keepVrad) std::cout << "vrad directory=" << trip.directory().string() << '\n';
         auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(loaded.atlas)));
-        check(maps->upload(loaded.radiance));
-        mirror.setLightmaps(std::move(maps));
+        check(maps->upload(o.density ? render::densityRadiance(maps->atlas()) : loaded.radiance));
+        vradMaps = std::move(maps);
     }
+    // The sources to draw, in order; a comparison draws each and joins the two images.
+    const std::vector<std::string> modes = o.sources.empty() ? std::vector<std::string>{o.mode} : o.sources;
+    const auto bind = [&](const std::string& mode) {
+        mirror.setLightmaps(mode == "baked" ? bakeMaps : mode == "vrad" ? vradMaps : nullptr);
+    };
+    bind(modes.front());
     mirror.rebuild(document);
     mirror.setInstanceContents(instances.contents());
     // Lit draw-list construction requests the sky grid; settle must see that request.
@@ -346,14 +379,29 @@ int run(const Options& o) {
         std::cerr << "model-failed " << name << ": " << models.error(name)->what() << '\n';
     }
     fs::create_directories(out);
+    const auto write = [&](const QImage& png, const std::string& name) {
+        const auto path = out / name;
+        QFile file(QString::fromStdString(path.string()));
+        if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+            throw std::runtime_error("Cannot create output: " + path.string());
+        if (!png.save(&file, "PNG")) throw std::runtime_error("PNG write failed: " + path.string());
+    };
+    std::vector<std::vector<QImage>> drawn(modes.size());
+    for (std::size_t sourceIndex = 0; sourceIndex < modes.size(); ++sourceIndex) {
+    const std::string& mode = modes[sourceIndex];
+    if (sourceIndex) {
+        bind(mode);
+        mirror.buildDrawList(warmup);
+        if (!mirror.settle(std::chrono::minutes(5))) throw std::runtime_error("RenderMirror settle timed out");
+    }
     for (const auto& pose : o.poses) {
         viewport::Camera camera;
         camera.position = pose.position;
         camera.angles = pose.angles;
         camera.fovYDegrees = viewport::sourceFovYDegrees(o.fov);
         render::MirrorViewOptions options;
-        options.mode = o.mode == "textured" ? render::DisplayMode::Textured :
-            (o.mode == "baked" || o.mode == "vrad") ? render::DisplayMode::Baked : render::DisplayMode::Lit;
+        options.mode = mode == "textured" ? render::DisplayMode::Textured :
+            (mode == "baked" || mode == "vrad") ? render::DisplayMode::Baked : render::DisplayMode::Lit;
         options.showEntityHelpers = false;
         options.showNodraw = false;
         options.showToolFaces = o.toolBrightness > 0.0f; // The game draws no trigger, clip or hint faces.
@@ -364,10 +412,10 @@ int run(const Options& o) {
         options.view.cameraRight = Vec3(camera.basis().right);
         options.view.cameraUp = Vec3(camera.basis().up);
         auto list = mirror.buildDrawList(options);
-        list.bakedScale = o.mode == "vrad" ? o.vradScale.value_or(o.bakeScale) : o.bakeScale;
+        list.bakedScale = o.density ? 1.0f : mode == "vrad" ? o.vradScale.value_or(o.bakeScale) : o.bakeScale;
         if (list.toolBrightness > 0.0f) list.toolBrightness = o.toolBrightness;
         if (o.noSpecular) for (auto& light : list.lights) light.specularMode = 0;
-        list.fullbright = o.mode == "fullbright";
+        list.fullbright = mode == "fullbright";
         // Leave exposure at DrawList's default, as ViewportPane does.
         constexpr float clear[] = {0.1f, 0.1f, 0.1f, 1.0f};
         VkCommandBuffer slot = VK_NULL_HANDLE;
@@ -382,12 +430,9 @@ int run(const Options& o) {
         };
         render();
         const auto image = take(target.readback());
-        const auto path = out / (fileName(pose, o));
-        QFile file(QString::fromStdString(path.string()));
-        if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly))
-            throw std::runtime_error("Cannot create output: " + path.string());
-        const QImage png(image.pixels.data(), o.width, o.height, o.width * 4, QImage::Format_RGBA8888);
-        if (!png.save(&file, "PNG")) throw std::runtime_error("PNG write failed: " + path.string());
+        const QImage png = QImage(image.pixels.data(), o.width, o.height, o.width * 4, QImage::Format_RGBA8888).copy();
+        if (o.sources.empty()) write(png, fileName(pose, o));
+        else drawn[sourceIndex].push_back(png);
         std::cout << fileName(pose, o) << " exposure=" << list.exposure
                   << " lights=" << list.lights.size() << " materials=" << materialNames.size()
                   << " failed-materials=" << failedMaterials << " failed-models=" << failedModels
@@ -401,6 +446,22 @@ int run(const Options& o) {
             std::cout << fileName(pose, o) << " device=\"" << context->info().name << "\" frame-ms=" << ms
                       << " frames=" << o.timeFrames << " cluster-overflow=" << renderer->clusterOverflow(slot)
                       << " shadow-overflow=" << renderer->shadowOverflow(slot) << '\n';
+        }
+    }
+    }
+    if (!o.sources.empty()) {
+        // Source A fills the left part of the image and source B the rest, with a white divider.
+        const int edge = std::clamp(int(std::lround(o.width * o.split)), 1, o.width - 1);
+        for (std::size_t i = 0; i < o.poses.size(); ++i) {
+            QImage joined = drawn[1][i];
+            for (int y = 0; y < o.height; ++y) {
+                std::memcpy(joined.scanLine(y), drawn[0][i].constScanLine(y), std::size_t(edge) * 4);
+                for (int x = std::max(0, edge - 1); x < std::min(o.width, edge + 1); ++x)
+                    reinterpret_cast<std::uint32_t*>(joined.scanLine(y))[x] = 0xffffffffu;
+            }
+            write(joined, fileName(o.poses[i], o));
+            std::cout << fileName(o.poses[i], o) << " compare=" << o.sources[0] << '|' << o.sources[1]
+                      << " split=" << edge << '\n';
         }
     }
     context->waitIdle();

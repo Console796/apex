@@ -164,6 +164,29 @@ BakedLightmaps::~BakedLightmaps() {
     if (slot_ != kNoTexture) heap_.releaseAttachment(slot_);
 }
 
+std::vector<std::vector<Vec3>> densityRadiance(const LightmapAtlas& atlas, double target) {
+    std::vector<std::vector<Vec3>> result;
+    result.reserve(atlas.faces.size());
+    for (const auto& face : atlas.faces) {
+        const auto& chart = face.chart;
+        const double units = 0.5 * (1.0 / glm::length(chart.worldToLuxel[0]) + 1.0 / glm::length(chart.worldToLuxel[1]));
+        const double ratio = units / target;
+        const Vec3 hue = ratio > 1.1 ? Vec3(1.0f, 0.15f, 0.1f) : ratio < 0.9 ? Vec3(0.15f, 0.35f, 1.0f)
+                                                                              : Vec3(0.15f, 1.0f, 0.2f);
+        auto& luxels = result.emplace_back();
+        const int width = chart.dimensions[0], height = chart.dimensions[1];
+        luxels.reserve(std::size_t(width) * std::size_t(height));
+        for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x)
+            luxels.push_back(hue * (((x + y) & 1) ? 1.0f : 0.4f));
+    }
+    return result;
+}
+
+std::string densityLegend(double target) {
+    return "Luxel density: one checker cell per luxel; green " + std::to_string(int(target)) +
+           " u/luxel (+-10%), red coarser, blue finer";
+}
+
 Result<void> BakedLightmaps::upload(const std::vector<std::vector<Vec3>>& radiance,
                                    std::span<const std::size_t> selected) {
     if (radiance.size() != atlas_->faces.size()) return fail("lightmap face count mismatch");

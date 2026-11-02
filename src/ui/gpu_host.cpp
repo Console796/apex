@@ -2,6 +2,9 @@
 
 #include "ui/gpu_host.hpp"
 #include "ui/bake_controller.hpp"
+#include "ui/vrad_controller.hpp"
+#include "render/lightmap_atlas.hpp"
+#include "render/renderer.hpp"
 
 #include <algorithm>
 
@@ -160,6 +163,11 @@ void GpuHost::unbind() {
     if (context_) context_->waitIdle();
     clearModelThumbnails();
     bake_.reset();
+    vrad_.reset();
+    vradMaps_.reset();
+    vradRadiance_.clear();
+    source_ = LightmapSource::Apex;
+    density_ = false;
     bakeInstances_.clear();
     mirror_.reset();
     modelPicks_.reset();
@@ -213,6 +221,17 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
         models_.get(), [this](const std::string& path) { return vfs_->exists(path); });
     mirror_->rebuild(*document);
     bake_ = std::make_unique<BakeController>(*document, vfs_, *context_, *heap_, *mirror_, *jobs_);
+    profile_ = effective;
+    vrad_ = std::make_unique<VradController>(*document, vradRunner_, [this](render::VradLightmaps loaded) -> Result<void> {
+        auto maps = render::BakedLightmaps::create(*context_, *heap_, std::move(loaded.atlas));
+        if (!maps) return std::unexpected(maps.error());
+        if (auto uploaded = (*maps)->upload(density_ ? render::densityRadiance((*maps)->atlas()) : loaded.radiance); !uploaded)
+            return uploaded;
+        vradMaps_ = std::move(*maps);
+        vradRadiance_ = std::move(loaded.radiance);
+        if (mirror_ && source_ == LightmapSource::Vrad) mirror_->setLightmaps(vradMaps_);
+        return {};
+    });
     observerToken_ = document->observe([this](const document::ChangeSet& changes) {
         if (mirror_ && document_) mirror_->apply(*document_, changes);
         // Conservative whole restart: keys include light targets, material and instance fixups.
@@ -249,6 +268,45 @@ QString GpuHost::bakeStatus() const {
                  : tr("Baked: no document/GPU");
 }
 float GpuHost::bakeScale() const { return bake_ ? bake_->scale() : render::kDefaultBakedScale; }
+float GpuHost::lightmapScale(bool vrad, bool density) const {
+    if (density) return 1.0f;
+    return vrad ? (vrad_ ? vrad_->scale() : render::kDefaultVradScale) : bakeScale();
+}
+
+void GpuHost::selectLightmaps(LightmapSource source, bool density) {
+    if (!bake_ || !mirror_) return;
+    if (source != source_) {
+        source_ = source;
+        if (source == LightmapSource::Vrad) { bake_->setDisplayed(false); mirror_->setLightmaps(vradMaps_); }
+        else bake_->setDisplayed(true);
+    }
+    if (density != density_) {
+        density_ = density;
+        bake_->setDensity(density);
+        if (vradMaps_) {
+            if (auto uploaded = vradMaps_->upload(density ? render::densityRadiance(vradMaps_->atlas()) : vradRadiance_); !uploaded)
+                log::error("viewports: lattice overlay upload: {}", uploaded.error().what());
+        }
+    }
+}
+
+bool GpuHost::updateVrad(bool active, const std::filesystem::path& map) {
+    if (!vrad_) return false;
+    editor::CompileGamePaths paths;
+    paths.gameDirectory = profile_.gameDirectory;
+    paths.toolDirectory = profile_.toolDirectory();
+    paths.instanceRoot = profile_.instanceSearchRoot();
+    paths.classes = classes_.get();
+    paths.escapeMode = profile_.escapeMode;
+    for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"}, {"light_exe", "vrad"}})
+        paths.tools[variable] = profile_.toolPath(tool).string();
+    return vrad_->update(active, map, paths);
+}
+void GpuHost::rerunVrad() { if (vrad_) vrad_->rerun(); }
+void GpuHost::cancelVrad() { if (vrad_) vrad_->cancel(); }
+QString GpuHost::vradStatus() const { return vrad_ ? vrad_->status() : tr("VRAD: no document/GPU"); }
+QString GpuHost::vradDetail() const { return vrad_ && !vrad_->detail().isEmpty() ? vrad_->detail() : vradStatus(); }
+bool GpuHost::vradFailed() const { return vrad_ && vrad_->phase() == VradController::Phase::Failed; }
 
 void GpuHost::rebuildCubemaps() {
     if (mirror_) mirror_->requestCubemapRebuild();

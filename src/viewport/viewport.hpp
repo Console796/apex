@@ -6,9 +6,11 @@
 #include "core/result.hpp"
 #include "viewport/camera.hpp"
 
+#include <optional>
+
 namespace apex::viewport {
 
-enum class DisplayMode { Wireframe, Flat, Textured, Lit, Baked }; // Lit: 0.6, Baked: 0.7.
+enum class DisplayMode { Wireframe, Flat, Textured, Lit, Baked, Vrad }; // Lit: 0.6, Baked: 0.7, Vrad: 0.7.5.
 
 struct Overlays {
     bool grid = true;
@@ -22,6 +24,7 @@ struct Overlays {
     bool cordons = true;      // The map's cordon boxes (0.5 D7).
     bool backfaceCulling = true; // False draws the back of every face too (Textured, Flat, Lit).
     bool toolFixedBrightness = false; // Lit/Baked: tool textures drawn at a fixed brightness, not lit or baked.
+    bool luxelDensity = false;   // Baked/Vrad: the lightmap lattice as a checker, one cell per luxel (0.7.5 D7).
     bool approxBounce = true;    // Lit: constant ambient fill plus screen-space AO, a stand-in for bounce light.
 
     bool operator==(const Overlays&) const = default;
@@ -31,6 +34,9 @@ struct Viewport {
     Camera camera;
     DisplayMode mode = DisplayMode::Textured;
     Overlays overlays;
+    // Compare (0.7.5 D7): the source a swap switches to, for flipping one viewport between Lit, Baked and
+    // Vrad. Session state only; not saved.
+    std::optional<DisplayMode> compare;
 };
 
 enum class Preset { Top, Front, Side, Camera };

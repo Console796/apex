@@ -32,6 +32,7 @@
 #include "render/view_math.hpp"
 #include "ui/gpu_host.hpp"
 #include "ui/bake_controller.hpp"
+#include "ui/vrad_controller.hpp"
 #include "ui/input_log.hpp"
 #include "ui/key_chord.hpp"
 #include "viewport/pick_math.hpp"
@@ -65,6 +66,7 @@ QString modeName(viewport::DisplayMode mode) {
     case viewport::DisplayMode::Textured: return QStringLiteral("Textured");
     case viewport::DisplayMode::Lit: return QStringLiteral("Lit");
     case viewport::DisplayMode::Baked: return QStringLiteral("Baked");
+    case viewport::DisplayMode::Vrad: return QStringLiteral("VRAD");
     }
     return {};
 }
@@ -74,7 +76,8 @@ render::DisplayMode renderMode(viewport::DisplayMode mode) {
     case viewport::DisplayMode::Wireframe: return render::DisplayMode::Wireframe;
     case viewport::DisplayMode::Flat: return render::DisplayMode::Flat;
     case viewport::DisplayMode::Lit: return render::DisplayMode::Lit;
-    case viewport::DisplayMode::Baked: return render::DisplayMode::Baked;
+    case viewport::DisplayMode::Baked:
+    case viewport::DisplayMode::Vrad: return render::DisplayMode::Baked;
     default: return render::DisplayMode::Textured;
     }
 }
@@ -594,7 +597,7 @@ double PaneWindow::draw() {
     render::DrawList list;
     if (auto* mirror = host_.mirror()) {
         list = mirror->buildDrawList(options);
-        list.bakedScale = host_.bakeScale();
+        list.bakedScale = host_.lightmapScale(vp->mode == viewport::DisplayMode::Vrad, vp->overlays.luxelDensity);
     } else {
         list.mode = options.mode;
         list.cullBackFaces = options.cullBackFaces;
@@ -807,13 +810,14 @@ void PaneFrame::refreshTitle() {
     const auto* vp = accessor_();
     if (!vp) return;
     QString text = viewName(*vp) + QStringLiteral("  |  ") + modeName(vp->mode);
+    if (vp->compare) text += tr("  (A/B: swaps with %1)").arg(modeName(*vp->compare));
     if (maximized_) text += tr("  (maximized)");
     title_->setText(text);
 }
 
-void PaneFrame::setBakeStatus(const QString& text) {
+void PaneFrame::setBakeStatus(const QString& text, const QString& detail) {
     bakeStatus_->setText(text);
-    bakeStatus_->setToolTip(text);
+    bakeStatus_->setToolTip(detail.isEmpty() ? text : detail);
     bakeStatus_->setVisible(!text.isEmpty());
 }
 
@@ -896,7 +900,7 @@ void PaneFrame::buildMenu() {
     auto* mode = menu_->addMenu(tr("Display mode"));
     auto* modeGroup = new QActionGroup(mode);
     for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat, viewport::DisplayMode::Textured,
-                         viewport::DisplayMode::Lit, viewport::DisplayMode::Baked}) {
+                         viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad}) {
         auto* a = mode->addAction(modeName(m), this, [edit, m] { edit([m](viewport::Viewport& v) { v.mode = m; }); });
         a->setCheckable(true);
         a->setChecked(vp->mode == m);
@@ -904,6 +908,24 @@ void PaneFrame::buildMenu() {
     }
     mode->addSeparator();
     mode->addAction(tr("Bake settings..."), this, [this] { showBakeSettings(this); });
+    mode->addAction(tr("VRAD settings..."), this, [this] { showVradSettings(this); });
+    mode->addAction(tr("Re-run VRAD"), this, [this] { emit vradRerunRequested(); });
+    mode->addAction(tr("Cancel VRAD run"), this, [this] { emit vradCancelRequested(); });
+
+    // Compare (0.7.5 D7): flip this viewport between two light sources; the title says which one is showing.
+    auto* compare = menu_->addMenu(tr("Compare light source"));
+    for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad}) {
+        auto* a = compare->addAction(tr("A/B with %1").arg(modeName(m)), this, [edit, m] {
+            edit([m](viewport::Viewport& v) { v.compare = m; });
+        });
+        a->setEnabled(vp->mode != m);
+    }
+    auto* swap = compare->addAction(tr("Swap A/B"), this, [edit] {
+        edit([](viewport::Viewport& v) { if (v.compare) std::swap(v.mode, *v.compare); });
+    });
+    swap->setEnabled(vp->compare.has_value());
+    compare->addAction(tr("Compare off"), this, [edit] { edit([](viewport::Viewport& v) { v.compare.reset(); }); })
+        ->setEnabled(vp->compare.has_value());
 
     auto* overlays = menu_->addMenu(tr("Overlays"));
     struct OverlayEntry { const char* label; bool viewport::Overlays::*field; };
@@ -918,6 +940,7 @@ void PaneFrame::buildMenu() {
                                     {"Compile portals", &viewport::Overlays::portals},
                                     {"Cordons", &viewport::Overlays::cordons},
                                     {"Backface culling", &viewport::Overlays::backfaceCulling},
+                                    {"Luxel density (Baked, VRAD)", &viewport::Overlays::luxelDensity},
                                     {"Approximate bounce (Lit)", &viewport::Overlays::approxBounce}};
     for (const auto& entry : entries) {
         auto* a = overlays->addAction(tr(entry.label));

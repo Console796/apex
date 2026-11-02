@@ -29,6 +29,7 @@
 #include "editor/selection_expand.hpp"
 #include "ui/area_frame.hpp"
 #include "ui/compile_panel.hpp"
+#include "render/lightmap_atlas.hpp"
 #include "ui/gpu_host.hpp"
 #include "ui/input_log.hpp"
 #include "ui/theme.hpp"
@@ -872,6 +873,8 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     connect(frame, &PaneFrame::activated, this, &ViewportArea::setActive);
     connect(frame, &PaneFrame::edited, this, [this](viewport::NodeId) { emit layoutChanged(); });
     connectArea(frame);
+    connect(frame, &PaneFrame::vradRerunRequested, this, [this] { host_->rerunVrad(); });
+    connect(frame, &PaneFrame::vradCancelRequested, this, [this] { host_->cancelVrad(); });
     if (window) {
         connect(window, &PaneWindow::cameraChanged, this, &ViewportArea::emitCamera);
         connect(window, &PaneWindow::modelPlacementFailed, this, &ViewportArea::modelPlacementFailed);
@@ -918,21 +921,43 @@ void ViewportArea::tick() {
         if (window) if (auto* models = qobject_cast<ModelsPanel*>(window->panel())) models->syncThumbnails(interacting);
     if (modelPicker_) modelPicker_->syncThumbnails(interacting);
     host_->tickModelThumbnails(gameContent_ ? gameContent_->thumbnails() : nullptr, interacting);
-    bool baked = false;
+    bool baked = false, vrad = false, density = false;
     DVec3 bakeCamera{0};
-    // Prefer the active Baked pane; otherwise the first Baked pane in layout order.
+    // Prefer the active Baked pane; otherwise the first Baked pane in layout order. The mirror holds one
+    // lightmap set, so the active pane's source (Apex bake or VRAD) is the one drawn; other panes say so.
+    std::optional<viewport::DisplayMode> activeSource;
     for (const auto id : layout_.viewportIds()) {
         const auto* view = layout_.viewport(id);
-        if (view && view->mode == viewport::DisplayMode::Baked && (!baked || id == layout_.active())) {
+        if (!view) continue;
+        const bool lightmapped = view->mode == viewport::DisplayMode::Baked || view->mode == viewport::DisplayMode::Vrad;
+        if (view->mode == viewport::DisplayMode::Baked && (!baked || id == layout_.active())) {
             baked = true;
             bakeCamera = view->camera.position;
         }
+        vrad |= view->mode == viewport::DisplayMode::Vrad;
+        if (lightmapped && (!activeSource || id == layout_.active())) {
+            activeSource = view->mode;
+            density = view->overlays.luxelDensity;
+        }
     }
+    const auto source = activeSource.value_or(viewport::DisplayMode::Baked);
+    host_->selectLightmaps(source == viewport::DisplayMode::Vrad ? ui::LightmapSource::Vrad : ui::LightmapSource::Apex, density);
     if (session_ && host_->updateBake(baked, bakeCamera, session_->connectionMapPath(),
                                      session_->connectionExtraRoot(), session_->instances().contents())) forceDraw_ = true;
+    if (session_ && host_->updateVrad(vrad, session_->connectionMapPath())) forceDraw_ = true;
     for (auto& [id, frame] : frames_) if (frame) {
         const auto* view = layout_.viewport(id);
-        frame->setBakeStatus(view && view->mode == viewport::DisplayMode::Baked ? host_->bakeStatus() : QString());
+        QString text, detail;
+        if (view && view->mode == viewport::DisplayMode::Baked) text = host_->bakeStatus();
+        else if (view && view->mode == viewport::DisplayMode::Vrad) {
+            text = host_->vradStatus();
+            if (host_->vradFailed()) detail = host_->vradDetail();
+        }
+        if (view && !text.isEmpty() && view->mode != source && activeSource)
+            text += tr(" | showing the %1 lightmaps (active pane)").arg(source == viewport::DisplayMode::Vrad ? tr("VRAD") : tr("Apex bake"));
+        if (view && !text.isEmpty() && view->overlays.luxelDensity)
+            text += QStringLiteral(" | ") + QString::fromStdString(render::densityLegend());
+        frame->setBakeStatus(text, detail);
     }
     const auto pickRevision = host_->modelPickRevision();
     if (gpuReady_ && host_->pump()) forceDraw_ = true;

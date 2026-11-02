@@ -55,7 +55,7 @@ Result<bool> readBool(const json::Value::Object& o, std::string_view key, bool f
 constexpr struct { DisplayMode mode; const char* name; } kModes[] = {
     {DisplayMode::Wireframe, "wireframe"}, {DisplayMode::Flat, "flat"},
     {DisplayMode::Textured, "textured"},   {DisplayMode::Lit, "lit"},
-    {DisplayMode::Baked, "baked"}};
+    {DisplayMode::Baked, "baked"},         {DisplayMode::Vrad, "vrad"}};
 
 } // namespace
 
@@ -133,6 +133,7 @@ json::Value toJson(const Viewport& vp) {
     ov["backfaceCulling"] = boolean(vp.overlays.backfaceCulling);
     ov["approxBounce"] = boolean(vp.overlays.approxBounce);
     ov["toolFixedBrightness"] = boolean(vp.overlays.toolFixedBrightness);
+    ov["luxelDensity"] = boolean(vp.overlays.luxelDensity);
     json::Value::Object root;
     root["camera"].data = std::move(cam);
     root["mode"] = str(nameOf(vp.mode));
@@ -206,7 +207,8 @@ Result<Viewport> viewportFromJson(const json::Value& value) {
                                Field{"cordons", &vp.overlays.cordons},
                                Field{"backfaceCulling", &vp.overlays.backfaceCulling},
                                Field{"approxBounce", &vp.overlays.approxBounce},
-                               Field{"toolFixedBrightness", &vp.overlays.toolFixedBrightness}}) {
+                               Field{"toolFixedBrightness", &vp.overlays.toolFixedBrightness},
+                               Field{"luxelDensity", &vp.overlays.luxelDensity}}) {
             auto b = readBool(*o, f.key, *f.dst);
             if (!b) return std::unexpected(b.error());
             *f.dst = *b;

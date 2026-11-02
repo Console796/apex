@@ -9,6 +9,8 @@
 
 namespace apex::render {
 
+inline constexpr double kDefaultLuxelTarget = 16.0; // Source's default lightmap scale, units per luxel.
+
 struct LightmapRect {
     int x = 0, y = 0, width = 0, height = 0; // Interior; one duplicated texel surrounds each rect.
     bool operator==(const LightmapRect&) const = default;
@@ -51,6 +53,13 @@ struct LightmapAtlas {
     std::vector<std::vector<Vec3>> retainRadiance(
         const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const;
 };
+
+// A stand-in for baked radiance that shows the lattice (0.7.5 D7): one checker cell per luxel, coloured by
+// the face's world units per luxel against `target` (green within 10%, red coarser, blue finer; the game's
+// default is 16). Same layout as the real radiance, so it uploads through BakedLightmaps::upload.
+std::vector<std::vector<Vec3>> densityRadiance(const LightmapAtlas& atlas, double target = kDefaultLuxelTarget);
+// The HUD legend for densityRadiance.
+std::string densityLegend(double target = kDefaultLuxelTarget);
 
 class BakedLightmaps {
   public:

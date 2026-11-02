@@ -81,6 +81,21 @@ BakeController::BakeController(document::Document& document, std::shared_ptr<con
       options_(readOptions()) {}
 BakeController::~BakeController() { job_.cancel(); }
 
+void BakeController::setDisplayed(bool displayed) {
+    displayed_ = displayed;
+    if (displayed_) { mirror_.setLightmaps(maps_); redraw_ = true; }
+}
+
+void BakeController::setDensity(bool density) {
+    if (density_ == density) return;
+    density_ = density;
+    if (maps_) {
+        const auto shown = density_ ? render::densityRadiance(maps_->atlas()) : radiance_;
+        if (auto uploaded = maps_->upload(shown); !uploaded) status_ = QStringLiteral("Baked: %1").arg(QString::fromStdString(uploaded.error().what()));
+    }
+    redraw_ = true;
+}
+
 void BakeController::invalidate() {
     job_.cancel();
     if (session_) previous_ = std::move(session_);
@@ -163,7 +178,7 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                     return;
                 }
                 auto retained = std::move(prepared.radiance);
-                if (auto uploaded = (*maps)->upload(retained); !uploaded) {
+                if (auto uploaded = (*maps)->upload(density_ ? render::densityRadiance((*maps)->atlas()) : retained); !uploaded) {
                     status_ = QStringLiteral("Baked: %1").arg(QString::fromStdString(uploaded.error().what()));
                     failed_ = true;
                     redraw_ = true;
@@ -174,7 +189,7 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                 session_ = std::move(prepared.session);
                 previous_.reset();
                 incremental_ = prepared.incremental ? incremental_ + 1 : 0;
-                mirror_.setLightmaps(maps_);
+                if (displayed_) mirror_.setLightmaps(maps_);
                 status_ = progressText(session_->progress(), options_.maxPasses);
                 redraw_ = true;
             });
@@ -208,7 +223,7 @@ void BakeController::accept(lighting::BakePublication publication) {
             if (update.sampled[i]) radiance_[update.face][i] = update.radiance[i];
         changed.push_back(update.face);
     }
-    if (!changed.empty()) {
+    if (!changed.empty() && !density_) {
         if (auto uploaded = maps_->upload(radiance_, changed); !uploaded)
             status_ = QStringLiteral("Baked: %1").arg(QString::fromStdString(uploaded.error().what()));
     }

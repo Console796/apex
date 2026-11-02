@@ -25,6 +25,10 @@ public:
     void invalidate();
     bool update(bool active, DVec3 camera, const std::filesystem::path& map,
                 const std::optional<std::filesystem::path>& extraRoot);
+    // Whether the mirror draws this bake's lightmaps (the VRAD view takes the slot otherwise), and the lattice
+    // checker (render::densityRadiance) in place of the radiance.
+    void setDisplayed(bool displayed);
+    void setDensity(bool density);
     QString status() const { return status_; }
     float scale() const { return scale_; }
 
@@ -48,6 +52,7 @@ private:
     QString status_;
     unsigned incremental_ = 0; // Consecutive incremental restarts since the last full one.
     float scale_ = render::kDefaultBakedScale;
+    bool displayed_ = true, density_ = false;
     bool active_ = false, busy_ = false, redraw_ = false, failed_ = false;
     void accept(lighting::BakePublication publication);
 };

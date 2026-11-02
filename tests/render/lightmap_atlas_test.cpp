@@ -340,3 +340,99 @@ TEST_CASE("bake setup: a brush entity is lit but does not cast") {
     baker.step();
     CHECK(baker.resolve().size() == setup.scene.faces.size());
 }
+
+namespace {
+void setupSides(std::vector<geometry::PlaneSide>& planes) {
+    for (auto& side : planes) {
+        side.material = "test/one";
+        side.lightmapScale = 16;
+        side.uv.uaxis = std::abs(side.plane.normal.x) > 0.5 ? DVec3{0, 1, 0} : DVec3{1, 0, 0};
+        side.uv.vaxis = std::abs(side.plane.normal.z) > 0.5 ? DVec3{0, 1, 0} : DVec3{0, 0, 1};
+    }
+}
+// Scales a loop about its centroid.
+void scaleLoop(std::vector<DVec3>& loop, double factor) {
+    DVec3 centre{0.0};
+    for (const auto& p : loop) centre += p;
+    centre /= double(loop.size());
+    for (auto& p : loop) p = centre + (p - centre) * factor;
+}
+std::vector<lighting::BakeFace> boxFaces(const geometry::ConvexPolyhedron& poly, std::uint64_t solid, int = 0) {
+    std::vector<lighting::BakeFace> faces;
+    for (const auto& face : poly.faces)
+        for (auto& fragment : lighting::bakeFaces(face, poly.vertices)) { fragment.solidId = solid; faces.push_back(std::move(fragment)); }
+    return faces;
+}
+}
+
+TEST_CASE("lightmap atlas: a compiled atlas keeps fragments that cover no more than the face") {
+    auto planes = geometry_test::boxSides();
+    setupSides(planes);
+    const auto poly = geometry_test::build(planes);
+    auto faces = boxFaces(poly, 7);
+    REQUIRE(faces.size() == poly.faces.size());
+    auto packed = LightmapAtlas::pack(faces);
+    REQUIRE(packed);
+    const auto size = [](std::string_view) { return TextureSize{64, 64}; };
+    const auto lit = [&](const LightmapAtlas& atlas) {
+        auto mesh = meshSolid(poly, size, &atlas, 7);
+        REQUIRE(mesh);
+        std::size_t count = 0;
+        for (const auto& batch : mesh->batches) for (const auto& v : batch.vertices) count += v.lightmapUv[0] >= 0.0f;
+        return count;
+    };
+    // The baker's own charts match in either mode.
+    const auto all = lit(*packed);
+    CHECK(all > 0);
+    auto compiled = *packed;
+    compiled.compiled = true;
+    CHECK(lit(compiled) == all);
+    // A fragment the compiler cut down (touching brushes removed part of the side) is still used...
+    scaleLoop(compiled.faces[0].vertices, 0.5);
+    CHECK(lit(compiled) == all);
+    // ...but the baker's strict check refuses the same fragment, since it no longer matches the chart.
+    auto strict = compiled;
+    strict.compiled = false;
+    CHECK(lit(strict) < all);
+    // A fragment spilling past the face is rejected whatever the mode.
+    auto spilling = *packed;
+    spilling.compiled = true;
+    scaleLoop(spilling.faces[0].vertices, 2.0);
+    CHECK(lit(spilling) < all);
+}
+
+TEST_CASE("lightmap atlas: the density overlay has the radiance layout and colours by units per luxel") {
+    auto planes = geometry_test::boxSides({0, 0, 0}, {128, 128, 128});
+    setupSides(planes);
+    planes[0].lightmapScale = 32; // One coarse face.
+    planes[1].lightmapScale = 8;  // One fine face.
+    const auto poly = geometry_test::build(planes);
+    auto faces = boxFaces(poly, 1);
+    auto atlas = LightmapAtlas::pack(faces);
+    REQUIRE(atlas);
+    const auto density = densityRadiance(*atlas);
+    REQUIRE(density.size() == atlas->faces.size());
+    int green = 0, red = 0, blue = 0;
+    for (std::size_t i = 0; i < density.size(); ++i) {
+        const auto& chart = atlas->faces[i].chart;
+        REQUIRE(density[i].size() == std::size_t(chart.dimensions[0]) * std::size_t(chart.dimensions[1]));
+        REQUIRE(density[i].size() >= 2);
+        // Neighbouring luxels alternate between a bright and a dim cell of the same hue.
+        const auto a = density[i][0], b = density[i][1];
+        CHECK(a != b);
+        const auto hue = glm::normalize(a);
+        const auto other = glm::normalize(b);
+        CHECK(hue.x == doctest::Approx(other.x));
+        CHECK(hue.y == doctest::Approx(other.y));
+        const auto bright = std::max(glm::length(a), glm::length(b)), dim = std::min(glm::length(a), glm::length(b));
+        CHECK(dim == doctest::Approx(bright * 0.4f));
+        if (hue.x > hue.y && hue.x > hue.z) ++red;
+        else if (hue.z > hue.y) ++blue;
+        else ++green;
+    }
+    CHECK(red >= 1);
+    CHECK(blue >= 1);
+    CHECK(green >= 1);
+    CHECK(densityRadiance(*atlas) == density); // Deterministic.
+    CHECK(densityLegend(16.0).find("16") != std::string::npos);
+}

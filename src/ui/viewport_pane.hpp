@@ -151,7 +151,7 @@ public:
     QWidget* container() const { return container_; }
     void setActive(bool active);
     void refreshTitle();
-    void setBakeStatus(const QString& text);
+    void setBakeStatus(const QString& text, const QString& detail = {});
     void setTool(editor::Tool& tool);
     void setModeText(const QString& text, bool entityTool);
     void setEditorSession(editor::EditorSession* session);
@@ -167,6 +167,8 @@ signals:
     void activated(viewport::NodeId pane);
     void roleRequested(viewport::NodeId pane, viewport::AreaRole role);
     void collapseRequested(viewport::NodeId pane);
+    void vradRerunRequested();
+    void vradCancelRequested();
 
 private:
     void buildMenu();

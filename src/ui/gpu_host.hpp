@@ -18,6 +18,7 @@
 #include "render/texture_heap.hpp"
 #include "render/model_inspector.hpp"
 #include "render/model_thumbnail_scheduler.hpp"
+#include "ui/qprocess_runner.hpp"
 
 class QVulkanInstance;
 
@@ -40,6 +41,10 @@ namespace apex::ui {
 // the first pane; unavailable (with an explanation) on platforms without Vulkan surfaces, such as
 // the offscreen QPA plugin, so the shell still runs headless.
 class BakeController;
+class VradController;
+
+// Which compiled lightmap set the shared mirror draws (0.7.5): the Apex bake or the VRAD round trip.
+enum class LightmapSource { Apex, Vrad };
 
 class GpuHost : public QObject {
     Q_OBJECT
@@ -77,6 +82,17 @@ public:
                     const std::vector<document::InstanceContent>& instances);
     QString bakeStatus() const;
     float bakeScale() const;
+    // The mirror holds one lightmap set, so the panes share a source; `density` swaps in the luxel checker.
+    void selectLightmaps(LightmapSource source, bool density);
+    // VRAD view: `active` when a pane shows it. Starts a run on entry; rerunVrad() / cancelVrad() are the menu actions.
+    bool updateVrad(bool active, const std::filesystem::path& map);
+    void rerunVrad();
+    void cancelVrad();
+    QString vradStatus() const;
+    QString vradDetail() const;  // The failing tool's log tail when a run failed, else the status.
+    bool vradFailed() const;
+    // Display scale for a pane in Baked or Vrad mode; 1 under the density overlay.
+    float lightmapScale(bool vrad, bool density) const;
 
     void requestModelThumbnail(const QObject* owner, const QString& path, bool visible);
     void clearModelThumbnails();
@@ -116,6 +132,13 @@ private:
     std::unique_ptr<assets::EntityClassTable> classes_;
     std::unique_ptr<render::RenderMirror> mirror_;
     std::unique_ptr<BakeController> bake_;
+    QProcessRunner vradRunner_;
+    std::unique_ptr<VradController> vrad_;
+    std::shared_ptr<render::BakedLightmaps> vradMaps_;
+    std::vector<std::vector<Vec3>> vradRadiance_;
+    assets::GameProfile profile_;
+    LightmapSource source_ = LightmapSource::Apex;
+    bool density_ = false;
     std::vector<std::pair<std::shared_ptr<const document::Document>, DMat4>> bakeInstances_;
     document::Document* document_ = nullptr;
     std::size_t observerToken_ = 0;
