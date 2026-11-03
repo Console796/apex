@@ -29,10 +29,49 @@ was byte-identical to the initial capture. Loading and mapping took 0.071 s,
 compared with 7.315 s for the original compile and mapping. The caller must
 validate that a cached BSP matches the VMF, instances, assets and flags.
 
-`tools/vrad_image_metrics.py` computes masked per-pose and pooled metrics; it
-requires independently supplied masks. The masks have not been implemented:
-nonblack VRAD pixels cannot safely be used, because sky, emissive surfaces,
-and other non-lightmapped pixels may also be nonblack. No parity, held-out,
-convergence, frame-time or before/after tables are claimed yet. The renderer
-still needs a reliable visible-surface validity pass and cache-key validation
-for the requested repeatable end-to-end harness.
+## Preliminary six-pose measurement
+
+Original map, RX 6600, 640x360, exposure 1, direct specular disabled, cached
+`vrad -final` at scale 1. `--vrad-mask` marks mapped, nonblack brush lightmap
+pixels, excluding sky, tools, displacements, selfillum/refraction, transparent
+footprints and sides whose materials are in the game's `lights.rad`. It is
+**experimental**, not a fully validated classification pass: map-local RAD
+files are not read and the material/occluder exclusions lack targeted tests.
+For this map the log found 59 RAD materials and two matching sides, but no
+matching atlas fragments. Do not interpret these figures as a parity gate.
+
+The four test poses are the set-2 positions in `bake_parity_set2_0_7_4.md`;
+the two held-out views are p1's position at pitch -42/yaw 60 and p2's position
+at pitch 25/yaw 150. The 16-pass, two-bounce, 32-ray Baked baseline below uses
+**scale 1**, matching VRAD, not the editor's existing 0.62 default. Lit uses
+128 probe frames. The Baked trial uses display scale 1.35, selected from the
+four test poses, without changing the default. Ratios and errors are computed
+only on the provisional mask; RGB MAE/RMSE use normalized linear values or
+0–255 sRGB values. Shadow/lit means are split at each pose's median reference
+linear luminance. Coarse RMSE uses normalized masked Gaussian blur, sigma 8 px.
+
+| Pose | Baked 1.0 ratio / linear RMSE / 8-bit MAE | Baked 1.35 ratio / linear RMSE / 8-bit MAE | Lit ratio / linear RMSE / 8-bit MAE |
+|---|---|---|---|
+| p1 | 0.730 / 0.0560 / 13.95 | 0.985 / 0.0382 / 5.96 | 0.502 / 0.1011 / 27.43 |
+| p2 | 0.716 / 0.0289 / 8.58 | 0.965 / 0.0205 / 3.09 | 0.502 / 0.0509 / 15.24 |
+| p3 | 0.732 / 0.0481 / 12.72 | 0.987 / 0.0354 / 5.53 | 0.516 / 0.0851 / 24.53 |
+| p4 | 0.749 / 0.0538 / 13.25 | 1.010 / 0.0392 / 5.70 | 0.530 / 0.0982 / 26.11 |
+| h1 held out | 0.734 / 0.0729 / 17.55 | 0.990 / 0.0453 / 6.99 | 0.520 / 0.1295 / 33.89 |
+| h2 held out | 0.665 / 0.0311 / 8.62 | 0.898 / 0.0130 / 2.51 | 0.435 / 0.0533 / 15.39 |
+
+For p1, Baked 1.0 shadow/lit ratios were 0.653/0.735, versus 0.881/0.991 at
+1.35; its coarse RMSE fell from 0.0535 to 0.0331. For h2 the respective
+shadow/lit ratios were 0.684/0.663 and 0.923/0.894, and coarse RMSE fell from
+0.0298 to 0.0112. The trial is evidence of a scale discrepancy, not proof of
+its cause or a safe default across scenes. The four-pose 16-pass trial took
+7.23 s end-to-end including setup and rendering; this is not convergence time.
+
+Lit `--time 20` measured total synchronous frame times of 8.18–10.96 ms across
+these views after warm-up. Shadow-atlas overflow was 1–3 for all views except
+p4 (zero), so some direct shadows are missing and confound the comparison.
+No incremental probe-only timing, convergence frames/seconds, bounce/ray/pass
+sweep, larger final renders, systematic bias fix or default change is claimed.
+The PNG metrics helper supports pooled aggregates and additional error columns;
+the rendered files and JSON from these exploratory runs are in `/tmp/opencode`
+and the ignored worktree build directory, respectively. A self-contained
+render/cache/metric driver and automatic cache-key validation are still needed.
