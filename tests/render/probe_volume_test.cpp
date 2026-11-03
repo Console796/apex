@@ -136,6 +136,24 @@ void clean(Context& context) {
     CHECK(context.validation().errorCount() == 0);
     CHECK(context.validation().warningCount() == 0);
 }
+std::vector<GpuIrradianceProbe> readProbes(Context& context, ProbeVolume& probes, glm::uvec3 dims, bool coarse = false) {
+    const std::size_t size = std::size_t(dims.x) * dims.y * dims.z * sizeof(GpuIrradianceProbe);
+    auto staging = Buffer::create(context, {size, VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUsage::Readback});
+    REQUIRE(staging);
+    REQUIRE(context.oneShot([&](VkCommandBuffer commands) {
+        const VkBufferCopy copy{0, 0, size};
+        vkCmdCopyBuffer(commands, coarse ? probes.coarseBuffer() : probes.buffer(), staging->handle(), 1, &copy);
+        auto memory = vkStruct<VkMemoryBarrier2>(VK_STRUCTURE_TYPE_MEMORY_BARRIER_2);
+        memory.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT; memory.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        memory.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT; memory.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        auto dep = vkStruct<VkDependencyInfo>(VK_STRUCTURE_TYPE_DEPENDENCY_INFO);
+        dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &memory;
+        vkCmdPipelineBarrier2(commands, &dep);
+    }));
+    staging->invalidate();
+    const auto* data = static_cast<const GpuIrradianceProbe*>(staging->mapped());
+    return {data, data + size / sizeof(GpuIrradianceProbe)};
+}
 }
 
 TEST_CASE("render: realtime probes bounce deterministically and honour indirect light modes") {
@@ -214,6 +232,100 @@ TEST_CASE("render: realtime probe visibility rejects a 16 unit wall at 64 unit s
     clean(*context);
 }
 
+TEST_CASE("render: probe cascades cover the fine edge without a seam") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    if (!context->info().rayQuery) { MESSAGE("Skipped: ray query unavailable"); return; }
+    context->validation().clear();
+    {
+        Rooms rooms(*context);
+        auto list = rooms.list();
+        GpuMaterial material; material.bounce = Vec4(0.65f, 0.65f, 0.65f, 0);
+        auto created = ProbeVolume::create(*context); REQUIRE(created);
+        auto& probes = **created;
+
+        // Fine grid {6,6,6} at 64 units covers |x|,|y| <= 160; the coarse cascade ({3,3,3} at 256)
+        // covers |x|,|y| <= 256. The lit left-room ceiling at x = -190 is outside the fine grid.
+        list.probeSettings.dims = {6, 6, 6};
+        std::vector<Sample> sweep;
+        for (float x = -240.0f; x <= -40.0f; x += 5.0f) sweep.push_back({Vec4(x, 0, 127.9f, 0), Vec4(0, 0, -1, 0)});
+        const auto at = [&](float x) { return std::size_t((x + 240.0f) / 5.0f + 0.5f); };
+        accumulate(*context, probes, list, material);
+        FrameBlock frame; probes.pack(frame, DVec3(0));
+        REQUIRE(frame.indirectCoarseDims == glm::uvec4(3, 3, 3, 0));
+        REQUIRE(frame.indirectCoarseParams.x == doctest::Approx(256.0));
+        const auto cascaded = sample(*context, frame, sweep);
+        std::vector<double> values;
+        for (const auto& value : cascaded) values.push_back(luminance({value}));
+        double worst = 0, brightest = 0;
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            brightest = std::max(brightest, values[i]);
+            if (i) worst = std::max(worst, std::abs(values[i] - values[i - 1]));
+        }
+        MESSAGE("cascaded: inside(-60)=" << values[at(-60)] << " fine edge(-160)=" << values[at(-160)]
+                << " outside(-190)=" << values[at(-190)] << " brightest=" << brightest
+                << " worst adjacent delta (5 units)=" << worst);
+        CHECK(values[at(-60)] > 0.005);
+        CHECK(values[at(-190)] > 1e-4); // Coarse coverage where the fine grid has none.
+        // Stated tolerance: adjacent 5-unit steps change by at most 15% of the brightest sample.
+        // A hard fine-to-coarse switch jumps by the fine/coarse difference, far above that.
+        CHECK(worst <= 0.15 * brightest);
+
+        // Without the coarse cascade the same outside point is exactly black.
+        probes.reset();
+        list.probeSettings.cascades = false;
+        accumulate(*context, probes, list, material);
+        probes.pack(frame, DVec3(0));
+        REQUIRE(frame.indirectCoarseDims == glm::uvec4(0));
+        const auto single = sample(*context, frame, sweep);
+        CHECK(luminance({single[at(-190)]}) == 0.0);
+        CHECK(luminance({single[at(-60)]}) > 0.005);
+    }
+    clean(*context);
+}
+
+TEST_CASE("render: probe relocation moves a buried probe into air") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    if (!context->info().rayQuery) { MESSAGE("Skipped: ray query unavailable"); return; }
+    context->validation().clear();
+    {
+        Rooms rooms(*context);
+        auto list = rooms.list();
+        list.meshes[0].origin.x = 32; // The wall spans [24, 40]; probe cell x=32 lies inside it.
+        list.lights[0].origin.x = -96 + 32;
+        GpuMaterial material; material.bounce = Vec4(0.65f, 0.65f, 0.65f, 0);
+        auto created = ProbeVolume::create(*context); REQUIRE(created);
+        auto& probes = **created;
+        const glm::uvec3 grid = list.probeSettings.dims;
+        // Camera at 0 → fine origin x = -224, cells every 64: x=32 (cell 4), y=-32 (cell 3),
+        // z=-32 (cell 2) sit inside the wall.
+        const glm::uvec3 buried{4, 3, 2};
+        const auto verify = [&](bool relocate) {
+            probes.reset();
+            list.probeSettings.relocate = relocate;
+            accumulate(*context, probes, list, material);
+            const auto maps = readProbes(*context, probes, grid);
+            return maps[(buried.z * grid.y + buried.y) * grid.x + buried.x];
+        };
+        const auto buriedProbe = verify(false);
+        CHECK(buriedProbe.irradiance[0].w == -1.0f);
+        const auto relocated = verify(true);
+        CHECK(relocated.irradiance[0].w == 1.0f);
+        // The stored offset moves the probe's sampling position out of the wall, bounded by
+        // the relocation budget (half a probe spacing).
+        const Vec3 offset(relocated.depth[0].z, relocated.depth[0].w, relocated.depth[1].z);
+        const double x = 32.0 + double(offset.x) * 64.0;
+        MESSAGE("relocation offset=" << offset.x << ' ' << offset.y << ' ' << offset.z << " world x=" << x);
+        CHECK(std::abs(offset.x) <= 0.5 + 0.01);
+        CHECK(std::abs(offset.y) <= 0.5 + 0.01);
+        CHECK(std::abs(offset.z) <= 0.5 + 0.01);
+        const bool movedOut = x <= 24.0 - 0.05 || x >= 40.0 + 0.05;
+        CHECK(movedOut);
+    }
+    clean(*context);
+}
+
 TEST_CASE("render: probe reflectivity shares the baker override rule") {
     assets::Material material;
     CHECK(bakeReflectivity(material, Vec3(0.1f, 0.3f, 0.6f)) == Vec3(0.1f, 0.3f, 0.6f));
@@ -231,6 +343,7 @@ TEST_CASE("render: probe budgets preserve untouched history and sky replaces CPU
     {
         Rooms rooms(*context);
         auto list = rooms.list(); list.probeSettings.probesPerFrame = 32;
+        list.probeSettings.cascades = false; // Fine-cascade history budgeting; cascades have their own test.
         GpuMaterial material; material.bounce = Vec4(0.65f, 0.65f, 0.65f, 0);
         auto created = ProbeVolume::create(*context); REQUIRE(created);
         auto& probes = **created;

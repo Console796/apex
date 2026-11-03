@@ -5,7 +5,9 @@
 
 namespace apex::render {
 
-// 8x8 octahedral maps; each texel holds irradiance and first/second distance moments.
+// 8x8 octahedral maps; each texel holds irradiance and first/second distance moments. Texel
+// 0/1's depth zw additionally carry each probe's relocation offset (z/x, y in texel 0; z in
+// texel 1) as a fraction of the grid spacing.
 inline constexpr std::uint32_t kProbeMapSide = 8, kProbeRays = 128;
 struct alignas(16) GpuIrradianceProbe {
     Vec4 irradiance[kProbeMapSide * kProbeMapSide]{}; // w: 0 uninitialised, 1 valid, -1 buried.
@@ -25,6 +27,8 @@ class ProbeVolume {
     void pack(FrameBlock& frame, DVec3 camera) const;
     void reset();
     VkDeviceAddress address() const;
+    VkBuffer buffer() const; // Verification accessor for the fine cascade's current map.
+    VkBuffer coarseBuffer() const; // Verification accessor for the coarse cascade's current map.
 
   private:
     struct Impl;

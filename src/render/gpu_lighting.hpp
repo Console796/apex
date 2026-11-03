@@ -43,13 +43,22 @@ struct alignas(16) FrameBlock {
     std::uint32_t indirectPad[2]{};
     glm::uvec4 indirectDims{0};
     Vec4 indirectOrigin{0}; // Camera-relative centre of the first probe.
-    Vec4 indirectParams{0}; // spacing, normal bias; zw reserved.
+    Vec4 indirectParams{0}; // spacing, normal bias, coarse-fade cells; w reserved.
+    VkDeviceAddress indirectCoarse = 0;
+    std::uint32_t indirectCoarsePad[2]{};
+    glm::uvec4 indirectCoarseDims{0};
+    Vec4 indirectCoarseOrigin{0}; // Camera-relative centre of the coarse cascade's first probe.
+    Vec4 indirectCoarseParams{0}; // x: spacing; y: normal bias; zw reserved.
 };
-static_assert(sizeof(FrameBlock) == 496);
+static_assert(sizeof(FrameBlock) == 560);
 static_assert(offsetof(FrameBlock, indirectProbes) == 432);
 static_assert(offsetof(FrameBlock, indirectDims) == 448);
 static_assert(offsetof(FrameBlock, indirectOrigin) == 464);
 static_assert(offsetof(FrameBlock, indirectParams) == 480);
+static_assert(offsetof(FrameBlock, indirectCoarse) == 496);
+static_assert(offsetof(FrameBlock, indirectCoarseDims) == 512);
+static_assert(offsetof(FrameBlock, indirectCoarseOrigin) == 528);
+static_assert(offsetof(FrameBlock, indirectCoarseParams) == 544);
 static_assert(offsetof(FrameBlock, fill) == 416);
 static_assert(offsetof(FrameBlock, shadows) == 400);
 static_assert(offsetof(FrameBlock, shadowAtlas) == 408);

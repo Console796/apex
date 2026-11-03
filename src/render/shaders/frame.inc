@@ -3,7 +3,7 @@
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require
 
-// FrameBlock in gpu_lighting.hpp; 496 bytes, one allocation per recording slot.
+// FrameBlock in gpu_lighting.hpp; 560 bytes, one allocation per recording slot.
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer FrameBlock {
     uvec2 previews;
     uvec2 lights;
@@ -40,7 +40,12 @@ layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Fr
     uvec2 indirectPad;
     uvec4 indirectDims;
     vec4 indirectOrigin;
-    vec4 indirectParams;
+    vec4 indirectParams; // spacing, normal bias, coarse-fade cells; w reserved.
+    uvec2 indirectCoarse;
+    uvec2 indirectCoarsePad;
+    uvec4 indirectCoarseDims;
+    vec4 indirectCoarseOrigin;
+    vec4 indirectCoarseParams;
 };
 #ifndef APEX_FRAME_NO_PUSH
 FrameBlock frameBlock() { return FrameBlock(floatBitsToUint(push.p1.xy)); }

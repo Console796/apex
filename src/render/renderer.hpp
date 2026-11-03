@@ -223,6 +223,13 @@ struct ProbeSettings {
     std::uint32_t probesPerFrame = 256;
     float hysteresis = 0.9f;
     float normalBias = 2.0f;
+    // 0.7.6 step 2: only used while the realtime indirect option is on (still default off).
+    bool cascades = true; // Second coarser probe cascade covering the first one's edge falloff.
+    float cascadeScale = 4.0f; // Coarse spacing = spacing * cascadeScale; coarse extent grows with it.
+    float cascadeFade = 1.0f; // Fine-to-coarse cross-fade width in fine grid cells.
+    bool relocate = true; // Move buried/near-wall probes into air by a bounded deterministic offset.
+    float relocateRadius = 0.25f; // Wall clearance target, as a fraction of spacing.
+    float relocateMax = 0.5f; // Bounded relocation offset, as a fraction of spacing.
     bool operator==(const ProbeSettings&) const = default;
 };
 

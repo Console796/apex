@@ -11,6 +11,18 @@ struct Triangle { vec4 a; vec4 b; vec4 c; vec4 albedo; };
 layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer Triangles { Triangle values[]; };
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer Offsets { uint values[]; };
 layout(buffer_reference, std430, buffer_reference_align = 16) buffer ProbeOutput { IrradianceProbe probes[]; };
+// Shared cascade context (CascadeContext in probe_volume.cpp): the previous-frame grids of both
+// cascades, used by every lane to transport bounce. The push constants' dims/originSpacing/params
+// always describe the cascade currently being updated.
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer CascadeContext {
+    uvec4 fineDims;
+    vec4 fineOriginSpacing;
+    vec4 fineParams;      // x: fine bias; y: fine fade cells.
+    uvec4 addresses;      // xy: fine previous; zw: coarse previous.
+    uvec4 coarseDims;
+    vec4 coarseOriginSpacing;
+    vec4 coarseParams;    // x: coarse bias; y: relocate enabled; z: clearance fraction; w: max fraction.
+};
 layout(push_constant) uniform Update {
     uvec2 previous;
     uvec2 outputMaps;
@@ -22,9 +34,11 @@ layout(push_constant) uniform Update {
     uvec4 dims;
     vec4 originSpacing;
     vec4 params; // hysteresis, normal bias, rotation, max distance
+    uvec2 context;
 } push;
 shared vec4 radianceDistance[128];
 shared vec4 directionsBackface[128];
+shared vec3 relocationOffset;
 
 bool blocked(vec3 point, vec3 direction, float distance, bool allowSky) {
     rayQueryEXT q;
@@ -46,13 +60,63 @@ vec3 sky(vec3 direction) {
     }
     return value;
 }
+// Bounce energy at a ray hit, sampled from both previous-frame cascades exactly like the
+// runtime sampler, so far-field hits feed the updating probe instead of going dark.
+vec3 transported(vec3 point, vec3 normal) {
+    CascadeContext context = CascadeContext(push.context);
+    return cascadeIrradiance(context.addresses.xy,
+                             uvec3(context.fineDims.xyz), context.fineOriginSpacing.xyz,
+                             context.fineOriginSpacing.w, context.fineParams.x, context.fineParams.y,
+                             context.addresses.zw, uvec3(context.coarseDims.xyz), context.coarseOriginSpacing.xyz,
+                             context.coarseOriginSpacing.w, context.coarseParams.x,
+                             point, normal);
+}
+// Deterministic relocation: a probe that exits a solid is pushed out along the first (fixed
+// axis order) escape normal; a probe too close to a wall moves back out to the clearance
+// radius. The offset is bounded by the settings' max fraction of the spacing.
+vec3 relocate(vec3 gridPoint) {
+    CascadeContext context = CascadeContext(push.context);
+    if (context.coarseParams.y < 0.5) return vec3(0.0);
+    float radius = context.coarseParams.z * push.originSpacing.w;
+    float maxOffset = context.coarseParams.w * push.originSpacing.w;
+    const vec3 axes[6] = vec3[](vec3(-1, 0, 0), vec3(1, 0, 0), vec3(0, -1, 0),
+                                vec3(0, 1, 0), vec3(0, 0, -1), vec3(0, 0, 1));
+    // Nearest exit (a ray that meets a back face) wins; ties keep the first axis in the fixed
+    // order, so the result is deterministic. Without any exit, the nearest front face closer than
+    // the clearance radius pushes the probe away from that wall instead.
+    float exitDistance = 1e30, wallDistance = 1e30;
+    vec3 exitNormal = vec3(0.0), wallNormal = vec3(0.0);
+    rayQueryEXT q;
+    for (uint i = 0u; i < 6u; ++i) {
+        rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFF, gridPoint, 0.0,
+                              axes[i], maxOffset + radius);
+        while (rayQueryProceedEXT(q)) {}
+        if (rayQueryGetIntersectionTypeEXT(q, true) == gl_RayQueryCommittedIntersectionNoneEXT) continue;
+        float distance = rayQueryGetIntersectionTEXT(q, true);
+        uint instance = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
+        uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(q, true);
+        Triangle triangle = Triangles(push.triangles).values[Offsets(push.offsets).values[instance] + primitive];
+        vec3 normal = normalize(cross(triangle.b.xyz - triangle.a.xyz, triangle.c.xyz - triangle.a.xyz));
+        if (dot(normal, axes[i]) > 0.0) { // Back face: the probe sits inside a solid.
+            if (distance < exitDistance) { exitDistance = distance; exitNormal = normal; }
+        } else if (distance < wallDistance && distance < radius) {
+            wallDistance = distance; wallNormal = normal;
+        }
+    }
+    if (exitDistance < 1e30) return exitNormal * min(maxOffset, exitDistance + radius);
+    if (wallDistance < 1e30) return wallNormal * min(maxOffset, radius - wallDistance);
+    return vec3(0.0);
+}
 void main() {
     uint lane = gl_LocalInvocationID.x;
     uint count = push.dims.x * push.dims.y * push.dims.z;
     uint index = (push.first + gl_WorkGroupID.x) % count;
     uvec3 cell = uvec3(index % push.dims.x, (index / push.dims.x) % push.dims.y,
                        index / (push.dims.x * push.dims.y));
-    vec3 point = push.originSpacing.xyz + vec3(cell) * push.originSpacing.w;
+    vec3 gridPoint = push.originSpacing.xyz + vec3(cell) * push.originSpacing.w;
+    if (lane == 0u) relocationOffset = relocate(gridPoint) / push.originSpacing.w;
+    barrier();
+    vec3 point = gridPoint + push.originSpacing.w * relocationOffset;
     float z = 1.0 - 2.0 * (float(lane) + 0.5) / 128.0;
     float phi = 6.28318530718 * (float(lane) * 0.61803398875 + push.params.z);
     vec3 direction = vec3(sqrt(1.0 - z * z) * vec2(cos(phi), sin(phi)), z);
@@ -72,8 +136,7 @@ void main() {
         if (triangle.albedo.w == 1.0) value = sky(direction);
         else if (backface == 0.0 && triangle.albedo.w == 0.0) {
             vec3 hit = point + direction * distance;
-            vec3 energy = probeIrradiance(push.previous, push.dims.xyz, push.originSpacing.xyz,
-                push.originSpacing.w, push.params.y, hit, normal);
+            vec3 energy = transported(hit, normal);
             for (uint i = 0u; i < push.lightCount; ++i) {
                 Light light = LightBuffer(push.lights).lights[i];
                 if (light.kindMode.w != 2u || light.kindMode.x == 5u) continue;
@@ -111,8 +174,14 @@ void main() {
     ProbeBuffer previous = ProbeBuffer(push.previous);
     bool valid = backfaces < 32.0;
     float blend = previous.probes[index].irradiance[0].w > 0.0 && valid ? push.params.x : 0.0;
-    ProbeOutput(push.outputMaps).probes[index].irradiance[lane] =
+    ProbeOutput outMaps = ProbeOutput(push.outputMaps);
+    outMaps.probes[index].irradiance[lane] =
         vec4(mix(sum, previous.probes[index].irradiance[lane].rgb, blend), valid ? 1.0 : -1.0);
-    ProbeOutput(push.outputMaps).probes[index].depth[lane] =
+    // Texel 0/1's unused depth channels carry the relocation offset for the sampler.
+    if (lane == 0u) outMaps.probes[index].depth[0] =
+        vec4(mix(moments, previous.probes[index].depth[0].xy, blend), relocationOffset.xy);
+    else if (lane == 1u) outMaps.probes[index].depth[1] =
+        vec4(mix(moments, previous.probes[index].depth[1].xy, blend), relocationOffset.z, 0.0);
+    else outMaps.probes[index].depth[lane] =
         vec4(mix(moments, previous.probes[index].depth[lane].xy, blend), 0.0, 0.0);
 }
