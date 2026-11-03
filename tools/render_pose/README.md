@@ -168,6 +168,11 @@ draw black. Compare with the same ratio recipe as above, using `-vrad.png`. Note
 ignored by VRAD, so maps lit only by them render nearly black. Findings:
 `docs/plans/probe-results/vrad_roundtrip_0_7_5.md`.
 
+`--vrad-bsp PATH` reuses a BSP retained by `--keep-vrad` and maps its HDR
+lightmaps onto a newly expanded copy of the VMF, without invoking VRAD again.
+The caller must ensure the BSP was compiled from the same VMF, instances,
+game assets and VRAD flags; the tool does not validate the cache key.
+
 ## Compare and luxel density (0.7.5 D7)
 
 `--compare A,B[,split]` renders the same poses with two light sources (`lit`, `baked`, `vrad`) and writes one

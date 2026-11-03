@@ -41,7 +41,7 @@ struct Pose {
     DVec3 position, angles;
 };
 struct Options {
-    fs::path vmf, game, out, cubemaps;
+    fs::path vmf, game, out, cubemaps, vradBsp;
     int width = 1920, height = 1080;
     double fov = 90;
     int timeFrames = 0;
@@ -69,7 +69,7 @@ void help() {
                  "  [--indirect off|probes] [--indirect-frames N]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.62]\n"
-                 "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad]\n"
+                 "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
@@ -89,7 +89,8 @@ void help() {
                  "the VMF with instances expanded, then draws VRAD's own lightmaps through the Baked path; faces VRAD\n"
                  "gave no data (displacements, nolight, tools) are black. --vrad-flags replaces the extra vrad\n"
                  "arguments (default -noextra), --no-vis skips vvis, --vrad-scale is the display scale (else\n"
-                 "--bake-scale), --keep-vrad keeps the temp directory and prints it.\n"
+                 "--bake-scale), --keep-vrad keeps the temp directory and prints it. --vrad-bsp reuses a kept\n"
+                 "BSP from the identical VMF and flags; the caller is responsible for cache validity.\n"
                  "--indirect probes enables realtime diffuse probes in Lit; --indirect-frames N accumulates N frames per pose.\n"
                  "--no-specular disables direct-light highlights for image comparisons in Lit or Baked.\n"
                  "--tool-fixed-brightness [VALUE] shows tools/* faces (normally hidden here) at a fixed linear\n"
@@ -150,6 +151,7 @@ Options parse(int argc, char** argv) {
         else if (flag == "--vrad-flags") o.vrad.flags = next();
         else if (flag == "--no-vis") o.vrad.vis = false;
         else if (flag == "--keep-vrad") o.keepVrad = true;
+        else if (flag == "--vrad-bsp") o.vradBsp = next();
         else if (flag == "--vrad-scale") {
             const double value = number(next());
             if (value < 0 || value > std::numeric_limits<float>::max())
@@ -352,18 +354,28 @@ int run(const Options& o) {
         for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"}, {"light_exe", "vrad"}})
             paths.tools[variable] = profile.toolPath(tool).string();
         const auto started = std::chrono::steady_clock::now();
-        check(trip.start(document, fs::canonical(o.vmf), paths, o.vrad));
-        if (trip.poll() != editor::VradRoundTrip::State::Done)
-            throw std::runtime_error("VRAD round trip failed: " + trip.message());
-        auto loaded = take(render::loadVradLightmaps(trip.bsp(), *trip.exported(), trip.origins()));
+        render::VradLightmaps loaded;
+        if (o.vradBsp.empty()) {
+            check(trip.start(document, fs::canonical(o.vmf), paths, o.vrad));
+            if (trip.poll() != editor::VradRoundTrip::State::Done)
+                throw std::runtime_error("VRAD round trip failed: " + trip.message());
+            loaded = take(render::loadVradLightmaps(trip.bsp(), *trip.exported(), trip.origins()));
+        } else {
+            auto exported = document.snapshot();
+            const auto origins = tools::expandBakeInstances(*exported, fs::canonical(o.vmf), profile);
+            loaded = take(render::loadVradLightmaps(o.vradBsp, *exported, origins));
+            std::cout << "vrad cached-bsp=" << o.vradBsp.string() << '\n';
+        }
         const auto& stats = loaded.stats;
-        std::cout << "vrad flags=\"" << o.vrad.flags << "\" vis=" << o.vrad.vis << " seconds="
+        if (o.vradBsp.empty()) std::cout << "vrad flags=\"" << o.vrad.flags << "\" vis=" << o.vrad.vis;
+        else std::cout << "vrad cached (flags not verified)";
+        std::cout << " seconds="
                   << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
                   << " fragments=" << stats.fragments << " mapped=" << stats.mapped << " faces=" << stats.faces
                   << " displacement=" << stats.displacement << " no-data=" << stats.noData
                   << " unowned=" << stats.unowned << " shared=" << stats.shared
                   << " mismatched=" << stats.mismatched << '\n';
-        if (o.keepVrad) std::cout << "vrad directory=" << trip.directory().string() << '\n';
+        if (o.keepVrad && o.vradBsp.empty()) std::cout << "vrad directory=" << trip.directory().string() << '\n';
         auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(loaded.atlas)));
         check(maps->upload(o.density ? render::densityRadiance(maps->atlas()) : loaded.radiance));
         vradMaps = std::move(maps);

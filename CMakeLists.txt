@@ -247,6 +247,9 @@ if(APEX_BUILD_TESTS)
       add_test(NAME apex_render_pose_compare COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/render_pose_compare.py
                $<TARGET_FILE:apex_render_pose> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/lit_room.vmf)
       set_tests_properties(apex_render_pose_compare PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+      add_test(NAME apex_render_pose_vrad_replay COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/vrad_replay_test.py
+               $<TARGET_FILE:apex_render_pose> ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/lit_room.vmf)
+      set_tests_properties(apex_render_pose_vrad_replay PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
     endif()
   endif()
   add_executable(apex_bake_probe tools/bake_probe/main.cpp tools/common/bake_setup.cpp)

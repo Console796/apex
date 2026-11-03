@@ -1,7 +1,7 @@
 # VRAD parity tuning (0.7.6): preliminary, incomplete
 
-The intended target is a derived copy of `test1.vmf`, not the original VRAD
-output. `tools/derive_vrad_lights.py` changes only the five `light_rt` classnames
+The target is the original `test1.vmf` VRAD output. A separate experiment used
+`tools/derive_vrad_lights.py` to change only the five `light_rt` classnames
 to `light` and the five `light_rt_spot` classnames to `light_spot`, leaving all
 other bytes intact. The output is outside the repository. This does not rewrite
 instance VMFs. `lighting::lightsFromEntity` uses the same code path for each
@@ -22,10 +22,15 @@ by at most 3 out of 255 per channel (mean absolute RGBA difference 0.045);
 this includes non-lightmapped pixels and is **not** a parity metric. The
 discrepancy in light accounting must be investigated before interpreting it.
 
+The kept original-map `-final` BSP was replayed with `--vrad-bsp`; its p1 PNG
+was byte-identical to the initial capture. Loading and mapping took 0.071 s,
+compared with 7.315 s for the original compile and mapping. The caller must
+validate that a cached BSP matches the VMF, instances, assets and flags.
+
 `tools/vrad_image_metrics.py` computes masked per-pose and pooled metrics; it
 requires independently supplied masks. The masks have not been implemented:
 nonblack VRAD pixels cannot safely be used, because sky, emissive surfaces,
 and other non-lightmapped pixels may also be nonblack. No parity, held-out,
 convergence, frame-time or before/after tables are claimed yet. The renderer
-still needs a reliable visible-surface validity pass and VRAD cache reuse for
-the requested repeatable end-to-end harness.
+still needs a reliable visible-surface validity pass and cache-key validation
+for the requested repeatable end-to-end harness.
