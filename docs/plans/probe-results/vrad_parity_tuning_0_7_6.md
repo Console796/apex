@@ -233,6 +233,27 @@ total was 6.07 ms, versus 6.57 ms in the separate fixed-budget run; steady
 budgets are identical, but the timing samples are not paired profiles. Remaining
 indirect-energy error and the absence of a sky-specific reference remain.
 
+## Final confirmation and verification
+
+With fast-start enabled at 2048 frames, the 640x360 Lit luminance ratios for
+p1–p4 and held-out h1/h2 are **0.649, 0.655, 0.649, 0.670, 0.660, 0.604**;
+the respective linear RMSEs are 0.0742, 0.0376, 0.0634, 0.0715, 0.0948 and
+0.0403. The analysis-only 256 shadow cap had zero overflow in all six. A
+1280x720 confirmation gave Baked ratios 1.010, 0.997, 1.006, 1.010, 1.013,
+0.975 across the same six views; Lit p1 and h1 were 0.649 and 0.661 (linear
+RMSE 0.0746 and 0.0954). Only those two Lit views were rerun at the larger size.
+
+After each implementation stage, `python3 tools/check_layers.py`, focused
+`ctest -R 'probe|indirect|lighting|renderer|bake|baked' -j3`, and
+`apex_tests -tc='render:*,renderer:*,lighting*'` passed. After fast-start the
+ctest selection had 148 passes and one opt-in measurement skipped; doctest
+had 81 cases and 97,136 assertions passing. The VRAD replay test and two Python
+tool tests also passed. The p1 realtime-indirect-off PNG at the 256 shadow cap
+was byte-identical before and after the probe changes. No goldens changed.
+No full ctest suite, Windows test, independent sky/sun decomposition, exact
+first-crossing search, multi-map acceptance test or live-editor restart timing
+was run. Persisted bake settings do not change automatically.
+
 The PNG metrics helper supports pooled aggregates and additional error columns;
 the rendered files and JSON from these exploratory runs are in `/tmp/opencode`
 and the ignored worktree build directory, respectively. A self-contained
