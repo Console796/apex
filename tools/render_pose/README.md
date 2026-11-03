@@ -24,8 +24,8 @@ QT_QPA_PLATFORM=offscreen build/linux-clang-release/apex_render_pose \
   --out /tmp/apex-baked-set2
 ```
 
-Defaults: 16 passes per direct/bounce level, 2 bounces, 32 bounce rays, 3 threads, seed 0,
-display scale **1.0**, exposure 1. `--bake-scale 2.02` was the earlier unscaled set-2 fit (the viewport default is now 0.62), the
+Defaults: 4 passes per direct/bounce level, 8 bounces, 32 bounce rays, 3 threads, seed 0,
+display scale **1.0**, exposure 1. `--bake-scale 2.02` was the earlier unscaled set-2 fit, the
 baker-to-display multiplier from `docs/plans/probe-results/bake_parity_set2_0_7_4.md`;
 no scale is applied to the baker's accumulation or uploaded radiance. Width/height/FOV defaults
 match the 1920x1080 game captures. Baked filenames are `11-baked.png` through `41-baked.png`.
@@ -109,8 +109,8 @@ The editor enables Baked in the viewport's Display mode menu.
 ## Live Baked view (0.7.4 slice 4b)
 
 Choose **Display mode > Baked** in a viewport menu. **Display mode > Bake settings...** sets
-persisted global display scale (default 1), bounces (2), bounce rays (32), sky rays (64), and maximum
-passes per level (64). Display scale only changes `DrawList::bakedScale`; the other controls restart
+persisted global display scale (default 1), bounces (8), bounce rays (32), sky rays (64), and maximum
+passes per level (4). Display scale only changes `DrawList::bakedScale`; the other controls restart
 the bake. Defaults use seed 0 and three CPU threads. The status line below the viewport header
 shows completed whole-scene passes, preparation/errors, or `Baking (idle)` after convergence.
 
@@ -164,9 +164,9 @@ implemented here.
 `APEX_P2CE_DIR`) and draws the BSP's HDR lightmaps on the document's faces. Options: `--vrad-flags "<text>"`
 (default `-noextra`), `--no-vis`, `--vrad-scale <x>` (display scale, default 1.0), `--keep-vrad` (keep the
 temp dir). Files are `11-vrad.png` and so on. Faces VRAD gave no data (displacements, nolight, unmapped)
-draw black. Compare with the same ratio recipe as above, using `-vrad.png`. Note light_rt entities are
-ignored by VRAD, so maps lit only by them render nearly black. Findings:
-`docs/plans/probe-results/vrad_roundtrip_0_7_5.md`.
+draw black. Compare with the same ratio recipe as above, using `-vrad.png`. P2CE VRAD's
+HDR worldlights include the runtime lights in test1; the older report's contrary claim was
+incorrect. See `docs/plans/probe-results/vrad_parity_tuning_0_7_6.md`.
 
 `--vrad-bsp PATH` reuses a BSP retained by `--keep-vrad` and maps its HDR
 lightmaps onto a newly expanded copy of the VMF, without invoking VRAD again.

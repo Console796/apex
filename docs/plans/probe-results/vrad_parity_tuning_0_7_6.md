@@ -1,11 +1,11 @@
-# VRAD parity tuning (0.7.6): preliminary, incomplete
+# VRAD parity tuning (0.7.6): Baked tuned, Lit pending
 
 The target is the original `test1.vmf` VRAD output. A separate experiment used
 `tools/derive_vrad_lights.py` to change only the five `light_rt` classnames
 to `light` and the five `light_rt_spot` classnames to `light_spot`, leaving all
 other bytes intact. The output is outside the repository. This does not rewrite
 instance VMFs. `lighting::lightsFromEntity` uses the same code path for each
-class pair. No tuning or default changes have been made.
+class pair.
 
 On the RX 6600, at 640x360 and exposure 1, no direct specular, original and
 derived Apex p1 images are byte-identical for Lit with 128 probe frames and for
@@ -43,7 +43,7 @@ matching atlas fragments. Do not interpret these figures as a parity gate.
 The four test poses are the set-2 positions in `bake_parity_set2_0_7_4.md`;
 the two held-out views are p1's position at pitch -42/yaw 60 and p2's position
 at pitch 25/yaw 150. The 16-pass, two-bounce, 32-ray Baked baseline below uses
-**scale 1**, matching VRAD, not the editor's existing 0.62 default. Lit uses
+**scale 1**, matching VRAD, not the editor's former 0.62 default. Lit uses
 128 probe frames. The Baked trial uses display scale 1.35, selected from the
 four test poses, without changing the default. Ratios and errors are computed
 only on the provisional mask; RGB MAE/RMSE use normalized linear values or
@@ -97,8 +97,58 @@ pooled VRAD RMSE. The 512-frame image itself has not been proved converged,
 and proximity in VRAD error can conceal an evolving indirect field. These
 whole-process timings cannot be used as a per-reset convergence time.
 
-No fast-start, bounce/ray sweep, larger final renders, systematic bias fix or
-default change is claimed.
+No Lit fast-start, ray sweep or larger final renders are claimed.
+
+## Baked decomposition and chosen defaults
+
+The same six poses were rerun with VRAD `-final -bounce 0` and Baked bounces 0,
+then VRAD `-final -bounce 2` and Baked bounces 2, all at scale 1. The expanded
+test map has no `light_environment`, so this does not test sky/sun. The direct
+VRAD run still includes texlights. Ratios below compare masked linear luminance;
+the final column divides the mean per-pixel change from bounce 0 to bounce 2 in
+Baked by the corresponding VRAD change, using the intersection of both masks.
+
+| Pose | direct Baked/VRAD | 2-bounce total Baked/VRAD | two-bounce increment Baked/VRAD |
+|---|---:|---:|---:|
+| p1 | 1.122 | 1.081 | 1.049 |
+| p2 | 1.093 | 1.067 | 1.046 |
+| p3 | 1.094 | 1.073 | 1.054 |
+| p4 | 1.108 | 1.077 | 1.049 |
+| h1 held out | 1.088 | 1.074 | 1.063 |
+| h2 held out | 1.070 | 1.044 | 1.028 |
+
+Thus the earlier 0.72 ratio was primarily an **unequal bounce-depth** comparison,
+not evidence for multiplying every term by 1.35: the default `-final` VRAD log
+shows 28 `GatherLight` iterations on this map, while `-bounce 2` shows two.
+Direct-only Apex is 7–12% brighter at equal display scale, and matched two-bounce
+increments agree to within about 7%; differences remain, including texlight
+scope, geometric mapping, materials and VRAD's gather algorithm. No direct or
+bounce formula was changed on this evidence.
+
+The fresh-install Baked defaults are now **2 → 8 bounces, 64 → 4 maximum passes
+per level, and display scale 0.62 → 1.0** (32 bounce rays unchanged). The old
+0.62 fit targeted game screenshots; direct-only and matched-bounce results here
+show that retaining it would introduce a large display mismatch against VRAD.
+Saved QSettings values are respected. The VRAD view is unchanged; render_pose's
+previous implicit VRAD fallback remains 0.62 unless a scale is supplied.
+
+| Pose | old default ratio / linear RMSE | new default ratio / linear RMSE |
+|---|---|---|
+| p1 | 0.453 / 0.1108 | 1.010 / 0.0211 |
+| p2 | 0.444 / 0.0572 | 0.997 / 0.0114 |
+| p3 | 0.454 / 0.0979 | 1.006 / 0.0186 |
+| p4 | 0.464 / 0.1125 | 1.010 / 0.0218 |
+| h1 held out | 0.455 / 0.1466 | 1.013 / 0.0240 |
+| h2 held out | 0.413 / 0.0528 | 0.975 / 0.0071 |
+
+For the four test poses, eight-bounce pooled RMSE was 0.018578 at one pass and
+0.018570 at 16 passes; the four-pass run's per-pose errors are the values above.
+One/16 passes took 2.49/25.06 s including setup and four renders. The old
+64-pass, two-bounce run took 27.42 s including six renders, and the new
+four-pass, eight-bounce run took 7.02 s including six renders. These are
+whole-process timings, not interactive invalidation timings; proximity in
+reference error does not prove every luxel has converged. Provisional mask,
+single-map and lack of a sky-specific test remain limitations.
 The PNG metrics helper supports pooled aggregates and additional error columns;
 the rendered files and JSON from these exploratory runs are in `/tmp/opencode`
 and the ignored worktree build directory, respectively. A self-contained

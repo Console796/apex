@@ -28,11 +28,20 @@ BakeScene scene() {
 BakeSessionOptions options() {
     BakeSessionOptions result;
     result.baker.threads = 1;
+    result.baker.bounces = 2; // The schedule assertions below exercise exactly two bounce levels.
     result.baker.skyRays = result.baker.bounceRays = 1;
     result.initialPasses = 1;
     result.maxPasses = 2;
     return result;
 }
+}
+
+TEST_CASE("bake session defaults use the VRAD-parity bounce budget") {
+    const BakeSessionOptions defaults;
+    CHECK(defaults.baker.bounces == 8);
+    CHECK(defaults.baker.bounceRays == 32);
+    CHECK(defaults.initialPasses == 4);
+    CHECK(defaults.maxPasses == 4);
 }
 
 TEST_CASE("bake session camera ordering is nearest first with stable ties") {

@@ -48,9 +48,10 @@ struct Options {
     int timeFrames = 0;
     bool indirectProbes = false;
     int indirectFrames = 1;
-    unsigned bakePasses = 16;
-    lighting::BakerOptions bakeOptions{.bounces = 2};
+    unsigned bakePasses = 4;
+    lighting::BakerOptions bakeOptions{.bounces = 8};
     float bakeScale = render::kDefaultBakedScale;
+    float vradFallbackScale = 0.62f; // Preserve VRAD CLI output when --bake-scale is omitted.
     std::optional<float> vradScale; // --vrad-scale; else --bake-scale.
     editor::VradOptions vrad;
     bool keepVrad = false;
@@ -70,7 +71,7 @@ void help() {
                  "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad]\n"
                  "  [--indirect off|probes] [--indirect-frames N]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
-                 "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.62]\n"
+                 "  [--bake-passes 4 --bake-bounces 8 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH] [--vrad-mask]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
@@ -83,7 +84,7 @@ void help() {
                  "origin rounded to integers as VBSP names them (e.g. files extracted from a compiled BSP's\n"
                  "pakfile). Prints one line per probe with the file used, or \"default\" for the default cube.\n"
                  "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
-                 "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 0.62).\n"
+                 "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 1).\n"
                  "--instances mirror|expanded (Baked only): mirror (default) bakes an expanded copy and draws the\n"
                  "instances through the viewport's own instance path, as the editor does; expanded collapses the\n"
                  "instances into the document first and draws that.\n"
@@ -149,6 +150,7 @@ Options parse(int argc, char** argv) {
             if (value < 0 || value > std::numeric_limits<float>::max())
                 throw std::runtime_error("--bake-scale must be finite and nonnegative");
             o.bakeScale = static_cast<float>(value);
+            o.vradFallbackScale = o.bakeScale;
         }
         else if (flag == "--vrad-flags") o.vrad.flags = next();
         else if (flag == "--no-vis") o.vrad.vis = false;
@@ -498,7 +500,7 @@ int run(const Options& o) {
         options.view.cameraRight = Vec3(camera.basis().right);
         options.view.cameraUp = Vec3(camera.basis().up);
         auto list = mirror.buildDrawList(options);
-        list.bakedScale = o.density ? 1.0f : mode == "vrad" ? o.vradScale.value_or(o.bakeScale) : o.bakeScale;
+        list.bakedScale = o.density ? 1.0f : mode == "vrad" ? o.vradScale.value_or(o.vradFallbackScale) : o.bakeScale;
         if (list.toolBrightness > 0.0f) list.toolBrightness = o.toolBrightness;
         if (o.noSpecular) for (auto& light : list.lights) light.specularMode = 0;
         list.fullbright = mode == "fullbright";

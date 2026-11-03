@@ -34,7 +34,7 @@ enum class DisplayMode { Textured, Flat, Wireframe, Lit, Baked };
 // texture's albedo exactly as the unlit Textured view does. See baked_tool_overlay_0_7_4.md.
 inline constexpr float kToolFixedBrightness = 1.0f;
 inline constexpr float kDefaultVradScale = 1.0f;  // VRAD's own units are the display's; see vrad_roundtrip_0_7_5.md.
-inline constexpr float kDefaultBakedScale = 0.62f; // Set-2 rendered-view fit (0.78 read 1.27x game); see bake_tuning_0_7_4.md.
+inline constexpr float kDefaultBakedScale = 1.0f; // Direct and eight-bounce comparison against VRAD; see parity tuning.
 
 constexpr bool sceneMode(DisplayMode mode) { return mode == DisplayMode::Lit || mode == DisplayMode::Baked; }
 

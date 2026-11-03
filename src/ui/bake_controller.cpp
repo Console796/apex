@@ -18,10 +18,10 @@ namespace {
 lighting::BakeSessionOptions readOptions() {
     QSettings settings;
     lighting::BakeSessionOptions options;
-    options.baker.bounces = unsigned(std::clamp(settings.value("bake/bounces", 2).toInt(), 0, 8));
+    options.baker.bounces = unsigned(std::clamp(settings.value("bake/bounces", int(options.baker.bounces)).toInt(), 0, 8));
     options.baker.bounceRays = unsigned(std::clamp(settings.value("bake/bounceRays", 32).toInt(), 1, 1024));
     options.baker.skyRays = unsigned(std::clamp(settings.value("bake/skyRays", 64).toInt(), 1, 1024));
-    options.maxPasses = unsigned(std::clamp(settings.value("bake/maxPasses", 64).toInt(), 1, 1024));
+    options.maxPasses = unsigned(std::clamp(settings.value("bake/maxPasses", int(options.maxPasses)).toInt(), 1, 1024));
     return options;
 }
 bool sameOptions(const lighting::BakeSessionOptions& a, const lighting::BakeSessionOptions& b) {

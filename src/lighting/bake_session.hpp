@@ -11,9 +11,9 @@
 namespace apex::lighting {
 
 struct BakeSessionOptions {
-    BakerOptions baker{.bounces = 2};
+    BakerOptions baker{.bounces = 8};
     unsigned initialPasses = 4;
-    unsigned maxPasses = 64;
+    unsigned maxPasses = 4;
 };
 
 struct BakeProgress {
