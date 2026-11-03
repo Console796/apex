@@ -323,9 +323,12 @@ void ProbeVolume::record(VkCommandBuffer commands) {
     };
     // Fine cascade, then the coarser one, each with its own budget and cursor.
     const auto fineCount = s.settings.dims.x * s.settings.dims.y * s.settings.dims.z;
-    const auto fineBudget = std::min({fineCount, s.settings.probesPerFrame, 65535u});
+    const bool fastStart = s.settings.fastStart && s.refresh < 3;
+    const auto requestedBudget = std::uint64_t(s.settings.probesPerFrame) * (fastStart ? 4u : 1u);
+    const auto fineBudget = static_cast<std::uint32_t>(std::min({std::uint64_t(fineCount), requestedBudget, std::uint64_t(65535)}));
+    const float hysteresis = fastStart ? std::min(s.settings.hysteresis, 0.5f) : s.settings.hysteresis;
     dispatch(s.maps[previous], s.maps[s.current], glm::uvec4(s.settings.dims, 0), Vec4(s.origin, s.settings.spacing),
-             Vec4(s.settings.hysteresis, s.settings.normalBias, float(s.refresh % 128) * 0.754877666f, s.settings.spacing * 4.0f),
+             Vec4(hysteresis, s.settings.normalBias, float(s.refresh % 128) * 0.754877666f, s.settings.spacing * 4.0f),
              fineCount, s.cursor, fineBudget);
     if (s.coarseDims.x && s.coarseMaps[0].size()) {
         const auto coarseCount = s.coarseDims.x * s.coarseDims.y * s.coarseDims.z;
@@ -335,7 +338,7 @@ void ProbeVolume::record(VkCommandBuffer commands) {
             std::uint32_t(std::uint64_t(fineBudget) * coarseCount / fineCount))});
         dispatch(s.coarseMaps[previous], s.coarseMaps[s.current], glm::uvec4(s.coarseDims, 0),
                  Vec4(s.coarseOrigin, s.cascadeSpacing()),
-                 Vec4(s.settings.hysteresis, s.cascadeBias(), float(s.coarseRefresh % 128) * 0.754877666f,
+                 Vec4(hysteresis, s.cascadeBias(), float(s.coarseRefresh % 128) * 0.754877666f,
                       s.cascadeSpacing() * 4.0f),
                  coarseCount, s.coarseCursor, coarseBudget);
         advance(s.coarseCursor, s.coarseRefresh, coarseCount, coarseBudget);

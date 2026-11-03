@@ -1,4 +1,4 @@
-# VRAD parity tuning (0.7.6): Baked and Lit transport tuned; fast-start pending
+# VRAD parity tuning (0.7.6): Baked, Lit transport and fast-start
 
 The target is the original `test1.vmf` VRAD output. A separate experiment used
 `tools/derive_vrad_lights.py` to change only the five `light_rt` classnames
@@ -201,6 +201,38 @@ whether visibility weighting, locality, missing texlights or other transport
 effects dominate the remaining discrepancy. Sky/sun reference parity remains
 unmeasured. A 2048-frame p1 accumulation after reset took 14.16 seconds on the
 RX 6600 in the instrumented tool (including its first frame, not setup).
+
+## Probe fast-start
+
+For the first three fine-grid refreshes after reset, the default now dispatches
+up to four times the configured probe budget and caps history hysteresis at 0.5
+(previously the budget and 0.9 default hysteresis were used from the start).
+The coarse grid keeps the same fraction of its probes. After the third refresh
+the configured steady-state budget and hysteresis are restored. The feature is
+only active when realtime indirect is enabled, which remains off by default;
+`--no-probe-fast-start` permits paired tool measurements. Reset, camera-grid
+rebase and relevant scene changes reset the refresh counter. No FrameBlock ABI
+change was made.
+
+Using the provisional VRAD mask, compare each capture with its **own** 2048-frame
+capture, using mean absolute error in linear luminance divided by that reference's
+mean luminance. These are sampled frame counts, not an exact first crossing:
+
+| Pose | before: 512 / 1024 frames | after: 256 / 512 frames | first sampled <5% before → after | measured reset seconds at those samples |
+|---|---|---|---|---|
+| p1 | 9.24% / 4.94% | 6.04% / 4.53% | 1024 → 512 | 7.52 → 3.85 |
+| h1 held out | 8.20% / 4.91% | 5.49% / 4.30% | 1024 → 512 | 6.79 → 3.26 |
+
+The 2048-frame fast and fixed-budget references themselves differ by 1.68%
+and 1.61% normalized luminance MAE on p1 and h1, respectively. The tool times
+the frame loop after each reset, including its first frame but excluding scene
+setup/readback; runs are single observations on RX 6600, with the 256 shadow
+cap and no overflow. On p1, total early frame time (10 frames after warmup)
+was 5.79 ms without and 7.27 ms with fast-start. At 2048 frames the fast-start
+total was 6.07 ms, versus 6.57 ms in the separate fixed-budget run; steady
+budgets are identical, but the timing samples are not paired profiles. Remaining
+indirect-energy error and the absence of a sky-specific reference remain.
+
 The PNG metrics helper supports pooled aggregates and additional error columns;
 the rendered files and JSON from these exploratory runs are in `/tmp/opencode`
 and the ignored worktree build directory, respectively. A self-contained

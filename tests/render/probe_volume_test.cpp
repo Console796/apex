@@ -351,6 +351,7 @@ TEST_CASE("render: probe budgets preserve untouched history and sky replaces CPU
     {
         Rooms rooms(*context);
         auto list = rooms.list(); list.probeSettings.probesPerFrame = 32;
+        list.probeSettings.fastStart = false; // Exercise the fixed steady-state budget.
         list.probeSettings.cascades = false; // Fine-cascade history budgeting; cascades have their own test.
         GpuMaterial material; material.bounce = Vec4(0.65f, 0.65f, 0.65f, 0);
         auto created = ProbeVolume::create(*context); REQUIRE(created);
@@ -383,6 +384,37 @@ TEST_CASE("render: probe budgets preserve untouched history and sky replaces CPU
         for (auto& p : relative) p.point -= Vec4(100, 200, 300, 0);
         const auto same = sample(*context, rebased, relative);
         CHECK(std::memcmp(sky.data(), same.data(), sky.size() * sizeof(Vec4)) == 0);
+    }
+    clean(*context);
+}
+
+TEST_CASE("render: probe fast start resets and returns to its steady budget") {
+    auto* context = testing::sharedContext();
+    if (!context || !context->info().rayQuery) return;
+    context->validation().clear();
+    {
+        Rooms rooms(*context);
+        auto list = rooms.list();
+        list.probeSettings.probesPerFrame = 32;
+        list.probeSettings.cascades = false;
+        GpuMaterial material; material.bounce = Vec4(0.65f, 0.65f, 0.65f, 0);
+        auto created = ProbeVolume::create(*context); REQUIRE(created);
+        auto& probes = **created;
+        accumulate(*context, probes, list, material, 1);
+        const auto first = readProbes(*context, probes, list.probeSettings.dims);
+        std::size_t updated = 0;
+        for (const auto& probe : first) if (probe.irradiance[0].w != 0) ++updated;
+        CHECK(updated == 128); // Four times the steady 32-probe budget.
+        probes.reset();
+        accumulate(*context, probes, list, material, 1);
+        const auto restarted = readProbes(*context, probes, list.probeSettings.dims);
+        CHECK(std::memcmp(first.data(), restarted.data(), first.size() * sizeof(first[0])) == 0);
+        accumulate(*context, probes, list, material, 8); // Finish three 384-probe refreshes.
+        const auto settled = readProbes(*context, probes, list.probeSettings.dims);
+        accumulate(*context, probes, list, material, 1);
+        const auto next = readProbes(*context, probes, list.probeSettings.dims);
+        CHECK(std::memcmp(settled.data() + 32, next.data() + 32,
+                          (next.size() - 32) * sizeof(next[0])) == 0);
     }
     clean(*context);
 }

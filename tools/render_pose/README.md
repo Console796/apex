@@ -179,6 +179,8 @@ check `--time`'s overflow count. The default remains 1024, preserving ordinary
 editor and tool rendering.
 `--time-reset` reports elapsed time for the requested accumulation frames
 after each independent probe reset, excluding scene setup and image readback.
+`--no-probe-fast-start` disables the default startup budget/hysteresis for
+paired convergence measurements.
 
 `--mode vrad --vrad-mask` also writes `NAME-vrad-mask.png` for offline
 comparisons. This experimental conservative pass marks mapped brush pixels

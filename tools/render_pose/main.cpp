@@ -49,6 +49,7 @@ struct Options {
     bool timeReset = false;
     std::uint32_t shadowTileCap = render::kMaxShadowTile;
     bool indirectProbes = false;
+    bool probeFastStart = true;
     int indirectFrames = 1;
     unsigned bakePasses = 4;
     lighting::BakerOptions bakeOptions{.bounces = 8};
@@ -71,7 +72,7 @@ struct Options {
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
                  "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad]\n"
-                 "  [--indirect off|probes] [--indirect-frames N] [--time-reset] [--shadow-tile-cap 256|512|1024]\n"
+                 "  [--indirect off|probes] [--indirect-frames N] [--no-probe-fast-start] [--time-reset] [--shadow-tile-cap 256|512|1024]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 4 --bake-bounces 8 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH] [--vrad-mask]\n"
@@ -188,6 +189,7 @@ Options parse(int argc, char** argv) {
             if (value != "off" && value != "probes") throw std::runtime_error("--indirect takes off or probes");
             o.indirectProbes = value == "probes";
         }
+        else if (flag == "--no-probe-fast-start") o.probeFastStart = false;
         else if (flag == "--indirect-frames") {
             const double value = number(next());
             if (value < 1 || value > 10000 || std::floor(value) != value)
@@ -514,6 +516,7 @@ int run(const Options& o) {
         if (o.noSpecular) for (auto& light : list.lights) light.specularMode = 0;
         list.fullbright = mode == "fullbright";
         list.realtimeIndirect = o.indirectProbes && mode == "lit";
+        list.probeSettings.fastStart = o.probeFastStart;
         if (list.realtimeIndirect) {
             if (!context->info().rayQuery) throw std::runtime_error("--indirect probes requires a ray-query device");
             renderer->resetIndirect(scene);

@@ -223,6 +223,7 @@ struct ProbeSettings {
     float spacing = 64.0f;
     std::uint32_t probesPerFrame = 256;
     float hysteresis = 0.9f;
+    bool fastStart = true; // Fourfold probe budget and lower hysteresis for the first three refreshes.
     float normalBias = 2.0f;
     // 0.7.6 step 2: only used while the realtime indirect option is on (still default off).
     bool cascades = true; // Second coarser probe cascade covering the first one's edge falloff.
