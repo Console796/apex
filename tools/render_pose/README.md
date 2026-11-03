@@ -162,7 +162,7 @@ implemented here.
 
 `--mode vrad` runs the real VRAD round trip (native vbsp, `vvis -fast`, vrad in a temp dir; needs
 `APEX_P2CE_DIR`) and draws the BSP's HDR lightmaps on the document's faces. Options: `--vrad-flags "<text>"`
-(default `-noextra`), `--no-vis`, `--vrad-scale <x>` (display scale, default 1.0), `--keep-vrad` (keep the
+(default `-noextra`), `--no-vis`, `--vrad-scale <x>` (display scale, default 0.62 unless `--bake-scale` is supplied), `--keep-vrad` (keep the
 temp dir). Files are `11-vrad.png` and so on. Faces VRAD gave no data (displacements, nolight, unmapped)
 draw black. Compare with the same ratio recipe as above, using `-vrad.png`. P2CE VRAD's
 HDR worldlights include the runtime lights in test1; the older report's contrary claim was
@@ -172,6 +172,11 @@ incorrect. See `docs/plans/probe-results/vrad_parity_tuning_0_7_6.md`.
 lightmaps onto a newly expanded copy of the VMF, without invoking VRAD again.
 The caller must ensure the BSP was compiled from the same VMF, instances,
 game assets and VRAD flags; the tool does not validate the cache key.
+
+For Lit comparisons, `--shadow-tile-cap 256` caps each shadow tile at 256
+pixels so more lights fit in the fixed atlas. This reduces shadow resolution;
+check `--time`'s overflow count. The default remains 1024, preserving ordinary
+editor and tool rendering.
 
 `--mode vrad --vrad-mask` also writes `NAME-vrad-mask.png` for offline
 comparisons. This experimental conservative pass marks mapped brush pixels

@@ -46,6 +46,7 @@ struct Options {
     int width = 1920, height = 1080;
     double fov = 90;
     int timeFrames = 0;
+    std::uint32_t shadowTileCap = render::kMaxShadowTile;
     bool indirectProbes = false;
     int indirectFrames = 1;
     unsigned bakePasses = 4;
@@ -69,7 +70,7 @@ struct Options {
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
                  "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad]\n"
-                 "  [--indirect off|probes] [--indirect-frames N]\n"
+                 "  [--indirect off|probes] [--indirect-frames N] [--shadow-tile-cap 256|512|1024]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 4 --bake-bounces 8 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH] [--vrad-mask]\n"
@@ -174,6 +175,11 @@ Options parse(int argc, char** argv) {
             if (value < 1 || value > 10000 || std::floor(value) != value)
                 throw std::runtime_error("--time takes a frame count in [1, 10000]");
             o.timeFrames = static_cast<int>(value);
+        }
+        else if (flag == "--shadow-tile-cap") {
+            o.shadowTileCap = count(256, 1024);
+            if (o.shadowTileCap != 256 && o.shadowTileCap != 512 && o.shadowTileCap != 1024)
+                throw std::runtime_error("--shadow-tile-cap takes 256, 512 or 1024");
         }
         else if (flag == "--indirect") {
             const auto value = next();
@@ -500,6 +506,7 @@ int run(const Options& o) {
         options.view.cameraRight = Vec3(camera.basis().right);
         options.view.cameraUp = Vec3(camera.basis().up);
         auto list = mirror.buildDrawList(options);
+        list.shadowTileCap = o.shadowTileCap;
         list.bakedScale = o.density ? 1.0f : mode == "vrad" ? o.vradScale.value_or(o.vradFallbackScale) : o.bakeScale;
         if (list.toolBrightness > 0.0f) list.toolBrightness = o.toolBrightness;
         if (o.noSpecular) for (auto& light : list.lights) light.specularMode = 0;

@@ -149,6 +149,23 @@ four-pass, eight-bounce run took 7.02 s including six renders. These are
 whole-process timings, not interactive invalidation timings; proximity in
 reference error does not prove every luxel has converged. Provisional mask,
 single-map and lack of a sky-specific test remain limitations.
+
+## Lit: zero-overflow direct and long-history baseline
+
+An opt-in `--shadow-tile-cap 256` fits all requested lights in the existing
+atlas, at lower spatial shadow resolution. On all six poses `--time 20` reports
+zero cluster and shadow overflow. With probes off, the direct-only Lit / VRAD
+`-bounce 0` luminance ratios are 1.160, 1.128, 1.140, 1.148, 1.128 and 1.100
+for p1–p4, h1 and h2, respectively.
+
+At 2048 frames with that cap, the p1–p4 full Lit / VRAD `-final` ratios are
+0.554, 0.557, 0.563 and 0.580. Using intersected reference masks and subtracting
+the no-probe Lit and zero-bounce VRAD images, the Lit/VRAD indirect-increment
+ratios are 0.298, 0.315, 0.288 and 0.298. Four independent 2048-frame resets
+plus setup, captures and 10 extra timing frames took 51.47 s. Warm on frame
+times were 4.99–6.57 ms. This is a baseline, not a fast-start measurement.
+The direct / indirect subtraction operates on sRGB-decoded displayed images,
+not the underlying HDR buffers, so clipping or unlit terms can affect it.
 The PNG metrics helper supports pooled aggregates and additional error columns;
 the rendered files and JSON from these exploratory runs are in `/tmp/opencode`
 and the ignored worktree build directory, respectively. A self-contained

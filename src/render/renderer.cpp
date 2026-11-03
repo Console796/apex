@@ -878,6 +878,7 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
         for (std::size_t i = 0; i < list.lights.size(); ++i)
             if (auto request = shadowRequest(list.lights[i], list.view.cameraPosition, list.view.viewProjection,
                                              exposureRange(list.lights[i]))) {
+                request->maxSize = std::clamp(list.shadowTileCap, kMinShadowTile, request->maxSize);
                 requests.push_back(*request);
                 requested.push_back(i);
             }
