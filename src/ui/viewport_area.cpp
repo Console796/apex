@@ -419,6 +419,13 @@ PaneFrame* ViewportArea::frame(viewport::NodeId pane) const {
     return it == frames_.end() ? nullptr : it->second.data();
 }
 
+bool ViewportArea::editActiveViewport(const std::function<void(viewport::Viewport&)>& change) {
+    auto* f = frame(layout_.active());
+    if (!f) return false;
+    f->edit(change);
+    return true;
+}
+
 QString ViewportArea::missingAssetTooltip(Ray ray) const {
     if (!session_ || !document_ || !gameContent_ || session_->document() != document_) return {};
     const auto hit = session_->picks().first(ray);

@@ -37,6 +37,7 @@ namespace apex::ui {
 
 class CompilePanel;
 class PieMenuPopup;
+class CommandPalette;
 class GameContent;
 class LogPanel;
 class OutlinerPanel;
@@ -210,6 +211,7 @@ private:
     std::vector<assets::GameProfile> profiles_;
 
     ViewportArea* viewport_ = nullptr;
+    CommandPalette* palette_ = nullptr;
     WorkspaceBar* workspaces_ = nullptr;
     QToolButton* toolButton_ = nullptr;
     std::map<editor::ToolId, std::vector<QWidgetAction*>> toolOptions_;

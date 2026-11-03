@@ -93,6 +93,10 @@ public:
     // The pane widget of a layout node (null while a rebuild is pending, or when hidden by maximize).
     PaneFrame* frame(viewport::NodeId pane) const;
     GpuHost& host() { return *host_; }
+    // The active viewport pane's settings (null when no area is a viewport), and an edit applied to it
+    // exactly as the pane menu would (title, redraw, layoutChanged).
+    const viewport::Viewport* activeViewport() const { return layout_.viewport(layout_.active()); }
+    bool editActiveViewport(const std::function<void(viewport::Viewport&)>& change);
 
     // Layout persistence (the whole tree, per-pane cameras, active and maximized pane) as JSON.
     QByteArray layoutJson() const;

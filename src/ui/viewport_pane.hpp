@@ -162,6 +162,8 @@ public:
     void refreshInstanceVisibility();
     void restyle();
     QMenu* menu() const { return menu_; }
+    // Applies a change to this pane's viewport, then refreshes the title, redraws and emits edited().
+    void edit(const std::function<void(viewport::Viewport&)>& change);
 
 signals:
     void edited(viewport::NodeId pane);  // The viewport settings changed (not the tree).

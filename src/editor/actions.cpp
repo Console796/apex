@@ -123,6 +123,8 @@ Actions::Actions()
          "Show the inspector: in its workspace area, or in a floating window (see Preferences)."},
         {"workspace.next", "Next workspace", "Window", "Switch to the next workspace tab."},
         {"workspace.previous", "Previous workspace", "Window", "Switch to the previous workspace tab."},
+        {"app.command_palette", "Command palette", "Window",
+         "Search and run commands: switch the view type, toggle overlays, run any menu action."},
       } {}
 
 Actions::Actions(std::vector<Action> entries) : entries_(std::move(entries)) {}
@@ -286,6 +288,7 @@ const Preset& hammerPreset() {
         {"view.properties", bound({"Alt+Enter"})},
         {"workspace.next", bound({"Ctrl+PageDown"})},
         {"workspace.previous", bound({"Ctrl+PageUp"})},
+        {"app.command_palette", bound({"Ctrl+Shift+P"})},
     }};
     return preset;
 }
@@ -379,6 +382,7 @@ const Preset& blenderPreset() {
         {"view.properties", bound({"N"})},
         {"workspace.next", bound({"Ctrl+PageDown"})},
         {"workspace.previous", bound({"Ctrl+PageUp"})},
+        {"app.command_palette", bound({"Ctrl+Shift+P"})},
     }};
     return preset;
 }

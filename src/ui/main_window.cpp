@@ -65,6 +65,8 @@
 #include "ui/log_panel.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/pie_menu_popup.hpp"
+#include "ui/command_palette.hpp"
+#include "ui/command_providers.hpp"
 #include "ui/transform_input.hpp"
 #include "ui/input_log.hpp"
 #include "ui/outliner_panel.hpp"
@@ -1084,7 +1086,10 @@ void MainWindow::buildAreas() {
         action->setObjectName(QStringLiteral("actionShowArea_") + QString::fromLatin1(viewport::nameOf(role)));
         action->setToolTip(tr("Expand this workspace's %1 area, or open it in a window if it has none").arg(roleTitle(role)));
     }
-    for (const char* id : {"view.properties", "workspace.next", "workspace.previous"}) {
+    palette_ = new CommandPalette(this);
+    registerViewportCommands(palette_->registry(), *viewport_);
+    registerEditorActionCommands(palette_->registry(), editorActions_, session_);
+    for (const char* id : {"view.properties", "workspace.next", "workspace.previous", "app.command_palette"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = viewMenu_->addAction(fromStd(entry->name));
         action->setObjectName(fromStd(entry->id));
@@ -1092,6 +1097,7 @@ void MainWindow::buildAreas() {
         editorActions_.emplace(entry->id, action);
         connect(action, &QAction::triggered, this, [this, id = entry->id] {
             if (id == "view.properties") showInspector();
+            else if (id == "app.command_palette") palette_->open();
             else workspaces_->step(id == "workspace.next" ? 1 : -1);
         });
     }

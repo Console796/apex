@@ -869,18 +869,20 @@ void PaneFrame::refreshInstanceVisibility() {
     instanceVisibilityButton_->setEnabled(session_ && session_->document());
 }
 
+void PaneFrame::edit(const std::function<void(viewport::Viewport&)>& change) {
+    if (auto* v = accessor_()) {
+        change(*v);
+        refreshTitle();
+        if (window_) window_->requestRedraw();
+        emit edited(pane_);
+    }
+}
+
 void PaneFrame::buildMenu() {
     menu_->clear();
     auto* vp = accessor_();
     if (!vp) return;
-    const auto edit = [this](auto&& change) {
-        if (auto* v = accessor_()) {
-            change(*v);
-            refreshTitle();
-            if (window_) window_->requestRedraw();
-            emit edited(pane_);
-        }
-    };
+    const auto edit = [this](std::function<void(viewport::Viewport&)> change) { this->edit(change); };
 
     auto* preset = menu_->addMenu(tr("Preset"));
     for (const auto p : {viewport::Preset::Camera, viewport::Preset::Top, viewport::Preset::Front, viewport::Preset::Side}) {
