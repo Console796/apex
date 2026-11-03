@@ -182,13 +182,19 @@ TEST_CASE("render: realtime probes bounce deterministically and honour indirect 
         probes.pack(frame, DVec3(0));
         const auto repeat = sample(*context, frame, surface);
         CHECK(std::memcmp(on.data(), repeat.data(), on.size() * sizeof(Vec4)) == 0);
-        for (const auto mode : {0u, 1u}) {
-            list.lights[0].indirectMode = static_cast<std::uint8_t>(mode);
-            accumulate(*context, probes, list, material);
-            probes.pack(frame, DVec3(0));
-            CHECK(luminance(sample(*context, frame, surface)) == 0);
-        }
+        // None injects nothing. Static is what the bake will include, so it matches Dynamic exactly.
+        list.lights[0].indirectMode = 0;
+        accumulate(*context, probes, list, material);
+        probes.pack(frame, DVec3(0));
+        CHECK(luminance(sample(*context, frame, surface)) == 0);
+        list.lights[0].indirectMode = 1;
+        probes.reset();
+        accumulate(*context, probes, list, material);
+        probes.pack(frame, DVec3(0));
+        const auto staticMode = sample(*context, frame, surface);
+        CHECK(std::memcmp(on.data(), staticMode.data(), on.size() * sizeof(Vec4)) == 0);
         list.lights[0].indirectMode = 2;
+        probes.reset();
         material.bounce = Vec4(0.1f, 0.1f, 0.1f, 0);
         accumulate(*context, probes, list, material);
         probes.pack(frame, DVec3(0));

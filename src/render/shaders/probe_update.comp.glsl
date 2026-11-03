@@ -55,7 +55,9 @@ vec3 sky(vec3 direction) {
     vec3 value = vec3(0.0);
     for (uint i = 0u; i < push.lightCount; ++i) {
         Light light = LightBuffer(push.lights).lights[i];
-        if (light.kindMode.x == 5u && light.kindMode.w == 2u)
+        // Static (1) and Dynamic (2) both inject: the preview shows what the bake will, and VRAD bounces
+        // Static lights. Only None (0) stays out.
+        if (light.kindMode.x == 5u && light.kindMode.w != 0u)
             value += light.intensityExponent.rgb * (6.0 / (5.0 * 3.14159265359));
     }
     return value;
@@ -139,7 +141,7 @@ void main() {
             vec3 energy = transported(hit, normal);
             for (uint i = 0u; i < push.lightCount; ++i) {
                 Light light = LightBuffer(push.lights).lights[i];
-                if (light.kindMode.w != 2u || light.kindMode.x == 5u) continue;
+                if (light.kindMode.w == 0u || light.kindMode.x == 5u) continue;
                 vec3 toLight = light.kindMode.x == 3u ? -light.directionInner.xyz : light.originRadius.xyz - hit;
                 float lengthToLight = length(toLight);
                 if (lengthToLight < 0.1) continue;

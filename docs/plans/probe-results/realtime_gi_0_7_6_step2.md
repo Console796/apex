@@ -76,3 +76,16 @@ probe code runs and the only ABI change is zeroed trailing frame-block bytes.
   for both cascades.
 - Coarse and fine updates are serial dispatches; hardware cost was not measured.
 - Only the Lit view with the option on is covered; the editor and viewport UI are untouched.
+
+## Static lights inject (decision, 2026-11-02)
+
+Step 1 injected only lights with `_indirectmode 2` (Dynamic). Every light defaults to 1 (Static), so in
+ordinary maps the probe volume received nothing and the overlay showed no change. The preview exists to show
+what the bake will show, and VRAD bounces Static lights, so modes 1 and 2 now both inject, for local lights
+and for the `light_environment` sky emitter. Only None (0) stays out. There is no separate option.
+
+Evidence: the probe test now checks that None gives exactly zero and Static is byte-identical to Dynamic.
+`test1.vmf` (all `light_rt` Static, 17 lights), pose p1, 640x360, 128 accumulation frames: mean luma
+46.0 off, 56.5 with probes; 94.6% of pixels differ by more than 2 levels. Before this change the same
+run gave no injection for these lights. `render:*,renderer:*,lighting*`: 80 cases, 97,098 assertions pass.
+Not compared against VRAD; the `vrad -final` ratio on this scene is still owed.
