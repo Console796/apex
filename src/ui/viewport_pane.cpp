@@ -181,6 +181,9 @@ PaneWindow::PaneWindow(GpuHost& host, viewport::NodeId pane, ViewportAccessor ac
       depth_(*host.context()), scene_(*host.context(), *host.heap()) {
     setSurfaceType(QSurface::VulkanSurface);
     setVulkanInstance(host.vulkanInstance());
+    // A committed edit may change lights or brushes: drop the accumulating probe history so the
+    // next convergence starts over instead of blending across the edit (0.7.6 step 3).
+    connect(&host_, &GpuHost::indirectInvalidated, this, [this] { resetIndirectHistory(); });
     sinceTick_.start();
     traceClock_.start();
     tooltipTimer_.setSingleShot(true);
@@ -515,6 +518,16 @@ void PaneWindow::applyNavigation(double dt) {
 
 bool PaneWindow::realtimeIndirectAvailable() const {
     return host_.context() && host_.context()->info().rayQuery;
+}
+
+void PaneWindow::resetIndirectHistory() {
+    // Only a Lit pane with the option enabled accumulates probe history; without RayQuery or the
+    // swapchain there is nothing built yet, and the default off path must not take a device wait.
+    const auto* vp = accessor_();
+    if (!swapchain_ || !vp || vp->mode != viewport::DisplayMode::Lit || !vp->overlays.realtimeIndirect ||
+        !realtimeIndirectAvailable())
+        return;
+    if (auto* renderer = host_.renderer(swapchain_->format())) renderer->resetIndirect(scene_);
 }
 
 double PaneWindow::tick(bool forceDraw) {
@@ -925,6 +938,14 @@ void PaneFrame::buildMenu() {
 
     // Compare (0.7.5 D7): flip this viewport between two light sources; the title says which one is showing.
     auto* compare = menu_->addMenu(tr("Compare light source"));
+    // Quick A/B (0.7.6): one action flips between the Lit view with realtime indirect and the Baked
+    // view, so the probes do not need the two-step arming below.
+    auto* quickBaked = compare->addAction(tr("A/B: probes \u2194 baked"), this, [edit] {
+        edit([](viewport::Viewport& v) { viewport::toggleBakedCompare(v); });
+    });
+    quickBaked->setEnabled(vp->mode == viewport::DisplayMode::Lit ||
+                           vp->mode == viewport::DisplayMode::Baked ||
+                           vp->compare == viewport::DisplayMode::Baked);
     for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad}) {
         auto* a = compare->addAction(tr("A/B with %1").arg(modeName(m)), this, [edit, m] {
             edit([m](viewport::Viewport& v) { v.compare = m; });

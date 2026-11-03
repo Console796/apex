@@ -110,6 +110,15 @@ void applyPreset(Viewport& viewport, Preset preset) {
     viewport.overlays.grid = grid || viewport.overlays.grid;
 }
 
+void toggleBakedCompare(Viewport& viewport) {
+    // The pane menu gates this to the Lit and Baked sides; the swaps reuse the same idiom as the
+    // 0.7.5 "Swap A/B" so arming through "A/B with Baked" and this flip share one state machine.
+    if (viewport.mode == DisplayMode::Baked)
+        std::swap(viewport.mode, viewport.compare.emplace(DisplayMode::Lit));
+    else
+        std::swap(viewport.mode, viewport.compare.emplace(DisplayMode::Baked));
+}
+
 json::Value toJson(const Viewport& vp) {
     const auto& c = vp.camera;
     json::Value::Object cam;

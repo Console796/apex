@@ -48,6 +48,12 @@ Viewport makePreset(Preset preset, DVec3 focus = DVec3{0.0}, double orthoHeight 
 // Replaces projection/axis/mode/overlays with the preset's, keeping the focus point (the camera's
 // pivot for perspective, its position for ortho).
 void applyPreset(Viewport& viewport, Preset preset);
+// Quick A/B (0.7.6): one action flips the viewport between the Lit view with realtime indirect
+// probes and the Baked view, using the 0.7.5 compare state the same way its menu swap does:
+// after a flip, `compare` marks the source the next flip shows, so the pane title keeps naming
+// which is showing. The camera, projection and every overlay are kept, including the probes flag,
+// which only affects Lit; in Baked it stays isolated and off. `compare` stays session state.
+void toggleBakedCompare(Viewport& viewport);
 
 const char* nameOf(DisplayMode mode);
 const char* nameOf(Preset preset);

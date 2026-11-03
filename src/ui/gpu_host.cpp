@@ -237,6 +237,10 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
         // Conservative whole restart: keys include light targets, material and instance fixups.
         // Selection/view settings do not issue document ChangeSets.
         if (bake_ && !changes.empty()) bake_->invalidate();
+        // Realtime indirect (0.7.6 step 3): any committed edit may change lights or brushes, so
+        // accumulating Lit panes reset through Renderer::resetIndirect. Panes without the option
+        // enabled ignore this, leaving the default off behaviour untouched.
+        if (!changes.empty()) emit indirectInvalidated();
     });
 }
 

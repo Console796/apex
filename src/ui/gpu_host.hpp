@@ -105,6 +105,9 @@ public:
 
 signals:
     void gpuNameChanged(const QString& name);
+    // A committed document change may alter lights or brushes. Lit panes accumulating realtime
+    // indirect reset their probe history on this (0.7.6 step 3); other panes ignore it.
+    void indirectInvalidated();
 
 private:
     void unbind();

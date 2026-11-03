@@ -136,6 +136,83 @@ TEST_CASE("viewport JSON round trip and validation") {
     CHECK_FALSE(viewportFromJson(*json::parse(R"([])")));
 }
 
+TEST_CASE("the realtime indirect option round trips and old files load it off") {
+    auto vp = makePreset(Preset::Front, {1, 2, 3}, 777);
+    vp.mode = DisplayMode::Lit;
+    vp.overlays.realtimeIndirect = true;
+    const auto text = json::write(toJson(vp));
+    const auto back = viewportFromJson(*json::parse(text));
+    REQUIRE(back);
+    CHECK(back->mode == DisplayMode::Lit);
+    CHECK(back->overlays.realtimeIndirect);
+    CHECK(json::write(toJson(*back)) == text);  // Stable: saved and loaded with the viewport JSON.
+
+    // An explicit false is kept, not turned into the missing-key fallback.
+    auto off = vp;
+    off.overlays.realtimeIndirect = false;
+    const auto offText = json::write(toJson(off));
+    const auto offBack = viewportFromJson(*json::parse(offText));
+    REQUIRE(offBack);
+    CHECK_FALSE(offBack->overlays.realtimeIndirect);
+    CHECK(json::write(toJson(*offBack)) == offText);
+
+    // A layout written before the option existed loads with the option off and the rest intact.
+    const auto older = viewportFromJson(*json::parse(
+        R"({"camera":{"fov":73.7,"position":[0,0,64],"angles":[0,0,0],"orbitDistance":512,
+            "orthoHeight":1024,"projection":"perspective"},"mode":"lit","overlays":{"grid":true}})"));
+    REQUIRE(older);
+    CHECK(older->mode == DisplayMode::Lit);
+    CHECK_FALSE(older->overlays.realtimeIndirect);
+    CHECK(older->overlays.approxBounce);  // The neighbouring overlay keeps its default too.
+}
+
+TEST_CASE("the baked A/B toggle flips Lit probes and Baked keeping camera and overlays") {
+    auto vp = makePreset(Preset::Camera, {7, 8, 9});
+    vp.camera.position = {100, 200, 300};
+    vp.camera.angles = {5, 10, 0};
+    vp.mode = DisplayMode::Lit;
+    vp.overlays.realtimeIndirect = true;
+    vp.overlays.luxelDensity = true;  // Any other view setting must survive the flip.
+
+    toggleBakedCompare(vp);
+    CHECK(vp.mode == DisplayMode::Baked);
+    REQUIRE(vp.compare);
+    CHECK(*vp.compare == DisplayMode::Lit);  // The marked source the next flip shows.
+    checkVec(vp.camera.position, {100, 200, 300});
+    checkVec(vp.camera.angles, {5, 10, 0});
+    CHECK(vp.overlays.realtimeIndirect);
+    CHECK(vp.overlays.luxelDensity);
+
+    toggleBakedCompare(vp);
+    CHECK(vp.mode == DisplayMode::Lit);
+    REQUIRE(vp.compare);
+    CHECK(*vp.compare == DisplayMode::Baked);
+
+    // Repeated flips alternate between the two sides of the same pairing.
+    toggleBakedCompare(vp);
+    CHECK(vp.mode == DisplayMode::Baked);
+    CHECK(*vp.compare == DisplayMode::Lit);
+    toggleBakedCompare(vp);
+    CHECK(vp.mode == DisplayMode::Lit);
+    CHECK(*vp.compare == DisplayMode::Baked);
+
+    // Arming through the 0.7.5 compare entries and the quick flip share one state machine.
+    Viewport armed = makePreset(Preset::Camera, {0, 0, 64});
+    armed.mode = DisplayMode::Lit;
+    armed.compare = DisplayMode::Baked;
+    toggleBakedCompare(armed);
+    CHECK(armed.mode == DisplayMode::Baked);
+    CHECK(*armed.compare == DisplayMode::Lit);
+    // Two flips from here return to the starting state.
+    toggleBakedCompare(armed);
+    CHECK(armed.mode == DisplayMode::Lit);
+    CHECK(*armed.compare == DisplayMode::Baked);
+
+    // The compare is session state, like every other A/B setting: never saved.
+    const auto text = json::write(toJson(vp));
+    CHECK_FALSE(viewportFromJson(*json::parse(text))->compare);
+}
+
 TEST_CASE("fly controller: RMB look and WASD") {
     Camera c;
     NavSettings s;

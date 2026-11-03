@@ -63,6 +63,9 @@ public:
     std::uint32_t shadowOverflow() const { return shadowOverflow_; }
     bool failed() const { return failed_; }
     bool realtimeIndirectAvailable() const;
+    // GpuHost::indirectInvalidated callback (0.7.6 step 3): resets the accumulating probe history
+    // of a Lit pane with the option on; everything else is a no-op.
+    void resetIndirectHistory();
     std::uint32_t recreateCount() const { return swapchain_ ? swapchain_->recreateCount() : 0; }
 
     void releaseCapture();
