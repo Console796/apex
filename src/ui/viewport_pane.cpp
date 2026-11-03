@@ -952,18 +952,18 @@ void PaneFrame::buildMenu() {
                                     {"Cordons", &viewport::Overlays::cordons},
                                     {"Backface culling", &viewport::Overlays::backfaceCulling},
                                     {"Luxel density (Baked, VRAD)", &viewport::Overlays::luxelDensity},
+                                    {"Realtime indirect", &viewport::Overlays::realtimeIndirect},
                                     {"Approximate bounce (Lit)", &viewport::Overlays::approxBounce}};
     for (const auto& entry : entries) {
-                                    {"Realtime indirect", &viewport::Overlays::realtimeIndirect},
         auto* a = overlays->addAction(tr(entry.label));
         a->setCheckable(true);
         a->setChecked(vp->overlays.*(entry.field));
-        connect(a, &QAction::toggled, this, [edit, field = entry.field](bool on) {
-            edit([field, on](viewport::Viewport& v) { v.overlays.*field = on; });
         if (entry.field == &viewport::Overlays::realtimeIndirect) {
             a->setEnabled(window_ && window_->realtimeIndirectAvailable());
             a->setToolTip(tr("Ray-traced diffuse approximation; requires ray query support."));
         }
+        connect(a, &QAction::toggled, this, [edit, field = entry.field](bool on) {
+            edit([field, on](viewport::Viewport& v) { v.overlays.*field = on; });
         });
     }
 
