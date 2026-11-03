@@ -38,6 +38,7 @@ layout(push_constant) uniform Update {
 } push;
 shared vec4 radianceDistance[128];
 shared vec4 directionsBackface[128];
+shared float skyRay[128];
 shared vec3 relocationOffset;
 
 bool blocked(vec3 point, vec3 direction, float distance, bool allowSky) {
@@ -126,12 +127,14 @@ void main() {
     rayQueryInitializeEXT(q, scene, gl_RayFlagsOpaqueEXT, 0xFF, point, 0.05, direction, push.params.w);
     while (rayQueryProceedEXT(q)) {}
     float distance = push.params.w, backface = 0.0;
+    float fromSky = 1.0;
     vec3 value = sky(direction);
     if (rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
         distance = rayQueryGetIntersectionTEXT(q, true);
         uint instance = rayQueryGetIntersectionInstanceCustomIndexEXT(q, true);
         uint primitive = rayQueryGetIntersectionPrimitiveIndexEXT(q, true);
         Triangle triangle = Triangles(push.triangles).values[Offsets(push.offsets).values[instance] + primitive];
+        fromSky = triangle.albedo.w == 1.0 ? 1.0 : 0.0;
         vec3 normal = normalize(cross(triangle.b.xyz - triangle.a.xyz, triangle.c.xyz - triangle.a.xyz));
         backface = dot(normal, direction) > 0.0 ? 1.0 : 0.0;
         value = vec3(0.0);
@@ -155,6 +158,7 @@ void main() {
     }
     radianceDistance[lane] = vec4(value, min(distance, push.originSpacing.w * 4.0));
     directionsBackface[lane] = vec4(direction, backface);
+    skyRay[lane] = fromSky;
     barrier();
     if (lane >= 64u) return;
     float backfaces = 0.0;
@@ -164,7 +168,9 @@ void main() {
     float weight = 0.0;
     for (uint r = 0u; r < 128u; ++r) {
         float cosine = max(dot(axis, directionsBackface[r].xyz), 0.0);
-        sum += radianceDistance[r].rgb * surfaceResponse(cosine);
+        // Surface bounce uses Lambertian transport, matching the CPU baker.
+        // Keep the previously calibrated angular response for the sky emitter.
+        sum += radianceDistance[r].rgb * mix(cosine, surfaceResponse(cosine), skyRay[r]);
         float w = pow(cosine, 64.0);
         float d = radianceDistance[r].w;
         moments += w * vec2(d, d * d);

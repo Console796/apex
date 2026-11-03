@@ -1,4 +1,4 @@
-# VRAD parity tuning (0.7.6): Baked tuned, Lit pending
+# VRAD parity tuning (0.7.6): Baked and Lit transport tuned; fast-start pending
 
 The target is the original `test1.vmf` VRAD output. A separate experiment used
 `tools/derive_vrad_lights.py` to change only the five `light_rt` classnames
@@ -166,6 +166,41 @@ plus setup, captures and 10 extra timing frames took 51.47 s. Warm on frame
 times were 4.99–6.57 ms. This is a baseline, not a fast-start measurement.
 The direct / indirect subtraction operates on sRGB-decoded displayed images,
 not the underlying HDR buffers, so clipping or unlit terms can affect it.
+
+## Lit: cosine-normalized surface transport
+
+Probe-update hit radiance is `energy * albedo / pi`, but its directional
+integration had used the calibrated *direct-light* response `(c + c²)/2`.
+Over a hemisphere that integrates to `5*pi/6`, losing one sixth of a uniform
+Lambertian surface's energy at every transport step. The CPU baker uses
+cosine-weighted transport instead. Probe updates now integrate surface-hit
+radiance with cosine; rays that hit/miss to sky retain the previous sky
+angular response and its existing `6/(5*pi)` normalization. This is a transport
+correction, not a fitted gain. The probe-off and Baked/VRAD paths are unchanged.
+
+At 2048 frames and the zero-overflow 256-pixel shadow cap, before/after:
+
+| Pose | full ratio before → after | linear RMSE before → after | indirect increment ratio before → after |
+|---|---|---|---|
+| p1 | 0.554 → 0.638 | 0.0916 → 0.0762 | 0.298 → 0.418 |
+| p2 | 0.557 → 0.644 | 0.0464 → 0.0386 | 0.315 → 0.440 |
+| p3 | 0.562 → 0.638 | 0.0776 → 0.0651 | 0.288 → 0.400 |
+| p4 | 0.579 → 0.661 | 0.0889 → 0.0732 | 0.298 → 0.419 |
+| h1 held out | 0.561 → 0.649 | 0.1192 → 0.0974 | not measured → 0.439 |
+| h2 held out | 0.502 → 0.591 | 0.0487 → 0.0413 | not measured → 0.424 |
+
+The map has no sky emitter; retaining the original sky kernel makes the
+split-sky p1 image byte-identical to the original cosine trial. Steady-state
+total frame times for the six corrected views were 5.09–6.79 ms at the 256 cap;
+this cap is for analysis and reduces shadow resolution. The synthetic probe
+room rose from 0.0585 to 0.0720 mean linear luminance; thin-wall leakage
+remained below 0.57% in the three tested phases. No goldens were changed.
+
+Substantial indirect energy remains missing; this change does not establish
+whether visibility weighting, locality, missing texlights or other transport
+effects dominate the remaining discrepancy. Sky/sun reference parity remains
+unmeasured. A 2048-frame p1 accumulation after reset took 14.16 seconds on the
+RX 6600 in the instrumented tool (including its first frame, not setup).
 The PNG metrics helper supports pooled aggregates and additional error columns;
 the rendered files and JSON from these exploratory runs are in `/tmp/opencode`
 and the ignored worktree build directory, respectively. A self-contained

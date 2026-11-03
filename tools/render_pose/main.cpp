@@ -46,6 +46,7 @@ struct Options {
     int width = 1920, height = 1080;
     double fov = 90;
     int timeFrames = 0;
+    bool timeReset = false;
     std::uint32_t shadowTileCap = render::kMaxShadowTile;
     bool indirectProbes = false;
     int indirectFrames = 1;
@@ -70,7 +71,7 @@ struct Options {
 void help() {
     std::cout << "Usage: apex_render_pose --vmf PATH --game DIR [--width 1920 --height 1080]\n"
                  "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad]\n"
-                 "  [--indirect off|probes] [--indirect-frames N] [--shadow-tile-cap 256|512|1024]\n"
+                 "  [--indirect off|probes] [--indirect-frames N] [--time-reset] [--shadow-tile-cap 256|512|1024]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 4 --bake-bounces 8 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH] [--vrad-mask]\n"
@@ -176,6 +177,7 @@ Options parse(int argc, char** argv) {
                 throw std::runtime_error("--time takes a frame count in [1, 10000]");
             o.timeFrames = static_cast<int>(value);
         }
+        else if (flag == "--time-reset") o.timeReset = true;
         else if (flag == "--shadow-tile-cap") {
             o.shadowTileCap = count(256, 1024);
             if (o.shadowTileCap != 256 && o.shadowTileCap != 512 && o.shadowTileCap != 1024)
@@ -529,7 +531,13 @@ int run(const Options& o) {
                 target.end(commands);
             }));
         };
+        const auto accumulationStart = std::chrono::steady_clock::now();
         for (int frame = 0; frame < (list.realtimeIndirect ? o.indirectFrames : 1); ++frame) render();
+        if (o.timeReset) {
+            const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - accumulationStart).count();
+            std::cout << pose.name << " reset-frames=" << (list.realtimeIndirect ? o.indirectFrames : 1)
+                      << " reset-seconds=" << seconds << '\n';
+        }
         const auto image = take(target.readback());
         const QImage png = QImage(image.pixels.data(), o.width, o.height, o.width * 4, QImage::Format_RGBA8888).copy();
         if (o.sources.empty()) write(png, fileName(pose, o));

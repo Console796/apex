@@ -177,6 +177,8 @@ For Lit comparisons, `--shadow-tile-cap 256` caps each shadow tile at 256
 pixels so more lights fit in the fixed atlas. This reduces shadow resolution;
 check `--time`'s overflow count. The default remains 1024, preserving ordinary
 editor and tool rendering.
+`--time-reset` reports elapsed time for the requested accumulation frames
+after each independent probe reset, excluding scene setup and image readback.
 
 `--mode vrad --vrad-mask` also writes `NAME-vrad-mask.png` for offline
 comparisons. This experimental conservative pass marks mapped brush pixels

@@ -176,7 +176,9 @@ TEST_CASE("render: realtime probes bounce deterministically and honour indirect 
         FrameBlock frame; probes.pack(frame, DVec3(0));
         const auto on = sample(*context, frame, surface);
         MESSAGE("ceiling linear mean off=" << luminance(off) << " probes=" << luminance(on));
-        CHECK(luminance(on) > 0.01);
+        // Cosine-weighted indirect transport in this deterministic room reads
+        // ~0.072; using the direct-light surface response instead read ~0.0585.
+        CHECK(luminance(on) > 0.064);
         probes.reset();
         accumulate(*context, probes, list, material);
         probes.pack(frame, DVec3(0));
