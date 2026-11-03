@@ -67,10 +67,38 @@ its cause or a safe default across scenes. The four-pose 16-pass trial took
 7.23 s end-to-end including setup and rendering; this is not convergence time.
 
 Lit `--time 20` measured total synchronous frame times of 8.18–10.96 ms across
-these views after warm-up. Shadow-atlas overflow was 1–3 for all views except
-p4 (zero), so some direct shadows are missing and confound the comparison.
-No incremental probe-only timing, convergence frames/seconds, bounce/ray/pass
-sweep, larger final renders, systematic bias fix or default change is claimed.
+these views after warm-up. On p1 the separately measured off and on runs were
+7.215 and 8.989 ms/frame respectively (about 1.77 ms difference; not a paired
+profile). Shadow-atlas overflow was 1–3 for all views except p4 (zero), so
+some direct shadows are missing and confound the comparison.
+
+### Exploratory sampling curves, not a convergence proof
+
+Four test poses, same provisional mask and Baked scale 1.35; times are entire
+processes including setup and four images, not interactive restart times:
+
+| Baked passes per level | 1 | 4 | 8 | 16 | 32 |
+|---|---:|---:|---:|---:|---:|
+| pooled linear RMSE vs VRAD | 0.034041 | 0.034072 | 0.034062 | 0.034017 | 0.034025 |
+| wall seconds | 1.27 | 2.39 | 3.79 | 7.23 | 12.51 |
+
+The one-pass error is within 0.05% of the 32-pass error, but systematic error
+dominates this metric; that does not establish that the indirect field or
+individual luxels have converged, nor that 32 passes is a converged reference.
+It does not justify changing the live progressive bake's settings.
+
+| Lit probe frames per pose | 1 | 32 | 128 | 256 | 512 |
+|---|---:|---:|---:|---:|---:|
+| pooled linear RMSE vs VRAD | 0.112205 | 0.108041 | 0.085770 | 0.084691 | 0.082903 |
+| wall seconds for four poses | 1.09 | 2.54 | 6.31 | 11.92 | 22.25 |
+
+Against the 512-frame result, 128 frames is within 5% of its per-pose and
+pooled VRAD RMSE. The 512-frame image itself has not been proved converged,
+and proximity in VRAD error can conceal an evolving indirect field. These
+whole-process timings cannot be used as a per-reset convergence time.
+
+No fast-start, bounce/ray sweep, larger final renders, systematic bias fix or
+default change is claimed.
 The PNG metrics helper supports pooled aggregates and additional error columns;
 the rendered files and JSON from these exploratory runs are in `/tmp/opencode`
 and the ignored worktree build directory, respectively. A self-contained
