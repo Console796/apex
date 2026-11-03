@@ -17,10 +17,12 @@ per-field light-list assertion or proof that VRAD uses matching attenuation.
 The derived map's `-final` run completed with 449 fragments, 266 mapped,
 181 no-data and 2 unowned; VRAD reports 21 direct lights. Surprisingly the
 original map's `-final` log also reports 21 direct lights, despite the older
-report saying it omitted runtime lights. The two complete p1 renders differ
+report saying it omitted runtime lights. Inspecting HDR worldlight lump 54,
+both BSPs have 21 100-byte records; the ten records at the converted runtime
+lights' origins are byte-identical across the two BSPs. The prior claim that
+P2CE VRAD omits those ten lights was wrong. The two complete p1 renders differ
 by at most 3 out of 255 per channel (mean absolute RGBA difference 0.045);
-this includes non-lightmapped pixels and is **not** a parity metric. The
-discrepancy in light accounting must be investigated before interpreting it.
+this includes non-lightmapped pixels and is **not** a parity metric.
 
 The kept original-map `-final` BSP was replayed with `--vrad-bsp`; its p1 PNG
 was byte-identical to the initial capture. Loading and mapping took 0.071 s,
