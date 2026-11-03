@@ -35,6 +35,19 @@ void main() {
         if (alpha < 0.5) discard;
         alpha = 1.0;
     }
+    // Offline validity pass: keep depth occlusion, but mark only opaque mapped
+    // brush pixels with nonzero VRAD radiance and no unlit material component.
+    if ((floatBitsToUint(push.p1.w) & 8u) != 0u && (frameBlock().flags & 8u) != 0u) {
+        FrameBlock frame = frameBlock();
+        Material material = materialRecord(frame, slot);
+        uint atlas = floatBitsToUint(frame.fill.z);
+        bool mapped = (floatBitsToUint(push.p1.w) & 32u) != 0u && atlas != NO_TEXTURE &&
+                      all(greaterThanEqual(vLightmapUv, vec2(0.0)));
+        bool eligible = mapped && (material.flags & (MATERIAL_SELFILLUM | MATERIAL_LOCAL_REFRACT)) == 0u;
+        vec3 lightmap = eligible ? textureLod(sampler2D(textures[nonuniformEXT(atlas)], samplers[3]), vLightmapUv, 0.0).rgb : vec3(0.0);
+        outColor = vec4(vec3(any(greaterThan(lightmap, vec3(0.0))) ? 1.0 : 0.0), 1.0);
+        return;
+    }
     outColor = vec4(texel.rgb * push.colour.rgb * shade, alpha);
     // Additive layers are mostly tinted by $color2 (often to black, leaving only specular), so
     // Textured applies it too, back in the VMT's gamma space.

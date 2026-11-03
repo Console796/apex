@@ -173,6 +173,15 @@ lightmaps onto a newly expanded copy of the VMF, without invoking VRAD again.
 The caller must ensure the BSP was compiled from the same VMF, instances,
 game assets and VRAD flags; the tool does not validate the cache key.
 
+`--mode vrad --vrad-mask` also writes `NAME-vrad-mask.png` for offline
+comparisons. This experimental conservative pass marks mapped brush pixels
+whose sampled HDR lightmap is nonblack. It excludes sky, displacements,
+tools, self-illumination, local refraction, transparent material footprints,
+and faces using emitters listed in the game's `lights.rad`; transparent objects
+are treated as opaque for occlusion. It does not yet inspect map-local RAD
+files or prove all material types and occluders are classified correctly.
+It must not be combined with `--density`. The VRAD view itself is unchanged.
+
 ## Compare and luxel density (0.7.5 D7)
 
 `--compare A,B[,split]` renders the same poses with two light sources (`lit`, `baked`, `vrad`) and writes one

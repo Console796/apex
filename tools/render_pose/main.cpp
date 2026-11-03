@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -53,6 +54,7 @@ struct Options {
     std::optional<float> vradScale; // --vrad-scale; else --bake-scale.
     editor::VradOptions vrad;
     bool keepVrad = false;
+    bool vradMask = false;
     bool noSpecular = false;
     float toolBrightness = 0.0f; // --tool-fixed-brightness; 0 = off.
     std::string mode = "lit";
@@ -69,7 +71,7 @@ void help() {
                  "  [--indirect off|probes] [--indirect-frames N]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 16 --bake-bounces 2 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 0.62]\n"
-                 "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH]\n"
+                 "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH] [--vrad-mask]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
@@ -152,6 +154,7 @@ Options parse(int argc, char** argv) {
         else if (flag == "--no-vis") o.vrad.vis = false;
         else if (flag == "--keep-vrad") o.keepVrad = true;
         else if (flag == "--vrad-bsp") o.vradBsp = next();
+        else if (flag == "--vrad-mask") o.vradMask = true;
         else if (flag == "--vrad-scale") {
             const double value = number(next());
             if (value < 0 || value > std::numeric_limits<float>::max())
@@ -222,6 +225,8 @@ Options parse(int argc, char** argv) {
     if (o.mode != "lit" && o.mode != "textured" && o.mode != "fullbright" && o.mode != "baked" &&
         o.mode != "vrad" && o.mode != "compare")
         throw std::runtime_error("Mode must be lit, textured, fullbright, baked or vrad");
+    if (o.vradMask && o.mode != "vrad") throw std::runtime_error("--vrad-mask requires --mode vrad");
+    if (o.vradMask && o.density) throw std::runtime_error("--vrad-mask cannot be combined with --density");
     return o;
 }
 
@@ -317,6 +322,7 @@ int run(const Options& o) {
     // No FGD class table: entity models then come only from explicit model keys, so the
     // editor-only helper models (light_rt_spot cones, player start, etc.) stay out of the capture.
     std::shared_ptr<render::BakedLightmaps> bakeMaps, vradMaps;
+    std::vector<std::vector<Vec3>> vradRadiance, maskRadiance;
     if (uses("baked")) {
         // The bake sees the expansion; the mirror keeps the original and draws the instances itself.
         auto bakeDocument = document.snapshot();
@@ -355,16 +361,68 @@ int run(const Options& o) {
             paths.tools[variable] = profile.toolPath(tool).string();
         const auto started = std::chrono::steady_clock::now();
         render::VradLightmaps loaded;
+        std::unique_ptr<document::Document> cachedExported;
+        const document::Document* mappedDocument = nullptr;
         if (o.vradBsp.empty()) {
             check(trip.start(document, fs::canonical(o.vmf), paths, o.vrad));
             if (trip.poll() != editor::VradRoundTrip::State::Done)
                 throw std::runtime_error("VRAD round trip failed: " + trip.message());
             loaded = take(render::loadVradLightmaps(trip.bsp(), *trip.exported(), trip.origins()));
+            mappedDocument = trip.exported();
         } else {
-            auto exported = document.snapshot();
-            const auto origins = tools::expandBakeInstances(*exported, fs::canonical(o.vmf), profile);
-            loaded = take(render::loadVradLightmaps(o.vradBsp, *exported, origins));
+            cachedExported = document.snapshot();
+            const auto origins = tools::expandBakeInstances(*cachedExported, fs::canonical(o.vmf), profile);
+            loaded = take(render::loadVradLightmaps(o.vradBsp, *cachedExported, origins));
+            mappedDocument = cachedExported.get();
             std::cout << "vrad cached-bsp=" << o.vradBsp.string() << '\n';
+        }
+        if (o.vradMask) {
+            // lights.rad emitters are not necessarily marked $selfillum in their VMT.
+            // Remove their atlas rows from the validity pass, not from the reference image.
+            std::ifstream rad(profile.gameDirectory / "lights.rad");
+            if (!rad) throw std::runtime_error("--vrad-mask requires the game's lights.rad");
+            std::set<std::string> emitters;
+            const auto lower = [](std::string value) {
+                std::transform(value.begin(), value.end(), value.begin(),
+                               [](unsigned char c) { return char(std::tolower(c)); });
+                return value;
+            };
+            for (std::string line; std::getline(rad, line);) {
+                std::istringstream fields(line);
+                std::string material;
+                double energy = 0;
+                if (fields >> material >> energy && !material.starts_with("//") && energy > 0)
+                    emitters.insert(lower(material));
+            }
+            std::set<std::pair<std::uint64_t, std::uint32_t>> emissiveSides;
+            const auto walk = [&](const auto& self, document::NodeId id) -> void {
+                const auto handle = mappedDocument->handle(id);
+                if (!handle) return;
+                if (const auto* solid = std::get_if<Handle<document::Solid>>(&*handle)) {
+                    const auto* node = mappedDocument->get(*solid);
+                    for (const auto* side : node->block->findAll("side")) {
+                        const auto* sideId = side->find("id");
+                        const auto* material = side->find("material");
+                        if (!sideId || !material) continue;
+                        const auto value = sideId->asInt();
+                        if (value && emitters.contains(lower(material->decodedValue().value_or(""))))
+                            emissiveSides.emplace(node->id, std::uint32_t(*value));
+                    }
+                }
+                for (const auto child : mappedDocument->get(*handle)->children) self(self, child);
+            };
+            for (const auto root : mappedDocument->roots()) walk(walk, root);
+            vradRadiance = loaded.radiance;
+            maskRadiance = loaded.radiance;
+            std::size_t excluded = 0;
+            for (std::size_t i = 0; i < loaded.atlas.faces.size(); ++i) {
+                const auto& face = loaded.atlas.faces[i];
+                if (!emissiveSides.contains({face.solidId, face.sideId})) continue;
+                std::fill(maskRadiance[i].begin(), maskRadiance[i].end(), Vec3(0));
+                ++excluded;
+            }
+            std::cout << "vrad mask texlight materials=" << emitters.size() << " sides=" << emissiveSides.size()
+                      << " excluded-fragments=" << excluded << '\n';
         }
         const auto& stats = loaded.stats;
         if (o.vradBsp.empty()) std::cout << "vrad flags=\"" << o.vrad.flags << "\" vis=" << o.vrad.vis;
@@ -451,7 +509,7 @@ int run(const Options& o) {
             std::cout << "indirect: probes (approximation), frames=" << o.indirectFrames << '\n';
         }
         // Leave exposure at DrawList's default, as ViewportPane does.
-        constexpr float clear[] = {0.1f, 0.1f, 0.1f, 1.0f};
+        float clear[] = {0.1f, 0.1f, 0.1f, 1.0f};
         VkCommandBuffer slot = VK_NULL_HANDLE;
         const auto render = [&] {
             check(context->oneShot([&](VkCommandBuffer commands) {
@@ -480,6 +538,30 @@ int run(const Options& o) {
             std::cout << fileName(pose, o) << " device=\"" << context->info().name << "\" frame-ms=" << ms
                       << " frames=" << o.timeFrames << " cluster-overflow=" << renderer->clusterOverflow(slot)
                       << " shadow-overflow=" << renderer->shadowOverflow(slot) << '\n';
+        }
+        if (o.vradMask) {
+            check(vradMaps->upload(maskRadiance));
+            list.lightmapValidityMask = true;
+            list.sky.enabled = false;
+            list.sky.camera.reset();
+            list.fog.enabled = false;
+            list.boxes.clear();
+            list.sprites.clear();
+            list.ghosts.clear();
+            for (auto& mesh : list.meshes) {
+                if (mesh.alpha != render::AlphaMode::Opaque || mesh.sky || mesh.skySurface || mesh.toolFixed)
+                    mesh.bakedBrush = false;
+                // Conservative occlusion for transparent/alpha-tested objects: exclude
+                // their whole footprint instead of letting a hidden surface count.
+                mesh.alpha = render::AlphaMode::Opaque;
+            }
+            clear[0] = clear[1] = clear[2] = 0.0f;
+            render();
+            const auto mask = take(target.readback());
+            const QImage maskPng = QImage(mask.pixels.data(), o.width, o.height, o.width * 4,
+                                          QImage::Format_RGBA8888).copy();
+            write(maskPng, pose.name + "-vrad-mask.png");
+            check(vradMaps->upload(vradRadiance));
         }
     }
     }

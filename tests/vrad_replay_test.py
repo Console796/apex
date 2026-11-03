@@ -16,8 +16,8 @@ with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temp:
     root = Path(temp)
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", TMPDIR=temp)
     base = [binary, "--vmf", vmf, "--game", game, "--width", "320", "--height", "180",
-            "--mode", "vrad", "--vrad-scale", "1", "--no-specular", "--pose", "p",
-            "-120", "-100", "100", "20", "40", "0"]
+            "--mode", "vrad", "--vrad-scale", "1", "--vrad-mask", "--no-specular", "--pose", "p",
+            "64", "64", "64", "0", "45", "0"]
     fresh = subprocess.run(base + ["--vrad-flags", "-final", "--keep-vrad", "--out", str(root / "fresh")],
                            env=env, capture_output=True, text=True, check=True, timeout=120)
     match = re.search(r"^vrad directory=(.*)$", fresh.stdout, re.MULTILINE)
@@ -30,4 +30,12 @@ with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temp:
                             env=env, capture_output=True, text=True, check=True, timeout=120)
     assert "vrad cached-bsp=" in cached.stdout
     assert (root / "fresh/p-vrad.png").read_bytes() == (root / "cached/p-vrad.png").read_bytes()
+    assert (root / "fresh/p-vrad-mask.png").read_bytes() == (root / "cached/p-vrad-mask.png").read_bytes()
+    try:
+        from PIL import Image
+    except ImportError:
+        print("Pillow unavailable; skipping pixel coverage assertion")
+    else:
+        values = set(Image.open(root / "fresh/p-vrad-mask.png").convert("L").getdata())
+        assert 255 in values and values <= {0, 255}, f"expected valid binary mask pixels, got {values}"
 print("retained VRAD replay is byte-identical")
