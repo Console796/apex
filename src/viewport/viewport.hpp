@@ -10,7 +10,7 @@
 
 namespace apex::viewport {
 
-enum class DisplayMode { Wireframe, Flat, Textured, Lit, Baked, Vrad }; // Lit: 0.6, Baked: 0.7, Vrad: 0.7.5.
+enum class DisplayMode { Wireframe, Flat, Textured, Lit, Baked, Vrad, Hybrid }; // Lit: 0.6, Baked: 0.7, Vrad: 0.7.5, Hybrid: 0.7.7.
 
 struct Overlays {
     bool grid = true;
@@ -24,7 +24,7 @@ struct Overlays {
     bool cordons = true;      // The map's cordon boxes (0.5 D7).
     bool backfaceCulling = true; // False draws the back of every face too (Textured, Flat, Lit).
     bool toolFixedBrightness = false; // Lit/Baked: tool textures drawn at a fixed brightness, not lit or baked.
-    bool luxelDensity = false;   // Baked/Vrad: the lightmap lattice as a checker, one cell per luxel (0.7.5 D7).
+    bool luxelDensity = false;   // Baked/Vrad/Hybrid: the lightmap lattice as a checker, one cell per luxel (0.7.5 D7).
     bool realtimeIndirect = false; // Lit: ray-traced irradiance probes (approximation).
     bool approxBounce = true;    // Lit: constant ambient fill plus screen-space AO, a stand-in for bounce light.
 

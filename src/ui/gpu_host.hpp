@@ -80,6 +80,8 @@ public:
     bool updateBake(bool active, DVec3 camera, const std::filesystem::path& map,
                     const std::optional<std::filesystem::path>& extraRoot,
                     const std::vector<document::InstanceContent>& instances);
+    // The pane driving the bake shows the Hybrid view (VRAD-anchored); drops the bake chain when it changes.
+    void setBakeHybrid(bool hybrid);
     QString bakeStatus() const;
     float bakeScale() const;
     // The mirror holds one lightmap set, so the panes share a source; `density` swaps in the luxel checker.

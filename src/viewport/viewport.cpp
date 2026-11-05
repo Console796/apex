@@ -55,7 +55,8 @@ Result<bool> readBool(const json::Value::Object& o, std::string_view key, bool f
 constexpr struct { DisplayMode mode; const char* name; } kModes[] = {
     {DisplayMode::Wireframe, "wireframe"}, {DisplayMode::Flat, "flat"},
     {DisplayMode::Textured, "textured"},   {DisplayMode::Lit, "lit"},
-    {DisplayMode::Baked, "baked"},         {DisplayMode::Vrad, "vrad"}};
+    {DisplayMode::Baked, "baked"},         {DisplayMode::Vrad, "vrad"},
+    {DisplayMode::Hybrid, "hybrid"}};
 
 } // namespace
 

@@ -11,6 +11,7 @@
 #include <QSettings>
 
 #include <algorithm>
+#include <utility>
 
 namespace apex::ui {
 
@@ -74,7 +75,12 @@ void VradController::finish() {
     auto loaded = loader_(trip_.bsp(), *trip_.exported(), trip_.origins());
     if (loaded) {
         stats_ = loaded->stats;
+        // Set before publishing so the publish callback can read it; a failed publish keeps the old one.
+        const auto earlier = std::exchange(baseline_, std::make_shared<const Baseline>(Baseline{
+            std::shared_ptr<const document::Document>(trip_.exported()->snapshot()),
+            trip_.origins(), trip_.revision(), std::chrono::steady_clock::now()}));
         if (auto published = publish_(std::move(*loaded)); !published) {
+            baseline_ = earlier;
             phase_ = Phase::Failed;
             detail_ = QString::fromStdString(published.error().what());
             return;

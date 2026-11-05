@@ -1,4 +1,5 @@
 #include "render/lightmap_atlas.hpp"
+#include "render/vrad_lightmaps.hpp"
 #include "render/solid_mesh.hpp"
 #include "render/bake_setup.hpp"
 #include "lighting/baker.hpp"
@@ -234,10 +235,19 @@ TEST_CASE("lightmap atlas: restart retains same-side radiance with resized chart
     auto current = LightmapAtlas::pack(std::array{face, added});
     REQUIRE(current);
     const std::vector<std::vector<Vec3>> radiance{{Vec3{1}, Vec3{2}}};
-    const auto retained = current->retainRadiance(&*previous, radiance);
+    std::vector<char> covered;
+    const auto retained = current->retainRadiance(&*previous, radiance, &covered);
+    CHECK(covered == std::vector<char>{1, 0});
     CHECK(retained[0] == std::vector<Vec3>{Vec3{1}, Vec3{2}, Vec3{2}});
     CHECK(retained[1] == std::vector<Vec3>(3, Vec3{0}));
-    CHECK(current->retainRadiance(nullptr, {}) == std::vector<std::vector<Vec3>>(2, std::vector<Vec3>(3, Vec3{0})));
+    CHECK(current->retainRadiance(nullptr, {}, &covered) == std::vector<std::vector<Vec3>>(2, std::vector<Vec3>(3, Vec3{0})));
+    CHECK(covered == std::vector<char>{0, 0});
+    VradLightmaps vrad{*previous, radiance, {}};
+    lighting::BakeScene scene;
+    scene.faces = current->faces;
+    const auto state = hybridSeed(*current, scene, vrad, {});
+    CHECK(state.passes[0] == std::vector<unsigned>{4, 0});
+    CHECK(state.keys == current->faceKeys());
 }
 
 TEST_CASE("lightmap atlas: plain faces' keys equal lighting::faceKeys") {

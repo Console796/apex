@@ -23,4 +23,11 @@ Result<VradLightmaps> loadVradLightmaps(const std::filesystem::path& bsp, const 
     return result;
 }
 
+lighting::BakeState hybridSeed(const LightmapAtlas& bakerAtlas, const lighting::BakeScene& scene,
+                               const VradLightmaps& vrad, const lighting::BakeSessionOptions& options) {
+    std::vector<char> covered;
+    const auto radiance = bakerAtlas.retainRadiance(&vrad.atlas, vrad.radiance, &covered);
+    return lighting::seedState(scene, bakerAtlas.faceKeys(), radiance, covered, options);
+}
+
 } // namespace apex::render

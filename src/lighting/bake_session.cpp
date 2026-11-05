@@ -6,6 +6,44 @@
 #include <stdexcept>
 
 namespace apex::lighting {
+BakeState seedState(const BakeScene& scene, std::vector<FaceKey> keys,
+                    std::span<const std::vector<Vec3>> radiance, std::span<const char> known,
+                    const BakeSessionOptions& options) {
+    const auto count = scene.faces.size();
+    if (!options.maxPasses || !options.initialPasses || radiance.size() != count || known.size() != count)
+        throw std::invalid_argument("seedState: invalid inputs");
+    if (keys.empty()) keys = faceKeys(scene.faces);
+    if (keys.size() != count) throw std::invalid_argument("seedState: key count mismatch");
+    BakeState state;
+    state.faces = scene.faces;
+    state.lights = scene.lights;
+    state.materials = scene.materials;
+    state.keys = std::move(keys);
+    state.baker = options.baker;
+    state.unpublished.assign(count, 1);
+    state.buffers.resize(std::size_t(options.baker.bounces) + 1);
+    state.passes.assign(state.buffers.size(), std::vector<unsigned>(count, 0));
+    const auto samples = std::uint64_t{4} * options.maxPasses;
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto dims = scene.faces[i].chart.dimensions;
+        if (dims[0] < 1 || dims[1] < 1) throw std::invalid_argument("seedState: invalid chart dimensions");
+        const auto size = std::size_t(dims[0]) * std::size_t(dims[1]);
+        if (known[i] && radiance[i].size() != size) throw std::invalid_argument("seedState: luxel count mismatch");
+        for (std::size_t level = 0; level < state.buffers.size(); ++level) {
+            auto& buffer = state.buffers[level].emplace_back();
+            buffer.dimensions = dims;
+            buffer.radiance.assign(size, Vec3{0});
+            buffer.samples.assign(size, known[i] ? samples : 0);
+            if (known[i]) {
+                state.passes[level][i] = options.maxPasses;
+                if (level == 0) for (std::size_t j = 0; j < size; ++j)
+                    buffer.radiance[j] = radiance[i][j] * float(samples);
+            }
+        }
+    }
+    return state;
+}
+
 BakeSession::BakeSession(BakeScene scene, BakeSessionOptions options, std::uint64_t revision,
                          std::vector<FaceKey> keys) {
     reset(std::move(scene), options, revision, std::move(keys));
@@ -82,7 +120,7 @@ BakeDiff BakeSession::restart(BakeState previous, BakeScene scene, BakeSessionOp
         const auto old = diff.oldOfNew[i];
         if (old < 0 || diff.dirty[i]) continue;
         for (unsigned level = 0; level < levels; ++level) {
-            if (level > 0 && diff.bounceDirty[i]) break; // Direct stays, bounce restarts.
+            if (level > 0 && diff.bounceDirty[i] && !options.freezeBounceDirty) break; // Direct stays, bounce restarts.
             auto& buffer = previous.buffers[level][std::size_t(old)];
             try { baker_->adopt(level, i, std::move(buffer)); }
             catch (const std::invalid_argument&) { break; } // Charts disagree: keep this face fresh.

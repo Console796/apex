@@ -29,8 +29,8 @@ bool sameOptions(const lighting::BakeSessionOptions& a, const lighting::BakeSess
            a.baker.skyRays == b.baker.skyRays && a.maxPasses == b.maxPasses;
 }
 QString progressText(const lighting::BakeProgress& p, unsigned maximum) {
-    if (p.idle) return QStringLiteral("Baking (idle)");
-    QString text = QStringLiteral("Baked: direct %1/%2").arg(p.passes[0]).arg(maximum);
+    if (p.idle) return QStringLiteral("idle");
+    QString text = QStringLiteral("direct %1/%2").arg(p.passes[0]).arg(maximum);
     for (std::size_t i = 1; i < p.passes.size(); ++i)
         text += QStringLiteral(", bounce %1 %2/%3").arg(i).arg(p.passes[i]).arg(maximum);
     return text;
@@ -38,6 +38,8 @@ QString progressText(const lighting::BakeProgress& p, unsigned maximum) {
 // Drift guard: bounce reach and light range are cut off at fixed bounds, so after this many incremental
 // restarts in a row the next one bakes everything again.
 constexpr unsigned kMaxIncrementalRestarts = 16;
+// Past this share of dirty faces the hybrid view has drifted far enough that a fresh VRAD run is worth it.
+constexpr double kRecommendRerunShare = 0.25;
 }
 
 void showBakeSettings(QWidget* parent) {
@@ -91,9 +93,55 @@ void BakeController::setDensity(bool density) {
     density_ = density;
     if (maps_) {
         const auto shown = density_ ? render::densityRadiance(maps_->atlas()) : radiance_;
-        if (auto uploaded = maps_->upload(shown); !uploaded) status_ = QStringLiteral("Baked: %1").arg(QString::fromStdString(uploaded.error().what()));
+        if (auto uploaded = maps_->upload(shown); !uploaded) status_ = failure(QString::fromStdString(uploaded.error().what()));
     }
     redraw_ = true;
+}
+
+QString BakeController::failure(const QString& text) const {
+    return QStringLiteral("%1: %2").arg(hybrid_ ? QStringLiteral("Hybrid") : QStringLiteral("Baked"), text);
+}
+
+QString BakeController::status() const {
+    if (!hybrid_) return status_;
+    if (!baseline_) return QStringLiteral("Hybrid: waiting for the first VRAD compile");
+    if (failed_) return status_;
+    if (hybridFull_) return QStringLiteral("Hybrid: this change needs a VRAD rebake (Re-run VRAD)");
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - baseline_->completed).count();
+    const QString age = seconds >= 60 ? QStringLiteral("%1m").arg(seconds / 60) : QStringLiteral("%1s").arg(seconds);
+    QString text = QStringLiteral("Hybrid: VRAD baseline %1 | %2 of %3 faces rebaked | %4")
+                       .arg(age).arg(hybridDirty_.size()).arg(hybridFaces_).arg(progress_.isEmpty() ? QStringLiteral("preparing snapshot") : progress_);
+    if (hybridFaces_ && double(hybridDirty_.size()) > kRecommendRerunShare * double(hybridFaces_))
+        text += QStringLiteral(" | Re-run VRAD recommended");
+    return text;
+}
+
+void BakeController::dropChain() {
+    job_.cancel();
+    session_.reset();
+    previous_.reset();
+    busy_ = false;
+    failed_ = false;
+    hybridFull_ = false;
+    hybridDirty_.clear();
+    hybridFaces_ = 0;
+    incremental_ = 0;
+    ++revision_;
+    changed_ = std::chrono::steady_clock::now();
+    progress_.clear();
+    status_ = hybrid_ ? QStringLiteral("Hybrid: preparing snapshot") : QStringLiteral("Baked: waiting for edits");
+    redraw_ = true;
+}
+
+void BakeController::setHybrid(bool hybrid) {
+    if (hybrid_ == hybrid) return;
+    hybrid_ = hybrid;
+    dropChain();
+}
+
+void BakeController::setBaseline(std::shared_ptr<const HybridBaseline> baseline) {
+    baseline_ = std::move(baseline);
+    if (hybrid_) dropChain();
 }
 
 void BakeController::invalidate() {
@@ -104,6 +152,7 @@ void BakeController::invalidate() {
     failed_ = false;
     ++revision_;
     changed_ = std::chrono::steady_clock::now();
+    progress_ = QStringLiteral("waiting for edits");
     status_ = QStringLiteral("Baked: waiting for edits");
     redraw_ = true;
 }
@@ -119,7 +168,8 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
         if (!active) { job_.cancel(); session_.reset(); previous_.reset(); busy_ = false; }
         else { failed_ = false; status_ = QStringLiteral("Baked: preparing snapshot"); redraw_ = true; }
     }
-    if (!active_ || busy_ || failed_ || std::chrono::steady_clock::now() - changed_ < std::chrono::milliseconds(250))
+    // Hybrid without a VRAD result has nothing to anchor to; status() says so.
+    if (!active_ || (hybrid_ && !baseline_) || busy_ || failed_ || std::chrono::steady_clock::now() - changed_ < std::chrono::milliseconds(250))
         return std::exchange(redraw_, false);
     if (!session_) {
         // Copy arenas and immutable blocks on the owner thread; geometry/material/Embree work is off-thread.
@@ -128,14 +178,23 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
         busy_ = true;
         auto previous = maps_ ? maps_->layout() : nullptr;
         auto earlier = incremental_ < kMaxIncrementalRestarts ? previous_ : nullptr;
+        // Hybrid starts from the VRAD seed; it chains from its own previous session until the drift limit,
+        // then re-seeds from the baseline instead of baking everything.
+        auto baseline = hybrid_ ? baseline_ : nullptr;
+        auto jobOptions = options;
+        jobOptions.freezeBounceDirty = hybrid_;
         job_ = jobs_.submit(Priority::Low,
-            [snapshot = std::move(snapshot), vfs = vfs_, map, extraRoot, options, revision,
-             previous = std::move(previous), radiance = radiance_, earlier = std::move(earlier)](CancelToken cancel) {
+            [snapshot = std::move(snapshot), vfs = vfs_, map, extraRoot, options = jobOptions, revision,
+             previous = std::move(previous), radiance = radiance_, earlier = std::move(earlier),
+             baseline = std::move(baseline)](CancelToken cancel) {
                 struct Prepared {
                     std::shared_ptr<lighting::BakeSession> session;
                     bool incremental = false;
                     std::optional<render::LightmapAtlas> atlas;
                     std::vector<std::vector<Vec3>> radiance;
+                    std::vector<lighting::FaceKey> dirty; // Faces the restart rebakes (all when full).
+                    std::size_t faces = 0;
+                    bool full = false, reseeded = false;
                     QString error;
                 } result;
                 try {
@@ -147,23 +206,44 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                     auto atlas = render::LightmapAtlas::pack(setup.scene.faces);
                     if (!atlas) { result.error = QString::fromStdString(atlas.error().what()); return result; }
                     atlas->bindInstances(origins);
-                    result.radiance = atlas->retainRadiance(previous.get(), radiance);
-                    atlas->retainStale = true;
                     // Last cancellable point: after takeState the old state lives only in the new session.
                     if (cancel.cancelled()) return result;
                     auto state = earlier ? earlier->takeState() : lighting::BakeState{};
+                    // A lost chain re-seeds from the baseline rather than baking everything without VRAD.
+                    const auto seed = state.empty() ? baseline : nullptr;
+                    if (seed) {
+                        // The exported document is already instance-expanded: set it up as is, never expand again.
+                        const auto seedDocument = seed->exported->snapshot();
+                        auto seedSetup = render::setupBake(*seedDocument, vfs.get());
+                        if (cancel.cancelled()) return result;
+                        auto seedAtlas = render::LightmapAtlas::pack(seedSetup.scene.faces);
+                        if (!seedAtlas) { result.error = QString::fromStdString(seedAtlas.error().what()); return result; }
+                        seedAtlas->bindInstances(seed->origins);
+                        result.radiance = atlas->retainRadiance(&seed->lightmaps.atlas, seed->lightmaps.radiance);
+                        if (cancel.cancelled()) return result;
+                        state = render::hybridSeed(*seedAtlas, seedSetup.scene, seed->lightmaps, options);
+                    } else {
+                        result.radiance = atlas->retainRadiance(previous.get(), radiance);
+                    }
+                    atlas->retainStale = true;
                     auto keys = atlas->faceKeys();
+                    const auto allKeys = keys;
+                    result.faces = setup.scene.faces.size();
+                    result.reseeded = bool(seed);
                     result.session = std::make_shared<lighting::BakeSession>(lighting::BakeScene{}, options, revision);
                     result.atlas = std::move(*atlas);
                     const auto diff = result.session->restart(std::move(state), std::move(setup.scene), options, revision,
                                                               std::move(keys));
                     result.incremental = !diff.full;
+                    result.full = diff.full;
+                    for (std::size_t i = 0; i < allKeys.size(); ++i)
+                        if (diff.full || (i < diff.dirty.size() && diff.dirty[i])) result.dirty.push_back(allKeys[i]);
                 } catch (const std::exception& e) { result.error = QString::fromUtf8(e.what()); }
                 return result;
             }, [this](auto prepared) {
                 busy_ = false;
                 if (!prepared.error.isEmpty()) {
-                    status_ = QStringLiteral("Baked: %1").arg(prepared.error);
+                    status_ = failure(prepared.error);
                     // Retain the old atlas; retry only after another edit or mode/settings change.
                     failed_ = true;
                     redraw_ = true;
@@ -172,14 +252,14 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                 if (!prepared.session || !prepared.atlas) return;
                 auto maps = render::BakedLightmaps::create(context_, heap_, std::move(*prepared.atlas));
                 if (!maps) {
-                    status_ = QStringLiteral("Baked: %1").arg(QString::fromStdString(maps.error().what()));
+                    status_ = failure(QString::fromStdString(maps.error().what()));
                     failed_ = true;
                     redraw_ = true;
                     return;
                 }
                 auto retained = std::move(prepared.radiance);
                 if (auto uploaded = (*maps)->upload(density_ ? render::densityRadiance((*maps)->atlas()) : retained); !uploaded) {
-                    status_ = QStringLiteral("Baked: %1").arg(QString::fromStdString(uploaded.error().what()));
+                    status_ = failure(QString::fromStdString(uploaded.error().what()));
                     failed_ = true;
                     redraw_ = true;
                     return;
@@ -188,9 +268,17 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                 radiance_ = std::move(retained);
                 session_ = std::move(prepared.session);
                 previous_.reset();
-                incremental_ = prepared.incremental ? incremental_ + 1 : 0;
+                // A re-seed counts drift from the baseline again.
+                incremental_ = prepared.incremental && !prepared.reseeded ? incremental_ + 1 : 0;
+                if (hybrid_) {
+                    if (prepared.reseeded) hybridDirty_.clear(); // Counted from the baseline again.
+                    hybridDirty_.insert(prepared.dirty.begin(), prepared.dirty.end());
+                    hybridFaces_ = prepared.faces;
+                    hybridFull_ = prepared.full;
+                }
                 if (displayed_) mirror_.setLightmaps(maps_);
-                status_ = progressText(session_->progress(), options_.maxPasses);
+                progress_ = progressText(session_->progress(), options_.maxPasses);
+                status_ = QStringLiteral("Baked: ") + progress_;
                 redraw_ = true;
             });
     } else if (!session_->progress().idle) {
@@ -205,7 +293,7 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
         }, [this](auto result) {
             busy_ = false;
             if (!result.error.isEmpty()) {
-                status_ = QStringLiteral("Baked: %1").arg(result.error);
+                status_ = failure(result.error);
                 failed_ = true;
                 redraw_ = true;
             } else accept(std::move(result.publication));
@@ -216,7 +304,8 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
 
 void BakeController::accept(lighting::BakePublication publication) {
     if (publication.progress.revision != revision_) return;
-    status_ = progressText(publication.progress, options_.maxPasses);
+    progress_ = progressText(publication.progress, options_.maxPasses);
+    status_ = QStringLiteral("Baked: ") + progress_;
     std::vector<std::size_t> changed;
     for (auto& update : publication.faces) {
         for (std::size_t i = 0; i < update.radiance.size(); ++i)
@@ -225,7 +314,7 @@ void BakeController::accept(lighting::BakePublication publication) {
     }
     if (!changed.empty() && !density_) {
         if (auto uploaded = maps_->upload(radiance_, changed); !uploaded)
-            status_ = QStringLiteral("Baked: %1").arg(QString::fromStdString(uploaded.error().what()));
+            status_ = failure(QString::fromStdString(uploaded.error().what()));
     }
     redraw_ = true;
 }

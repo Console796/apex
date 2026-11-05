@@ -14,6 +14,7 @@ struct BakeSessionOptions {
     BakerOptions baker{.bounces = 8};
     unsigned initialPasses = 4;
     unsigned maxPasses = 4;
+    bool freezeBounceDirty = false;
 };
 
 struct BakeProgress {
@@ -48,6 +49,10 @@ struct BakeState {
     bool empty() const { return faces.empty(); }
     BakeSceneView view() const { return {faces, lights, materials, keys}; }
 };
+
+BakeState seedState(const BakeScene& scene, std::vector<FaceKey> keys,
+                    std::span<const std::vector<Vec3>> radiance, std::span<const char> known,
+                    const BakeSessionOptions& options);
 
 // Worker-owned, no Qt/GPU. Methods are serialised by an internal mutex, so a cancelled tick can
 // still be finishing while takeState waits. Restart replaces the entire immutable scene/accel.

@@ -136,6 +136,17 @@ TEST_CASE("viewport JSON round trip and validation") {
     CHECK_FALSE(viewportFromJson(*json::parse(R"([])")));
 }
 
+TEST_CASE("the Hybrid display mode round trips through the viewport JSON") {
+    auto vp = makePreset(Preset::Camera, {1, 2, 3}, 777);
+    vp.mode = DisplayMode::Hybrid;
+    const auto text = json::write(toJson(vp));
+    CHECK(text.find("\"hybrid\"") != std::string::npos);
+    const auto back = viewportFromJson(*json::parse(text));
+    REQUIRE(back);
+    CHECK(back->mode == DisplayMode::Hybrid);
+    CHECK(json::write(toJson(*back)) == text);
+}
+
 TEST_CASE("the realtime indirect option round trips and old files load it off") {
     auto vp = makePreset(Preset::Front, {1, 2, 3}, 777);
     vp.mode = DisplayMode::Lit;

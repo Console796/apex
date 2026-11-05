@@ -928,7 +928,7 @@ void ViewportArea::tick() {
         if (window) if (auto* models = qobject_cast<ModelsPanel*>(window->panel())) models->syncThumbnails(interacting);
     if (modelPicker_) modelPicker_->syncThumbnails(interacting);
     host_->tickModelThumbnails(gameContent_ ? gameContent_->thumbnails() : nullptr, interacting);
-    bool baked = false, vrad = false, density = false;
+    bool baked = false, vrad = false, density = false, hybrid = false;
     DVec3 bakeCamera{0};
     // Prefer the active Baked pane; otherwise the first Baked pane in layout order. The mirror holds one
     // lightmap set, so the active pane's source (Apex bake or VRAD) is the one drawn; other panes say so.
@@ -936,18 +936,22 @@ void ViewportArea::tick() {
     for (const auto id : layout_.viewportIds()) {
         const auto* view = layout_.viewport(id);
         if (!view) continue;
-        const bool lightmapped = view->mode == viewport::DisplayMode::Baked || view->mode == viewport::DisplayMode::Vrad;
-        if (view->mode == viewport::DisplayMode::Baked && (!baked || id == layout_.active())) {
+        const bool hybridPane = view->mode == viewport::DisplayMode::Hybrid;
+        const bool lightmapped = view->mode == viewport::DisplayMode::Baked || view->mode == viewport::DisplayMode::Vrad || hybridPane;
+        if ((view->mode == viewport::DisplayMode::Baked || hybridPane) && (!baked || id == layout_.active())) {
             baked = true;
+            hybrid = hybridPane;
             bakeCamera = view->camera.position;
         }
-        vrad |= view->mode == viewport::DisplayMode::Vrad;
+        // The VRAD controller also serves Hybrid panes: it supplies the baseline, and only runs on request after that.
+        vrad |= view->mode == viewport::DisplayMode::Vrad || hybridPane;
         if (lightmapped && (!activeSource || id == layout_.active())) {
             activeSource = view->mode;
             density = view->overlays.luxelDensity;
         }
     }
     const auto source = activeSource.value_or(viewport::DisplayMode::Baked);
+    host_->setBakeHybrid(hybrid);
     host_->selectLightmaps(source == viewport::DisplayMode::Vrad ? ui::LightmapSource::Vrad : ui::LightmapSource::Apex, density);
     if (session_ && host_->updateBake(baked, bakeCamera, session_->connectionMapPath(),
                                      session_->connectionExtraRoot(), session_->instances().contents())) forceDraw_ = true;
@@ -955,13 +959,17 @@ void ViewportArea::tick() {
     for (auto& [id, frame] : frames_) if (frame) {
         const auto* view = layout_.viewport(id);
         QString text, detail;
-        if (view && view->mode == viewport::DisplayMode::Baked) text = host_->bakeStatus();
+        if (view && view->mode == viewport::DisplayMode::Hybrid) {
+            text = host_->bakeStatus();
+            if (host_->vradFailed()) { text += QStringLiteral(" | ") + host_->vradStatus(); detail = host_->vradDetail(); }
+        } else if (view && view->mode == viewport::DisplayMode::Baked) text = host_->bakeStatus();
         else if (view && view->mode == viewport::DisplayMode::Vrad) {
             text = host_->vradStatus();
             if (host_->vradFailed()) detail = host_->vradDetail();
         }
         if (view && !text.isEmpty() && view->mode != source && activeSource)
-            text += tr(" | showing the %1 lightmaps (active pane)").arg(source == viewport::DisplayMode::Vrad ? tr("VRAD") : tr("Apex bake"));
+            text += tr(" | showing the %1 lightmaps (active pane)").arg(source == viewport::DisplayMode::Vrad ? tr("VRAD")
+                                                                                                    : source == viewport::DisplayMode::Hybrid ? tr("Hybrid") : tr("Apex bake"));
         if (view && !text.isEmpty() && view->overlays.luxelDensity)
             text += QStringLiteral(" | ") + QString::fromStdString(render::densityLegend());
         frame->setBakeStatus(text, detail);

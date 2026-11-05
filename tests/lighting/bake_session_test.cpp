@@ -436,3 +436,91 @@ TEST_CASE("incremental bake: dirty faces finish their bounce levels before other
     CHECK(next.progress().idle);
     CHECK(next.facePasses(1) == std::vector<unsigned>{8, 8, 8});
 }
+
+namespace {
+std::vector<std::vector<Vec3>> seedValues(const BakeScene& scene) {
+    std::vector<std::vector<Vec3>> values;
+    for (std::size_t i = 0; i < scene.faces.size(); ++i) {
+        const auto dims = scene.faces[i].chart.dimensions;
+        values.emplace_back(std::size_t(dims[0]) * std::size_t(dims[1]), Vec3(float(i + 1)));
+    }
+    return values;
+}
+}
+
+TEST_CASE("bake seed: unchanged faces retain total light and publish") {
+    auto input = bounceRoom(-32);
+    auto settings = withBounce();
+    settings.freezeBounceDirty = true;
+    const auto values = seedValues(input);
+    const std::vector<char> known(input.faces.size(), 1);
+    auto state = seedState(input, {}, values, known, settings);
+    BakeSession session(input, settings);
+    const auto diff = session.restart(std::move(state), input, settings, 1);
+    CHECK_FALSE(diff.full);
+    CHECK(diff.dirtyCount == 0);
+    CHECK(session.baker().resolve() == values);
+    const auto publication = session.tick();
+    CHECK(publication.progress.idle);
+    CHECK(publication.faces.size() == input.faces.size());
+}
+
+TEST_CASE("bake seed: moved light leaves bounce dirty neighbours frozen") {
+    auto input = bounceRoom(-32);
+    auto settings = withBounce();
+    settings.freezeBounceDirty = true;
+    const auto values = seedValues(input);
+    const std::vector<char> known(input.faces.size(), 1);
+    auto state = seedState(input, {}, values, known, settings);
+    BakeSession session(input, settings);
+    const auto diff = session.restart(std::move(state), bounceRoom(0), settings, 1);
+    REQUIRE_FALSE(diff.full);
+    REQUIRE(diff.dirty == std::vector<char>{1, 0, 0});
+    REQUIRE(diff.bounceDirty == std::vector<char>{1, 1, 0});
+    settle(session);
+    const auto result = session.baker().resolve();
+    CHECK(result[0] != values[0]);
+    CHECK(result[1] == values[1]);
+    CHECK(result[2] == values[2]);
+}
+
+TEST_CASE("bake seed: dirty face gathers frozen total as first bounce") {
+    auto input = bounceRoom(-32);
+    input.lights.clear();
+    auto settings = withBounce();
+    settings.freezeBounceDirty = true;
+    auto values = seedValues(input);
+    for (auto& face : values) std::fill(face.begin(), face.end(), Vec3{10});
+    const std::vector<char> known(input.faces.size(), 1);
+    auto state = seedState(input, {}, values, known, settings);
+    auto edited = input;
+    edited.faces[1].albedo = Vec3{0.6f};
+    BakeSession session(input, settings);
+    const auto diff = session.restart(std::move(state), edited, settings, 1);
+    REQUIRE_FALSE(diff.full);
+    REQUIRE(diff.dirty[1]);
+    REQUIRE_FALSE(diff.dirty[0]);
+    settle(session);
+    const auto direct = session.baker().resolveLevel(0)[1];
+    const auto bounce = session.baker().resolveLevel(1)[1];
+    for (const auto value : direct) CHECK(glm::length(value) == doctest::Approx(0.0));
+    float total = 0;
+    for (const auto value : bounce) total += value.x;
+    CHECK(total > 0);
+}
+
+TEST_CASE("bake seed: uncovered faces reach their pass target") {
+    auto input = bounceRoom(-32);
+    auto settings = withBounce();
+    settings.freezeBounceDirty = true;
+    const auto values = seedValues(input);
+    const std::vector<char> known{1, 0, 1};
+    auto state = seedState(input, {}, values, known, settings);
+    BakeSession session(input, settings);
+    const auto diff = session.restart(std::move(state), input, settings, 1);
+    CHECK_FALSE(diff.full);
+    CHECK(session.facePasses(0)[1] == 0);
+    settle(session);
+    CHECK(session.facePasses(0)[1] == settings.maxPasses);
+    CHECK(session.facePasses(1)[1] == settings.maxPasses);
+}

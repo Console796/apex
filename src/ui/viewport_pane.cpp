@@ -67,6 +67,7 @@ QString modeName(viewport::DisplayMode mode) {
     case viewport::DisplayMode::Lit: return QStringLiteral("Lit");
     case viewport::DisplayMode::Baked: return QStringLiteral("Baked");
     case viewport::DisplayMode::Vrad: return QStringLiteral("VRAD");
+    case viewport::DisplayMode::Hybrid: return QStringLiteral("Hybrid");
     }
     return {};
 }
@@ -77,6 +78,7 @@ render::DisplayMode renderMode(viewport::DisplayMode mode) {
     case viewport::DisplayMode::Flat: return render::DisplayMode::Flat;
     case viewport::DisplayMode::Lit: return render::DisplayMode::Lit;
     case viewport::DisplayMode::Baked:
+    case viewport::DisplayMode::Hybrid:
     case viewport::DisplayMode::Vrad: return render::DisplayMode::Baked;
     default: return render::DisplayMode::Textured;
     }
@@ -926,7 +928,8 @@ void PaneFrame::buildMenu() {
     auto* mode = menu_->addMenu(tr("Display mode"));
     auto* modeGroup = new QActionGroup(mode);
     for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat, viewport::DisplayMode::Textured,
-                         viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad}) {
+                         viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
+                         viewport::DisplayMode::Hybrid}) {
         auto* a = mode->addAction(modeName(m), this, [edit, m] { edit([m](viewport::Viewport& v) { v.mode = m; }); });
         a->setCheckable(true);
         a->setChecked(vp->mode == m);
@@ -948,7 +951,8 @@ void PaneFrame::buildMenu() {
     quickBaked->setEnabled(vp->mode == viewport::DisplayMode::Lit ||
                            vp->mode == viewport::DisplayMode::Baked ||
                            vp->compare == viewport::DisplayMode::Baked);
-    for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad}) {
+    for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
+                         viewport::DisplayMode::Hybrid}) {
         auto* a = compare->addAction(tr("A/B with %1").arg(modeName(m)), this, [edit, m] {
             edit([m](viewport::Viewport& v) { v.compare = m; });
         });

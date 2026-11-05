@@ -143,3 +143,26 @@ TEST_CASE("the flags and vis settings reach the tools") {
     h.update(true);
     CHECK(h.controller.scale() == doctest::Approx(2.5f));
 }
+
+TEST_CASE("a successful run exposes the hybrid baseline and a failed publish keeps the old one") {
+    Harness h;
+    h.queue(6);
+    CHECK_FALSE(h.controller.baseline());
+    h.update(true);
+    REQUIRE(h.controller.phase() == ui::VradController::Phase::Ready);
+    const auto first = h.controller.baseline();
+    REQUIRE(first);
+    REQUIRE(first->exported);
+    CHECK(first->revision == h.document->historyState());
+    CHECK(first->completed != std::chrono::steady_clock::time_point{});
+    editor_test::addBox(*h.document, {128, 0, 0}, {192, 64, 64});
+    h.update(true);
+    CHECK(h.controller.baseline() == first); // Entering/staying never starts a later run on its own.
+    h.controller.rerun();
+    h.update(true);
+    const auto second = h.controller.baseline();
+    REQUIRE(second);
+    CHECK(second != first);
+    CHECK(second->revision == h.document->historyState());
+    CHECK(second->revision != first->revision);
+}

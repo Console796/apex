@@ -91,7 +91,9 @@ std::vector<lighting::FaceKey> LightmapAtlas::faceKeys() const {
 }
 
 std::vector<std::vector<Vec3>> LightmapAtlas::retainRadiance(
-    const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const {
+    const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance,
+    std::vector<char>* covered) const {
+    if (covered) covered->assign(faces.size(), 0);
     std::vector<std::vector<Vec3>> retained(faces.size());
     for (std::size_t i = 0; i < faces.size(); ++i) {
         const auto& face = faces[i];
@@ -107,6 +109,7 @@ std::vector<std::vector<Vec3>> LightmapAtlas::retainRadiance(
         } else if (previous->templateOfSide.contains(key)) continue;
         const auto found = previous->fragments.find(key);
         if (found == previous->fragments.end()) continue;
+        if (covered) (*covered)[i] = 1;
         for (int y = 0; y < dims[1]; ++y) for (int x = 0; x < dims[0]; ++x) {
             const auto world = face.chart.worldAt({x, y});
             double best = std::numeric_limits<double>::max();

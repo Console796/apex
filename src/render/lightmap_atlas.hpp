@@ -51,7 +51,8 @@ struct LightmapAtlas {
     std::vector<lighting::FaceKey> faceKeys() const;
     // CPU-only restart seed: nearest old luxel of the same source side, black for new sides.
     std::vector<std::vector<Vec3>> retainRadiance(
-        const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance) const;
+        const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance,
+        std::vector<char>* covered = nullptr) const;
 };
 
 // A stand-in for baked radiance that shows the lattice (0.7.5 D7): one checker cell per luxel, coloured by

@@ -27,6 +27,7 @@ QString displayModeName(viewport::DisplayMode mode) {
     case viewport::DisplayMode::Lit: return QStringLiteral("Lit");
     case viewport::DisplayMode::Baked: return QStringLiteral("Baked");
     case viewport::DisplayMode::Vrad: return QStringLiteral("VRAD");
+    case viewport::DisplayMode::Hybrid: return QStringLiteral("Hybrid");
     }
     return {};
 }
@@ -59,13 +60,14 @@ void registerViewportCommands(CommandRegistry& registry, ViewportArea& area) {
         if (vp) {
             const auto mode = vp->mode;
             r.add({.id = "view.display_mode", .title = "Display mode", .category = kView,
-                   .description = "Switch the active viewport between Wireframe, Flat, Textured, Lit, Baked and VRAD.",
+                   .description = "Switch the active viewport between Wireframe, Flat, Textured, Lit, Baked, VRAD and Hybrid.",
                    .keywords = {"view", "type", "shading", "render"},
                    .options = [=, &area] {
                        std::vector<PaletteOption> options;
                        for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat,
                                             viewport::DisplayMode::Textured, viewport::DisplayMode::Lit,
-                                            viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad}) {
+                                            viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
+                                            viewport::DisplayMode::Hybrid}) {
                            options.push_back({.label = displayModeName(m), .checked = m == mode,
                                               .run = [&area, m] {
                                                   area.editActiveViewport([m](viewport::Viewport& v) { v.mode = m; });
@@ -160,7 +162,8 @@ void registerViewportCommands(CommandRegistry& registry, ViewportArea& area) {
                    .keywords = {"ab", "a/b", "swap"},
                    .options = [&area, mode, compare = vp->compare] {
                        std::vector<PaletteOption> options;
-                       for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad}) {
+                       for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
+                                            viewport::DisplayMode::Hybrid}) {
                            if (m == mode) continue;
                            options.push_back({.label = QStringLiteral("A/B with %1").arg(displayModeName(m)),
                                               .checked = compare == m,

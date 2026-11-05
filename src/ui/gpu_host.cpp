@@ -223,6 +223,16 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
     bake_ = std::make_unique<BakeController>(*document, vfs_, *context_, *heap_, *mirror_, *jobs_);
     profile_ = effective;
     vrad_ = std::make_unique<VradController>(*document, vradRunner_, [this](render::VradLightmaps loaded) -> Result<void> {
+        // The hybrid view anchors to this run; the copy is taken before the atlas moves into the GPU maps.
+        std::shared_ptr<HybridBaseline> baseline;
+        if (const auto compiled = vrad_ ? vrad_->baseline() : nullptr) {
+            baseline = std::make_shared<HybridBaseline>();
+            baseline->exported = compiled->exported;
+            baseline->origins = compiled->origins;
+            baseline->revision = compiled->revision;
+            baseline->completed = compiled->completed;
+            baseline->lightmaps = loaded;
+        }
         auto maps = render::BakedLightmaps::create(*context_, *heap_, std::move(loaded.atlas));
         if (!maps) return std::unexpected(maps.error());
         if (auto uploaded = (*maps)->upload(density_ ? render::densityRadiance((*maps)->atlas()) : loaded.radiance); !uploaded)
@@ -230,6 +240,7 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
         vradMaps_ = std::move(*maps);
         vradRadiance_ = std::move(loaded.radiance);
         if (mirror_ && source_ == LightmapSource::Vrad) mirror_->setLightmaps(vradMaps_);
+        if (bake_ && baseline) bake_->setBaseline(std::move(baseline));
         return {};
     });
     observerToken_ = document->observe([this](const document::ChangeSet& changes) {
@@ -267,6 +278,7 @@ bool GpuHost::updateBake(bool active, DVec3 camera, const std::filesystem::path&
     }
     return bake_->update(active, camera, map, extraRoot);
 }
+void GpuHost::setBakeHybrid(bool hybrid) { if (bake_) bake_->setHybrid(hybrid); }
 QString GpuHost::bakeStatus() const {
     return bake_ ? bake_->status() + tr(" | Props/displacements: Lit (not baked)")
                  : tr("Baked: no document/GPU");

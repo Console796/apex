@@ -7,6 +7,7 @@
 #include <QString>
 #include <chrono>
 #include <functional>
+#include <memory>
 
 class QWidget;
 
@@ -25,6 +26,14 @@ public:
         const std::filesystem::path&, const document::Document&, std::span<const document::InstanceSolidOrigin>)>;
     using Publish = std::function<Result<void>(render::VradLightmaps)>;
     enum class Phase { Idle, Running, Ready, Failed };
+    // What the last successful run compiled (the hybrid view's anchor, 0.7.7): the exported, instance-expanded
+    // document, its instance origins and the document revision. Replaced by the next success only.
+    struct Baseline {
+        std::shared_ptr<const document::Document> exported;
+        std::vector<document::InstanceSolidOrigin> origins;
+        std::uint64_t revision = 0;
+        std::chrono::steady_clock::time_point completed{};
+    };
 
     VradController(document::Document& document, compile::ProcessRunner& runner, Publish publish,
                    Loader loader = render::loadVradLightmaps);
@@ -33,12 +42,13 @@ public:
     // Asks for a new run at the next update(); a run in flight is cancelled first.
     void rerun() { rerun_ = true; }
     void cancel();
-    // Call each tick. `active`: some pane shows the VRAD view. True when the status or image changed.
+    // Call each tick. `active`: some pane shows the VRAD or Hybrid view. True when the status or image changed.
     bool update(bool active, const std::filesystem::path& map, const editor::CompileGamePaths& game);
 
     Phase phase() const { return phase_; }
     bool stale() const { return phase_ == Phase::Ready && trip_.stale(document_.historyState()); }
     float scale() const { return scale_; }
+    std::shared_ptr<const Baseline> baseline() const { return baseline_; }
     // One line for the pane's HUD, and the full text (the failing tool's log tail) for its tooltip.
     QString status() const;
     const QString& detail() const { return detail_; }
@@ -52,6 +62,7 @@ private:
     editor::VradRoundTrip trip_;
     Publish publish_;
     Loader loader_;
+    std::shared_ptr<const Baseline> baseline_;
     Phase phase_ = Phase::Idle;
     lighting::BspMapStats stats_;
     QString detail_;

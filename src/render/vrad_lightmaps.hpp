@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lighting/bsp_lightmaps.hpp"
+#include "lighting/bake_session.hpp"
 #include "render/lightmap_atlas.hpp"
 
 namespace apex::render {
@@ -17,5 +18,8 @@ struct VradLightmaps {
 // hammerfaceids). Worker-thread safe.
 Result<VradLightmaps> loadVradLightmaps(const std::filesystem::path& bsp, const document::Document& exported,
                                         std::span<const document::InstanceSolidOrigin> origins);
+
+lighting::BakeState hybridSeed(const LightmapAtlas& bakerAtlas, const lighting::BakeScene& scene,
+                               const VradLightmaps& vrad, const lighting::BakeSessionOptions& options);
 
 } // namespace apex::render
