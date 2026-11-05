@@ -114,6 +114,8 @@ struct ModelMesh {
     std::shared_ptr<const lighting::TriangleMesh> cpuMesh;
 };
 
+constexpr Vec4 kBoundsColour{0.35f, 0.8f, 1.0f, 0.7f}; // The Bounds overlay's boxes.
+constexpr double kNormalLength = 16.0;                   // World units; the Normals overlay's segments.
 constexpr float kSpriteHalfSize = 8.0f; // World units; Hammer draws icons about 16 across.
 
 std::uint32_t entityUint(const kv1::Node& block, std::string_view key) {
@@ -1903,6 +1905,34 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
         if (replaced.contains(id)) continue;
         if (solid.hidden || !solid.meshed) continue;
         const auto preview = previewIndex(id, solid.origin);
+        if (options.showBounds || options.showNormals) {
+            const auto found = m.effectivePreview.find(id);
+            const auto place = [&](DVec3 p) {
+                return found == m.effectivePreview.end() ? p : DVec3(found->second * DVec4(p, 1.0));
+            };
+            if (options.showBounds && solid.bounded) {
+                const auto corner = [&](int bits) {
+                    return place({bits & 1 ? solid.bounds.max.x : solid.bounds.min.x,
+                                  bits & 2 ? solid.bounds.max.y : solid.bounds.min.y,
+                                  bits & 4 ? solid.bounds.max.z : solid.bounds.min.z});
+                };
+                for (int bits = 0; bits < 8; ++bits)
+                    for (int axis = 0; axis < 3; ++axis)
+                        if (!(bits & (1 << axis)))
+                            list.worldSegments.push_back({corner(bits), corner(bits | (1 << axis)), kBoundsColour, 1.0f});
+            }
+            if (options.showNormals) {
+                for (const GpuBatch& batch : solid.batches) {
+                    for (const FaceRange& face : batch.faces) {
+                        // Coloured by direction, so axis-aligned faces read as red, green or blue.
+                        const auto n = glm::abs(face.normal);
+                        const Vec4 colour(float(n.x), float(n.y), float(n.z), 1.0f);
+                        list.worldSegments.push_back({place(face.centre), place(face.centre + face.normal * kNormalLength),
+                                                      colour, 1.5f});
+                    }
+                }
+            }
+        }
         for (const GpuBatch& batch : solid.batches) {
             MeshDraw draw;
             draw.bakedBrush = true;

@@ -1317,6 +1317,50 @@ TEST_CASE("mirror helpers: entity names are labels only on request") {
     CHECK(named->position == DVec3(1, 2, 3));
 }
 
+TEST_CASE("mirror overlays: bounds outline each solid and normals point out of each face") {
+    REQUIRE_GPU();
+    Scene scene(*g, documentOf("world { id 1 classname worldspawn\n" +
+                               boxSolid(2, {0, 0, 0}, {64, 32, 16}, "test/red") +
+                               boxSolid(3, {100, 0, 0}, {132, 32, 32}, "test/blue") + "}\n"));
+    REQUIRE(scene.mirror.settle());
+    MirrorViewOptions options;
+    CHECK(scene.mirror.buildDrawList(options).worldSegments.empty());
+
+    options.showBounds = true;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 24); // Twelve edges per solid.
+    AABB drawn;
+    for (const auto& segment : list.worldSegments) {
+        CHECK(glm::length(segment.b - segment.a) > 0.0);
+        drawn.expand(segment.a);
+        drawn.expand(segment.b);
+    }
+    CHECK(drawn.min == DVec3(0, 0, 0));
+    CHECK(drawn.max == DVec3(132, 32, 32));
+
+    options.showBounds = false;
+    options.showNormals = true;
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.worldSegments.size() == 12); // One per face.
+    for (const auto& segment : list.worldSegments) {
+        const DVec3 direction = segment.b - segment.a;
+        CHECK(glm::length(direction) == doctest::Approx(16.0));
+        // Outward: the tip is farther from its solid's centre than the face centre is.
+        const DVec3 centre = segment.a.x < 80 ? DVec3(32, 16, 8) : DVec3(116, 16, 16);
+        CHECK(glm::dot(direction, segment.a - centre) > 0.0);
+    }
+
+    // A previewed move carries both overlays with the solid.
+    PreviewTransforms preview;
+    DMat4 raised(1.0);
+    raised[3] = DVec4(0, 0, 100, 1);
+    preview[static_cast<document::NodeId>(2)] = raised;
+    scene.mirror.setPreview(preview);
+    options.showBounds = true;
+    list = scene.mirror.buildDrawList(options);
+    CHECK(std::ranges::any_of(list.worldSegments, [](const auto& s) { return s.a.z >= 100.0 && s.b.z >= 100.0; }));
+}
+
 TEST_CASE("mirror helpers: brush entities centre on their solids and can be line targets") {
     REQUIRE_GPU();
     const auto classes = tableOf({helperClass("helper_brush", {{"sphere", "radius"}}, {{"radius", "float"}}),

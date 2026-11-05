@@ -32,6 +32,7 @@ struct TextureSize {
 // Ranges into the batch's existing buffers; face selection never re-meshes or uploads.
 struct FaceRange {
     DVec3 centre{0.0};
+    DVec3 normal{0.0}; // Unit outward plane normal.
     document::SideId side = 0;
     bool displacement = false; // Baked retains the existing Lit path for unsupported displacement sides.
     std::uint32_t firstIndex = 0, indexCount = 0;

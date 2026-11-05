@@ -179,6 +179,7 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
         FaceRange range;
         for (const auto index : face.vertices) range.centre += polyhedron->vertices[index];
         range.centre /= static_cast<double>(face.vertices.size());
+        range.normal = face.plane.normal;
         range.side = static_cast<document::SideId>(face.sideId);
         range.firstIndex = static_cast<std::uint32_t>(batch.indices.size());
         range.firstEdgeIndex = static_cast<std::uint32_t>(batch.edges.size());

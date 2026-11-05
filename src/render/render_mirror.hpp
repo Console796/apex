@@ -111,6 +111,10 @@ struct MirrorViewOptions {
     bool cullBackFaces = true;
     // Labels each point entity with its targetname (entities without one are skipped).
     bool showEntityNames = false;
+    // Outlines each meshed solid's world bounding box.
+    bool showBounds = false;
+    // Draws a short segment from each brush face's centre along its outward normal.
+    bool showNormals = false;
     // Samples entity icon sprites with nearest filtering instead of linear.
     bool iconNearest = false;
 };
