@@ -99,6 +99,16 @@ CPMAddPackage(
   GITHUB_REPOSITORY RenderKit/embree
   GIT_TAG f590db83ef6559387df7f6d8725c34fb7acf851d
 )
+# Embree's ISA kernels are the build's heaviest compiles: no debug info (halves memory and time), at most two at once.
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS apex_embree=2)
+foreach(target embree embree_sse42 embree_avx embree_avx2 sys tasking simd lexers math)
+  if(TARGET ${target})
+    if(NOT MSVC)
+      target_compile_options(${target} PRIVATE -g0)
+    endif()
+    set_property(TARGET ${target} PROPERTY JOB_POOL_COMPILE apex_embree)
+  endif()
+endforeach()
 
 if(APEX_BUILD_APP)
   # Qt Multimedia (qt6-multimedia-dev) is required by apex_ui (root CMakeLists.txt).

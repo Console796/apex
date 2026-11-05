@@ -20,6 +20,18 @@ cmake --build --preset linux-gcc-debug
 ctest --preset linux-gcc-debug
 ```
 
+On memory-constrained machines (about 15 GiB with 12 cores will OOM an uncapped build), use the capped
+wrappers instead, which size `-j` to available memory and run inside a cgroup limit:
+
+```
+scripts/build.sh [preset] [--target <name>]
+scripts/test.sh [preset]
+scripts/memcheck.sh      # headroom and memory pressure
+```
+
+Linux builds link with `ld.lld` when installed (`-DAPEX_PREFER_LLD=OFF` to disable), and at most
+`APEX_LINK_JOBS` (default 2) links run at once.
+
 Presets: `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan`, `linux-fuzz`,
 `windows-msvc-{debug,release}`.
 

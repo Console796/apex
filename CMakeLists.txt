@@ -32,10 +32,11 @@ option(APEX_BUILD_APP "Build the Qt application (needs Qt 6)" ON)
 set(APEX_SANITIZE "" CACHE STRING "Sanitizers, e.g. address;undefined")
 # BUILD field of the version (plan 0.1, D1): injected by tools/ci.py, 0 for ad-hoc builds.
 set(APEX_BUILD_NUMBER 0 CACHE STRING "CI run counter")
-option(APEX_PREFER_LLD "Link GCC builds with ld.lld when it is installed" OFF)
+option(APEX_PREFER_LLD "Link with ld.lld (GCC and Clang, Linux) when it is installed" ON)
+set(APEX_LINK_JOBS 2 CACHE STRING "Max concurrent link steps (Ninja); links are the memory peaks")
 
-# ld.lld links far faster than GNU ld; fall back silently when it is absent.
-if(APEX_PREFER_LLD AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+# ld.lld links faster than GNU ld and uses much less memory; fall back silently when it is absent.
+if(APEX_PREFER_LLD AND UNIX AND NOT APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang)$")
   find_program(APEX_LD_LLD ld.lld)
   if(APEX_LD_LLD)
     include(CheckLinkerFlag)
@@ -45,6 +46,12 @@ if(APEX_PREFER_LLD AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
       message(STATUS "Linking with ${APEX_LD_LLD}")
     endif()
   endif()
+endif()
+
+# Cap concurrent links so several large links never overlap.
+if(CMAKE_GENERATOR MATCHES "Ninja")
+  set_property(GLOBAL APPEND PROPERTY JOB_POOLS apex_link=${APEX_LINK_JOBS})
+  set(CMAKE_JOB_POOL_LINK apex_link)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)

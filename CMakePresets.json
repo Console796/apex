@@ -30,9 +30,9 @@
       "cacheVariables": { "CMAKE_CXX_COMPILER": "cl" }
     },
     { "name": "linux-gcc-debug", "inherits": "linux-gcc", "displayName": "Linux GCC Debug",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "APEX_PREFER_LLD": "ON" } },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
     { "name": "linux-gcc-release", "inherits": "linux-gcc", "displayName": "Linux GCC Release",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "APEX_PREFER_LLD": "ON" } },
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" } },
     { "name": "linux-clang-debug", "inherits": "linux-clang", "displayName": "Linux Clang Debug",
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } },
     { "name": "linux-clang-release", "inherits": "linux-clang", "displayName": "Linux Clang Release",

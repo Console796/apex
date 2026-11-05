@@ -1,2 +1,2 @@
 #!/usr/bin/env bash
-cmake --build --preset linux-gcc-release $1
+exec "$(dirname "$0")/scripts/build.sh" linux-gcc-release "$@"
