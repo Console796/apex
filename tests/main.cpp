@@ -18,6 +18,7 @@
 
 #ifndef _WIN32
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -191,12 +192,16 @@ bool wantsProgress(int argc, char** argv) {
 // --jobs=N (or -j=N, or $APEX_TEST_JOBS outside ctest) runs the selected test cases in N child processes of this
 // binary. doctest keeps its registry and counters in globals, so cases cannot share a process across threads;
 // each child gets a contiguous --first/--last slice of the filtered case list. 0 means one job per hardware thread.
-// Returns -1 when no parallel run was asked for; `rest` gets argv without the jobs flag.
+// Returns -1 when no parallel run was asked for; `rest` gets argv without the jobs flag. The first failed slice
+// stops the run (running slices are killed, no new ones start) unless --keep-going is given.
+bool g_keepGoing = false;
+
 long parseJobs(int argc, char** argv, std::vector<std::string>& rest) {
     long jobs = -1;
     rest.emplace_back(argv[0]);
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
+        if (a == "--keep-going") { g_keepGoing = true; continue; }
         const char* value = a.rfind("--jobs=", 0) == 0 ? argv[i] + 7 : a.rfind("-j=", 0) == 0 ? argv[i] + 3 : nullptr;
         if (!value) { rest.push_back(a); continue; }
         char* end = nullptr;
@@ -380,7 +385,11 @@ int runParallel(const std::vector<std::string>& args, unsigned jobs, unsigned to
 
     std::atomic<unsigned> next{0};
     std::mutex mutex;
-    unsigned badSlices = 0, failedTotal = 0, finished = 0;
+    unsigned badSlices = 0, failedTotal = 0, finished = 0, stopped = 0, ran = 0; // ran: cases in slices that finished
+    // A failure stops the run: one broken case can leave many slices growing at once (and an ASan run can take the
+    // machine down), so running slices are killed and none start. Guarded by `mutex`.
+    bool stopping = false;
+    std::vector<pid_t> children(jobs, 0);
     const auto begin = Clock::now();
 
     auto worker = [&](unsigned w) {
@@ -388,6 +397,10 @@ int runParallel(const std::vector<std::string>& args, unsigned jobs, unsigned to
         std::error_code wec;
         fs::create_directories(tmp, wec);
         for (unsigned i; (i = next++) < sliceCount;) {
+            {
+                std::lock_guard lock(mutex);
+                if (stopping) break;
+            }
             std::vector<std::string> envStrings = baseEnv;
             envStrings.push_back("TMPDIR=" + tmp.string());
             if (merge) envStrings.push_back("APEX_TEST_PROGRESS_DIR=" + merge->sliceDir(i).string());
@@ -415,7 +428,12 @@ int runParallel(const std::vector<std::string>& args, unsigned jobs, unsigned to
                 posix_spawn_file_actions_adddup2(&actions, fds[1], 1);
                 posix_spawn_file_actions_adddup2(&actions, fds[1], 2);
                 pid_t pid = 0;
-                const int rc = posix_spawn(&pid, exe.c_str(), &actions, nullptr, argvv.data(), envp.data());
+                int rc = 0;
+                {
+                    std::lock_guard lock(mutex);
+                    rc = stopping ? -1 : posix_spawn(&pid, exe.c_str(), &actions, nullptr, argvv.data(), envp.data());
+                    if (rc == 0) children[w] = pid;
+                }
                 posix_spawn_file_actions_destroy(&actions);
                 close(fds[1]);
                 if (rc == 0) {
@@ -424,6 +442,8 @@ int runParallel(const std::vector<std::string>& args, unsigned jobs, unsigned to
                     int st = 0;
                     waitpid(pid, &st, 0);
                     status = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st);
+                    std::lock_guard lock(mutex);
+                    children[w] = 0;
                 }
                 close(fds[0]);
             }
@@ -432,12 +452,26 @@ int runParallel(const std::vector<std::string>& args, unsigned jobs, unsigned to
 
             std::lock_guard lock(mutex);
             ++finished;
-            failedTotal += failedCases(output);
+            if (stopping && status != 0) {
+                // Killed (or never started) because another slice failed first: not a failure of its own.
+                ++stopped;
+                std::printf("[apex_tests] slice %u/%u (cases %u-%u) stopped after %.1fs\n", i + 1, sliceCount, first, last, seconds);
+                std::fflush(stdout);
+                continue;
+            }
+            const unsigned failedHere = failedCases(output);
+            failedTotal += failedHere;
+            ran += last - first + 1;
             if (status != 0) ++badSlices;
             std::printf("[apex_tests] slice %u/%u (cases %u-%u) %s in %.1fs  [%u/%u done]\n", i + 1, sliceCount, first, last,
                         status == 0 ? "ok" : (status < 0 ? "FAILED TO START" : ("FAILED, exit " + std::to_string(status)).c_str()), seconds,
                         finished, sliceCount);
             if (status != 0) std::printf("%s", output.c_str());
+            if ((status != 0 || failedHere) && !g_keepGoing && !stopping) {
+                stopping = true;
+                for (const pid_t child : children) if (child > 0) kill(child, SIGKILL);
+                std::printf("[apex_tests] stopping after the first failure (--keep-going runs every slice)\n");
+            }
             std::fflush(stdout);
         }
     };
@@ -458,8 +492,11 @@ int runParallel(const std::vector<std::string>& args, unsigned jobs, unsigned to
 
     const bool ok = badSlices == 0 && failedTotal == 0;
     if (merge) merge->write(ok ? "passed" : "failed");
+    const unsigned notRun = sliceCount - std::min(sliceCount, finished);
+    if (stopping)
+        std::printf("[apex_tests] stopped: %u slice(s) killed, %u not started, %u case(s) not run\n", stopped, notRun, total - ran);
     std::printf("[apex_tests] %u jobs, %u slices, %.1fs\n[doctest] test cases: %u | %u passed | %u failed\n[doctest] Status: %s\n", jobs, sliceCount,
-                std::chrono::duration<double>(Clock::now() - begin).count(), total, total - std::min(total, failedTotal),
+                std::chrono::duration<double>(Clock::now() - begin).count(), total, ran - std::min(ran, failedTotal),
                 failedTotal, ok ? "SUCCESS!" : "FAILURE!");
     return ok ? 0 : 1;
 }

@@ -507,9 +507,11 @@ def windows_stage(build, report, test_jobs=1):
             f'set "CMAKE_PREFIX_PATH={qt}"', f'set "CPM_SOURCE_CACHE={wwin}\\cpm-cache"',
             # Non-GPU tests only (0.1 D23): a guest's software Vulkan isn't the lavapipe reference.
             f'set "APEX_VK_DEVICE={os.environ.get("APEX_WIN_VK_DEVICE", "apex-ci-no-gpu")}"',
-            f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}",
+            # A real machine is booted only for CI, so it uses every core; the VM shares this host.
+            f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}"
+            + (" -DAPEX_EMBREE_JOBS=%NUMBER_OF_PROCESSORS%" if machine else ""),
             "cmake --build --preset windows-msvc-release",
-            f"ctest --preset windows-msvc-release -j {test_jobs}",
+            f"ctest --preset windows-msvc-release -j {'%NUMBER_OF_PROCESSORS%' if machine else test_jobs}",
         ]
         log = tmp / "windows-msvc.log"
         with open(log, "w", encoding="utf-8") as f:
@@ -664,8 +666,9 @@ def main():
     if budget is not None:
         share = max(2, budget // (slots + 1))
         jobs = min(jobs, share)
-        if not a.test_jobs:
-            test_jobs = min(test_jobs, share)
+        # --test-jobs is an upper bound, never a way past the memory budget (8 ASan workers beside the fuzzers
+        # ran a 15 GiB host out of memory, build 72).
+        test_jobs = min(test_jobs, share)
     print(f"ci: {slots} build slot(s) x -j{jobs}, apex_tests --jobs={test_jobs} / ctest -j{test_jobs}"
           + (f" (memory allows {budget} jobs)" if budget is not None else ""), flush=True)
     g = Graph(rep, {"build": slots, "configure": 1})

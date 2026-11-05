@@ -18,6 +18,11 @@ apex_caps() {
   if [[ -n ${APEX_MEM_MAX_PCT:-} ]]; then APEX_MAX_KB=$((total * APEX_MEM_MAX_PCT / 100))
   else APEX_MAX_KB=$((${APEX_MEM_MAX_MB:-8192} * 1024)); fi
   (( APEX_MAX_KB > total )) && APEX_MAX_KB=$total
+  # A cap above what is free protects nothing: the desktop runs out first. Keep 1 GiB of today's headroom
+  # outside the scope (floor 2 GiB, so a busy machine still gets a cap rather than none).
+  local avail; avail=$(apex_meminfo_kb MemAvailable)
+  local room=$((avail - 1048576)); (( room < 2097152 )) && room=2097152
+  (( APEX_MAX_KB > room )) && APEX_MAX_KB=$room
   APEX_HIGH_KB=$((APEX_MAX_KB * ${APEX_MEM_HIGH_PCT:-85} / 100))
 }
 
