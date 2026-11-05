@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <mutex>
 #include <numbers>
 #include <numeric>
@@ -25,11 +26,42 @@ double unit(std::uint64_t key) {
 
 } // namespace
 
+DVec3 clampToFace(const BakeFace& face, DVec3 point) {
+    constexpr double kInset = 1;
+    const auto& vertices = face.vertices;
+    if (vertices.size() < 3) return point;
+    DVec3 centre{0};
+    for (const auto& vertex : vertices) centre += vertex;
+    centre /= static_cast<double>(vertices.size());
+    bool inside = true;
+    double best = std::numeric_limits<double>::infinity();
+    DVec3 nearest = centre;
+    for (std::size_t k = 0; k < vertices.size(); ++k) {
+        const DVec3 a = vertices[k], edge = vertices[(k + 1) % vertices.size()] - a;
+        const double length2 = glm::dot(edge, edge);
+        if (length2 <= 0) continue;
+        DVec3 inward = glm::cross(face.normal, edge);
+        if (glm::dot(inward, centre - a) < 0) inward = -inward;
+        if (glm::dot(inward, point - a) < kInset * std::sqrt(glm::dot(inward, inward))) inside = false;
+        const DVec3 closest = a + edge * std::clamp(glm::dot(point - a, edge) / length2, 0.0, 1.0);
+        if (const double distance = glm::length(point - closest); distance < best) {
+            best = distance;
+            nearest = closest;
+        }
+    }
+    if (inside) return point;
+    const DVec3 toCentre = centre - nearest;
+    const double distance = glm::length(toCentre);
+    return distance > 0 ? nearest + toCentre * std::min(1.0, kInset / distance) : centre;
+}
+
 Baker::Baker(BakeScene scene, BakerOptions options) : scene_(std::move(scene)), options_(options) {
     if (options.threads == 0 || options.skyRays == 0)
         throw std::invalid_argument("Baker: threads and skyRays must be positive");
     if (options.bounces > 0 && options.bounceRays == 0)
         throw std::invalid_argument("Baker: bounceRays must be positive");
+    if (!(options.bounceReflectivity >= 0 && options.bounceReflectivity <= 1))
+        throw std::invalid_argument("Baker: bounceReflectivity must be in [0,1]");
     for (const auto& face : scene_.faces) {
         const auto dims = face.chart.dimensions;
         if (dims[0] <= 0 || dims[1] <= 0 || !std::isfinite(glm::length(face.normal)) ||
@@ -70,7 +102,7 @@ DVec3 Baker::sample(std::size_t faceIndex, std::size_t luxel) const {
                                          DVec2{-0.5, 0.5}, DVec2{0.5, 0.5}};
     DVec3 sum{0};
     for (std::size_t i = 0; i < offsets.size(); ++i) {
-        const DVec3 point = face.chart.worldAt(coordinate + offsets[i]) + face.normal;
+        const DVec3 point = clampToFace(face, face.chart.worldAt(coordinate + offsets[i])) + face.normal;
         double sky = -1; // One visibility estimate shared by every ambient light at this point.
         for (const auto& light : scene_.lights) {
             if (!hasDirect(light)) continue;
@@ -106,7 +138,7 @@ DVec3 Baker::sampleBounce(unsigned level, std::size_t faceIndex, std::size_t lux
     DVec3 sum{0};
     for (std::size_t i = 0; i < offsets.size(); ++i) {
         // Use the same float ray origin/direction to reconstruct the actual acceleration hit.
-        const Vec3 point(face.chart.worldAt(coordinate + offsets[i]) + face.normal);
+        const Vec3 point(clampToFace(face, face.chart.worldAt(coordinate + offsets[i])) + face.normal);
         const auto key = mix(mix(mix(mix(options_.seed) ^ faceIndex) ^ luxel) ^ level) ^ mix(count + i + 1);
         const double rotation = unit(key);
         for (unsigned ray = 0; ray < options_.bounceRays; ++ray) {
@@ -135,8 +167,8 @@ DVec3 Baker::sampleBounce(unsigned level, std::size_t faceIndex, std::size_t lux
                                 static_cast<std::size_t>(st[0]);
             // Lambertian albedo/pi and cosine/pi sampling cancel: a normalized mean of E * albedo.
             // Unlike the calibrated direct/sky surfaceResponse, this transport conserves energy.
-            sum += DVec3(source[*index][sample]) * DVec3(hitFace.albedo) /
-                   static_cast<double>(options_.bounceRays);
+            sum += DVec3(source[*index][sample]) * DVec3(hitFace.albedo) *
+                   (options_.bounceReflectivity / static_cast<double>(options_.bounceRays));
         }
     }
     return sum;

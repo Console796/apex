@@ -96,7 +96,8 @@ DVec3 fourPoint(const BakeFace& face, std::size_t index, std::span<const Light> 
     for (const double t : {-0.5, 0.5})
         for (const double s : {-0.5, 0.5})
             for (const auto& light : lights)
-                sum += irradiance(light, face.chart.worldAt(sample + DVec2{s, t}) + face.normal, face.normal);
+                sum += irradiance(light, clampToFace(face, face.chart.worldAt(sample + DVec2{s, t})) + face.normal,
+                                  face.normal);
     return sum / 4.0;
 }
 
@@ -159,6 +160,36 @@ DVec3 mean(const std::vector<std::vector<Vec3>>& level) {
             ++count;
         }
     return sum / static_cast<double>(count);
+}
+
+// Mean weighted by each luxel's footprint on its face (axis-aligned quads only), so partial edge
+// luxels count for the area they light: the form in which bounce energy must not exceed albedo.
+DVec3 coveredMean(const BakeScene& scene, const std::vector<std::vector<Vec3>>& level) {
+    constexpr int kSub = 8;
+    DVec3 sum{0};
+    double weight = 0;
+    for (std::size_t f = 0; f < level.size(); ++f) {
+        const auto& face = scene.faces[f];
+        DVec3 lo{std::numeric_limits<double>::infinity()}, hi{-std::numeric_limits<double>::infinity()};
+        for (const auto& v : face.vertices) {
+            lo = glm::min(lo, v - 1e-6);
+            hi = glm::max(hi, v + 1e-6);
+        }
+        const auto width = static_cast<std::size_t>(face.chart.dimensions[0]);
+        for (std::size_t i = 0; i < level[f].size(); ++i) {
+            int inside = 0;
+            for (int a = 0; a < kSub; ++a)
+                for (int b = 0; b < kSub; ++b) {
+                    const DVec3 p = face.chart.worldAt(DVec2(double(i % width) + (a + 0.5) / kSub - 0.5,
+                                                             double(i / width) + (b + 0.5) / kSub - 0.5));
+                    inside += glm::all(glm::greaterThanEqual(p, lo)) && glm::all(glm::lessThanEqual(p, hi));
+                }
+            const double covered = double(inside) / (kSub * kSub);
+            sum += DVec3(level[f][i]) * covered;
+            weight += covered;
+        }
+    }
+    return sum / weight;
 }
 
 } // namespace
@@ -418,6 +449,40 @@ TEST_CASE("baker: bounce snapshots and seeds agree across threads and budgets") 
     CHECK(mean(updated.resolveLevel(1)).x > mean(frozen.resolveLevel(1)).x);
 }
 
+TEST_CASE("baker: sample points outside the face move just inside it") {
+    const auto face = quadFace({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
+    const DVec3 interior{40, 50, 0};
+    CHECK(clampToFace(face, interior) == interior);
+    const auto past = clampToFace(face, {-8, 64, 0}); // Beyond the x = 0 edge, as a crease's edge luxel corner.
+    CHECK(past.x == doctest::Approx(1));
+    CHECK(past.y == doctest::Approx(64).epsilon(0.01));
+    CHECK(past.z == doctest::Approx(0));
+    const auto corner = clampToFace(face, {-8, -8, 0}); // Outside a vertex: towards the centre.
+    CHECK(corner.x > 0);
+    CHECK(corner.y > 0);
+    CHECK(glm::length(corner) == doctest::Approx(1));
+}
+
+TEST_CASE("baker: bounce reflectivity scales bounce transport only") {
+    BakeScene scene;
+    scene.faces = {
+        quadFace({-64, -64, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}),
+        quadFace({-64, -64, 128}, {1, 0, 0}, {0, 1, 0}, {0, 0, -1})};
+    auto light = pointLight();
+    light.origin = {0, 0, 64};
+    scene.lights = {light};
+    scene.occlusion = faceCasters(scene).build();
+    const auto level = [&](double reflectivity, unsigned index) {
+        Baker baker(scene, {.seed = 5, .bounces = 1, .bounceRays = 64, .bounceReflectivity = reflectivity});
+        baker.step();
+        baker.bounce(1);
+        return mean(baker.resolveLevel(index));
+    };
+    near(level(0.5, 0), level(1, 0));
+    near(level(0.5, 1), level(1, 1) * 0.5);
+    CHECK_THROWS_AS(Baker(scene, {.bounceReflectivity = 1.5}), std::invalid_argument);
+}
+
 TEST_CASE("baker: sealed-room successive bounce energy decreases with reflectivity") {
     BakeScene scene;
     scene.faces = {
@@ -440,7 +505,7 @@ TEST_CASE("baker: sealed-room successive bounce energy decreases with reflectivi
     auto previous = baker.resolveLevel(0);
     for (unsigned level = 1; level <= 2; ++level) {
         const auto current = baker.resolveLevel(level);
-        const auto before = mean(previous), after = mean(current);
+        const auto before = coveredMean(scene, previous), after = coveredMean(scene, current);
         CHECK(after.x > 0);
         for (int c = 0; c < 3; ++c) {
             CHECK(after[c] <= before[c] * albedo * 1.1); // Finite chart/sample boundary noise.

@@ -37,7 +37,8 @@ void main() {
     }
     // Offline validity pass: keep depth occlusion, but mark only opaque mapped
     // brush pixels with nonzero VRAD radiance and no unlit material component.
-    if ((floatBitsToUint(push.p1.w) & 8u) != 0u && (frameBlock().flags & 8u) != 0u) {
+    // The matte pass instead shows the lightmap value itself (a difference colour), unlit pixels near black.
+    if ((floatBitsToUint(push.p1.w) & 8u) != 0u && (frameBlock().flags & 24u) != 0u) {
         FrameBlock frame = frameBlock();
         Material material = materialRecord(frame, slot);
         uint atlas = floatBitsToUint(frame.fill.z);
@@ -45,7 +46,8 @@ void main() {
                       all(greaterThanEqual(vLightmapUv, vec2(0.0)));
         bool eligible = mapped && (material.flags & (MATERIAL_SELFILLUM | MATERIAL_LOCAL_REFRACT)) == 0u;
         vec3 lightmap = eligible ? textureLod(sampler2D(textures[nonuniformEXT(atlas)], samplers[3]), vLightmapUv, 0.0).rgb : vec3(0.0);
-        outColor = vec4(vec3(any(greaterThan(lightmap, vec3(0.0))) ? 1.0 : 0.0), 1.0);
+        if ((frame.flags & 16u) != 0u) outColor = vec4(eligible ? lightmap : vec3(0.004), 1.0);
+        else outColor = vec4(vec3(any(greaterThan(lightmap, vec3(0.0))) ? 1.0 : 0.0), 1.0);
         return;
     }
     outColor = vec4(texel.rgb * push.colour.rgb * shade, alpha);

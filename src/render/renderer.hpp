@@ -246,6 +246,7 @@ struct DrawList {
     bool buildingCubemap = false; // D16: all envmaps sample neutral black.
     bool fullbright = false; // Lit: unit irradiance, useful for inspecting albedo.
     bool lightmapValidityMask = false; // Offline analysis only: conservative VRAD brush-pixel mask.
+    bool lightmapMatte = false; // Offline analysis only: mapped brush pixels show the lightmap value itself.
     std::uint32_t shadowTileCap = kMaxShadowTile; // Optional offline tradeoff: fit more shadowed lights.
     // Lit stand-in for bounce light until the 0.7 probes (plans/0.7-realtime-gi.md, option A): a constant
     // fill irradiance, and a depth-based AO that darkens the dim, fill-dominated pixels. 0 disables each.

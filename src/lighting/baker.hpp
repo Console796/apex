@@ -12,7 +12,16 @@ struct BakerOptions {
     unsigned skyRays = 64; // Upper-hemisphere strata per lifted sample; at least one.
     unsigned bounces = 0;
     unsigned bounceRays = 32; // Cosine-weighted hemisphere samples per lifted point per bounce.
+    double bounceReflectivity = 1; // Scales every albedo in bounce transport, in [0,1]; direct is unaffected.
 };
+
+// The bounce reflectivity at which Baked's interreflection matches VRAD's patch radiosity (P0 of 0.7.7).
+inline constexpr double kVradBounceReflectivity = 0.97;
+
+// Luxel-corner sample points past the face's edge would sample against or behind the neighbouring
+// surface and darken concave creases. Points closer than 1 unit inside the edge (or outside) move to
+// the nearest boundary point, then up to 1 unit towards the face's centre; the rest are unchanged.
+DVec3 clampToFace(const BakeFace& face, DVec3 point);
 
 struct BakeBuffer {
     std::array<int, 2> dimensions{};

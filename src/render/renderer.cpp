@@ -924,7 +924,8 @@ bool Renderer::uploadFrame(VkCommandBuffer commands, const DrawList& list, VkExt
     frame.lights = buffer.deviceAddress() + lightOffset;
     frame.lightCount = static_cast<std::uint32_t>(list.lights.size());
     frame.flags = (list.fullbright ? 1u : 0u) | (list.buildingCubemap ? 2u : 0u) |
-                  (list.mode == DisplayMode::Baked ? 4u : 0u) | (list.lightmapValidityMask ? 8u : 0u);
+                  (list.mode == DisplayMode::Baked ? 4u : 0u) | (list.lightmapValidityMask ? 8u : 0u) |
+                  (list.lightmapMatte ? 16u : 0u);
     frame.fogColour = Vec4(list.fog.colour, 0);
     // Divide out exposure so the overlay's on-screen level stays fixed.
     frame.fill = Vec4(list.ambientFill, list.bakedScale, std::bit_cast<float>(list.lightmap),

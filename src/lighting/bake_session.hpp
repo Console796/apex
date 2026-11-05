@@ -11,7 +11,7 @@
 namespace apex::lighting {
 
 struct BakeSessionOptions {
-    BakerOptions baker{.bounces = 8};
+    BakerOptions baker{.bounces = 8, .bounceReflectivity = kVradBounceReflectivity};
     unsigned initialPasses = 4;
     unsigned maxPasses = 4;
     bool freezeBounceDirty = false;

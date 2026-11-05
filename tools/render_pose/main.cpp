@@ -1,4 +1,5 @@
 #include "../common/bake_setup.hpp"
+#include "lighting/bake_session.hpp"
 #include "lighting/baker.hpp"
 #include "render/lightmap_atlas.hpp"
 #include "assets/game_profile.hpp"
@@ -29,6 +30,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -52,7 +54,7 @@ struct Options {
     bool probeFastStart = true;
     int indirectFrames = 1;
     unsigned bakePasses = 4;
-    lighting::BakerOptions bakeOptions{.bounces = 8};
+    lighting::BakerOptions bakeOptions{.bounces = 8, .bounceReflectivity = lighting::kVradBounceReflectivity};
     float bakeScale = render::kDefaultBakedScale;
     float vradFallbackScale = 0.62f; // Preserve VRAD CLI output when --bake-scale is omitted.
     std::optional<float> vradScale; // --vrad-scale; else --bake-scale.
@@ -66,6 +68,11 @@ struct Options {
     double split = 0.5;               // --compare ...,split: the fraction of the width that shows source A.
     bool density = false;             // --density: the lattice checker in place of baked/VRAD radiance.
     bool expandedInstances = false; // --instances expanded: bake and draw the collapsed document.
+    fs::path baselineVmf, baselineBsp; // The hybrid's VRAD baseline: the map before the edit, and a kept BSP of it.
+    double rebakeReach = 1;            // --rebake-reach: BakeSessionOptions::rebakeReach for the hybrid.
+    bool bounceRing = false;           // --bounce-ring: the hybrid rebakes its bounce ring too.
+    std::vector<std::string> diff;     // --diff A,B: per-luxel comparison of two sources on the --vmf's charts.
+    double diffRange = 1;              // --diff-range: |log2(A/B)| drawn at full colour.
     std::vector<Pose> poses;
 };
 
@@ -75,8 +82,11 @@ void help() {
                  "  [--indirect off|probes] [--indirect-frames N] [--no-probe-fast-start] [--time-reset] [--shadow-tile-cap 256|512|1024]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
                  "  [--bake-passes 4 --bake-bounces 8 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
+                 "  [--bake-reflectivity 0.97]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH] [--vrad-mask]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
+                 "  [--baseline-vmf PATH [--baseline-bsp PATH]] [--rebake-reach 1] [--bounce-ring]\n"
+                 "  [--diff A,B [--diff-range 1]]\n"
                  "  --pose NAME X Y Z PITCH YAW ROLL [--pose ...] --out DIR\n\n"
                  "Game DIR is the P2CE install root (containing p2ce). Mounts the game's addon list.\n"
                  "Poses are Source cl_showpos eye positions and QAngles; negative pitch looks up.\n"
@@ -88,6 +98,7 @@ void help() {
                  "pakfile). Prints one line per probe with the file used, or \"default\" for the default cube.\n"
                  "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
                  "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 1).\n"
+                 "--bake-reflectivity scales every albedo in bounce transport (default: the VRAD-parity fit).\n"
                  "--instances mirror|expanded (Baked only): mirror (default) bakes an expanded copy and draws the\n"
                  "instances through the viewport's own instance path, as the editor does; expanded collapses the\n"
                  "instances into the document first and draws that.\n"
@@ -101,6 +112,15 @@ void help() {
                  "--no-specular disables direct-light highlights for image comparisons in Lit or Baked.\n"
                  "--tool-fixed-brightness [VALUE] shows tools/* faces (normally hidden here) at a fixed linear\n"
                  "brightness in Lit or Baked instead of lighting (default VALUE 1, the Textured view's level).\n"
+                 "Hybrid (--mode hybrid, or a --compare or --diff source) compiles --baseline-vmf, the map before the edit\n"
+                 "(--baseline-bsp reuses a kept BSP of it), with the VRAD round trip, seeds the bake from that result as the\n"
+                 "editor's Hybrid view does, and bakes --vmf until idle (--bake-passes per level).\n"
+                 "--diff A,B (baked, hybrid or vrad) resamples both sources onto the --vmf's baker charts and compares them\n"
+                 "per luxel: it prints a summary, writes luxels-A-B.csv (read by tools/lightmap_diff_report.py) and, per pose,\n"
+                 "NAME-diff-A-B.png: a matte of log2(A/B) in luminance, white where equal, red where A is brighter, blue where\n"
+                 "it is darker, in bands of 1/8 of --diff-range (default 1, so full colour is 2x or 0.5x), grey where B is\n"
+                 "below the floor or VRAD gave no data. With hybrid it also writes NAME-hybrid-class.png: rebaked faces\n"
+                 "orange, the bounce ring yellow, faces frozen at VRAD's values grey.\n"
                  "--time N also renders each pose N more times after 3 warm-up frames and prints the mean frame\n"
                  "time (submit + wait, no readback) with the cluster and shadow-budget overflow counts.\n";
 }
@@ -148,6 +168,11 @@ Options parse(int argc, char** argv) {
         else if (flag == "--bake-bounce-rays") o.bakeOptions.bounceRays = count(1, 65536);
         else if (flag == "--bake-threads") o.bakeOptions.threads = count(1, 256);
         else if (flag == "--bake-seed") o.bakeOptions.seed = count(0, 0xFFFFFFFFu);
+        else if (flag == "--bake-reflectivity") {
+            const double value = number(next());
+            if (!(value >= 0 && value <= 1)) throw std::runtime_error("--bake-reflectivity must be in [0,1]");
+            o.bakeOptions.bounceReflectivity = value;
+        }
         else if (flag == "--bake-scale") {
             const double value = number(next());
             if (value < 0 || value > std::numeric_limits<float>::max())
@@ -196,6 +221,25 @@ Options parse(int argc, char** argv) {
                 throw std::runtime_error("--indirect-frames takes a frame count in [1, 10000]");
             o.indirectFrames = static_cast<int>(value);
         }
+        else if (flag == "--baseline-vmf") o.baselineVmf = next();
+        else if (flag == "--baseline-bsp") o.baselineBsp = next();
+        else if (flag == "--rebake-reach") {
+            o.rebakeReach = number(next());
+            if (!(o.rebakeReach > 0 && o.rebakeReach <= 16)) throw std::runtime_error("--rebake-reach must be in (0, 16]");
+        }
+        else if (flag == "--bounce-ring") o.bounceRing = true;
+        else if (flag == "--diff") {
+            std::stringstream list(next());
+            for (std::string item; std::getline(list, item, ',');) o.diff.push_back(item);
+            if (o.diff.size() != 2 || o.diff[0] == o.diff[1]) throw std::runtime_error("--diff takes two different sources A,B");
+            for (const auto& source : o.diff)
+                if (source != "baked" && source != "hybrid" && source != "vrad")
+                    throw std::runtime_error("--diff sources are baked, hybrid or vrad");
+        }
+        else if (flag == "--diff-range") {
+            o.diffRange = number(next());
+            if (!(o.diffRange > 0 && o.diffRange <= 8)) throw std::runtime_error("--diff-range must be in (0, 8]");
+        }
         else if (flag == "--mode") o.mode = next();
         else if (flag == "--density") o.density = true;
         else if (flag == "--compare") {
@@ -208,8 +252,8 @@ Options parse(int argc, char** argv) {
             }
             if (o.sources.size() != 2) throw std::runtime_error("--compare takes A,B[,split]");
             for (const auto& source : o.sources)
-                if (source != "lit" && source != "baked" && source != "vrad")
-                    throw std::runtime_error("--compare sources are lit, baked or vrad");
+                if (source != "lit" && source != "baked" && source != "vrad" && source != "hybrid")
+                    throw std::runtime_error("--compare sources are lit, baked, vrad or hybrid");
             o.mode = "compare";
         }
         else if (flag == "--instances") {
@@ -235,8 +279,13 @@ Options parse(int argc, char** argv) {
         throw std::runtime_error("--cubemaps must name a directory");
     if (!(o.fov > 0 && o.fov < 180)) throw std::runtime_error("FOV must be between 0 and 180 degrees");
     if (o.mode != "lit" && o.mode != "textured" && o.mode != "fullbright" && o.mode != "baked" &&
-        o.mode != "vrad" && o.mode != "compare")
-        throw std::runtime_error("Mode must be lit, textured, fullbright, baked or vrad");
+        o.mode != "vrad" && o.mode != "hybrid" && o.mode != "compare")
+        throw std::runtime_error("Mode must be lit, textured, fullbright, baked, vrad or hybrid");
+    const bool hybrid = o.mode == "hybrid" || std::ranges::find(o.sources, "hybrid") != o.sources.end() ||
+                        std::ranges::find(o.diff, "hybrid") != o.diff.end();
+    if (hybrid == o.baselineVmf.empty()) throw std::runtime_error("--baseline-vmf is required for, and only used by, hybrid");
+    if (!o.baselineBsp.empty() && o.baselineVmf.empty()) throw std::runtime_error("--baseline-bsp requires --baseline-vmf");
+    if (!o.diff.empty() && o.density) throw std::runtime_error("--diff cannot be combined with --density");
     if (o.vradMask && o.mode != "vrad") throw std::runtime_error("--vrad-mask requires --mode vrad");
     if (o.vradMask && o.density) throw std::runtime_error("--vrad-mask cannot be combined with --density");
     return o;
@@ -252,6 +301,52 @@ template <typename T> T take(Result<T> result) {
 }
 void check(Result<void> result) {
     if (!result) throw std::runtime_error(result.error().what());
+}
+
+std::unique_ptr<document::Document> loadDocument(const fs::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("Cannot open VMF: " + path.string());
+    std::stringstream buffer;
+    buffer << input.rdbuf();
+    const auto text = buffer.str();
+    auto parsed = vmf::parse(text);
+    if (!parsed) parsed = vmf::parse(text, {kv1::EscapeMode::Legacy});
+    return std::make_unique<document::Document>(take(std::move(parsed)));
+}
+
+float luminance(Vec3 c) { return 0.2126f * c.x + 0.7152f * c.y + 0.0722f * c.z; }
+
+Vec3 srgbToLinear(Vec3 c) {
+    const auto channel = [](float v) { return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f); };
+    return {channel(c.x), channel(c.y), channel(c.z)};
+}
+
+// The --diff matte colour of log2(A/B) / range, in bands of 1/8 so equal-ratio contours read at a glance.
+Vec3 divergingColour(double t) {
+    t = std::round(std::clamp(t, -1.0, 1.0) * 8) / 8;
+    const Vec3 white(0.95f), brighter(0.80f, 0.10f, 0.10f), darker(0.10f, 0.35f, 0.85f);
+    return srgbToLinear(t >= 0 ? glm::mix(white, brighter, float(t)) : glm::mix(white, darker, float(-t)));
+}
+
+double segmentDistance(DVec3 p, DVec3 a, DVec3 b) {
+    const DVec3 ab = b - a;
+    const double t = std::clamp(glm::dot(p - a, ab) / std::max(glm::dot(ab, ab), 1e-12), 0.0, 1.0);
+    return glm::length(p - (a + t * ab));
+}
+
+// Distance from p to a convex planar polygon (either winding).
+double polygonDistance(DVec3 p, const lighting::BakeFace& face) {
+    const auto& loop = face.vertices;
+    const double height = glm::dot(p - loop[0], face.normal);
+    const DVec3 q = p - height * face.normal;
+    int positive = 0, negative = 0;
+    double edge = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 0; i < loop.size(); ++i) {
+        const DVec3 a = loop[i], b = loop[(i + 1) % loop.size()];
+        (glm::dot(glm::cross(b - a, q - a), face.normal) >= 0 ? positive : negative)++;
+        edge = std::min(edge, segmentDistance(p, a, b));
+    }
+    return positive == 0 || negative == 0 ? std::abs(height) : edge;
 }
 
 bool within(const fs::path& path, const fs::path& root) {
@@ -270,14 +365,20 @@ int run(const Options& o) {
         if (fs::exists(out / (fileName(pose, o))))
             throw std::runtime_error("Output already exists: " + fileName(pose, o));
 
-    std::ifstream input(o.vmf, std::ios::binary);
-    if (!input) throw std::runtime_error("Cannot open VMF: " + o.vmf.string());
-    std::stringstream buffer;
-    buffer << input.rdbuf();
-    const auto text = buffer.str();
-    auto parsed = vmf::parse(text);
-    if (!parsed) parsed = vmf::parse(text, {kv1::EscapeMode::Legacy});
-    document::Document document(take(std::move(parsed)));
+    const auto diffName = [&](const Pose& pose) { return pose.name + "-diff-" + o.diff[0] + "-" + o.diff[1] + ".png"; };
+    const auto className = [](const Pose& pose) { return pose.name + "-hybrid-class.png"; };
+    const bool hybridDiff = std::ranges::find(o.diff, "hybrid") != o.diff.end();
+    const std::string luxelsName = o.diff.empty() ? "" : "luxels-" + o.diff[0] + "-" + o.diff[1] + ".csv";
+    if (!o.diff.empty()) {
+        if (fs::exists(out / luxelsName)) throw std::runtime_error("Output already exists: " + luxelsName);
+        for (const auto& pose : o.poses) {
+            if (fs::exists(out / diffName(pose))) throw std::runtime_error("Output already exists: " + diffName(pose));
+            if (hybridDiff && fs::exists(out / className(pose)))
+                throw std::runtime_error("Output already exists: " + className(pose));
+        }
+    }
+    const auto documentOwner = loadDocument(o.vmf);
+    document::Document& document = *documentOwner;
     assets::GameProfile profile;
     profile.gameDirectory = game / "p2ce";
     profile.addons.list = assets::AddonSettings::List::Game;
@@ -288,7 +389,8 @@ int run(const Options& o) {
     editor::InstanceTemplates templates;
     editor::InstanceExpansion instances(templates);
     const auto uses = [&](const char* source) {
-        return o.mode == source || std::ranges::find(o.sources, source) != o.sources.end();
+        return o.mode == source || std::ranges::find(o.sources, source) != o.sources.end() ||
+               std::ranges::find(o.diff, source) != o.diff.end();
     };
     if ((uses("baked") || uses("vrad")) && o.expandedInstances) tools::expandBakeInstances(document, fs::canonical(o.vmf), profile);
     instances.update(document, fs::canonical(o.vmf), profile.instanceSearchRoot());
@@ -333,15 +435,33 @@ int run(const Options& o) {
     }
     // No FGD class table: entity models then come only from explicit model keys, so the
     // editor-only helper models (light_rt_spot cones, player start, etc.) stay out of the capture.
-    std::shared_ptr<render::BakedLightmaps> bakeMaps, vradMaps;
+    std::shared_ptr<render::BakedLightmaps> bakeMaps, vradMaps, hybridMaps;
     std::vector<std::vector<Vec3>> vradRadiance, maskRadiance;
-    if (uses("baked")) {
+    // Radiance per source on the --vmf's baker charts, for --diff; vradCovered marks the faces VRAD gave data.
+    std::map<std::string, std::vector<std::vector<Vec3>>> charted;
+    std::vector<char> vradCovered;
+    std::optional<lighting::BakeDiff> rebaked; // The hybrid's restart diff against its baseline.
+    std::optional<render::LightmapAtlas> editAtlas;
+    lighting::BakeScene editScene;
+    if (uses("baked") || uses("hybrid") || !o.diff.empty()) {
         // The bake sees the expansion; the mirror keeps the original and draws the instances itself.
         auto bakeDocument = document.snapshot();
         const auto origins = o.expandedInstances ? std::vector<document::InstanceSolidOrigin>{} :
             tools::expandBakeInstances(*bakeDocument, fs::canonical(o.vmf), profile);
-        auto setup = tools::setupBake(*bakeDocument, &vfs);
-        lighting::Baker baker(std::move(setup.scene), o.bakeOptions);
+        editScene = tools::setupBake(*bakeDocument, &vfs).scene;
+        editAtlas = take(render::LightmapAtlas::pack(editScene.faces));
+        editAtlas->bindInstances(origins);
+        std::size_t placedSolids = 0;
+        for (const auto& [placement, solids] : editAtlas->instances) placedSolids += solids.size();
+        std::cout << "bake instances placements=" << editAtlas->instances.size() << " baked-solids=" << placedSolids << '\n';
+    }
+    const auto chartMaps = [&](const std::vector<std::vector<Vec3>>& radiance) {
+        auto maps = take(render::BakedLightmaps::create(*context, *heap, *editAtlas));
+        check(maps->upload(radiance));
+        return maps;
+    };
+    if (uses("baked")) {
+        lighting::Baker baker(editScene, o.bakeOptions);
         for (unsigned level = 0; level <= o.bakeOptions.bounces; ++level) {
             for (unsigned pass = 0; pass < o.bakePasses; ++pass) {
                 const auto step = level == 0 ? baker.step() : baker.bounce(level);
@@ -349,45 +469,57 @@ int run(const Options& o) {
             }
             std::cout << "bake level=" << level << " passes=" << o.bakePasses << std::endl;
         }
-        auto atlas = take(render::LightmapAtlas::pack(baker.scene().faces));
-        atlas.bindInstances(origins);
-        std::size_t placedSolids = 0;
-        for (const auto& [placement, solids] : atlas.instances) placedSolids += solids.size();
-        std::cout << "bake instances placements=" << atlas.instances.size() << " baked-solids=" << placedSolids << '\n';
-        auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(atlas)));
-        check(maps->upload(baker.resolve()));
-        if (o.density) check(maps->upload(render::densityRadiance(maps->atlas())));
-        bakeMaps = std::move(maps);
+        charted["baked"] = baker.resolve();
+        bakeMaps = chartMaps(o.density ? render::densityRadiance(*editAtlas) : charted["baked"]);
     }
-    if (uses("vrad")) {
-        compile::BlockingProcessRunner runner;
-        compile::FilesystemFileOps files;
-        editor::VradRoundTrip trip(runner, files);
-        if (o.keepVrad) trip.keepFiles();
-        editor::CompileGamePaths paths;
-        paths.gameDirectory = profile.gameDirectory;
-        paths.toolDirectory = profile.toolDirectory();
-        paths.instanceRoot = profile.instanceSearchRoot();
-        paths.contentGameInfo = take(vfs.compileGameInfo());
-        for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"}, {"light_exe", "vrad"}})
-            paths.tools[variable] = profile.toolPath(tool).string();
-        const auto started = std::chrono::steady_clock::now();
+    struct VradRun {
         render::VradLightmaps loaded;
-        std::unique_ptr<document::Document> cachedExported;
-        const document::Document* mappedDocument = nullptr;
-        if (o.vradBsp.empty()) {
-            check(trip.start(document, fs::canonical(o.vmf), paths, o.vrad));
+        std::unique_ptr<document::Document> exported; // The instance-expanded copy that was compiled.
+        std::vector<document::InstanceSolidOrigin> origins;
+    };
+    const auto runVrad = [&](const document::Document& source, const fs::path& vmf, const fs::path& cached,
+                             const char* label) {
+        VradRun run;
+        const auto started = std::chrono::steady_clock::now();
+        if (cached.empty()) {
+            compile::BlockingProcessRunner runner;
+            compile::FilesystemFileOps files;
+            editor::VradRoundTrip trip(runner, files);
+            if (o.keepVrad) trip.keepFiles();
+            editor::CompileGamePaths paths;
+            paths.gameDirectory = profile.gameDirectory;
+            paths.toolDirectory = profile.toolDirectory();
+            paths.instanceRoot = profile.instanceSearchRoot();
+            paths.contentGameInfo = take(vfs.compileGameInfo());
+            for (const auto& [variable, tool] : {std::pair{"bsp_exe", "vbsp"}, {"vis_exe", "vvis"}, {"light_exe", "vrad"}})
+                paths.tools[variable] = profile.toolPath(tool).string();
+            check(trip.start(source, fs::canonical(vmf), paths, o.vrad));
             if (trip.poll() != editor::VradRoundTrip::State::Done)
                 throw std::runtime_error("VRAD round trip failed: " + trip.message());
-            loaded = take(render::loadVradLightmaps(trip.bsp(), *trip.exported(), trip.origins()));
-            mappedDocument = trip.exported();
+            run.loaded = take(render::loadVradLightmaps(trip.bsp(), *trip.exported(), trip.origins()));
+            run.exported = trip.exported()->snapshot();
+            run.origins = trip.origins();
+            std::cout << label << " flags=\"" << o.vrad.flags << "\" vis=" << o.vrad.vis;
+            if (o.keepVrad) std::cout << " directory=" << trip.directory().string();
         } else {
-            cachedExported = document.snapshot();
-            const auto origins = tools::expandBakeInstances(*cachedExported, fs::canonical(o.vmf), profile);
-            loaded = take(render::loadVradLightmaps(o.vradBsp, *cachedExported, origins));
-            mappedDocument = cachedExported.get();
-            std::cout << "vrad cached-bsp=" << o.vradBsp.string() << '\n';
+            run.exported = source.snapshot();
+            run.origins = tools::expandBakeInstances(*run.exported, fs::canonical(vmf), profile);
+            run.loaded = take(render::loadVradLightmaps(cached, *run.exported, run.origins));
+            std::cout << label << " cached-bsp=" << cached.string() << " (flags not verified)";
         }
+        const auto& stats = run.loaded.stats;
+        std::cout << " seconds="
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+                  << " fragments=" << stats.fragments << " mapped=" << stats.mapped << " faces=" << stats.faces
+                  << " displacement=" << stats.displacement << " no-data=" << stats.noData
+                  << " unowned=" << stats.unowned << " shared=" << stats.shared
+                  << " mismatched=" << stats.mismatched << '\n';
+        return run;
+    };
+    if (uses("vrad")) {
+        auto run = runVrad(document, o.vmf, o.vradBsp, "vrad");
+        auto& loaded = run.loaded;
+        const document::Document* mappedDocument = run.exported.get();
         if (o.vradMask) {
             // lights.rad emitters are not necessarily marked $selfillum in their VMT.
             // Remove their atlas rows from the validity pass, not from the reference image.
@@ -436,24 +568,129 @@ int run(const Options& o) {
             std::cout << "vrad mask texlight materials=" << emitters.size() << " sides=" << emissiveSides.size()
                       << " excluded-fragments=" << excluded << '\n';
         }
-        const auto& stats = loaded.stats;
-        if (o.vradBsp.empty()) std::cout << "vrad flags=\"" << o.vrad.flags << "\" vis=" << o.vrad.vis;
-        else std::cout << "vrad cached (flags not verified)";
-        std::cout << " seconds="
-                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
-                  << " fragments=" << stats.fragments << " mapped=" << stats.mapped << " faces=" << stats.faces
-                  << " displacement=" << stats.displacement << " no-data=" << stats.noData
-                  << " unowned=" << stats.unowned << " shared=" << stats.shared
-                  << " mismatched=" << stats.mismatched << '\n';
-        if (o.keepVrad && o.vradBsp.empty()) std::cout << "vrad directory=" << trip.directory().string() << '\n';
+        if (editAtlas) charted["vrad"] = editAtlas->retainRadiance(&loaded.atlas, loaded.radiance, &vradCovered);
         auto maps = take(render::BakedLightmaps::create(*context, *heap, std::move(loaded.atlas)));
         check(maps->upload(o.density ? render::densityRadiance(maps->atlas()) : loaded.radiance));
         vradMaps = std::move(maps);
     }
+    if (uses("hybrid")) {
+        const auto baseline = loadDocument(o.baselineVmf);
+        const auto base = runVrad(*baseline, o.baselineVmf, o.baselineBsp, "baseline vrad");
+        lighting::BakeSessionOptions options{.baker = o.bakeOptions, .initialPasses = std::min(4u, o.bakePasses),
+                                             .maxPasses = o.bakePasses, .freezeBounceDirty = true,
+                                             .rebakeReach = o.rebakeReach, .rebakeBounceRing = o.bounceRing};
+        // As the editor's Hybrid view seeds it: the exported copy is already expanded, so it is set up as is.
+        auto seedSetup = tools::setupBake(*base.exported, &vfs);
+        auto seedAtlas = take(render::LightmapAtlas::pack(seedSetup.scene.faces));
+        seedAtlas.bindInstances(base.origins);
+        auto seed = render::hybridSeed(seedAtlas, seedSetup.scene, base.loaded, options);
+        const auto started = std::chrono::steady_clock::now();
+        lighting::BakeSession session(lighting::BakeScene{}, options);
+        rebaked = session.restart(std::move(seed), editScene, options, 1, editAtlas->faceKeys());
+        while (!session.progress().idle) session.advance(4096);
+        std::size_t ring = 0;
+        for (std::size_t i = 0; i < rebaked->dirty.size(); ++i) ring += rebaked->bounceDirty[i] && !rebaked->dirty[i];
+        std::cout << "hybrid faces=" << editScene.faces.size() << " rebaked=" << rebaked->dirtyCount
+                  << " frozen-ring=" << ring << " full=" << rebaked->full
+                  << (rebaked->full ? " reason=\"" + rebaked->reason + "\"" : std::string())
+                  << " reach=" << o.rebakeReach << " bounce-ring=" << o.bounceRing << " seconds="
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() << '\n';
+        charted["hybrid"] = session.baker().resolve();
+        hybridMaps = chartMaps(o.density ? render::densityRadiance(*editAtlas) : charted["hybrid"]);
+    }
+    // --diff: A against B per luxel on the --vmf's charts. The matte and the CSV share one validity rule.
+    std::vector<std::vector<Vec3>> matte, classes;
+    if (!o.diff.empty()) {
+        // Below this linear luminance in B the ratio is mostly noise; such luxels are grey and marked invalid.
+        constexpr float kDiffFloor = 0.002f;
+        constexpr double kOpen = 256; // Corner distances are capped here: "no facing surface nearby".
+        const auto& faces = editAtlas->faces;
+        const auto& a = charted.at(o.diff[0]);
+        const auto& b = charted.at(o.diff[1]);
+        const bool needsVrad = std::ranges::find(o.diff, "vrad") != o.diff.end();
+        std::vector<DVec3> centres(faces.size());
+        std::vector<double> radii(faces.size());
+        for (std::size_t i = 0; i < faces.size(); ++i) {
+            DVec3 sum{0};
+            for (const auto& v : faces[i].vertices) sum += v;
+            centres[i] = sum / double(std::max<std::size_t>(faces[i].vertices.size(), 1));
+            for (const auto& v : faces[i].vertices) radii[i] = std::max(radii[i], glm::length(v - centres[i]));
+        }
+        std::ofstream csv(out / luxelsName);
+        if (!csv) throw std::runtime_error("Cannot create output: " + (out / luxelsName).string());
+        csv << "face,solid,side,s,t,x,y,z,nx,ny,nz,area,class,edge,corner,dirty_gap,a_r,a_g,a_b,b_r,b_g,b_b,valid\n";
+        struct Sample { double log2Ratio, area; };
+        std::vector<Sample> samples;
+        const Vec3 invalid = srgbToLinear(Vec3(0.45f));
+        const Vec3 rebakedColour = srgbToLinear({1.0f, 0.55f, 0.1f}), ringColour = srgbToLinear({0.95f, 0.85f, 0.2f}),
+                   frozenColour = srgbToLinear(Vec3(0.35f));
+        for (std::size_t i = 0; i < faces.size(); ++i) {
+            const auto& face = faces[i];
+            const auto& chart = face.chart;
+            const double area = glm::length(glm::cross(chart.luxelToWorld[0], chart.luxelToWorld[1]));
+            const int cls = rebaked ? (rebaked->dirty[i] ? 2 : rebaked->bounceDirty[i] ? 1 : 0) : -1;
+            auto& row = matte.emplace_back(a[i].size(), invalid);
+            if (rebaked) classes.emplace_back(a[i].size(), cls == 2 ? rebakedColour : cls == 1 ? ringColour : frozenColour);
+            // Faces near enough to matter for the corner and dirty-distance columns.
+            std::vector<std::size_t> facing, dirty;
+            for (std::size_t j = 0; j < faces.size(); ++j) {
+                if (j == i || glm::length(centres[j] - centres[i]) - radii[j] - radii[i] > kOpen) continue;
+                if (glm::dot(face.normal, centres[j] - centres[i]) > 0.5 && glm::dot(faces[j].normal, centres[i] - centres[j]) > -radii[j])
+                    facing.push_back(j);
+            }
+            if (rebaked) for (std::size_t j = 0; j < faces.size(); ++j) if (rebaked->dirty[j]) dirty.push_back(j);
+            const int width = chart.dimensions[0];
+            for (std::size_t luxel = 0; luxel < a[i].size(); ++luxel) {
+                const int st[2] = {int(luxel) % width, int(luxel) / width};
+                const DVec3 p = chart.worldAt(DVec2(st[0], st[1]));
+                double edge = std::numeric_limits<double>::infinity();
+                for (std::size_t k = 0; k < face.vertices.size(); ++k)
+                    edge = std::min(edge, segmentDistance(p, face.vertices[k], face.vertices[(k + 1) % face.vertices.size()]));
+                double corner = kOpen;
+                for (const auto j : facing)
+                    if (glm::dot(faces[j].normal, p - faces[j].vertices[0]) > 0.5)
+                        corner = std::min(corner, polygonDistance(p, faces[j]));
+                double dirtyGap = -1;
+                if (rebaked) {
+                    dirtyGap = cls == 2 ? 0 : std::numeric_limits<double>::infinity();
+                    if (cls != 2) for (const auto j : dirty) dirtyGap = std::min(dirtyGap, polygonDistance(p, faces[j]));
+                }
+                const Vec3 va = a[i][luxel], vb = b[i][luxel];
+                const bool valid = (!needsVrad || vradCovered[i]) && luminance(vb) >= kDiffFloor && luminance(va) > 0;
+                if (valid) {
+                    const double ratio = std::log2(double(luminance(va)) / double(luminance(vb)));
+                    samples.push_back({ratio, area});
+                    row[luxel] = divergingColour(ratio / o.diffRange);
+                }
+                csv << i << ',' << face.solidId << ',' << face.sideId << ',' << st[0] << ',' << st[1] << ','
+                    << p.x << ',' << p.y << ',' << p.z << ',' << face.normal.x << ',' << face.normal.y << ','
+                    << face.normal.z << ',' << area << ',' << cls << ',' << edge << ',' << corner << ',' << dirtyGap << ','
+                    << va.x << ',' << va.y << ',' << va.z << ',' << vb.x << ',' << vb.y << ',' << vb.z << ',' << valid << '\n';
+            }
+        }
+        // Area-weighted quantiles of log2(A/B), printed as ratios.
+        std::ranges::sort(samples, {}, &Sample::log2Ratio);
+        double total = 0, within10 = 0, within25 = 0;
+        for (const auto& sample : samples) {
+            total += sample.area;
+            if (std::abs(sample.log2Ratio) <= std::log2(1.1)) within10 += sample.area;
+            if (std::abs(sample.log2Ratio) <= std::log2(1.25)) within25 += sample.area;
+        }
+        const auto quantile = [&](double q) {
+            double seen = 0;
+            for (const auto& sample : samples) if ((seen += sample.area) >= q * total) return std::exp2(sample.log2Ratio);
+            return std::numeric_limits<double>::quiet_NaN();
+        };
+        std::cout << "diff " << o.diff[0] << '/' << o.diff[1] << " luxels=" << samples.size() << " floor=" << kDiffFloor
+                  << " p5=" << quantile(0.05) << " p25=" << quantile(0.25) << " median=" << quantile(0.5)
+                  << " p75=" << quantile(0.75) << " p95=" << quantile(0.95)
+                  << " within10%=" << (total > 0 ? within10 / total : 0) << " within25%=" << (total > 0 ? within25 / total : 0)
+                  << " csv=" << luxelsName << '\n';
+    }
     // The sources to draw, in order; a comparison draws each and joins the two images.
     const std::vector<std::string> modes = o.sources.empty() ? std::vector<std::string>{o.mode} : o.sources;
     const auto bind = [&](const std::string& mode) {
-        mirror.setLightmaps(mode == "baked" ? bakeMaps : mode == "vrad" ? vradMaps : nullptr);
+        mirror.setLightmaps(mode == "baked" ? bakeMaps : mode == "vrad" ? vradMaps : mode == "hybrid" ? hybridMaps : nullptr);
     };
     bind(modes.front());
     mirror.rebuild(document);
@@ -484,22 +721,14 @@ int run(const Options& o) {
             throw std::runtime_error("Cannot create output: " + path.string());
         if (!png.save(&file, "PNG")) throw std::runtime_error("PNG write failed: " + path.string());
     };
-    std::vector<std::vector<QImage>> drawn(modes.size());
-    for (std::size_t sourceIndex = 0; sourceIndex < modes.size(); ++sourceIndex) {
-    const std::string& mode = modes[sourceIndex];
-    if (sourceIndex) {
-        bind(mode);
-        mirror.buildDrawList(warmup);
-        if (!mirror.settle(std::chrono::minutes(5))) throw std::runtime_error("RenderMirror settle timed out");
-    }
-    for (const auto& pose : o.poses) {
+    const auto viewOptions = [&](const Pose& pose, const std::string& mode) {
         viewport::Camera camera;
         camera.position = pose.position;
         camera.angles = pose.angles;
         camera.fovYDegrees = viewport::sourceFovYDegrees(o.fov);
         render::MirrorViewOptions options;
         options.mode = mode == "textured" ? render::DisplayMode::Textured :
-            (mode == "baked" || mode == "vrad") ? render::DisplayMode::Baked : render::DisplayMode::Lit;
+            (mode == "baked" || mode == "vrad" || mode == "hybrid") ? render::DisplayMode::Baked : render::DisplayMode::Lit;
         options.showEntityHelpers = false;
         options.showNodraw = false;
         options.showToolFaces = o.toolBrightness > 0.0f; // The game draws no trigger, clip or hint faces.
@@ -509,7 +738,34 @@ int run(const Options& o) {
         options.view.viewProjection = camera.projectionMatrix(double(o.width) / o.height) * camera.viewMatrix();
         options.view.cameraRight = Vec3(camera.basis().right);
         options.view.cameraUp = Vec3(camera.basis().up);
-        auto list = mirror.buildDrawList(options);
+        return options;
+    };
+    // The analysis passes (validity mask, difference matte) draw opaque mapped brushes only.
+    const auto analysisOnly = [](render::DrawList& list) {
+        list.sky.enabled = false;
+        list.sky.camera.reset();
+        list.fog.enabled = false;
+        list.boxes.clear();
+        list.sprites.clear();
+        list.ghosts.clear();
+        for (auto& mesh : list.meshes) {
+            if (mesh.alpha != render::AlphaMode::Opaque || mesh.sky || mesh.skySurface || mesh.toolFixed)
+                mesh.bakedBrush = false;
+            // Conservative occlusion for transparent/alpha-tested objects: exclude
+            // their whole footprint instead of letting a hidden surface count.
+            mesh.alpha = render::AlphaMode::Opaque;
+        }
+    };
+    std::vector<std::vector<QImage>> drawn(modes.size());
+    for (std::size_t sourceIndex = 0; sourceIndex < modes.size(); ++sourceIndex) {
+    const std::string& mode = modes[sourceIndex];
+    if (sourceIndex) {
+        bind(mode);
+        mirror.buildDrawList(warmup);
+        if (!mirror.settle(std::chrono::minutes(5))) throw std::runtime_error("RenderMirror settle timed out");
+    }
+    for (const auto& pose : o.poses) {
+        auto list = mirror.buildDrawList(viewOptions(pose, mode));
         list.shadowTileCap = o.shadowTileCap;
         list.bakedScale = o.density ? 1.0f : mode == "vrad" ? o.vradScale.value_or(o.vradFallbackScale) : o.bakeScale;
         if (list.toolBrightness > 0.0f) list.toolBrightness = o.toolBrightness;
@@ -562,19 +818,7 @@ int run(const Options& o) {
         if (o.vradMask) {
             check(vradMaps->upload(maskRadiance));
             list.lightmapValidityMask = true;
-            list.sky.enabled = false;
-            list.sky.camera.reset();
-            list.fog.enabled = false;
-            list.boxes.clear();
-            list.sprites.clear();
-            list.ghosts.clear();
-            for (auto& mesh : list.meshes) {
-                if (mesh.alpha != render::AlphaMode::Opaque || mesh.sky || mesh.skySurface || mesh.toolFixed)
-                    mesh.bakedBrush = false;
-                // Conservative occlusion for transparent/alpha-tested objects: exclude
-                // their whole footprint instead of letting a hidden surface count.
-                mesh.alpha = render::AlphaMode::Opaque;
-            }
+            analysisOnly(list);
             clear[0] = clear[1] = clear[2] = 0.0f;
             render();
             const auto mask = take(target.readback());
@@ -599,6 +843,50 @@ int run(const Options& o) {
             std::cout << fileName(o.poses[i], o) << " compare=" << o.sources[0] << '|' << o.sources[1]
                       << " split=" << edge << '\n';
         }
+    }
+    if (!o.diff.empty()) {
+        // Each matte is uploaded as a lightmap on the --vmf's charts and drawn as is: no albedo, lighting or exposure.
+        const auto drawMatte = [&](const std::vector<std::vector<Vec3>>& colours, const auto& name, bool legend) {
+            mirror.setLightmaps(chartMaps(colours));
+            mirror.buildDrawList(warmup);
+            if (!mirror.settle(std::chrono::minutes(5))) throw std::runtime_error("RenderMirror settle timed out");
+            for (const auto& pose : o.poses) {
+                auto list = mirror.buildDrawList(viewOptions(pose, "baked"));
+                list.lightmapMatte = true;
+                list.exposure = 1.0f;
+                analysisOnly(list);
+                float clear[] = {0.0f, 0.0f, 0.0f, 1.0f};
+                check(context->oneShot([&](VkCommandBuffer commands) {
+                    renderer->prepare(commands, list, scene, clear);
+                    target.begin(commands, clear);
+                    renderer->record(commands, list);
+                    target.end(commands);
+                }));
+                const auto image = take(target.readback());
+                QImage png = QImage(image.pixels.data(), o.width, o.height, o.width * 4, QImage::Format_RGBA8888).copy();
+                if (legend) {
+                    // The scale along the bottom edge: -range on the left, +range on the right, a tick at equal.
+                    const int barWidth = std::min(o.width - 16, 512), barHeight = std::min(o.height / 8, 16);
+                    const int left = (o.width - barWidth) / 2, top = o.height - barHeight - 8;
+                    for (int x = 0; x < barWidth; ++x) {
+                        const Vec3 linear = divergingColour(2.0 * (x + 0.5) / barWidth - 1.0);
+                        const auto encode = [](float v) {
+                            v = v <= 0.0031308f ? v * 12.92f : 1.055f * std::pow(v, 1.0f / 2.4f) - 0.055f;
+                            return int(std::lround(std::clamp(v, 0.0f, 1.0f) * 255));
+                        };
+                        const bool tick = std::abs(x - barWidth / 2) < 1;
+                        const QColor colour = tick ? QColor(0, 0, 0) : QColor(encode(linear.x), encode(linear.y), encode(linear.z));
+                        for (int y = 0; y < barHeight; ++y) png.setPixelColor(left + x, top + y, colour);
+                    }
+                }
+                write(png, name(pose));
+                std::cout << name(pose) << '\n';
+            }
+        };
+        drawMatte(matte, diffName, true);
+        std::cout << "diff matte legend: white A=B; full red A=" << std::exp2(o.diffRange) << "xB, full blue A="
+                  << std::exp2(-o.diffRange) << "xB; bands of " << o.diffRange / 8 << " in log2; grey invalid\n";
+        if (!classes.empty()) drawMatte(classes, className, false);
     }
     context->waitIdle();
     if (context->validation().errorCount()) throw std::runtime_error("Vulkan validation errors");
