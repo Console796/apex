@@ -499,7 +499,11 @@ def windows_stage(build, report, test_jobs=1):
         stale = [n for n in prev if n and n not in keep]
         subprocess.run(sshc + [ssh, f"if not exist {wwin}\\src mkdir {wwin}\\src"], check=True)
         subprocess.run(scpc + [str(archive), f"{ssh}:{wdir}/"], check=True)
-        steps = [
+        # A dropped SSH session leaves its build running on a real machine (build 72 kept compiling for an hour
+        # after the host went down); clear any such leftover first. The VM is freshly booted each run.
+        stale_kill = ["(taskkill /F /T /IM ninja.exe >nul 2>&1 & taskkill /F /T /IM cmake.exe >nul 2>&1"
+                      " & taskkill /F /T /IM ctest.exe >nul 2>&1 & ver >nul)"] if machine else []
+        steps = stale_kill + [
             f"cd /d {wwin}",
             "tar -xmf src.tar -C src", "cd /d src",
         ] + [f'(if exist "{n.replace("/", chr(92))}" del /q "{n.replace("/", chr(92))}")' for n in stale] + [
@@ -510,7 +514,8 @@ def windows_stage(build, report, test_jobs=1):
             # A real machine is booted only for CI, so it uses every core; the VM shares this host.
             f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}"
             + (" -DAPEX_EMBREE_JOBS=%NUMBER_OF_PROCESSORS%" if machine else ""),
-            "cmake --build --preset windows-msvc-release",
+            # One compile per core: Ninja's default (cores + 2) pages an 8 GB laptop at about 0.5 GB per cl.exe.
+            "cmake --build --preset windows-msvc-release" + (" -j %NUMBER_OF_PROCESSORS%" if machine else ""),
             f"ctest --preset windows-msvc-release -j {'%NUMBER_OF_PROCESSORS%' if machine else test_jobs}",
         ]
         log = tmp / "windows-msvc.log"
