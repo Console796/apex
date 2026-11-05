@@ -137,6 +137,20 @@ TEST_CASE("bake diff: a moved brush face dirties itself, its neighbourhood and i
     CHECK(flagged(result.bounceDirty) == std::vector<int>{0, 1, 2, 3, 4});
 }
 
+TEST_CASE("bake diff: reach scales the geometry and bounce bounds") {
+    auto a = row(), b = row();
+    b.faces[2].vertices[0].z += 8;
+    std::vector<FaceKey> ka, kb;
+    const auto before = a.view(ka);
+    const auto after = b.view(kb);
+    // Neighbours sit 210 units away: inside the default 362 reach, outside half of it.
+    const auto narrow = diffScenes(before, after, 0.5);
+    CHECK(flagged(narrow.dirty) == std::vector<int>{2});
+    CHECK(flagged(narrow.bounceDirty) == std::vector<int>{1, 2, 3});
+    const auto wide = diffScenes(before, after, 2);
+    CHECK(flagged(wide.dirty) == std::vector<int>{0, 1, 2, 3, 4});
+}
+
 TEST_CASE("bake diff: a changed occluder dirties faces in a light's shadow, not off-axis faces") {
     Scene a;
     a.faces = {quad(1, {0, 0, 0}), quad(2, {500, 0, 50}), quad(3, {1500, 0, 0}), quad(4, {500, 1500, 0})};

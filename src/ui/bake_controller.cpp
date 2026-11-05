@@ -3,6 +3,7 @@
 #include "editor/bake_instances.hpp"
 #include "render/bake_setup.hpp"
 
+#include <QCheckBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -11,6 +12,7 @@
 #include <QSpinBox>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace apex::ui {
@@ -19,9 +21,11 @@ lighting::BakeSessionOptions readOptions() {
     QSettings settings;
     lighting::BakeSessionOptions options;
     options.baker.bounces = unsigned(std::clamp(settings.value("bake/bounces", int(options.baker.bounces)).toInt(), 0, 8));
-    options.baker.bounceRays = unsigned(std::clamp(settings.value("bake/bounceRays", 32).toInt(), 1, 1024));
-    options.baker.skyRays = unsigned(std::clamp(settings.value("bake/skyRays", 64).toInt(), 1, 1024));
+    options.baker.bounceRays = unsigned(std::clamp(settings.value("bake/bounceRays", int(options.baker.bounceRays)).toInt(), 1, 1024));
+    options.baker.skyRays = unsigned(std::clamp(settings.value("bake/skyRays", int(options.baker.skyRays)).toInt(), 1, 1024));
     options.maxPasses = unsigned(std::clamp(settings.value("bake/maxPasses", int(options.maxPasses)).toInt(), 1, 1024));
+    options.rebakeReach = std::clamp(settings.value("bake/rebakeReach", options.rebakeReach).toDouble(), 0.25, 4.0);
+    options.rebakeBounceRing = settings.value("bake/hybridBounceRing", options.rebakeBounceRing).toBool();
     return options;
 }
 bool sameOptions(const lighting::BakeSessionOptions& a, const lighting::BakeSessionOptions& b) {
@@ -64,16 +68,38 @@ void showBakeSettings(QWidget* parent) {
     auto* bounceRays = integer(QObject::tr("Bounce rays"), int(options.baker.bounceRays), 1, 1024);
     auto* skyRays = integer(QObject::tr("Sky rays"), int(options.baker.skyRays), 1, 1024);
     auto* passes = integer(QObject::tr("Max passes per level"), int(options.maxPasses), 1, 1024);
+    auto* reach = new QDoubleSpinBox(&dialog);
+    reach->setRange(0.25, 4);
+    reach->setSingleStep(0.25);
+    reach->setValue(options.rebakeReach);
+    reach->setToolTip(QObject::tr("How far around an edit faces are rebaked. Lower is faster but leaves stale light nearby."));
+    layout->addRow(QObject::tr("Rebake reach"), reach);
+    auto* ring = new QCheckBox(QObject::tr("Rebake the bounce ring"), &dialog);
+    ring->setChecked(options.rebakeBounceRing);
+    ring->setToolTip(QObject::tr("Hybrid: fully rebake the faces near an edit instead of keeping their VRAD light."));
+    layout->addRow(QObject::tr("Hybrid"), ring);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     layout->addRow(buttons);
     QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     if (dialog.exec() != QDialog::Accepted) return;
-    settings.setValue("bake/displayScale", scale->value());
-    settings.setValue("bake/bounces", bounces->value());
-    settings.setValue("bake/bounceRays", bounceRays->value());
-    settings.setValue("bake/skyRays", skyRays->value());
-    settings.setValue("bake/maxPasses", passes->value());
+    // Only values that differ from the defaults are stored, so a later change of default reaches untouched fields.
+    const lighting::BakeSessionOptions defaults;
+    const auto store = [&](const char* key, const QVariant& value, const QVariant& fallback) {
+        if (value == fallback) settings.remove(key);
+        else settings.setValue(key, value);
+    };
+    // The spin boxes round to their displayed decimals; compare at that precision.
+    const auto rounded = [](const QDoubleSpinBox* spin, double value) {
+        return QVariant(std::round(value * std::pow(10.0, spin->decimals())) / std::pow(10.0, spin->decimals()));
+    };
+    store("bake/displayScale", scale->value(), rounded(scale, render::kDefaultBakedScale));
+    store("bake/bounces", bounces->value(), int(defaults.baker.bounces));
+    store("bake/bounceRays", bounceRays->value(), int(defaults.baker.bounceRays));
+    store("bake/skyRays", skyRays->value(), int(defaults.baker.skyRays));
+    store("bake/maxPasses", passes->value(), int(defaults.maxPasses));
+    store("bake/rebakeReach", reach->value(), rounded(reach, defaults.rebakeReach));
+    store("bake/hybridBounceRing", ring->isChecked(), defaults.rebakeBounceRing);
 }
 
 BakeController::BakeController(document::Document& document, std::shared_ptr<const assets::Vfs> vfs,
@@ -160,7 +186,10 @@ void BakeController::invalidate() {
 bool BakeController::update(bool active, DVec3 camera, const std::filesystem::path& map,
                              const std::optional<std::filesystem::path>& extraRoot) {
     const auto options = readOptions();
-    if (!sameOptions(options_, options)) { options_ = options; invalidate(); }
+    // The rebake reach and ring only shape the next edit's diff: they take effect without dropping the bake.
+    const bool same = sameOptions(options_, options);
+    options_ = options;
+    if (!same) invalidate();
     const auto scale = float(std::clamp(QSettings().value("bake/displayScale", render::kDefaultBakedScale).toDouble(), 0.01, 16.0));
     if (scale_ != scale) { scale_ = scale; redraw_ = true; }
     if (active_ != active) {

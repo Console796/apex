@@ -40,6 +40,7 @@ struct BakeDiff {
     std::size_t dirtyCount = 0, bounceDirtyCount = 0;
 };
 
-BakeDiff diffScenes(const BakeSceneView& before, const BakeSceneView& after);
+// `reach` scales the geometry and bounce bounds above: below 1 rebakes less around an edit, above 1 more.
+BakeDiff diffScenes(const BakeSceneView& before, const BakeSceneView& after, double reach = 1);
 
 } // namespace apex::lighting

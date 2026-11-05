@@ -6,7 +6,11 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QKeyEvent>
+#include <QDialog>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QTimer>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
@@ -15,6 +19,7 @@
 #include <QTreeWidget>
 
 #include "editor/preset_io.hpp"
+#include "ui/bake_controller.hpp"
 #include "ui/main_window.hpp"
 #include "ui/settings_dialog.hpp"
 
@@ -229,4 +234,35 @@ TEST_CASE("preferences persist the object-origin pivot and model overlay toggles
     }
     QSettings().remove("editing/pivotAtObjectOrigin");
     QSettings().remove("view/modelEdgeOverlay");
+}
+
+TEST_CASE("bake settings store only values that differ from the defaults") {
+    ui_test::app();
+    QSettings settings;
+    settings.remove("bake");
+    settings.setValue("bake/bounces", 3);
+    settings.setValue("bake/displayScale", 1.0);
+    // Runs inside the modal loop: set bounces, then accept.
+    const auto edit = [](int bounces) {
+        QTimer::singleShot(0, [bounces] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialog);
+            const auto spins = dialog->findChildren<QSpinBox*>();
+            REQUIRE(spins.size() == 4);
+            spins[0]->setValue(bounces); // Bounces, the first integer field.
+            dialog->accept();
+        });
+        ui::showBakeSettings(nullptr);
+    };
+    edit(5);
+    settings.sync();
+    CHECK(settings.value("bake/bounces").toInt() == 5);
+    CHECK_FALSE(settings.contains("bake/displayScale")); // Back at the default: removed.
+    CHECK_FALSE(settings.contains("bake/maxPasses"));
+    CHECK_FALSE(settings.contains("bake/rebakeReach"));
+    CHECK_FALSE(settings.contains("bake/hybridBounceRing"));
+    edit(int(lighting::BakeSessionOptions{}.baker.bounces));
+    settings.sync();
+    CHECK(settings.childGroups().indexOf("bake") < 0);
+    CHECK(settings.allKeys().filter("bake/").isEmpty());
 }

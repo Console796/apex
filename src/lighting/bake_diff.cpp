@@ -127,7 +127,7 @@ std::vector<FaceKey> faceKeys(std::span<const BakeFace> faces) {
     return keys;
 }
 
-BakeDiff diffScenes(const BakeSceneView& before, const BakeSceneView& after) {
+BakeDiff diffScenes(const BakeSceneView& before, const BakeSceneView& after, double reach) {
     BakeDiff diff;
     const auto n = after.faces.size();
     diff.oldOfNew.assign(n, -1);
@@ -200,8 +200,8 @@ BakeDiff diffScenes(const BakeSceneView& before, const BakeSceneView& after) {
             if (mayReceive(*light, face, spheres[i])) { diff.dirty[i] = 1; break; }
         if (diff.dirty[i]) continue;
         for (const auto& occluder : occluders) {
-            const double reach = std::max(kGeometryMinRadius, kGeometryScale * occluder.radius);
-            if (gap(spheres[i], occluder) <= reach) { diff.dirty[i] = 1; break; }
+            const double near = reach * std::max(kGeometryMinRadius, kGeometryScale * occluder.radius);
+            if (gap(spheres[i], occluder) <= near) { diff.dirty[i] = 1; break; }
             for (const auto& light : after.lights)
                 if (light.kind != LightKind::Ambient && mayReceive(light, face, spheres[i]) &&
                     shadowed(light, spheres[i], occluder)) { diff.dirty[i] = 1; break; }
@@ -215,7 +215,7 @@ BakeDiff diffScenes(const BakeSceneView& before, const BakeSceneView& after) {
     for (std::size_t i = 0; i < n; ++i) {
         if (diff.dirty[i]) { diff.bounceDirty[i] = 1; ++diff.bounceDirtyCount; continue; }
         for (const auto& source : sources)
-            if (gap(spheres[i], source) <= kBounceRadius) { diff.bounceDirty[i] = 1; ++diff.bounceDirtyCount; break; }
+            if (gap(spheres[i], source) <= reach * kBounceRadius) { diff.bounceDirty[i] = 1; ++diff.bounceDirtyCount; break; }
     }
     return diff;
 }

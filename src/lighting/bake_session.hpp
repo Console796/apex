@@ -15,6 +15,10 @@ struct BakeSessionOptions {
     unsigned initialPasses = 4;
     unsigned maxPasses = 4;
     bool freezeBounceDirty = false;
+    double rebakeReach = 1; // Scales the diff's bounds (diffScenes `reach`).
+    // With freezeBounceDirty: rebake the bounce ring fully instead of freezing it. Its frozen light already
+    // holds every bounce, so it restarts from direct rather than keep it and count the bounces twice.
+    bool rebakeBounceRing = false;
 };
 
 struct BakeProgress {

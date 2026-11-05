@@ -484,6 +484,26 @@ TEST_CASE("bake seed: moved light leaves bounce dirty neighbours frozen") {
     CHECK(result[2] == values[2]);
 }
 
+TEST_CASE("bake seed: the bounce ring option rebakes neighbours from direct") {
+    auto input = bounceRoom(-32);
+    auto settings = withBounce();
+    settings.freezeBounceDirty = true;
+    settings.rebakeBounceRing = true;
+    const auto values = seedValues(input);
+    const std::vector<char> known(input.faces.size(), 1);
+    auto state = seedState(input, {}, values, known, settings);
+    BakeSession session(input, settings);
+    const auto diff = session.restart(std::move(state), bounceRoom(0), settings, 1);
+    REQUIRE_FALSE(diff.full);
+    CHECK(diff.dirty == std::vector<char>{1, 1, 0});
+    CHECK(diff.dirtyCount == 2);
+    CHECK(session.facePasses(0)[1] == 0); // Nothing kept: no frozen total to count twice.
+    settle(session);
+    const auto result = session.baker().resolve();
+    CHECK(result[1] != values[1]);
+    CHECK(result[2] == values[2]);
+}
+
 TEST_CASE("bake seed: dirty face gathers frozen total as first bounce") {
     auto input = bounceRoom(-32);
     input.lights.clear();

@@ -3659,12 +3659,12 @@ TEST_CASE("live bake completes offscreen and restarts after document edits") {
         const auto converge = [&] {
             QElapsedTimer timer;
             timer.start();
-            while (timer.elapsed() < 5000 && bake.status() != "Baking (idle)") {
+            while (timer.elapsed() < 5000 && bake.status() != "Baked: idle") {
                 bake.update(true, {0, 0, 128}, {}, {});
                 mirror.pump();
                 QThread::msleep(1);
             }
-            CHECK(bake.status().toStdString() == "Baking (idle)");
+            CHECK(bake.status().toStdString() == "Baked: idle");
         };
         converge();
         apex::render::MirrorViewOptions options;

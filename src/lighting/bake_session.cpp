@@ -110,7 +110,10 @@ BakeDiff BakeSession::restart(BakeState previous, BakeScene scene, BakeSessionOp
     if (previous.empty() || previous.buffers.size() != std::size_t(b.bounces) + 1 || !sameSettings) {
         diff = diffScenes({}, next); // Sized all-dirty, full.
         diff.reason = previous.empty() ? "no previous state" : "baker settings changed";
-    } else diff = diffScenes(previous.view(), next);
+    } else diff = diffScenes(previous.view(), next, options.rebakeReach);
+    if (!diff.full && options.freezeBounceDirty && options.rebakeBounceRing)
+        for (std::size_t i = 0; i < diff.dirty.size(); ++i)
+            if (diff.bounceDirty[i] && !diff.dirty[i]) { diff.dirty[i] = 1; ++diff.dirtyCount; }
     reset(std::move(scene), options, revision, std::move(keys));
     if (diff.full) return diff;
 
