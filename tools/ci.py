@@ -676,12 +676,15 @@ def main():
         test_jobs = min(test_jobs, share)
     print(f"ci: {slots} build slot(s) x -j{jobs}, apex_tests --jobs={test_jobs} / ctest -j{test_jobs}"
           + (f" (memory allows {budget} jobs)" if budget is not None else ""), flush=True)
-    g = Graph(rep, {"build": slots, "configure": 1})
+    # Test, GPU and fuzz stages each size their own workers to the whole memory share; several
+    # starting together after an incremental build overran the cap (run 73), so they take turns.
+    g = Graph(rep, {"build": slots, "configure": 1, "heavy": 1})
 
     def add_preset(preset):
         g.add(f"{preset}:configure", lambda: configure_stage(preset, build, rep), slot="configure")
         g.add(f"{preset}:build", lambda: build_stage(preset, jobs, rep), [f"{preset}:configure"], "build")
-        g.add(f"{preset}:test", lambda: test_stage(preset, test_jobs, rep), [f"{preset}:build"])
+        g.add(f"{preset}:test", lambda: test_stage(preset, test_jobs, rep), [f"{preset}:build"],
+              "heavy")
 
     # Longest chains first so they win a contended slot: the VM, then the gcc-release fan-out.
     if run_win:
@@ -694,18 +697,18 @@ def main():
         gcc_build = "linux-gcc-release:build"
         if not a.fixtures_only:
             g.add("compile-chamber", lambda: run([sys.executable, str(ROOT / "tools/chamber_runner_check.py")],
-                  rep, "compile-chamber"), ["linux-asan:build"])
+                  rep, "compile-chamber"), ["linux-asan:build"], "heavy")
         g.add("corpus", lambda: corpus_stage(corpus, a.fixtures_only, rep), [gcc_build])
         g.add("srctools-crosscheck", lambda: crosscheck_stage(corpus, a.fixtures_only, rep), [gcc_build])
-        g.add("gpu-lavapipe", lambda: gpu_stage("gpu-lavapipe", "llvmpipe", rep), [gcc_build])
-        g.add("gpu-radv", lambda: gpu_stage("gpu-radv", "radv", rep), [gcc_build])
+        g.add("gpu-lavapipe", lambda: gpu_stage("gpu-lavapipe", "llvmpipe", rep), [gcc_build], "heavy")
+        g.add("gpu-radv", lambda: gpu_stage("gpu-radv", "radv", rep), [gcc_build], "heavy")
         if a.fuzz_seconds == 0:
             rep.add("fuzz", "skipped", 0, "disabled")
         else:
             g.add("fuzz-configure", lambda: fuzz_configure_stage(build, rep), slot="configure")
             g.add("fuzz-build", lambda: fuzz_build_stage(jobs, rep), ["fuzz-configure"], "build")
-            g.add("fuzz", lambda: fuzz_run_stage(a.fuzz_seconds, rep), ["fuzz-build"])
-            g.add("hull-fuzz", lambda: hull_fuzz_stage(rep), ["fuzz-build"])
+            g.add("fuzz", lambda: fuzz_run_stage(a.fuzz_seconds, rep), ["fuzz-build"], "heavy")
+            g.add("hull-fuzz", lambda: hull_fuzz_stage(rep), ["fuzz-build"], "heavy")
         if not run_win:
             rep.add("windows-msvc", "skipped", 0, win_why)
     if not a.tests:
