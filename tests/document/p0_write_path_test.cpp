@@ -79,8 +79,11 @@ TEST_CASE("P0 red: creating 5000 solids on the largest corpus map scales linearl
         REQUIRE(changes.created.size() == static_cast<std::size_t>(count));
         return seconds;
     };
-    const double time1000 = elapsed(1000);
-    const double time5000 = elapsed(5000);
+    // Best of three: one pass is tens of milliseconds, so a busy host can stretch a single sample
+    // past the bound (CI 76: 122 ms against a usual 67 ms). A quadratic cost slows every pass.
+    const auto best = [&](int count) { return std::min({elapsed(count), elapsed(count), elapsed(count)}); };
+    const double time1000 = best(1000);
+    const double time5000 = best(5000);
     REQUIRE(time1000 > 0.0);
     const double ratio = time5000 / time1000;
     CAPTURE(time1000);
