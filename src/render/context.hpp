@@ -1,9 +1,11 @@
 #pragma once
 
 // Vulkan instance, physical device, logical device, graphics queue and VMA allocator (plan 0.1,
-// D13). One Context per process (D12: one VkDevice, one graphics queue, main thread only). All
-// other render objects (Buffer, Image, Swapchain, TextureHeap, RenderTarget) borrow the Context
-// and must be destroyed before it.
+// D13). One Context per process (D12: one VkDevice, one graphics queue). oneShot, submitAndWait,
+// waitIdle and lockQueue are thread-safe, so the GPU baker can submit from a worker; every queue call
+// (submit, present, wait idle) takes lockQueue. Everything else, including commandPool(), stays
+// main-thread only. All other render objects (Buffer, Image, Swapchain, TextureHeap, RenderTarget)
+// borrow the Context and must be destroyed before it.
 
 #include "core/result.hpp"
 #include "render/vk.hpp"
@@ -101,9 +103,13 @@ class Context {
     // Submits a recorded command buffer and waits for completion.
     Result<void> submitAndWait(VkCommandBuffer commands);
     void waitIdle() const;
+    std::unique_lock<std::mutex> lockQueue() const { return std::unique_lock(queueMutex_); }
 
   private:
     Context() = default;
+    Result<void> submitAndWaitLocked(VkCommandBuffer commands);
+    mutable std::mutex queueMutex_;
+    std::recursive_mutex oneShotMutex_; // Recursive: a oneShot recording may build an Accel, itself a oneShot.
 
     VkInstance instance_ = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
@@ -113,6 +119,7 @@ class Context {
     std::uint32_t family_ = 0;
     VmaAllocator_T* allocator_ = nullptr;
     VkCommandPool pool_ = VK_NULL_HANDLE;
+    VkCommandPool oneShotPool_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
     DeviceInfo info_;
     std::unique_ptr<ValidationLog> validation_;

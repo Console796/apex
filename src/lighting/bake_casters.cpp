@@ -10,16 +10,15 @@ namespace apex::lighting {
 Result<BakeOcclusion> bakeCastersFromDocument(
     const document::Document& document, std::span<const BakeFace> faces,
     const std::function<BakeMaterial(std::string_view)>& material) {
-    struct Primitive { bool sky; std::optional<std::size_t> face; };
-    auto primitives = std::make_shared<std::vector<Primitive>>();
-    TriangleMesh mesh;
+    auto geometry = std::make_shared<BakeCasterGeometry>();
+    auto& mesh = geometry->mesh;
     const auto append = [&](std::span<const DVec3> loop, bool sky, std::optional<std::size_t> face) {
         const auto base = static_cast<std::uint32_t>(mesh.positions.size());
         for (const auto p : loop)
             mesh.positions.push_back({static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)});
         for (std::uint32_t i = 1; i + 1 < loop.size(); ++i) {
             mesh.indices.insert(mesh.indices.end(), {base, base + i, base + i + 1});
-            primitives->push_back({sky, face});
+            geometry->primitives.push_back({sky, face});
         }
     };
     std::map<std::pair<std::uint64_t, std::uint32_t>, std::vector<std::size_t>> fragments;
@@ -74,8 +73,9 @@ Result<BakeOcclusion> bakeCastersFromDocument(
     auto accel = CpuAccel::build(instances);
     if (!accel) return std::unexpected(accel.error());
     return BakeOcclusion{std::shared_ptr<const CpuAccel>(std::move(*accel)),
-        [primitives](const RayHit& hit) { return primitives->at(hit.primitive).sky; },
-        [primitives](const RayHit& hit) { return primitives->at(hit.primitive).face; }};
+        [geometry](const RayHit& hit) { return geometry->primitives.at(hit.primitive).sky; },
+        [geometry](const RayHit& hit) { return geometry->primitives.at(hit.primitive).face; },
+        geometry};
 }
 
 } // namespace apex::lighting

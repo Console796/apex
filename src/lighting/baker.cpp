@@ -55,7 +55,8 @@ DVec3 clampToFace(const BakeFace& face, DVec3 point) {
     return distance > 0 ? nearest + toCentre * std::min(1.0, kInset / distance) : centre;
 }
 
-Baker::Baker(BakeScene scene, BakerOptions options) : scene_(std::move(scene)), options_(options) {
+Baker::Baker(BakeScene scene, BakerOptions options, std::shared_ptr<BakeKernel> kernel)
+    : scene_(std::move(scene)), options_(options), kernel_(std::move(kernel)) {
     if (options.threads == 0 || options.skyRays == 0)
         throw std::invalid_argument("Baker: threads and skyRays must be positive");
     if (options.bounces > 0 && options.bounceRays == 0)
@@ -76,6 +77,7 @@ Baker::Baker(BakeScene scene, BakerOptions options) : scene_(std::move(scene)), 
     }
     bounceBuffers_.resize(options.bounces, buffers_);
     passes_.resize(static_cast<std::size_t>(options.bounces) + 1);
+    generations_.resize(passes_.size());
 }
 
 double Baker::skyVisibility(DVec3 point, DVec3 normal, std::uint64_t key) const {
@@ -189,9 +191,11 @@ void Baker::adopt(unsigned level, std::size_t face, BakeBuffer buffer) {
         buffer.radiance.size() != target[face].radiance.size() || buffer.samples.size() != target[face].samples.size())
         throw std::invalid_argument("Baker::adopt: buffer does not match the face");
     target[face] = std::move(buffer);
+    ++generations_.at(level);
 }
 
 std::vector<BakeBuffer> Baker::releaseBuffers(unsigned level) {
+    ++generations_.at(level);
     return std::move(level == 0 ? buffers_ : bounceBuffers_.at(level - 1));
 }
 
@@ -213,22 +217,28 @@ BakeStep Baker::stepLevel(unsigned level, std::size_t budget, std::span<const st
         std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
         throw std::invalid_argument("Baker::step: invalid face selection");
     if (budget == 0) return {0, selected.empty()};
-    if (selected != pass.selection || pass.complete) {
-        if (level > 0) pass.source = resolveLevel(level - 1);
+    const bool newTraversal = selected != pass.selection || pass.complete;
+    if (newTraversal) {
+        if (level > 0 && (!pass.hasSource || pass.sourceGeneration != generations_[level - 1])) {
+            pass.source = resolveLevel(level - 1);
+            pass.sourceGeneration = generations_[level - 1];
+            pass.hasSource = true;
+            pass.kernelNeedsSource = true;
+        }
         pass.selection = std::move(selected);
         pass.nextFace = pass.nextLuxel = 0;
         pass.complete = false;
+        if (level == 0) pass.kernelNeedsSource = true;
     }
 
-    struct Work { std::size_t face, begin, end; };
-    std::vector<Work> work;
+    std::vector<BakeWork> work;
     BakeStep result;
     auto nextFace = pass.nextFace, nextLuxel = pass.nextLuxel;
     while (nextFace < pass.selection.size() && result.luxels < budget) {
         const auto face = pass.selection[nextFace];
         const auto count = std::min({std::size_t{32}, buffers[face].samples.size() - nextLuxel,
                                      budget - result.luxels});
-        work.push_back({face, nextLuxel, nextLuxel + count});
+        work.push_back({face, nextLuxel, nextLuxel + count, buffers[face].samples});
         result.luxels += count;
         nextLuxel += count;
         if (nextLuxel == buffers[face].samples.size()) {
@@ -236,34 +246,49 @@ BakeStep Baker::stepLevel(unsigned level, std::size_t budget, std::span<const st
             nextLuxel = 0;
         }
     }
-    std::atomic<std::size_t> next{0};
-    std::exception_ptr error;
-    std::mutex errorMutex;
-    const auto run = [&] {
-        try {
-            for (;;) {
-                const auto index = next.fetch_add(1, std::memory_order_relaxed);
-                if (index >= work.size()) break;
-                const auto& item = work[index];
-                auto& buffer = buffers[item.face];
-                for (auto luxel = item.begin; luxel < item.end; ++luxel) {
-                    const auto value = level == 0 ? sample(item.face, luxel) : sampleBounce(level, item.face, luxel);
-                    buffer.radiance[luxel] += Vec3(value);
-                    buffer.samples[luxel] += 4;
-                }
+    if (kernel_) {
+        std::vector<Vec3> sums(result.luxels);
+        kernel_->run(level, work, level == 0 ? nullptr : &pass.source, pass.kernelNeedsSource, sums);
+        pass.kernelNeedsSource = false;
+        std::size_t index = 0;
+        for (const auto& item : work) {
+            auto& buffer = buffers[item.face];
+            for (auto luxel = item.begin; luxel < item.end; ++luxel) {
+                buffer.radiance[luxel] += sums[index++];
+                buffer.samples[luxel] += 4;
             }
-        } catch (...) {
-            std::lock_guard lock(errorMutex);
-            error = std::current_exception();
         }
-    };
-    {
-        std::vector<std::jthread> workers;
-        const auto threads = std::min<std::size_t>(options_.threads, work.size());
-        for (std::size_t i = 1; i < threads; ++i) workers.emplace_back(run);
-        run();
+    } else {
+        std::atomic<std::size_t> next{0};
+        std::exception_ptr error;
+        std::mutex errorMutex;
+        const auto run = [&] {
+            try {
+                for (;;) {
+                    const auto index = next.fetch_add(1, std::memory_order_relaxed);
+                    if (index >= work.size()) break;
+                    const auto& item = work[index];
+                    auto& buffer = buffers[item.face];
+                    for (auto luxel = item.begin; luxel < item.end; ++luxel) {
+                        const auto value = level == 0 ? sample(item.face, luxel) : sampleBounce(level, item.face, luxel);
+                        buffer.radiance[luxel] += Vec3(value);
+                        buffer.samples[luxel] += 4;
+                    }
+                }
+            } catch (...) {
+                std::lock_guard lock(errorMutex);
+                error = std::current_exception();
+            }
+        };
+        {
+            std::vector<std::jthread> workers;
+            const auto threads = std::min<std::size_t>(options_.threads, work.size());
+            for (std::size_t i = 1; i < threads; ++i) workers.emplace_back(run);
+            run();
+        }
+        if (error) std::rethrow_exception(error);
     }
-    if (error) std::rethrow_exception(error);
+    if (result.luxels) ++generations_[level];
     pass.nextFace = nextFace;
     pass.nextLuxel = nextLuxel;
     result.passComplete = pass.complete = pass.nextFace == pass.selection.size();
@@ -276,6 +301,19 @@ std::vector<std::vector<Vec3>> Baker::resolveLevel(unsigned level) const {
         auto& face = result.emplace_back(buffer.radiance.size(), Vec3{0});
         for (std::size_t i = 0; i < face.size(); ++i)
             if (buffer.samples[i] > 0) face[i] = buffer.radiance[i] / static_cast<float>(buffer.samples[i]);
+    }
+    return result;
+}
+
+std::vector<Vec3> Baker::resolveFace(std::size_t face) const {
+    const auto& direct = buffers_.at(face);
+    std::vector<Vec3> result(direct.radiance.size(), Vec3{0});
+    for (std::size_t i = 0; i < result.size(); ++i)
+        if (direct.samples[i] > 0) result[i] = direct.radiance[i] / static_cast<float>(direct.samples[i]);
+    for (unsigned level = 1; level <= options_.bounces; ++level) {
+        const auto& buffer = buffers(level).at(face);
+        for (std::size_t i = 0; i < result.size(); ++i)
+            if (buffer.samples[i] > 0) result[i] += buffer.radiance[i] / static_cast<float>(buffer.samples[i]);
     }
     return result;
 }

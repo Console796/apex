@@ -26,6 +26,16 @@ struct BakeFace {
     std::uint32_t sideId = 0; // Fragments share the source identity.
 };
 
+struct BakeCasterPrimitive {
+    bool sky = false;
+    std::optional<std::size_t> face;
+};
+
+struct BakeCasterGeometry {
+    TriangleMesh mesh;
+    std::vector<BakeCasterPrimitive> primitives;
+};
+
 struct BakeOcclusion {
     // A stable snapshot: no instance updates while the baker is stepping. Null means open space.
     std::shared_ptr<const CpuAccel> accel;
@@ -34,6 +44,7 @@ struct BakeOcclusion {
     // Optional hit-to-BakeScene::faces mapping, including chart fragments. Concurrent read-only.
     // Unmapped hits (props/non-bake geometry) still occlude but contribute no bounce radiance.
     std::function<std::optional<std::size_t>(const RayHit&)> faceOf;
+    std::shared_ptr<const BakeCasterGeometry> geometry;
 
     bool reachesSky(DVec3 point, DVec3 direction) const;
     bool visible(DVec3 point, DVec3 endpoint) const;

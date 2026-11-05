@@ -65,7 +65,7 @@ private:
     lighting::BakeSessionOptions options_;
     std::uint64_t revision_ = 0;
     std::chrono::steady_clock::time_point changed_{};
-    QString status_, progress_;
+    QString status_, progress_, device_ = QStringLiteral("auto"), deviceStatus_;
     std::shared_ptr<const HybridBaseline> baseline_;
     std::set<lighting::FaceKey> hybridDirty_; // Rebaked since the baseline (faces the edits dirtied, across the chain).
     std::size_t hybridFaces_ = 0;

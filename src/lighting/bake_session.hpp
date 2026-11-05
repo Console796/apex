@@ -19,6 +19,8 @@ struct BakeSessionOptions {
     // With freezeBounceDirty: rebake the bounce ring fully instead of freezing it. Its frozen light already
     // holds every bounce, so it restarts from direct rather than keep it and count the bounces twice.
     bool rebakeBounceRing = false;
+    double advanceMilliseconds = 5.0;
+    std::size_t maxBatchFaces = std::numeric_limits<std::size_t>::max();
 };
 
 struct BakeProgress {
@@ -58,7 +60,7 @@ BakeState seedState(const BakeScene& scene, std::vector<FaceKey> keys,
                     std::span<const std::vector<Vec3>> radiance, std::span<const char> known,
                     const BakeSessionOptions& options);
 
-// Worker-owned, no Qt/GPU. Methods are serialised by an internal mutex, so a cancelled tick can
+// Worker-owned, no Qt. Methods are serialised by an internal mutex, so a cancelled tick can
 // still be finishing while takeState waits. Restart replaces the entire immutable scene/accel.
 // Camera order is centre-distance, index breaks ties; it changes only at traversal boundaries so
 // moving the camera cannot starve a traversal.
@@ -72,8 +74,9 @@ BakeState seedState(const BakeScene& scene, std::vector<FaceKey> keys,
 // radiance meanwhile.
 class BakeSession {
 public:
+    using KernelFactory = std::function<std::shared_ptr<BakeKernel>(const BakeScene&, const BakerOptions&)>;
     BakeSession(BakeScene scene, BakeSessionOptions options = {}, std::uint64_t revision = 0,
-                std::vector<FaceKey> keys = {});
+                std::vector<FaceKey> keys = {}, KernelFactory factory = {});
     // Everything from zero. Keys default to faceKeys(scene.faces).
     void restart(BakeScene scene, BakeSessionOptions options, std::uint64_t revision, std::vector<FaceKey> keys = {});
     // Incremental restart: diff against `previous`, keep sums and counts of clean faces (all levels) and of
@@ -92,18 +95,24 @@ public:
     const BakeProgress& progress() const { return progress_; }
     const BakeScene& scene() const { return baker_->scene(); }
     const Baker& baker() const { return *baker_; }
+    bool gpu() const { return gpu_; }
+    const std::string& kernelError() const { return kernelError_; }
     const std::vector<unsigned>& facePasses(unsigned level) const { return facePasses_.at(level); }
 
 private:
     std::mutex mutex_;
     std::unique_ptr<Baker> baker_;
+    KernelFactory factory_;
+    bool gpu_ = false;
+    std::string kernelError_;
     BakeSessionOptions options_;
     BakeProgress progress_;
     DVec3 camera_{0};
     std::vector<std::size_t> order_;
     std::vector<FaceKey> keys_;
     std::vector<std::vector<unsigned>> facePasses_; // [level][face]
-    std::size_t nextFace_ = 0, budget_ = 16;
+    std::size_t nextFace_ = 0, budget_ = 16, batchLuxels_ = 0;
+    std::vector<std::size_t> batch_;
     bool refining_ = false, ordered_ = false;
     bool focusing_ = false;    // Incremental restart: first converge the dirty faces alone (direct and first bounce).
     std::vector<char> focus_;  // [face]: dirty in the last incremental restart; those lead every later traversal.

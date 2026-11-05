@@ -53,7 +53,7 @@ Result<std::unique_ptr<Swapchain>> Swapchain::create(Context& context, VkSurface
 Swapchain::~Swapchain() {
     if (!context_) return;
     VkDevice device = context_->device();
-    vkDeviceWaitIdle(device);
+    context_->waitIdle();
     destroyImages();
     destroyRetired();
     if (swapchain_) vkDestroySwapchainKHR(device, swapchain_, nullptr);
@@ -152,7 +152,10 @@ Result<bool> Swapchain::recreate(VkExtent2D pixelSize) {
     // process exhausts its descriptor limit.
     constexpr std::size_t maxRetiredSwapchains = 2;
     if (retired_.size() >= maxRetiredSwapchains) {
-        APEX_VK_TRY(vkQueueWaitIdle(context_->graphicsQueue()), "wait to retire resize swapchains");
+        {
+            auto lock = context_->lockQueue();
+            APEX_VK_TRY(vkQueueWaitIdle(context_->graphicsQueue()), "wait to retire resize swapchains");
+        }
         destroyRetired();
         retirementReady_ = false;
         ++forcedRetirements_;
@@ -250,7 +253,10 @@ Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn&
     submit.pCommandBufferInfos = &cb;
     submit.signalSemaphoreInfoCount = 1;
     submit.pSignalSemaphoreInfos = &signal;
-    APEX_VK_TRY(vkQueueSubmit2(context_->graphicsQueue(), 1, &submit, inFlight_), "submit frame");
+    {
+        auto lock = context_->lockQueue();
+        APEX_VK_TRY(vkQueueSubmit2(context_->graphicsQueue(), 1, &submit, inFlight_), "submit frame");
+    }
 
     VkPresentInfoKHR pi = vkStruct<VkPresentInfoKHR>(VK_STRUCTURE_TYPE_PRESENT_INFO_KHR);
     pi.waitSemaphoreCount = 1;
@@ -258,7 +264,11 @@ Result<FrameStatus> Swapchain::renderFrame(VkExtent2D pixelSize, const RecordFn&
     pi.swapchainCount = 1;
     pi.pSwapchains = &swapchain_;
     pi.pImageIndices = &index;
-    const VkResult presented = vkQueuePresentKHR(context_->graphicsQueue(), &pi);
+    VkResult presented;
+    {
+        auto lock = context_->lockQueue();
+        presented = vkQueuePresentKHR(context_->graphicsQueue(), &pi);
+    }
     if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_SUBOPTIMAL_KHR || acquired == VK_SUBOPTIMAL_KHR) {
         needsRecreate_ = true; // The frame itself was drawn; the next one gets a fresh swapchain.
     } else if (presented != VK_SUCCESS) {

@@ -351,6 +351,7 @@ Result<std::unique_ptr<Context>> Context::create(const ContextOptions& options) 
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT | VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pci.queueFamilyIndex = ctx->family_;
     APEX_VK_TRY(vkCreateCommandPool(ctx->device_, &pci, nullptr, &ctx->pool_), "vkCreateCommandPool");
+    APEX_VK_TRY(vkCreateCommandPool(ctx->device_, &pci, nullptr, &ctx->oneShotPool_), "vkCreateCommandPool");
     VkFenceCreateInfo fci = vkStruct<VkFenceCreateInfo>(VK_STRUCTURE_TYPE_FENCE_CREATE_INFO);
     APEX_VK_TRY(vkCreateFence(ctx->device_, &fci, nullptr, &ctx->fence_), "vkCreateFence");
 
@@ -362,8 +363,9 @@ Result<std::unique_ptr<Context>> Context::create(const ContextOptions& options) 
 }
 
 Context::~Context() {
-    if (device_) vkDeviceWaitIdle(device_);
+    if (device_) waitIdle();
     if (fence_) vkDestroyFence(device_, fence_, nullptr);
+    if (oneShotPool_) vkDestroyCommandPool(device_, oneShotPool_, nullptr);
     if (pool_) vkDestroyCommandPool(device_, pool_, nullptr);
     if (allocator_) vmaDestroyAllocator(allocator_);
     if (device_) vkDestroyDevice(device_, nullptr);
@@ -372,16 +374,25 @@ Context::~Context() {
 }
 
 void Context::waitIdle() const {
+    auto lock = lockQueue();
     vkDeviceWaitIdle(device_);
 }
 
 Result<void> Context::submitAndWait(VkCommandBuffer commands) {
+    std::lock_guard lock(oneShotMutex_);
+    return submitAndWaitLocked(commands);
+}
+
+Result<void> Context::submitAndWaitLocked(VkCommandBuffer commands) {
     VkCommandBufferSubmitInfo cb = vkStruct<VkCommandBufferSubmitInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO);
     cb.commandBuffer = commands;
     VkSubmitInfo2 submit = vkStruct<VkSubmitInfo2>(VK_STRUCTURE_TYPE_SUBMIT_INFO_2);
     submit.commandBufferInfoCount = 1;
     submit.pCommandBufferInfos = &cb;
-    APEX_VK_TRY(vkQueueSubmit2(queue_, 1, &submit, fence_), "vkQueueSubmit2");
+    {
+        auto lock = lockQueue();
+        APEX_VK_TRY(vkQueueSubmit2(queue_, 1, &submit, fence_), "vkQueueSubmit2");
+    }
     const VkResult waited = vkWaitForFences(device_, 1, &fence_, VK_TRUE, UINT64_MAX);
     vkResetFences(device_, 1, &fence_);
     APEX_VK_TRY(waited, "vkWaitForFences");
@@ -389,8 +400,9 @@ Result<void> Context::submitAndWait(VkCommandBuffer commands) {
 }
 
 Result<void> Context::oneShot(const std::function<void(VkCommandBuffer)>& record) {
+    std::lock_guard lock(oneShotMutex_);
     VkCommandBufferAllocateInfo ai = vkStruct<VkCommandBufferAllocateInfo>(VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO);
-    ai.commandPool = pool_;
+    ai.commandPool = oneShotPool_;
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
     VkCommandBuffer cb = VK_NULL_HANDLE;
@@ -405,10 +417,10 @@ Result<void> Context::oneShot(const std::function<void(VkCommandBuffer)>& record
         if (const VkResult e = vkEndCommandBuffer(cb); e != VK_SUCCESS) {
             result = std::unexpected(vkError(e, "vkEndCommandBuffer"));
         } else {
-            result = submitAndWait(cb);
+            result = submitAndWaitLocked(cb);
         }
     }
-    vkFreeCommandBuffers(device_, pool_, 1, &cb);
+    vkFreeCommandBuffers(device_, oneShotPool_, 1, &cb);
     return result;
 }
 

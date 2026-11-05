@@ -32,6 +32,7 @@ BakeSessionOptions options() {
     result.baker.skyRays = result.baker.bounceRays = 1;
     result.initialPasses = 1;
     result.maxPasses = 2;
+    result.maxBatchFaces = 1;
     return result;
 }
 }
@@ -276,12 +277,12 @@ TEST_CASE("incremental bake: camera order still holds among dirty faces") {
     BakeSession next(row(0), directOnly());
     next.restart(first.takeState(), row(1200), directOnly(), 2);
     next.setCamera({1190, 0, 0}); // Nearest dirty face is 4, then 3.
-    next.advance(1000);
+    next.advance(25); // One 5x5 face per call: batches take faces in camera order.
     const auto& buffers = next.baker().buffers(0);
     CHECK(buffers[4].samples[0] == 4);
     CHECK(buffers[3].samples[0] == 0);
     CHECK(buffers[0].samples[0] == 0);
-    next.advance(1000);
+    next.advance(25);
     CHECK(buffers[3].samples[0] == 4);
 }
 
@@ -316,7 +317,7 @@ TEST_CASE("incremental bake: unbounded changes and changed settings restart ever
 
 TEST_CASE("incremental bake: cancelled tick leaves its faces to be republished after takeState") {
     BakeSession first(row(0), directOnly());
-    first.advance(1000);
+    first.advance(25); // Exactly one face.
     BakeSession next(row(0), directOnly());
     next.restart(first.takeState(), row(0), directOnly(), 2);
     const auto publication = next.tick(CancelToken{}, std::chrono::milliseconds(0));
@@ -543,4 +544,26 @@ TEST_CASE("bake seed: uncovered faces reach their pass target") {
     settle(session);
     CHECK(session.facePasses(0)[1] == settings.maxPasses);
     CHECK(session.facePasses(1)[1] == settings.maxPasses);
+}
+
+TEST_CASE("bake session batching preserves radiance and face passes") {
+    auto singleOptions = options();
+    auto batchOptions = singleOptions;
+    batchOptions.maxBatchFaces = 100;
+    BakeSession single(scene(), singleOptions), batch(scene(), batchOptions);
+    while (!single.progress().idle) single.advance(100);
+    while (!batch.progress().idle) batch.advance(100);
+    CHECK(single.baker().resolve() == batch.baker().resolve());
+    for (unsigned level = 0; level <= singleOptions.baker.bounces; ++level)
+        CHECK(single.facePasses(level) == batch.facePasses(level));
+}
+
+TEST_CASE("bake session reports a throwing kernel factory and falls back") {
+    BakeSession session(scene(), options(), 0, {}, [](const auto&, const auto&) -> std::shared_ptr<BakeKernel> {
+        throw std::runtime_error("device failed");
+    });
+    CHECK_FALSE(session.gpu());
+    CHECK(session.kernelError() == "device failed");
+    while (!session.progress().idle) session.advance(100);
+    CHECK(session.progress().idle);
 }

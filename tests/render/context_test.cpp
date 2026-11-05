@@ -10,6 +10,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <thread>
 #include <array>
 #include <cstring>
 #include <filesystem>
@@ -396,4 +398,51 @@ TEST_CASE("swapchain on a headless surface recreates on resize") {
     ctx.waitIdle();
     vkDestroySurfaceKHR(ctx.instance(), surface, nullptr);
     CHECK(ctx.validation().errorCount() == 0);
+}
+
+TEST_CASE("context: concurrent one-shot submissions preserve readbacks") {
+    REQUIRE_GPU();
+    std::array<Buffer, 3> buffers;
+    for (auto& buffer : buffers) {
+        auto created = Buffer::create(*gpu, {256, VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUsage::Readback});
+        REQUIRE(created);
+        buffer = std::move(*created);
+    }
+    std::atomic<bool> good{true};
+    const auto run = [&](std::size_t index) {
+        for (std::uint32_t i = 1; i <= 20; ++i) {
+            const std::uint32_t value = i + std::uint32_t(index) * 100;
+            auto result = gpu->oneShot([&](VkCommandBuffer cb) {
+                vkCmdFillBuffer(cb, buffers[index].handle(), 0, 256, value);
+            });
+            if (!result) { good = false; return; }
+            buffers[index].invalidate();
+            if (static_cast<const std::uint32_t*>(buffers[index].mapped())[0] != value) good = false;
+        }
+    };
+    std::thread first(run, 0), second(run, 1);
+    run(2);
+    first.join();
+    second.join();
+    CHECK(good.load());
+    for (const auto& error : gpu->validation().errors()) MESSAGE(error);
+    CHECK(gpu->validation().errorCount() == 0);
+}
+
+TEST_CASE("context: a one-shot may run another one-shot while recording") {
+    REQUIRE_GPU();
+    auto created = Buffer::create(*gpu, {256, VK_BUFFER_USAGE_TRANSFER_DST_BIT, MemoryUsage::Readback});
+    REQUIRE(created);
+    // Renderer::prepare inside a oneShot can build acceleration structures, which submit their own oneShot.
+    bool inner = false;
+    REQUIRE(gpu->oneShot([&](VkCommandBuffer outer) {
+        inner = bool(gpu->oneShot([&](VkCommandBuffer cb) { vkCmdFillBuffer(cb, created->handle(), 0, 256, 7u); }));
+        vkCmdFillBuffer(outer, created->handle(), 4, 4, 9u);
+    }));
+    CHECK(inner);
+    created->invalidate();
+    const auto* values = static_cast<const std::uint32_t*>(created->mapped());
+    CHECK(values[0] == 7u);
+    CHECK(values[1] == 9u);
+    CHECK(gpu->validation().errorCount() == 0);
 }

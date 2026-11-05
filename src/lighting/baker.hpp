@@ -34,9 +34,22 @@ struct BakeStep {
     bool passComplete = false;
 };
 
+struct BakeWork {
+    std::size_t face, begin, end;
+    std::span<const std::uint64_t> samples;
+};
+
+class BakeKernel {
+public:
+    virtual ~BakeKernel() = default;
+    virtual void run(unsigned level, std::span<const BakeWork> work,
+                     const std::vector<std::vector<Vec3>>* source, bool sourceChanged,
+                     std::span<Vec3> sums) = 0;
+};
+
 class Baker {
 public:
-    explicit Baker(BakeScene scene, BakerOptions options = {});
+    explicit Baker(BakeScene scene, BakerOptions options = {}, std::shared_ptr<BakeKernel> kernel = {});
 
     // Synchronous, parallel work on at most budget luxels, never beyond one traversal. Empty faces
     // selects all. Repeat with the same selection to resume a budget-limited pass. Changing selection
@@ -46,13 +59,14 @@ public:
     BakeStep step(std::size_t budget = std::numeric_limits<std::size_t>::max(),
                   std::span<const std::size_t> faces = {});
     // Run after settling direct, then each preceding bounce level (1..options.bounces) in order.
-    // Same budget/selection semantics as step. Each new traversal snapshots resolveLevel(level-1);
+    // Same budget/selection semantics as step. A traversal snapshots resolveLevel(level-1) when it changes;
     // budget-limited continuations retain that snapshot. Levels store successive contributions,
     // not cumulative totals. Settle upstream levels before accumulating downstream passes.
     BakeStep bounce(unsigned level, std::size_t budget = std::numeric_limits<std::size_t>::max(),
                     std::span<const std::size_t> faces = {});
     const std::vector<BakeBuffer>& buffers(unsigned level = 0) const;
     std::vector<std::vector<Vec3>> resolve() const; // Direct + bounce means; zero if unsampled.
+    std::vector<Vec3> resolveFace(std::size_t face) const;
     std::vector<std::vector<Vec3>> resolveLevel(unsigned level) const; // 0 is direct.
     const BakeScene& scene() const { return scene_; }
     // Incremental restart support. adopt installs previously accumulated sums/counts for one face at one
@@ -70,14 +84,19 @@ private:
         std::vector<std::size_t> selection;
         std::size_t nextFace = 0, nextLuxel = 0;
         bool complete = true;
+        bool kernelNeedsSource = false;
+        std::uint64_t sourceGeneration = 0;
+        bool hasSource = false;
         std::vector<std::vector<Vec3>> source;
     };
 
     BakeScene scene_;
     BakerOptions options_;
+    std::shared_ptr<BakeKernel> kernel_;
     std::vector<BakeBuffer> buffers_;
     std::vector<std::vector<BakeBuffer>> bounceBuffers_;
     std::vector<Pass> passes_;
+    std::vector<std::uint64_t> generations_;
 };
 
 } // namespace apex::lighting

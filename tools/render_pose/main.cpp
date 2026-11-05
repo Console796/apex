@@ -12,6 +12,7 @@
 #include "editor/vrad_roundtrip.hpp"
 #include "editor/instance_expansion.hpp"
 #include "render/context.hpp"
+#include "render/gpu_bake.hpp"
 #include "render/render_mirror.hpp"
 #include "render/vrad_lightmaps.hpp"
 #include "render/render_target.hpp"
@@ -54,6 +55,7 @@ struct Options {
     bool probeFastStart = true;
     int indirectFrames = 1;
     unsigned bakePasses = 4;
+    std::string bakeBackend = "cpu";
     lighting::BakerOptions bakeOptions{.bounces = 8, .bounceReflectivity = lighting::kVradBounceReflectivity};
     float bakeScale = render::kDefaultBakedScale;
     float vradFallbackScale = 0.62f; // Preserve VRAD CLI output when --bake-scale is omitted.
@@ -81,7 +83,7 @@ void help() {
                  "  [--fov 90] [--mode lit|textured|fullbright|baked|vrad]\n"
                  "  [--indirect off|probes] [--indirect-frames N] [--no-probe-fast-start] [--time-reset] [--shadow-tile-cap 256|512|1024]\n"
                  "  [--compare A,B[,split]] [--density] [--cubemaps DIR] [--time N]\n"
-                 "  [--bake-passes 4 --bake-bounces 8 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
+                 "  [--bake-backend cpu|gpu --bake-passes 4 --bake-bounces 8 --bake-bounce-rays 32 --bake-threads 3 --bake-seed 0 --bake-scale 1]\n"
                  "  [--bake-reflectivity 0.97]\n"
                  "  [--vrad-flags \"-noextra\"] [--no-vis] [--vrad-scale S] [--keep-vrad] [--vrad-bsp PATH] [--vrad-mask]\n"
                  "  [--no-specular] [--tool-fixed-brightness [VALUE]] [--instances mirror|expanded]\n"
@@ -97,7 +99,8 @@ void help() {
                  "origin rounded to integers as VBSP names them (e.g. files extracted from a compiled BSP's\n"
                  "pakfile). Prints one line per probe with the file used, or \"default\" for the default cube.\n"
                  "Writes NAME.png for lit, NAME-MODE.png otherwise; refuses to overwrite existing files. No display required.\n"
-                 "Baked uses CPU brush direct + sky + bounce. --bake-scale is display-only (default 1).\n"
+                 "Baked uses CPU brush direct + sky + bounce by default; --bake-backend gpu uses Vulkan ray queries.\n"
+                 "--bake-scale is display-only (default 1).\n"
                  "--bake-reflectivity scales every albedo in bounce transport (default: the VRAD-parity fit).\n"
                  "--instances mirror|expanded (Baked only): mirror (default) bakes an expanded copy and draws the\n"
                  "instances through the viewport's own instance path, as the editor does; expanded collapses the\n"
@@ -163,6 +166,11 @@ Options parse(int argc, char** argv) {
             }
         }
         else if (flag == "--bake-passes") o.bakePasses = count(1, 10000);
+        else if (flag == "--bake-backend") {
+            o.bakeBackend = next();
+            if (o.bakeBackend != "cpu" && o.bakeBackend != "gpu")
+                throw std::runtime_error("--bake-backend takes cpu or gpu");
+        }
         else if (flag == "--no-specular") o.noSpecular = true;
         else if (flag == "--bake-bounces") o.bakeOptions.bounces = count(0, 32);
         else if (flag == "--bake-bounce-rays") o.bakeOptions.bounceRays = count(1, 65536);
@@ -461,7 +469,10 @@ int run(const Options& o) {
         return maps;
     };
     if (uses("baked")) {
-        lighting::Baker baker(editScene, o.bakeOptions);
+        const auto started = std::chrono::steady_clock::now();
+        std::shared_ptr<lighting::BakeKernel> kernel;
+        if (o.bakeBackend == "gpu") kernel = take(render::GpuBakeKernel::create(*context, editScene, o.bakeOptions));
+        lighting::Baker baker(editScene, o.bakeOptions, std::move(kernel));
         for (unsigned level = 0; level <= o.bakeOptions.bounces; ++level) {
             for (unsigned pass = 0; pass < o.bakePasses; ++pass) {
                 const auto step = level == 0 ? baker.step() : baker.bounce(level);
@@ -469,6 +480,9 @@ int run(const Options& o) {
             }
             std::cout << "bake level=" << level << " passes=" << o.bakePasses << std::endl;
         }
+        context->waitIdle();
+        std::cout << "bake backend=" << o.bakeBackend << " seconds="
+                  << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count() << '\n';
         charted["baked"] = baker.resolve();
         bakeMaps = chartMaps(o.density ? render::densityRadiance(*editAtlas) : charted["baked"]);
     }
@@ -585,8 +599,14 @@ int run(const Options& o) {
         seedAtlas.bindInstances(base.origins);
         auto seed = render::hybridSeed(seedAtlas, seedSetup.scene, base.loaded, options);
         const auto started = std::chrono::steady_clock::now();
-        lighting::BakeSession session(lighting::BakeScene{}, options);
+        lighting::BakeSession::KernelFactory factory;
+        if (o.bakeBackend == "gpu") factory = [&](const auto& scene, const auto& bakerOptions) -> std::shared_ptr<lighting::BakeKernel> {
+            return take(render::GpuBakeKernel::create(*context, scene, bakerOptions));
+        };
+        lighting::BakeSession session(lighting::BakeScene{}, options, 0, {}, std::move(factory));
         rebaked = session.restart(std::move(seed), editScene, options, 1, editAtlas->faceKeys());
+        if (o.bakeBackend == "gpu" && !session.gpu())
+            throw std::runtime_error("GPU bake unavailable: " + session.kernelError());
         while (!session.progress().idle) session.advance(4096);
         std::size_t ring = 0;
         for (std::size_t i = 0; i < rebaked->dirty.size(); ++i) ring += rebaked->bounceDirty[i] && !rebaked->dirty[i];

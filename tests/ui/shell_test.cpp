@@ -3656,15 +3656,17 @@ TEST_CASE("live bake completes offscreen and restarts after document edits") {
     {
         apex::ui::BakeController bake(document, vfs, *context, **heap, mirror, jobs);
         const auto observer = document.observe([&](const auto&) { bake.invalidate(); });
+        // The default Auto device bakes on the GPU wherever ray query is available.
+        const QString idle = context->info().rayQuery ? "Baked (GPU): idle" : "Baked (CPU): idle";
         const auto converge = [&] {
             QElapsedTimer timer;
             timer.start();
-            while (timer.elapsed() < 5000 && bake.status() != "Baked: idle") {
+            while (timer.elapsed() < 5000 && bake.status() != idle) {
                 bake.update(true, {0, 0, 128}, {}, {});
                 mirror.pump();
                 QThread::msleep(1);
             }
-            CHECK(bake.status().toStdString() == "Baked: idle");
+            CHECK(bake.status().toStdString() == idle.toStdString());
         };
         converge();
         apex::render::MirrorViewOptions options;

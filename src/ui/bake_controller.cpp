@@ -1,9 +1,12 @@
 #include "ui/bake_controller.hpp"
 
 #include "editor/bake_instances.hpp"
+#include "core/log.hpp"
+#include "render/gpu_bake.hpp"
 #include "render/bake_setup.hpp"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -57,6 +60,12 @@ void showBakeSettings(QWidget* parent) {
     scale->setValue(settings.value("bake/displayScale", render::kDefaultBakedScale).toDouble());
     layout->addRow(QObject::tr("Display scale"), scale);
     const auto options = readOptions();
+    auto* device = new QComboBox(&dialog);
+    device->addItem(QObject::tr("Auto"), QStringLiteral("auto"));
+    device->addItem(QObject::tr("GPU"), QStringLiteral("gpu"));
+    device->addItem(QObject::tr("CPU"), QStringLiteral("cpu"));
+    device->setCurrentIndex(std::max(0, device->findData(settings.value("bake/device", "auto"))));
+    layout->addRow(QObject::tr("Bake device"), device);
     const auto integer = [&](const QString& label, int value, int low, int high) {
         auto* spin = new QSpinBox(&dialog);
         spin->setRange(low, high);
@@ -93,6 +102,7 @@ void showBakeSettings(QWidget* parent) {
     const auto rounded = [](const QDoubleSpinBox* spin, double value) {
         return QVariant(std::round(value * std::pow(10.0, spin->decimals())) / std::pow(10.0, spin->decimals()));
     };
+    store("bake/device", device->currentData(), QStringLiteral("auto"));
     store("bake/displayScale", scale->value(), rounded(scale, render::kDefaultBakedScale));
     store("bake/bounces", bounces->value(), int(defaults.baker.bounces));
     store("bake/bounceRays", bounceRays->value(), int(defaults.baker.bounceRays));
@@ -106,7 +116,7 @@ BakeController::BakeController(document::Document& document, std::shared_ptr<con
                                render::Context& context, render::TextureHeap& heap,
                                render::RenderMirror& mirror, JobPool& jobs)
     : document_(document), vfs_(std::move(vfs)), context_(context), heap_(heap), mirror_(mirror), jobs_(jobs),
-      options_(readOptions()) {}
+      options_(readOptions()), device_(QSettings().value("bake/device", "auto").toString()) {}
 BakeController::~BakeController() { job_.cancel(); }
 
 void BakeController::setDisplayed(bool displayed) {
@@ -135,8 +145,8 @@ QString BakeController::status() const {
     if (hybridFull_) return QStringLiteral("Hybrid: this change needs a VRAD rebake (Re-run VRAD)");
     const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - baseline_->completed).count();
     const QString age = seconds >= 60 ? QStringLiteral("%1m").arg(seconds / 60) : QStringLiteral("%1s").arg(seconds);
-    QString text = QStringLiteral("Hybrid: VRAD baseline %1 | %2 of %3 faces rebaked | %4")
-                       .arg(age).arg(hybridDirty_.size()).arg(hybridFaces_).arg(progress_.isEmpty() ? QStringLiteral("preparing snapshot") : progress_);
+    QString text = QStringLiteral("Hybrid (%5): VRAD baseline %1 | %2 of %3 faces rebaked | %4")
+                       .arg(age).arg(hybridDirty_.size()).arg(hybridFaces_).arg(progress_.isEmpty() ? QStringLiteral("preparing snapshot") : progress_).arg(deviceStatus_.isEmpty() ? QStringLiteral("CPU") : deviceStatus_);
     if (hybridFaces_ && double(hybridDirty_.size()) > kRecommendRerunShare * double(hybridFaces_))
         text += QStringLiteral(" | Re-run VRAD recommended");
     return text;
@@ -187,7 +197,9 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                              const std::optional<std::filesystem::path>& extraRoot) {
     const auto options = readOptions();
     // The rebake reach and ring only shape the next edit's diff: they take effect without dropping the bake.
-    const bool same = sameOptions(options_, options);
+    const auto device = QSettings().value("bake/device", "auto").toString();
+    const bool same = sameOptions(options_, options) && device_ == device;
+    device_ = device;
     options_ = options;
     if (!same) invalidate();
     const auto scale = float(std::clamp(QSettings().value("bake/displayScale", render::kDefaultBakedScale).toDouble(), 0.01, 16.0));
@@ -210,12 +222,15 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
         // Hybrid starts from the VRAD seed; it chains from its own previous session until the drift limit,
         // then re-seeds from the baseline instead of baking everything.
         auto baseline = hybrid_ ? baseline_ : nullptr;
+        const bool useGpu = device != QStringLiteral("cpu") && context_.info().rayQuery;
+        const bool unavailable = device == QStringLiteral("gpu") && !context_.info().rayQuery;
+        auto* context = &context_;
         auto jobOptions = options;
         jobOptions.freezeBounceDirty = hybrid_;
         job_ = jobs_.submit(Priority::Low,
             [snapshot = std::move(snapshot), vfs = vfs_, map, extraRoot, options = jobOptions, revision,
              previous = std::move(previous), radiance = radiance_, earlier = std::move(earlier),
-             baseline = std::move(baseline)](CancelToken cancel) {
+             baseline = std::move(baseline), context, useGpu, unavailable](CancelToken cancel) {
                 struct Prepared {
                     std::shared_ptr<lighting::BakeSession> session;
                     bool incremental = false;
@@ -259,7 +274,20 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                     const auto allKeys = keys;
                     result.faces = setup.scene.faces.size();
                     result.reseeded = bool(seed);
-                    result.session = std::make_shared<lighting::BakeSession>(lighting::BakeScene{}, options, revision);
+                    lighting::BakeSession::KernelFactory factory;
+                    if (useGpu) factory = [context](const auto& scene, const auto& bakerOptions) -> std::shared_ptr<lighting::BakeKernel> {
+                        auto kernel = render::GpuBakeKernel::create(*context, scene, bakerOptions);
+                        if (!kernel) {
+                            log::error("GPU bake: {}", kernel.error().what());
+                            throw std::runtime_error(kernel.error().what());
+                        }
+                        return *kernel;
+                    };
+                    else if (unavailable) factory = [](const auto&, const auto&) -> std::shared_ptr<lighting::BakeKernel> {
+                        throw std::runtime_error("ray query unsupported");
+                    };
+                    result.session = std::make_shared<lighting::BakeSession>(lighting::BakeScene{}, options, revision,
+                                                                           std::vector<lighting::FaceKey>{}, std::move(factory));
                     result.atlas = std::move(*atlas);
                     const auto diff = result.session->restart(std::move(state), std::move(setup.scene), options, revision,
                                                               std::move(keys));
@@ -306,8 +334,11 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                     hybridFull_ = prepared.full;
                 }
                 if (displayed_) mirror_.setLightmaps(maps_);
+                deviceStatus_ = session_->gpu() ? QStringLiteral("GPU") : QStringLiteral("CPU");
+                if (!session_->kernelError().empty())
+                    deviceStatus_ += QStringLiteral(", GPU unavailable: ") + QString::fromStdString(session_->kernelError()).left(100);
                 progress_ = progressText(session_->progress(), options_.maxPasses);
-                status_ = QStringLiteral("Baked: ") + progress_;
+                status_ = QStringLiteral("Baked (%1): ").arg(deviceStatus_) + progress_;
                 redraw_ = true;
             });
     } else if (!session_->progress().idle) {
@@ -316,7 +347,7 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
             struct TickResult { lighting::BakePublication publication; QString error; } result;
             try {
                 session->setCamera(camera);
-                result.publication = session->tick(cancel);
+                result.publication = session->tick(cancel, std::chrono::milliseconds(session->gpu() ? 8 : 40));
             } catch (const std::exception& e) { result.error = QString::fromUtf8(e.what()); }
             return result;
         }, [this](auto result) {
@@ -334,7 +365,7 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
 void BakeController::accept(lighting::BakePublication publication) {
     if (publication.progress.revision != revision_) return;
     progress_ = progressText(publication.progress, options_.maxPasses);
-    status_ = QStringLiteral("Baked: ") + progress_;
+    status_ = QStringLiteral("Baked (%1): ").arg(deviceStatus_) + progress_;
     std::vector<std::size_t> changed;
     for (auto& update : publication.faces) {
         for (std::size_t i = 0; i < update.radiance.size(); ++i)

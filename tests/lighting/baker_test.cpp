@@ -449,6 +449,47 @@ TEST_CASE("baker: bounce snapshots and seeds agree across threads and budgets") 
     CHECK(mean(updated.resolveLevel(1)).x > mean(frozen.resolveLevel(1)).x);
 }
 
+TEST_CASE("baker: external kernel receives stable traversal snapshots and sample counts") {
+    struct Kernel final : BakeKernel {
+        std::vector<bool> starts;
+        void run(unsigned level, std::span<const BakeWork> work,
+                 const std::vector<std::vector<Vec3>>* source, bool newTraversal,
+                 std::span<Vec3> sums) override {
+            starts.push_back(newTraversal);
+            CHECK((source != nullptr) == (level != 0));
+            std::size_t output = 0;
+            for (const auto& item : work) {
+                for (auto luxel = item.begin; luxel < item.end; ++luxel) {
+                    const auto prior = static_cast<float>(item.samples[luxel]);
+                    sums[output++] = Vec3{4.0f + prior + static_cast<float>(level)};
+                }
+            }
+            CHECK(output == sums.size());
+        }
+    };
+    BakeScene scene;
+    scene.faces.push_back(floorFace());
+    auto fullKernel = std::make_shared<Kernel>();
+    auto partialKernel = std::make_shared<Kernel>();
+    Baker full(scene, {.bounces = 1}, fullKernel);
+    Baker partial(scene, {.bounces = 1}, partialKernel);
+    for (unsigned level = 0; level <= 1; ++level) {
+        for (int pass = 0; pass < 2; ++pass) {
+            if (level == 0) {
+                full.step();
+                while (!partial.step(7).passComplete) {}
+            } else {
+                full.bounce(level);
+                while (!partial.bounce(level, 7).passComplete) {}
+            }
+        }
+        CHECK(full.resolveLevel(level) == partial.resolveLevel(level));
+        CHECK(full.buffers(level)[0].samples == partial.buffers(level)[0].samples);
+    }
+    CHECK(std::count(partialKernel->starts.begin(), partialKernel->starts.end(), true) == 3);
+    CHECK(partialKernel->starts.size() > fullKernel->starts.size());
+}
+
 TEST_CASE("baker: sample points outside the face move just inside it") {
     const auto face = quadFace({0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1});
     const DVec3 interior{40, 50, 0};
@@ -605,4 +646,59 @@ TEST_CASE("baker: document adapter charts brush sides and filters compile materi
     }
     Baker baker(*scene);
     CHECK(baker.step().passComplete);
+}
+
+TEST_CASE("baker: bounce source changes only after upstream accumulation") {
+    struct Kernel final : BakeKernel {
+        std::vector<bool> changes;
+        void run(unsigned level, std::span<const BakeWork>, const std::vector<std::vector<Vec3>>*,
+                 bool changed, std::span<Vec3> sums) override {
+            if (level == 1) changes.push_back(changed);
+            std::ranges::fill(sums, Vec3{1});
+        }
+    };
+    BakeScene scene;
+    scene.faces = {floorFace(), floorFace()};
+    auto kernel = std::make_shared<Kernel>();
+    Baker baker(scene, {.threads = 1, .bounces = 1}, kernel);
+    const std::array<std::size_t, 1> first{0}, second{1};
+    baker.step();
+    baker.bounce(1, 1, first);
+    while (!baker.bounce(1, 7, first).passComplete) {}
+    baker.bounce(1, 10000, second);
+    baker.step(1, first);
+    baker.bounce(1, 10000, first);
+    REQUIRE(kernel->changes.size() > 3);
+    CHECK(kernel->changes.front());
+    CHECK(kernel->changes.back());
+    CHECK(std::count(kernel->changes.begin(), kernel->changes.end(), true) == 2);
+}
+
+TEST_CASE("baker: interleaved face selections preserve CPU results") {
+    BakeScene scene;
+    scene.faces = {floorFace(), floorFace(), floorFace()};
+    Light light;
+    light.kind = LightKind::Ambient;
+    light.intensity = {1, 1, 1};
+    scene.lights.push_back(light);
+    BakerOptions settings{.seed = 17, .threads = 1, .skyRays = 1, .bounces = 1, .bounceRays = 1};
+    Baker full(scene, settings), selected(scene, settings);
+    const std::array<std::size_t, 1> first{0};
+    const std::array<std::size_t, 2> rest{1, 2};
+    for (unsigned level = 0; level <= 1; ++level) {
+        for (int pass = 0; pass < 2; ++pass) {
+            if (!level) {
+                full.step();
+                while (!selected.step(7, first).passComplete) {}
+                while (!selected.step(7, rest).passComplete) {}
+            } else {
+                full.bounce(level);
+                while (!selected.bounce(level, 7, first).passComplete) {}
+                while (!selected.bounce(level, 7, rest).passComplete) {}
+            }
+        }
+        CHECK(full.resolveLevel(level) == selected.resolveLevel(level));
+    }
+    for (std::size_t face = 0; face < scene.faces.size(); ++face)
+        CHECK(selected.resolveFace(face) == selected.resolve()[face]);
 }

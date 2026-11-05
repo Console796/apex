@@ -45,7 +45,7 @@ BakeState seedState(const BakeScene& scene, std::vector<FaceKey> keys,
 }
 
 BakeSession::BakeSession(BakeScene scene, BakeSessionOptions options, std::uint64_t revision,
-                         std::vector<FaceKey> keys) {
+                         std::vector<FaceKey> keys, KernelFactory factory) : factory_(std::move(factory)) {
     reset(std::move(scene), options, revision, std::move(keys));
 }
 
@@ -61,12 +61,24 @@ void BakeSession::reset(BakeScene scene, const BakeSessionOptions& options, std:
     options_ = options;
     keys_ = keys.empty() ? faceKeys(scene.faces) : std::move(keys);
     if (keys_.size() != scene.faces.size()) throw std::invalid_argument("BakeSession: key count mismatch");
-    baker_ = std::make_unique<Baker>(std::move(scene), options.baker);
+    std::shared_ptr<BakeKernel> kernel;
+    kernelError_.clear();
+    if (factory_ && !scene.faces.empty()) {
+        try {
+            kernel = factory_(scene, options.baker);
+            if (!kernel) kernelError_ = "kernel creation returned no device";
+        } catch (const std::exception& error) { kernelError_ = error.what(); }
+        catch (...) { kernelError_ = "unknown error"; }
+    }
+    gpu_ = bool(kernel);
+    baker_ = std::make_unique<Baker>(std::move(scene), options.baker, std::move(kernel));
     progress_ = {revision, std::vector<unsigned>(options.baker.bounces + 1, 0), 0,
                  std::min(options.initialPasses, options.maxPasses), baker_->scene().faces.empty()};
     facePasses_.assign(options.baker.bounces + 1, std::vector<unsigned>(baker_->scene().faces.size(), 0));
     order_.clear();
     nextFace_ = 0;
+    batch_.clear();
+    batchLuxels_ = 0;
     budget_ = 16;
     refining_ = ordered_ = focusing_ = false;
     focus_.clear();
@@ -205,14 +217,34 @@ void BakeSession::advanceLocked(std::size_t budget) {
         if (order_.empty()) finishTraversal(); // Every face already at this level's target: next stage.
     }
     if (progress_.idle) return;
-    const auto face = order_[nextFace_];
-    const std::array selection{face};
-    const auto step = progress_.level == 0 ? baker_->step(budget, selection)
-                                         : baker_->bounce(progress_.level, budget, selection);
-    if (step.luxels) changed_.insert(face);
+    if (batch_.empty()) {
+        std::size_t total = 0;
+        for (auto i = nextFace_; i < order_.size() && batch_.size() < std::max(std::size_t{1}, options_.maxBatchFaces); ++i) {
+            const auto face = order_[i];
+            const auto count = baker_->buffers()[face].samples.size();
+            if (!batch_.empty() && count > budget - total) break;
+            batch_.push_back(face);
+            total += count;
+            if (total >= budget) break;
+        }
+        batchLuxels_ = 0;
+    }
+    const auto step = progress_.level == 0 ? baker_->step(budget, batch_)
+                                         : baker_->bounce(progress_.level, budget, batch_);
+    auto begin = batchLuxels_, end = begin + step.luxels;
+    std::size_t offset = 0;
+    for (const auto face : batch_) {
+        const auto count = baker_->buffers()[face].samples.size();
+        if (begin < offset + count && end > offset) changed_.insert(face);
+        if (begin < offset + count && end >= offset + count) ++facePasses_[progress_.level][face];
+        offset += count;
+    }
+    batchLuxels_ = end;
     if (step.passComplete) {
-        ++facePasses_[progress_.level][face];
-        if (++nextFace_ == order_.size()) finishTraversal();
+        nextFace_ += batch_.size();
+        batch_.clear();
+        batchLuxels_ = 0;
+        if (nextFace_ == order_.size()) finishTraversal();
     }
 }
 
@@ -224,17 +256,18 @@ BakePublication BakeSession::tick(CancelToken cancel, std::chrono::milliseconds 
         advanceLocked(budget_);
         const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
         // Aim below the full slice duration to bound cancellation latency, even at expensive levels.
-        budget_ = std::clamp(std::size_t(double(budget_) * 5.0 / std::max(ms, 0.01)), std::size_t{1}, std::size_t{256});
+        const auto limit = gpu_ ? std::size_t{1 << 18} : std::size_t{256};
+        budget_ = std::clamp(std::size_t(double(budget_) * options_.advanceMilliseconds / std::max(ms, 0.01)),
+                             std::size_t{1}, limit);
     }
     BakePublication publication{progress_, {}};
     // A cancelled tick publishes nothing; its faces stay in changed_ for takeState to report as unpublished.
     if (cancel.cancelled() || !baker_) return publication;
     if (!changed_.empty()) {
-        auto resolved = baker_->resolve();
         for (const auto face : changed_) {
             auto& update = publication.faces.emplace_back();
             update.face = face;
-            update.radiance = std::move(resolved[face]);
+            update.radiance = baker_->resolveFace(face);
             for (const auto count : baker_->buffers()[face].samples) update.sampled.push_back(count != 0);
         }
         changed_.clear();
