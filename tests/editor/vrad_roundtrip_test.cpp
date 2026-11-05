@@ -6,12 +6,18 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 
 using namespace apex;
 namespace {
 namespace fs = std::filesystem;
 using compile::test::Script;
 using compile::test::ScriptedRunner;
+
+std::string read(const fs::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), {}};
+}
 
 struct Sandbox {
     fs::path path = fs::temp_directory_path() / ("apex-vrad-test-" + std::to_string(
@@ -44,6 +50,7 @@ TEST_CASE("vrad round trip runs vbsp, vvis -fast and vrad in a fresh temp direct
     Sandbox sandbox;
     auto docPtr = makeDocument();
     auto& doc = *docPtr;
+    editor_test::addBlock(doc, R"(entity { id 2 classname light_rt origin "1 2 3" })");
     const auto before = doc.write();
     REQUIRE(before);
     const auto revision = doc.historyState();
@@ -64,6 +71,17 @@ TEST_CASE("vrad round trip runs vbsp, vvis -fast and vrad in a fresh temp direct
     CHECK((!relative.empty() && *relative.begin() != ".."));
     for (const auto& call : runner.calls) CHECK(call.cwd.lexically_relative(sandbox.temp()).begin()->string() != "..");
     CHECK(fs::exists(trip.directory() / "compile/room/room.vmf"));
+    // A round trip bakes runtime lights into the exported copy; the document keeps the runtime class.
+    auto exported = kv1::parse(read(trip.directory() / "compile/room/room.vmf"));
+    REQUIRE(exported);
+    bool baked = false;
+    for (const auto* entity : exported->root().findAll("entity")) {
+        const auto* classname = entity->find("classname");
+        REQUIRE(classname);
+        CHECK(classname->decodedValue() != "light_rt");
+        if (classname->decodedValue() == "light") baked = true;
+    }
+    CHECK(baked);
     CHECK(trip.bsp() == trip.directory() / "compile/room/room.bsp");
     CHECK(fs::is_empty(sandbox.path / "game"));
     CHECK(*doc.write() == *before);

@@ -71,7 +71,8 @@ Result<void> VradRoundTrip::start(const document::Document& document, const std:
         // The copy is expanded in place; the user's document is untouched.
         exported_ = document.snapshot();
         origins_ = expandBakeInstances(*exported_, map, game.instanceRoot);
-        auto snapshot = writeCompileSnapshot(*exported_, map, directory_, game);
+        // vrad does not light the runtime classes; the exported copy is baked for the tool run.
+        auto snapshot = writeCompileSnapshot(*exported_, map, directory_, game, {}, {.bakeRuntimeLights = true});
         if (!snapshot) {
             message_ = snapshot.error().what();
             state_ = State::Failed;

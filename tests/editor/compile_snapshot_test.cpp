@@ -199,6 +199,82 @@ TEST_CASE("compile snapshots restore missing light defaults in maps and copied i
     CHECK(doc.historyState() == revision);
 }
 
+TEST_CASE("compile snapshot keeps runtime light classnames for a normal compile") {
+    CompileDir dir;
+    document::Document doc(editor_test::parsed(R"(
+        world { id 1 classname worldspawn }
+        entity { id 2 classname light_rt origin "1 2 3" }
+        entity { id 3 classname LIGHT_RT_SPOT origin "4 5 6" }
+    )"));
+    auto snapshot = editor::writeCompileSnapshot(doc, {}, dir.path, {});
+    REQUIRE(snapshot);
+    auto compiled = kv1::parse(read(snapshot->path));
+    REQUIRE(compiled);
+    const auto entities = compiled->root().findAll("entity");
+    REQUIRE(entities.size() == 2);
+    // Matching is case-insensitive on values, but nothing may be renamed regardless.
+    CHECK(entities[0]->find("classname")->decodedValue() == "light_rt");
+    CHECK(entities[1]->find("classname")->decodedValue() == "LIGHT_RT_SPOT");
+}
+
+TEST_CASE("vrad snapshot bakes runtime light classnames in the map and copied instances") {
+    CompileDir dir;
+    document::Document doc(editor_test::parsed(R"(
+        world { id 1 classname worldspawn }
+        entity { id 2 classname light_rt origin "1 2 3" _light "10 20 30 200" }
+        entity { id 3 classname light_rt_spot origin "4 5 6" _light "40 50 60 250" }
+        entity { id 4 classname func_instance "file" "inst/lights.vmf" }
+    )"));
+    fs::create_directories(dir.path / "src/inst");
+    const auto source = dir.path / "src/map.vmf";
+    const auto instance = dir.path / "src/inst/lights.vmf";
+    const std::string instanceBefore = R"(entity { "id" "10" "classname" "light_rt" "origin" "7 8 9" })";
+    std::ofstream(source, std::ios::binary) << doc.write().value();
+    std::ofstream(instance, std::ios::binary) << instanceBefore;
+    const auto countOccurrences = [](const std::string& text, const std::string& needle) {
+        std::size_t n = 0;
+        for (auto at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) ++n;
+        return n;
+    };
+    editor::CompileGamePaths game;
+    SUBCASE("a normal compile keeps the runtime classnames everywhere") {
+        const auto snapshot = editor::writeCompileSnapshot(doc, source, dir.path / "cache", game);
+        REQUIRE(snapshot);
+        const auto compiled = read(snapshot->path);
+        const auto copied = read(snapshot->paths.workDirectory / "inst/lights.vmf");
+        CHECK(countOccurrences(compiled, "light_rt") == 2);
+        CHECK(countOccurrences(copied, "light_rt") == 1);
+    }
+    SUBCASE("the baked export renames only the light classnames") {
+        const auto snapshot =
+            editor::writeCompileSnapshot(doc, source, dir.path / "cache", game, {}, {.bakeRuntimeLights = true});
+        REQUIRE(snapshot);
+        auto compiled = kv1::parse(read(snapshot->path));
+        REQUIRE(compiled);
+        const auto entities = compiled->root().findAll("entity");
+        REQUIRE(entities.size() == 3);
+        CHECK(entities[0]->find("classname")->decodedValue() == "light");
+        CHECK(entities[0]->find("origin")->decodedValue() == "1 2 3");
+        CHECK(entities[0]->find("_light")->decodedValue() == "10 20 30 200");
+        CHECK(entities[1]->find("classname")->decodedValue() == "light_spot");
+        CHECK(entities[1]->find("origin")->decodedValue() == "4 5 6");
+        CHECK(entities[1]->find("_light")->decodedValue() == "40 50 60 250");
+        CHECK(entities[2]->find("classname")->decodedValue() == "func_instance");
+        const auto map = read(snapshot->path);
+        const auto copied = read(snapshot->paths.workDirectory / "inst/lights.vmf");
+        CHECK(countOccurrences(map, "light_rt") == 0);
+        CHECK(countOccurrences(copied, "light_rt") == 0);
+        REQUIRE(fs::is_regular_file(snapshot->paths.workDirectory / "inst/lights.vmf"));
+        auto instanceText = kv1::parse(copied);
+        REQUIRE(instanceText);
+        REQUIRE(instanceText->root().find("entity"));
+        CHECK(instanceText->root().find("entity")->find("classname")->decodedValue() == "light");
+        CHECK(instanceText->root().find("entity")->find("origin")->decodedValue() == "7 8 9");
+        CHECK(read(instance) == instanceBefore);
+        CHECK(read(source) == doc.write().value());
+    }
+}
+
 TEST_CASE("lighting compile snapshot applies installed FGD defaults to a supplied reproduction map" *
           doctest::skip(!std::getenv("APEX_LIGHTING_VMF"))) {
     const auto* install = std::getenv("APEX_P2CE_DIR");

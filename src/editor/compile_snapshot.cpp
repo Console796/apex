@@ -9,6 +9,7 @@
 #include <iterator>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace apex::editor {
@@ -45,10 +46,44 @@ Result<std::string> lightDefaults(std::string text, const CompileGamePaths& game
     return changed ? kv1::write(*parsed) : Result<std::string>{std::move(text)};
 }
 
+// A VRAD round trip runs vrad on the runtime light classes. vrad does not light those classes, so the
+// snapshot substitutes only classname values; a normal compile must keep them to avoid doubled lights.
+Result<std::string> bakeRuntimeLights(std::string text, kv1::EscapeMode escapeMode) {
+    auto parsed = kv1::parse(text, escapeMode);
+    if (!parsed) return std::unexpected(parsed.error());
+    bool changed = false;
+    const auto visit = [&](const auto& self, kv1::Node& block) -> Result<void> {
+        if (ciEquals(block.key(), "entity")) {
+            auto* name = block.find("classname");
+            if (name) {
+                const auto value = name->decodedValue().value_or("");
+                std::string_view baked;
+                if (ciEquals(value, "light_rt")) baked = "light";
+                else if (ciEquals(value, "light_rt_spot")) baked = "light_spot";
+                if (!baked.empty()) {
+                    auto set = name->setValue(std::string(baked));
+                    if (!set) return std::unexpected(set.error());
+                    changed = true;
+                }
+            }
+        }
+        for (auto& child : block.children()) {
+            if (child.kind() != kv1::NodeKind::Block) continue;
+            auto result = self(self, child);
+            if (!result) return result;
+        }
+        return {};
+    };
+    auto result = visit(visit, parsed->root());
+    if (!result) return std::unexpected(result.error());
+    return changed ? kv1::write(*parsed) : Result<std::string>{std::move(text)};
+}
+
 // vbsp resolves an instance `file` from the VMF's folder, then from the one -instancepath. The snapshot sits in
 // a cache folder, so instances that exist only beside the source map are copied in, keeping their relative path.
 Result<void> copySourceInstances(std::string& text, const std::filesystem::path& sourceDirectory,
-    const std::filesystem::path& work, const CompileGamePaths& game) {
+    const std::filesystem::path& work, const CompileGamePaths& game,
+    bool runtimeLights) {
     namespace fs = std::filesystem;
     std::map<fs::path, fs::path> copied;
     std::set<fs::path> destinations;
@@ -86,6 +121,12 @@ Result<void> copySourceInstances(std::string& text, const std::filesystem::path&
                 in.exceptions(std::ios::failbit | std::ios::badbit);
                 auto instance = lightDefaults(std::string(std::istreambuf_iterator<char>(in), {}), game);
                 if (!instance) return std::unexpected(instance.error().withContext(from.string()));
+                // Bake after the defaults so missing values still come from the light_rt class.
+                if (runtimeLights) {
+                    auto baked = bakeRuntimeLights(std::move(*instance), game.escapeMode);
+                    if (!baked) return std::unexpected(baked.error().withContext(from.string()));
+                    *instance = std::move(*baked);
+                }
                 auto nested = self(self, *instance, from.parent_path(), destination.parent_path());
                 if (!nested) return nested;
                 fs::create_directories(destination.parent_path());
@@ -111,11 +152,17 @@ Result<void> copySourceInstances(std::string& text, const std::filesystem::path&
 
 Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
     const std::filesystem::path& source, const std::filesystem::path& cache,
-    const CompileGamePaths& game, const std::optional<CompileCordon>& cordon) {
+    const CompileGamePaths& game, const std::optional<CompileCordon>& cordon,
+    const CompileSnapshotOptions& options) {
     auto text = document.write();
     if (!text) return std::unexpected(text.error());
     text = lightDefaults(std::move(*text), game);
     if (!text) return std::unexpected(text.error());
+    // Bake after the defaults so missing values still come from the light_rt FGD class.
+    if (options.bakeRuntimeLights) {
+        text = bakeRuntimeLights(std::move(*text), game.escapeMode);
+        if (!text) return std::unexpected(text.error());
+    }
     if (cordon) {
         const auto boxes = document::readCordons(document).compileBoxes();
         if (!boxes.empty()) {
@@ -144,7 +191,8 @@ Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
         for (const auto& entry : std::filesystem::directory_iterator(paths.workDirectory))
             std::filesystem::remove_all(entry.path());
         if (!source.empty()) {
-            auto copied = copySourceInstances(*text, source.parent_path(), paths.workDirectory, game);
+            auto copied = copySourceInstances(*text, source.parent_path(), paths.workDirectory, game,
+                options.bakeRuntimeLights);
             if (!copied) return std::unexpected(copied.error());
         }
         snapshot.path = paths.workDirectory / (name + ".vmf");

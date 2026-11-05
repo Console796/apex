@@ -30,9 +30,16 @@ struct CompileCordon {
     std::string material = "tools/toolsskybox";
 };
 
+// A VRAD round trip bakes runtime light classes into their static equivalents; normal compiles keep
+// the runtime classes so the game keeps drawing them.
+struct CompileSnapshotOptions {
+    bool bakeRuntimeLights = false;
+};
+
 // Call on the document's owning thread at Run. Never saves or modifies the source document.
 Result<CompileSnapshot> writeCompileSnapshot(const document::Document& document,
     const std::filesystem::path& source, const std::filesystem::path& cache,
-    const CompileGamePaths& game, const std::optional<CompileCordon>& cordon = std::nullopt);
+    const CompileGamePaths& game, const std::optional<CompileCordon>& cordon = std::nullopt,
+    const CompileSnapshotOptions& options = {});
 
 } // namespace apex::editor
