@@ -99,8 +99,10 @@ CPMAddPackage(
   GITHUB_REPOSITORY RenderKit/embree
   GIT_TAG f590db83ef6559387df7f6d8725c34fb7acf851d
 )
-# Embree's ISA kernels are the build's heaviest compiles: no debug info (halves memory and time), at most two at once.
-set_property(GLOBAL APPEND PROPERTY JOB_POOLS apex_embree=2)
+# Embree's ISA kernels are the build's heaviest compiles: no debug info (halves memory and time), at most
+# APEX_EMBREE_JOBS at once (2 suits a 15 GiB host; a dedicated build machine can raise it).
+set(APEX_EMBREE_JOBS 2 CACHE STRING "Max concurrent Embree kernel compiles (Ninja)")
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS apex_embree=${APEX_EMBREE_JOBS})
 foreach(target embree embree_sse42 embree_avx embree_avx2 sys tasking simd lexers math)
   if(TARGET ${target})
     if(NOT MSVC)

@@ -1,3 +1,4 @@
+// Apex-authored test fixture (MIT). Plan 0.7.5: a lit room for the VRAD view and replay tests.
 world
 {
 "id" "1"

@@ -12,7 +12,7 @@ game = os.environ.get("APEX_P2CE_DIR")
 if not game or not Path(game).is_dir():
     print("APEX_P2CE_DIR not set; skipping")
     sys.exit(77)
-with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temp:
+with tempfile.TemporaryDirectory() as temp:
     root = Path(temp)
     env = dict(os.environ, QT_QPA_PLATFORM="offscreen", TMPDIR=temp)
     base = [binary, "--vmf", vmf, "--game", game, "--width", "320", "--height", "180",
@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(dir="/tmp/opencode") as temp:
             "64", "64", "64", "0", "45", "0"]
     fresh = subprocess.run(base + ["--vrad-flags", "-final", "--keep-vrad", "--out", str(root / "fresh")],
                            env=env, capture_output=True, text=True, check=True, timeout=120)
-    match = re.search(r"^vrad directory=(.*)$", fresh.stdout, re.MULTILINE)
+    match = re.search(r"^vrad .*\bdirectory=(\S+)", fresh.stdout, re.MULTILINE)
     if not match:
         raise RuntimeError("VRAD did not report its retained directory")
     bsps = list(Path(match.group(1)).rglob("*.bsp"))

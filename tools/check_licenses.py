@@ -45,9 +45,10 @@ def required():
 def main():
     errors = []
     rows = listed()
+    names = {n.lower() for n in rows}
     for name in sorted(required()):
-        # Qt6 is listed once for the whole family.
-        if name not in rows and not (name.startswith("Qt") and "Qt6" in rows):
+        # Qt6 is listed once for the whole family; CPM names are matched case-insensitively (embree / Embree).
+        if name.lower() not in names and not (name.startswith("Qt") and "Qt6" in rows):
             errors.append(f"dependency '{name}' is missing from THIRD_PARTY.md")
     for name, lic in rows.items():
         parts = {p.strip() for p in re.split(r"\s+(?:OR|AND)\s+|/", lic)}
