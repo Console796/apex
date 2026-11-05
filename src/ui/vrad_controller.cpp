@@ -126,7 +126,7 @@ bool VradController::update(bool active, const std::filesystem::path& map, const
 QString VradController::status() const {
     const QString note = QStringLiteral("faces without VRAD data are black");
     switch (phase_) {
-    case Phase::Idle: return QStringLiteral("VRAD: not run (Re-run VRAD to compile)");
+    case Phase::Idle: return QStringLiteral("VRAD: not run (Rebuild VRAD lightmaps to compile)");
     case Phase::Running:
         return QStringLiteral("VRAD: compiling %1s | %2").arg(std::max<long long>(shown_.count(), 0)).arg(note);
     case Phase::Failed: {
@@ -136,7 +136,7 @@ QString VradController::status() const {
     case Phase::Ready: break;
     }
     QString text = QStringLiteral("VRAD: %1 faces lit").arg(stats_.faces);
-    if (stale()) text += QStringLiteral(" | STALE: edited since this run (Re-run VRAD)");
+    if (stale()) text += QStringLiteral(" | STALE: edited since this run (Rebuild VRAD lightmaps)");
     return text + QStringLiteral(" | ") + note;
 }
 

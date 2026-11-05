@@ -142,13 +142,13 @@ QString BakeController::status() const {
     if (!hybrid_) return status_;
     if (!baseline_) return QStringLiteral("Hybrid: waiting for the first VRAD compile");
     if (failed_) return status_;
-    if (hybridFull_) return QStringLiteral("Hybrid: this change needs a VRAD rebake (Re-run VRAD)");
+    if (hybridFull_) return QStringLiteral("Hybrid: this change needs a VRAD rebake (Rebiuld VRAD Lightmap)");
     const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - baseline_->completed).count();
     const QString age = seconds >= 60 ? QStringLiteral("%1m").arg(seconds / 60) : QStringLiteral("%1s").arg(seconds);
     QString text = QStringLiteral("Hybrid (%5): VRAD baseline %1 | %2 of %3 faces rebaked | %4")
                        .arg(age).arg(hybridDirty_.size()).arg(hybridFaces_).arg(progress_.isEmpty() ? QStringLiteral("preparing snapshot") : progress_).arg(deviceStatus_.isEmpty() ? QStringLiteral("CPU") : deviceStatus_);
     if (hybridFaces_ && double(hybridDirty_.size()) > kRecommendRerunShare * double(hybridFaces_))
-        text += QStringLiteral(" | Re-run VRAD recommended");
+        text += QStringLiteral(" | VRAD Lightmap rebuild recommended");
     return text;
 }
 

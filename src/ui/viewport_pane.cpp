@@ -1063,7 +1063,7 @@ void PaneFrame::buildMenu() {
     mode->addSeparator();
     mode->addAction(tr("Bake settings..."), this, [this] { showBakeSettings(this); });
     mode->addAction(tr("VRAD settings..."), this, [this] { showVradSettings(this); });
-    mode->addAction(tr("Re-run VRAD"), this, [this] { emit vradRerunRequested(); });
+    mode->addAction(tr("Rebuild VRAD Lightmap"), this, [this] { emit vradRerunRequested(); });
     mode->addAction(tr("Cancel VRAD run"), this, [this] { emit vradCancelRequested(); });
 
     // Compare (0.7.5 D7): flip this viewport between two light sources; the title says which one is showing.
