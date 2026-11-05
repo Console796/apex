@@ -82,35 +82,77 @@ target_include_directories(VulkanMemoryAllocator SYSTEM INTERFACE
                            "${VulkanMemoryAllocator_SOURCE_DIR}/include")
 
 # Embree v4.4.1 (0.7.3, D3): CPU ray tracing for the baker's fallback when VK_KHR_ray_query is absent.
-# Static, internal tasking (no TBB), no ISPC, no tutorials.
-set(EMBREE_STATIC_LIB ON CACHE BOOL "" FORCE)
-set(EMBREE_ISPC_SUPPORT OFF CACHE BOOL "" FORCE)
-set(EMBREE_TASKING_SYSTEM INTERNAL CACHE STRING "" FORCE)
-set(EMBREE_TUTORIALS OFF CACHE BOOL "" FORCE)
-set(EMBREE_INSTALL_DEPENDENCIES OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_CURVE OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_POINT OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_SUBDIVISION OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_USER OFF CACHE BOOL "" FORCE)
-set(EMBREE_GEOMETRY_GRID OFF CACHE BOOL "" FORCE)
-set(EMBREE_MAX_ISA AVX2 CACHE STRING "" FORCE)
-CPMAddPackage(
-  NAME embree
-  GITHUB_REPOSITORY RenderKit/embree
-  GIT_TAG f590db83ef6559387df7f6d8725c34fb7acf851d
-)
-# Embree's ISA kernels are the build's heaviest compiles: no debug info (halves memory and time), at most
-# APEX_EMBREE_JOBS at once (2 suits a 15 GiB host; a dedicated build machine can raise it).
-set(APEX_EMBREE_JOBS 2 CACHE STRING "Max concurrent Embree kernel compiles (Ninja)")
-set_property(GLOBAL APPEND PROPERTY JOB_POOLS apex_embree=${APEX_EMBREE_JOBS})
-foreach(target embree embree_sse42 embree_avx embree_avx2 sys tasking simd lexers math)
-  if(TARGET ${target})
-    if(NOT MSVC)
-      target_compile_options(${target} PRIVATE -g0)
-    endif()
-    set_property(TARGET ${target} PROPERTY JOB_POOL_COMPILE apex_embree)
+# MSVC needs 30+ minutes for each of Embree's AVX curve kernels (an estimated 11 hours for the library
+# on the CI laptop), so Windows links Intel's prebuilt release of the same version instead: a shared
+# embree4.dll with oneTBB tasking, pinned by hash. Everywhere else builds it from source.
+option(APEX_EMBREE_PREBUILT "Link Intel's prebuilt Embree release instead of building it (Windows x64)" ${MSVC})
+if(APEX_EMBREE_PREBUILT)
+  if(NOT WIN32)
+    message(FATAL_ERROR "APEX_EMBREE_PREBUILT is only available on Windows x64")
   endif()
-endforeach()
+  CPMAddPackage(
+    NAME embree
+    VERSION 4.4.1
+    URL https://github.com/RenderKit/embree/releases/download/v4.4.1/embree-4.4.1.x64.windows.zip
+    URL_HASH SHA256=5aa1fa3161a720f9c610b06c652b80f421cb2b1fe8221fdf92b74157336fdf8f
+    DOWNLOAD_ONLY YES
+  )
+  find_package(embree 4.4.1 EXACT CONFIG REQUIRED PATHS "${embree_SOURCE_DIR}" NO_DEFAULT_PATH)
+  set(APEX_EMBREE_DLLS "${embree_SOURCE_DIR}/bin/embree4.dll" "${embree_SOURCE_DIR}/bin/tbb12.dll"
+                       "${embree_SOURCE_DIR}/bin/tbbmalloc.dll")
+  # Every executable needs the DLLs beside it before it first runs (doctest discovery runs the test
+  # binaries at build time), so copy them at configure time into each of our executables' folders.
+  function(apex_copy_embree_dlls dir)
+    get_property(targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(target IN LISTS targets)
+      get_target_property(type ${target} TYPE)
+      if(type STREQUAL "EXECUTABLE")
+        get_target_property(out ${target} BINARY_DIR)
+        file(COPY ${APEX_EMBREE_DLLS} DESTINATION "${out}")
+      endif()
+    endforeach()
+    get_property(subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+    foreach(sub IN LISTS subdirs)
+      # Our own folders only: not dependencies, which may sit in the build tree's _deps.
+      cmake_path(IS_PREFIX PROJECT_SOURCE_DIR "${sub}" ours)
+      cmake_path(IS_PREFIX CMAKE_BINARY_DIR "${sub}" built)
+      if(ours AND NOT built)
+        apex_copy_embree_dlls("${sub}")
+      endif()
+    endforeach()
+  endfunction()
+  cmake_language(DEFER DIRECTORY "${PROJECT_SOURCE_DIR}" CALL apex_copy_embree_dlls "${PROJECT_SOURCE_DIR}")
+else()
+  # Static, internal tasking (no TBB), no ISPC, no tutorials.
+  set(EMBREE_STATIC_LIB ON CACHE BOOL "" FORCE)
+  set(EMBREE_ISPC_SUPPORT OFF CACHE BOOL "" FORCE)
+  set(EMBREE_TASKING_SYSTEM INTERNAL CACHE STRING "" FORCE)
+  set(EMBREE_TUTORIALS OFF CACHE BOOL "" FORCE)
+  set(EMBREE_INSTALL_DEPENDENCIES OFF CACHE BOOL "" FORCE)
+  set(EMBREE_GEOMETRY_CURVE OFF CACHE BOOL "" FORCE)
+  set(EMBREE_GEOMETRY_POINT OFF CACHE BOOL "" FORCE)
+  set(EMBREE_GEOMETRY_SUBDIVISION OFF CACHE BOOL "" FORCE)
+  set(EMBREE_GEOMETRY_USER OFF CACHE BOOL "" FORCE)
+  set(EMBREE_GEOMETRY_GRID OFF CACHE BOOL "" FORCE)
+  set(EMBREE_MAX_ISA AVX2 CACHE STRING "" FORCE)
+  CPMAddPackage(
+    NAME embree
+    GITHUB_REPOSITORY RenderKit/embree
+    GIT_TAG f590db83ef6559387df7f6d8725c34fb7acf851d
+  )
+  # Embree's ISA kernels are the build's heaviest compiles: no debug info (halves memory and time), at most
+  # APEX_EMBREE_JOBS at once (2 suits a 15 GiB host; a dedicated build machine can raise it).
+  set(APEX_EMBREE_JOBS 2 CACHE STRING "Max concurrent Embree kernel compiles (Ninja)")
+  set_property(GLOBAL APPEND PROPERTY JOB_POOLS apex_embree=${APEX_EMBREE_JOBS})
+  foreach(target embree embree_sse42 embree_avx embree_avx2 sys tasking simd lexers math)
+    if(TARGET ${target})
+      if(NOT MSVC)
+        target_compile_options(${target} PRIVATE -g0)
+      endif()
+      set_property(TARGET ${target} PROPERTY JOB_POOL_COMPILE apex_embree)
+    endif()
+  endforeach()
+endif()
 
 if(APEX_BUILD_APP)
   # Qt Multimedia (qt6-multimedia-dev) is required by apex_ui (root CMakeLists.txt).

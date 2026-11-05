@@ -19,7 +19,8 @@ The row's first column is the exact name used in `deps.cmake` (CPM) or `find_pac
 | Vulkan-Headers | Apache-2.0 OR MIT | CPM, pinned commit (vulkan-sdk-1.4.357.0) | render (through volk and VMA) |
 | volk | MIT | CPM, pinned commit (vulkan-sdk-1.4.357.0) | render |
 | VulkanMemoryAllocator | MIT | CPM, pinned commit (v3.3.0) | render |
-| Embree | Apache-2.0 | CPM, pinned commit (v4.4.1; static, internal tasking, triangles and instances only) | lighting (CPU ray tracing fallback) |
+| Embree | Apache-2.0 | CPM, pinned commit (v4.4.1; static, internal tasking, triangles and instances only). MSVC: Intel's prebuilt v4.4.1 Windows release zip, pinned by SHA-256, shipped as `embree4.dll` | lighting (CPU ray tracing fallback) |
+| oneTBB | Apache-2.0 | bundled in the prebuilt Embree Windows release (`tbb12.dll`, `tbbmalloc.dll`); Windows only | Embree's tasking on Windows |
 | wayland-client | MIT | optional system package, dynamically linked on Linux | ui (pointer lock) |
 | wayland-scanner | MIT | optional system build tool, located through pkg-config | build (protocol glue) |
 | wayland-protocols | MIT | vendored upstream pointer-constraints and relative-pointer unstable v1 XMLs in `third_party/wayland-protocols/`, copyright/licence headers retained | ui (generated protocol glue) |

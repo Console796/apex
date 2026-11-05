@@ -512,8 +512,7 @@ def windows_stage(build, report, test_jobs=1):
             # Non-GPU tests only (0.1 D23): a guest's software Vulkan isn't the lavapipe reference.
             f'set "APEX_VK_DEVICE={os.environ.get("APEX_WIN_VK_DEVICE", "apex-ci-no-gpu")}"',
             # A real machine is booted only for CI, so it uses every core; the VM shares this host.
-            f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}"
-            + (" -DAPEX_EMBREE_JOBS=%NUMBER_OF_PROCESSORS%" if machine else ""),
+            f"cmake --preset windows-msvc-release -DAPEX_BUILD_NUMBER={build}",
             # One compile per core: Ninja's default (cores + 2) pages an 8 GB laptop at about 0.5 GB per cl.exe.
             "cmake --build --preset windows-msvc-release" + (" -j %NUMBER_OF_PROCESSORS%" if machine else ""),
             f"ctest --preset windows-msvc-release -j {'%NUMBER_OF_PROCESSORS%' if machine else test_jobs}",
