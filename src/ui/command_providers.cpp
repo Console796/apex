@@ -2,6 +2,7 @@
 
 #include "editor/editor_session.hpp"
 #include "ui/area_frame.hpp"
+#include "ui/gpu_host.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/viewport_area.hpp"
 #include "ui/viewport_pane.hpp"
@@ -154,6 +155,15 @@ void registerViewportCommands(CommandRegistry& registry, ViewportArea& area) {
                        return options;
                    }});
         }
+
+        r.add({.id = "view.rebuild_cubemaps", .title = "Rebuild cubemaps", .category = kView,
+               .description = "Re-capture the reflection cubemaps used by env_cubemap materials.",
+               .keywords = {"reflection", "env_cubemap", "probe"},
+               .run = [&area] { area.host().rebuildCubemaps(); }});
+        r.add({.id = "view.rebuild_vrad", .title = "Rebuild VRAD lightmaps", .category = kView,
+               .description = "Re-run the VRAD round trip; shown in a viewport in VRAD or Hybrid mode.",
+               .keywords = {"lightmap", "bake", "compile", "vrad"},
+               .run = [&area] { area.host().rerunVrad(); }});
 
         r.add({.id = "view.show_area", .title = "Show area", .category = kView,
                .description = "Reveal the outliner, inspector, materials and other areas.",
