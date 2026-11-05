@@ -136,13 +136,23 @@ VRAD `-bounce 0` within a mean of 2% and a p99 of 6% on flat, unoccluded patches
 pinned exposure reviewed by the owner (plan 0.6 D3).
 
 ### 0.7: Lighting II: baked preview
-Luxel charting matching VBSP (`lightmapscale`, face splits, BSP v25 limits), a progressive GPU
-baker (Vulkan ray query) with an Embree CPU fallback, bounce using VTF reflectivity, bumped
-lightmaps, sky, OIDN denoise, incremental invalidation with camera-priority scheduling, a
-background VRAD round-trip mapped back through `hammerfaceid`, an A/B compare view, and a luxel
-density view.
-**Exit:** preview vs VRAD error is under a threshold on the reference maps, and the preview
-re-converges interactively after moving a light.
+Luxel charting matching VBSP (`lightmapscale`, face splits, the 128-luxel subdivision span), a
+progressive GPU baker (Vulkan ray query) with an Embree CPU fallback, bounce using VTF reflectivity
+with the VMT `$reflectivity` override, sky, incremental invalidation with camera-priority
+scheduling, a background VRAD round-trip mapped back to editor faces by geometry (the shipped vbsp
+writes no FACEIDS lump), an A/B compare view, a luxel density view, and a hybrid view that keeps the
+last VRAD result and re-bakes only what edits made stale. Realtime-view probes give an approximate
+bounce without baking.
+*Dropped from 0.7:*
+- **OIDN denoise:** there is no visible noise at the default settings.
+- **Bumped lightmaps:** not built. The baker writes the flat lightmap only.
+
+**Exit:** the preview's error against VRAD stays below a threshold on the reference maps, and after a light is moved the preview re-converges interactively.
+
+*Settled in 0.7 review (2026-11-04):*
+- **Parity:** the measured parity is accepted for now. On test1 the median ratio is 1.00 for Baked and for Hybrid against VRAD. Concave creases are darker than VRAD and are left to investigate later.
+- **Re-convergence:** GPU re-convergence on a mid-range card (RX 6600) counts as interactive. A full bake of test1 takes 0.16 s, and a hybrid re-bake of 220 faces takes 0.30 s.
+- **Windows:** baker validation on Windows is still owed.
 
 ### 0.8: Advanced geometry & surfaces
 Displacements (create, sculpt, paint alpha/multiblend, sew, subdivide, and what each topology tool
