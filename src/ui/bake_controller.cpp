@@ -337,6 +337,9 @@ bool BakeController::update(bool active, DVec3 camera, const std::filesystem::pa
                 deviceStatus_ = session_->gpu() ? QStringLiteral("GPU") : QStringLiteral("CPU");
                 if (!session_->kernelError().empty())
                     deviceStatus_ += QStringLiteral(", GPU unavailable: ") + QString::fromStdString(session_->kernelError()).left(100);
+                else if (device_ == QStringLiteral("auto") && !context_.info().rayQuery)
+                    // Auto falls back quietly; say why, or a recognised GPU looks ignored (GTX 16-series).
+                    deviceStatus_ += QStringLiteral(", %1 has no ray queries").arg(QString::fromStdString(context_.info().name));
                 progress_ = progressText(session_->progress(), options_.maxPasses);
                 status_ = QStringLiteral("Baked (%1): ").arg(deviceStatus_) + progress_;
                 redraw_ = true;

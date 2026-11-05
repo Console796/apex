@@ -3730,7 +3730,9 @@ TEST_CASE("live bake completes offscreen and restarts after document edits") {
         apex::ui::BakeController bake(document, vfs, *context, **heap, mirror, jobs);
         const auto observer = document.observe([&](const auto&) { bake.invalidate(); });
         // The default Auto device bakes on the GPU wherever ray query is available.
-        const QString idle = context->info().rayQuery ? "Baked (GPU): idle" : "Baked (CPU): idle";
+        // Without it the status names the device that lacks it.
+        const QString idle = context->info().rayQuery ? QStringLiteral("Baked (GPU): idle")
+            : QStringLiteral("Baked (CPU, %1 has no ray queries): idle").arg(QString::fromStdString(context->info().name));
         const auto converge = [&] {
             QElapsedTimer timer;
             timer.start();
