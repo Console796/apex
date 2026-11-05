@@ -1561,10 +1561,10 @@ struct RenderMirror::Impl {
         // Hidden contents are not pumped (see pump), so their loads never finish and must not hold frames open.
         if (instanceVisibility != document::InstanceVisibility::Hidden)
             for (const auto& [keys, mirror] : instanceMirrors) if (mirror->pending()) return true;
-        if (modelCache && std::ranges::any_of(models, [&](const auto& entry) {
-            return !entry.second.data && (modelCache->state(entry.first) == assets::ModelState::Loading ||
-                   modelCache->state(entry.first) == assets::ModelState::Unloaded);
-        })) return true;
+        // Any model without data is pending, Ready included: instance mirrors share one job pool, so a
+        // sibling's pump can complete this mirror's load before its own pumpModels takes it. Failed
+        // loads take the error model, so they never wait here.
+        if (modelCache && std::ranges::any_of(models, [](const auto& entry) { return !entry.second.data; })) return true;
         if (previewCursor < previewGeometry.size()) return true;
         if (std::ranges::any_of(solids, [](const auto& s) { return s.second.inFlight; })) return true;
         return std::ranges::any_of(materials, [](const auto& m) { return m.second.loading; });

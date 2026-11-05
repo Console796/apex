@@ -423,6 +423,28 @@ TEST_CASE("model adapter rejects non-finite geometry without throwing") {
     CHECK(ui::makePickModel(data) == nullptr);
 }
 
+TEST_CASE("model mirror stays pending for a load another pump completed") {
+    auto* context = testing::sharedContext();
+    if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
+    Fixture fixture;
+    auto heap = TextureHeap::create(*context); REQUIRE(heap);
+    auto doc = map("model models/fixture.mdl body 1");
+    RenderMirror mirror(*context, **heap, fixture.jobs, *fixture.materials, nullptr, fixture.models.get(),
+                        [&](const std::string& path) { return fixture.vfs->exists(path); });
+    mirror.rebuild(*doc);
+    // A sibling instance mirror drains the shared pool before this one pumps again (CI 74 under ASan).
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (fixture.models->state("models/fixture.mdl") == assets::ModelState::Loading &&
+           std::chrono::steady_clock::now() < deadline) {
+        fixture.jobs.drainCompletions();
+        std::this_thread::yield();
+    }
+    REQUIRE(fixture.models->state("models/fixture.mdl") == assets::ModelState::Ready);
+    CHECK(mirror.pending());
+    REQUIRE(mirror.settle());
+    CHECK(mirror.buildDrawList(view()).meshes.size() == 1);
+}
+
 TEST_CASE("Instance model fixups reach drawn skin body and model without changing either document") {
     auto* context = testing::sharedContext();
     if (!context) { MESSAGE("Skipped: no Vulkan device"); return; }
