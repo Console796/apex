@@ -113,7 +113,8 @@ def qt_prefix_from_cache(build_dir: Path):
 
 
 def install(build_dir: Path, prefix: Path):
-    run(["cmake", "--install", str(build_dir), "--prefix", str(prefix), "--strip"])
+    run(["cmake", "--install", str(build_dir), "--prefix", str(prefix), "--strip",
+         "--component", "apex"])
 
 
 def bundle_qt_linux(stage: Path, exe: Path, qt_prefix):
