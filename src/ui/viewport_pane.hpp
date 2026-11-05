@@ -7,6 +7,9 @@
 #include <QTimer>
 #include <functional>
 #include <memory>
+#include <span>
+#include <utility>
+#include <vector>
 
 #include "editor/editor_session.hpp"
 #include "render/renderer.hpp"
@@ -17,6 +20,7 @@
 #include "viewport/controllers.hpp"
 #include "viewport/layout.hpp"
 
+class QCheckBox;
 class QDropEvent;
 class QLabel;
 class QToolButton;
@@ -26,6 +30,21 @@ namespace apex::ui {
 
 class GpuHost;
 class ToolParameterStrip;
+
+// Menu label and one-line explanation of a display mode, shared by the pane menu and the palette.
+QString displayModeName(viewport::DisplayMode mode);
+QString displayModeDescription(viewport::DisplayMode mode);
+
+using OverlayField = bool viewport::Overlays::*;
+
+// One viewport overlay toggle: its label, what it shows, the group it is listed under, and its field.
+struct OverlayInfo {
+    const char* label;
+    const char* description;
+    const char* group;
+    OverlayField field;
+};
+std::span<const OverlayInfo> overlayInfos();
 
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session);
 // Red X, green Y and blue Z from the world origin while the grid overlay is on.
@@ -138,6 +157,23 @@ private:
 // the pane badge and the status bar.
 QString modeSummary(const editor::EditorSession& session);
 
+// The overlay toggles of one pane as a popup of grouped check boxes. Unlike a menu it stays open
+// while several overlays are toggled; a click outside or Esc closes it.
+class OverlayPanel final : public QFrame {
+    Q_OBJECT
+public:
+    explicit OverlayPanel(QWidget* parent = nullptr);
+    // Checks each box from `overlays`; `realtimeIndirect` enables the probes box.
+    void sync(const viewport::Overlays& overlays, bool realtimeIndirect);
+    QCheckBox* box(OverlayField field) const;
+
+signals:
+    void toggled(apex::ui::OverlayField field, bool on);
+
+private:
+    std::vector<std::pair<OverlayField, QCheckBox*>> boxes_;
+};
+
 // A viewport area in the splitter tree: a header strip (role switcher, title, mode badge, collapse
 // and the pane menu) above the Vulkan container. When no GPU is available the body is an
 // explanatory label instead.
@@ -162,6 +198,9 @@ public:
     void refreshInstanceVisibility();
     void restyle();
     QMenu* menu() const { return menu_; }
+    // Opens the overlay panel under the header's Overlays button (created on first use).
+    void showOverlays();
+    OverlayPanel* overlayPanel() const { return overlayPanel_; }
     // Applies a change to this pane's viewport, then refreshes the title, redraws and emits edited().
     void edit(const std::function<void(viewport::Viewport&)>& change);
 
@@ -188,6 +227,8 @@ private:
     QLabel* mode_ = nullptr;
     ToolParameterStrip* parameters_ = nullptr;
     QToolButton* menuButton_ = nullptr;
+    QToolButton* overlaysButton_ = nullptr;
+    OverlayPanel* overlayPanel_ = nullptr;
     QToolButton* instanceVisibilityButton_ = nullptr;
     editor::EditorSession* session_ = nullptr;
     QMenu* menu_ = nullptr;

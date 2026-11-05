@@ -309,20 +309,93 @@ TEST_CASE("pane menu offers the full set of view controls") {
     emit frame->menu()->aboutToShow();
     QStringList titles;
     for (auto* act : frame->menu()->actions()) titles << act->text();
-    for (const char* want : {"Preset", "Projection", "Axis", "Display mode", "Overlays", "Maximize", "Close area"})
+    for (const char* want : {"Preset", "Projection", "Axis", "Display mode", "Overlays...", "Maximize", "Close area"})
         CHECK(titles.contains(QString::fromLatin1(want)));
     CHECK(titles.filter("Split").size() == 2);
     QMenu* display = nullptr;
     for (auto* action : frame->menu()->actions())
         if (action->text() == "Display mode") display = action->menu();
     REQUIRE(display != nullptr);
+    // The common modes lead the list; Flat, Baked and VRAD sit in the Advanced submenu.
+    QStringList modes;
+    QMenu* advanced = nullptr;
+    for (auto* action : display->actions()) {
+        if (action->menu()) advanced = action->text() == "Advanced" ? action->menu() : advanced;
+        else if (action->isCheckable()) modes << action->text();
+    }
+    CHECK(modes == QStringList{"Wireframe", "Textured", "Realtime", "Hybrid"});
+    REQUIRE(advanced != nullptr);
+    QStringList advancedModes;
     QAction* baked = nullptr;
-    for (auto* action : display->actions()) if (action->text() == "Baked") baked = action;
+    for (auto* action : advanced->actions()) {
+        advancedModes << action->text();
+        if (action->text() == "Baked") baked = action;
+        CHECK_FALSE(action->toolTip().isEmpty());
+    }
+    CHECK(advancedModes == QStringList{"Flat", "Baked", "VRAD"});
     REQUIRE(baked != nullptr);
     CHECK(baked->isEnabled());
     CHECK(baked->isCheckable());
     baked->trigger();
     CHECK(area.viewportLayout().viewport(frame->paneId())->mode == apex::viewport::DisplayMode::Baked);
+    // Reopening keeps the advanced mode checked, inside its submenu.
+    emit frame->menu()->aboutToShow();
+    for (auto* action : frame->menu()->actions())
+        if (action->text() == "Display mode") display = action->menu();
+    for (auto* action : display->actions())
+        if (action->text() == "Advanced") advanced = action->menu();
+    for (auto* action : advanced->actions()) CHECK(action->isChecked() == (action->text() == "Baked"));
+}
+
+TEST_CASE("overlay panel stays open while several overlays are toggled") {
+    auto& a = app();
+    apex::ui::applyTheme(a, apex::ui::Theme::Dark);
+    apex::ui::ViewportArea area;
+    area.show();
+    auto* frame = area.frame(area.viewportLayout().active());
+    REQUIRE(frame);
+    const auto viewport = [&] { return area.viewportLayout().viewport(frame->paneId()); };
+    REQUIRE(viewport());
+    // One click on the header button opens it.
+    auto* button = frame->findChild<QToolButton*>("PaneOverlaysButton");
+    REQUIRE(button);
+    CHECK_FALSE(button->toolTip().isEmpty());
+    button->click();
+    auto* panel = frame->overlayPanel();
+    REQUIRE(panel);
+    CHECK(panel->isVisible());
+    // Every overlay has a labelled, explained box, checked from the viewport.
+    for (const auto& info : apex::ui::overlayInfos()) {
+        CAPTURE(info.label);
+        auto* box = panel->box(info.field);
+        REQUIRE(box);
+        CHECK(box->text() == QString::fromLatin1(info.label));
+        CHECK_FALSE(box->toolTip().isEmpty());
+        CHECK(box->isChecked() == viewport()->overlays.*(info.field));
+    }
+    const bool grid = viewport()->overlays.grid;
+    const bool names = viewport()->overlays.entityNames;
+    const bool leak = viewport()->overlays.leak;
+    panel->box(&apex::viewport::Overlays::grid)->click();
+    panel->box(&apex::viewport::Overlays::entityNames)->click();
+    panel->box(&apex::viewport::Overlays::leak)->click();
+    CHECK(panel->isVisible());
+    CHECK(viewport()->overlays.grid == !grid);
+    CHECK(viewport()->overlays.entityNames == !names);
+    CHECK(viewport()->overlays.leak == !leak);
+    // An edit made elsewhere shows when the panel opens again; the window action reaches the active pane.
+    panel->hide();
+    frame->edit([](apex::viewport::Viewport& v) { v.overlays.cordons = !v.overlays.cordons; });
+    CHECK(area.showOverlays());
+    CHECK(panel->isVisible());
+    CHECK(panel->box(&apex::viewport::Overlays::cordons)->isChecked() == viewport()->overlays.cordons);
+    panel->hide();
+
+    // The main window offers it as a bindable action with its own shortcut.
+    apex::ui::MainWindow window;
+    auto* action = window.findChild<QAction*>("view.overlay_panel");
+    REQUIRE(action);
+    CHECK(action->shortcut() == QKeySequence(QStringLiteral("Ctrl+Shift+O")));
 }
 
 TEST_CASE("map views load into and save from the open viewports") {

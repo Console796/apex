@@ -1089,14 +1089,15 @@ void MainWindow::buildAreas() {
     palette_ = new CommandPalette(this);
     registerViewportCommands(palette_->registry(), *viewport_);
     registerEditorActionCommands(palette_->registry(), editorActions_, session_);
-    for (const char* id : {"view.properties", "workspace.next", "workspace.previous", "app.command_palette"}) {
+    for (const char* id : {"view.overlay_panel", "view.properties", "workspace.next", "workspace.previous", "app.command_palette"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = viewMenu_->addAction(fromStd(entry->name));
         action->setObjectName(fromStd(entry->id));
         action->setToolTip(fromStd(entry->description));
         editorActions_.emplace(entry->id, action);
         connect(action, &QAction::triggered, this, [this, id = entry->id] {
-            if (id == "view.properties") showInspector();
+            if (id == "view.overlay_panel") viewport_->showOverlays();
+            else if (id == "view.properties") showInspector();
             else if (id == "app.command_palette") palette_->open();
             else workspaces_->step(id == "workspace.next" ? 1 : -1);
         });

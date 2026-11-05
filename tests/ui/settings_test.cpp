@@ -17,6 +17,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QTreeWidget>
+#include <utility>
 
 #include "editor/preset_io.hpp"
 #include "ui/bake_controller.hpp"
@@ -265,4 +266,26 @@ TEST_CASE("bake settings store only values that differ from the defaults") {
     settings.sync();
     CHECK(settings.childGroups().indexOf("bake") < 0);
     CHECK(settings.allKeys().filter("bake/").isEmpty());
+}
+
+TEST_CASE("preferences open the bake and VRAD settings dialogs") {
+    ui_test::app();
+    ui::MainWindow window;
+    ui::SettingsDialog prefs(window);
+    for (const auto& [name, title] : {std::pair{"settingsBakeSettings", "Bake settings"},
+                                      std::pair{"settingsVradSettings", "VRAD settings"}}) {
+        CAPTURE(name);
+        auto* button = prefs.findChild<QPushButton*>(name);
+        REQUIRE(button);
+        QString opened;
+        // Runs inside the modal loop: note which dialog opened, then cancel it unchanged.
+        QTimer::singleShot(0, [&opened] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            REQUIRE(dialog);
+            opened = dialog->windowTitle();
+            dialog->reject();
+        });
+        button->click();
+        CHECK(opened == QString::fromLatin1(title));
+    }
 }

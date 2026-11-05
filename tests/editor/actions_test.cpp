@@ -32,7 +32,7 @@ void checkBindings(const Preset& preset,
 TEST_CASE("Actions registry has stable ordered unique ids and complete metadata") {
     Actions copy;
     const auto& registry = actionRegistry();
-    REQUIRE(registry.entries().size() == 88);
+    REQUIRE(registry.entries().size() == 89);
     CHECK(registry.entries().front().id == "edit.undo");
     CHECK(registry.entries().back().id == "app.command_palette");
     std::set<ActionId> ids;

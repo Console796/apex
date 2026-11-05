@@ -97,6 +97,8 @@ public:
     // exactly as the pane menu would (title, redraw, layoutChanged).
     const viewport::Viewport* activeViewport() const { return layout_.viewport(layout_.active()); }
     bool editActiveViewport(const std::function<void(viewport::Viewport&)>& change);
+    // Opens the active viewport pane's overlay panel; false when no viewport pane is showing.
+    bool showOverlays();
 
     // Layout persistence (the whole tree, per-pane cameras, active and maximized pane) as JSON.
     QByteArray layoutJson() const;

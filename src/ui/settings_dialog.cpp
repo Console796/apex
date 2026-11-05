@@ -25,12 +25,14 @@
 
 #include "core/log.hpp"
 #include "editor/preset_io.hpp"
+#include "ui/bake_controller.hpp"
 #include "ui/game_content.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/main_window.hpp"
 #include "ui/pie_menu_popup.hpp"
 #include "ui/theme.hpp"
 #include "ui/theme_editor.hpp"
+#include "ui/vrad_controller.hpp"
 
 namespace apex::ui {
 namespace {
@@ -349,6 +351,21 @@ QWidget* SettingsDialog::buildGeneralPage() {
     uvAlignment_->addItem(tr("World"), static_cast<int>(geometry::UvAlignment::World));
     uvAlignment_->setCurrentIndex(window_.editorSession().newSolidStyle().alignment == geometry::UvAlignment::World ? 1 : 0);
     form->addRow(tr("New solid UV alignment"), uvAlignment_);
+
+    // The same dialogs as the viewport menu's Display mode submenu; each saves on its own OK.
+    auto* lightingButtons = new QHBoxLayout;
+    auto* bakeSettings = new QPushButton(tr("Bake settings…"));
+    bakeSettings->setObjectName(QStringLiteral("settingsBakeSettings"));
+    bakeSettings->setToolTip(tr("Apex's own lightmap bake, shown by the Baked and Hybrid display modes."));
+    auto* vradSettings = new QPushButton(tr("VRAD settings…"));
+    vradSettings->setObjectName(QStringLiteral("settingsVradSettings"));
+    vradSettings->setToolTip(tr("The VRAD compile behind the VRAD and Hybrid display modes."));
+    lightingButtons->addWidget(bakeSettings);
+    lightingButtons->addWidget(vradSettings);
+    lightingButtons->addStretch(1);
+    form->addRow(tr("Lighting"), lightingButtons);
+    connect(bakeSettings, &QPushButton::clicked, this, [this] { showBakeSettings(this); });
+    connect(vradSettings, &QPushButton::clicked, this, [this] { showVradSettings(this); });
     return page;
 }
 

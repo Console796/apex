@@ -383,6 +383,50 @@ TEST_CASE("renderer: grid default ground golden") {
     golden::check("grid_ground", drawFrame(*gpu, list, &*target), *gpu->context);
 }
 
+TEST_CASE("renderer: unbounded grid wins against a coplanar floor") {
+    REQUIRE_GPU();
+    auto target = RenderTarget::create(*gpu->context, 256, 256);
+    REQUIRE(target);
+    DrawList list;
+    list.mode = DisplayMode::Flat;
+    list.grid.enabled = true;
+    list.grid.spacing = 16;
+    list.grid.colour = Vec4(0.85f, 0.85f, 0.95f, 0.9f);
+    list.grid.fadeDistance = 1024;
+    GridSettings floorRect = list.grid;
+    floorRect.bounds = GridRect{-512, 512, -512, 512};
+    const Cube floor = makeGridFace(*gpu, floorRect);
+    MeshDraw mesh;
+    mesh.vertices = &floor.vertices;
+    mesh.indices = &floor.indices;
+    mesh.indexCount = 6;
+    mesh.colour = Vec4(0.18f, 0.24f, 0.32f, 1);
+    list.meshes.push_back(mesh);
+    // A grazing view is where an unbiased grid loses most of its depth tests to the floor.
+    for (const double pitch : {20.0, 45.0, 90.0}) {
+        CAPTURE(pitch);
+        list.view = makeView({0, -64, 96}, {pitch, 90, 0});
+        list.grid.enabled = false;
+        const auto bare = drawFrame(*gpu, list, &*target);
+        list.grid.enabled = true;
+        const auto overlaid = drawFrame(*gpu, list, &*target);
+        DrawList onlyGrid = list;
+        onlyGrid.meshes.clear();
+        const auto unobstructed = drawFrame(*gpu, onlyGrid, &*target);
+        int linesOnFloor = 0;
+        for (std::uint32_t y = 0; y < 256; ++y) {
+            for (std::uint32_t x = 0; x < 256; ++x) {
+                if (isBackground(at(bare, x, y))) continue;
+                linesOnFloor += !nearColour(at(bare, x, y), at(overlaid, x, y), 3) ? 1 : 0;
+                const double alpha = (at(unobstructed, x, y).r - 26.0) / (0.85 * 255.0 - 26.0);
+                const double expected = alpha * 0.85 * 255.0 + (1.0 - alpha) * at(bare, x, y).r;
+                CHECK(std::abs(at(overlaid, x, y).r - expected) < 3.0);
+            }
+        }
+        CHECK(linesOnFloor > 200);
+    }
+}
+
 TEST_CASE("renderer: grid bounded wall and slope goldens with surface depth bias") {
     REQUIRE_GPU();
     auto target = RenderTarget::create(*gpu->context, 256, 256);

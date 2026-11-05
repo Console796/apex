@@ -6,6 +6,7 @@
 #include "ui/area_frame.hpp"
 
 #include <QActionGroup>
+#include <QCheckBox>
 #include <QCoreApplication>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
@@ -19,6 +20,8 @@
 #include <QMouseEvent>
 #include <QHelpEvent>
 #include <QPlatformSurfaceEvent>
+#include <QScreen>
+#include <QSignalBlocker>
 #include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -26,6 +29,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <string_view>
 
 #include "core/log.hpp"
 #include "render/render_mirror.hpp"
@@ -59,24 +63,11 @@ QString viewName(const viewport::Viewport& vp) {
     return QStringLiteral("Ortho");
 }
 
-QString modeName(viewport::DisplayMode mode) {
-    switch (mode) {
-    case viewport::DisplayMode::Wireframe: return QStringLiteral("Wireframe");
-    case viewport::DisplayMode::Flat: return QStringLiteral("Flat");
-    case viewport::DisplayMode::Textured: return QStringLiteral("Textured");
-    case viewport::DisplayMode::Lit: return QStringLiteral("Lit");
-    case viewport::DisplayMode::Baked: return QStringLiteral("Baked");
-    case viewport::DisplayMode::Vrad: return QStringLiteral("VRAD");
-    case viewport::DisplayMode::Hybrid: return QStringLiteral("Hybrid");
-    }
-    return {};
-}
-
 render::DisplayMode renderMode(viewport::DisplayMode mode) {
     switch (mode) {
     case viewport::DisplayMode::Wireframe: return render::DisplayMode::Wireframe;
     case viewport::DisplayMode::Flat: return render::DisplayMode::Flat;
-    case viewport::DisplayMode::Lit: return render::DisplayMode::Lit;
+    case viewport::DisplayMode::Realtime: return render::DisplayMode::Lit;
     case viewport::DisplayMode::Baked:
     case viewport::DisplayMode::Hybrid:
     case viewport::DisplayMode::Vrad: return render::DisplayMode::Baked;
@@ -113,7 +104,61 @@ private:
     QPointer<PaneWindow> window_;
 };
 
+constexpr OverlayInfo kOverlayInfos[] = {
+    {"Grid", "The editing grid on the work plane, and the world axes from the origin.", "Scene",
+     &viewport::Overlays::grid},
+    {"Entity helpers", "Point entities: their boxes, icons, helper shapes and models.", "Scene",
+     &viewport::Overlays::entityHelpers},
+    {"Entity names", "Each point entity's targetname beside it.", "Scene", &viewport::Overlays::entityNames},
+    {"Cordons", "The map's cordon boxes.", "Scene", &viewport::Overlays::cordons},
+    {"Bounds", "Reserved: nothing draws this overlay yet.", "Scene", &viewport::Overlays::bounds},
+    {"Normals", "Reserved: nothing draws this overlay yet.", "Scene", &viewport::Overlays::normals},
+    {"Nodraw faces", "Show nodraw faces in the Textured and Flat views; off hides them.", "Faces",
+     &viewport::Overlays::nodrawFaces},
+    {"Backface culling", "Hide the back of each face; off draws both sides.", "Faces",
+     &viewport::Overlays::backfaceCulling},
+    {"Tool textures: fixed brightness", "Realtime and Baked: draw tools/* faces at a fixed brightness instead of lit.",
+     "Faces", &viewport::Overlays::toolFixedBrightness},
+    {"Compile leak", "The last compile's leak path, when it found one.", "Compile", &viewport::Overlays::leak},
+    {"Compile portals", "The last compile's vis portals.", "Compile", &viewport::Overlays::portals},
+    {"Approximate bounce", "Realtime: constant ambient fill plus screen-space AO, a stand-in for bounce light.",
+     "Lighting", &viewport::Overlays::approxBounce},
+    {"Realtime indirect", "Realtime: ray-traced irradiance probes, an approximation of bounce light. Needs ray query support.",
+     "Lighting", &viewport::Overlays::realtimeIndirect},
+    {"Luxel density", "Baked, VRAD and Hybrid: the lightmap lattice as a checker, one cell per luxel.", "Lighting",
+     &viewport::Overlays::luxelDensity}};
+
 }  // namespace
+
+QString displayModeName(viewport::DisplayMode mode) {
+    switch (mode) {
+    case viewport::DisplayMode::Wireframe: return QStringLiteral("Wireframe");
+    case viewport::DisplayMode::Flat: return QStringLiteral("Flat");
+    case viewport::DisplayMode::Textured: return QStringLiteral("Textured");
+    case viewport::DisplayMode::Realtime: return QStringLiteral("Realtime");
+    case viewport::DisplayMode::Baked: return QStringLiteral("Baked");
+    case viewport::DisplayMode::Vrad: return QStringLiteral("VRAD");
+    case viewport::DisplayMode::Hybrid: return QStringLiteral("Hybrid");
+    }
+    return {};
+}
+
+QString displayModeDescription(viewport::DisplayMode mode) {
+    switch (mode) {
+    case viewport::DisplayMode::Wireframe: return QObject::tr("Brush and model edges only.");
+    case viewport::DisplayMode::Flat: return QObject::tr("Solid faces in flat material colours, unlit.");
+    case viewport::DisplayMode::Textured: return QObject::tr("Textures at full brightness, no lighting.");
+    case viewport::DisplayMode::Realtime:
+        return QObject::tr("Live lights and shadows without lightmaps; follows every edit at once.");
+    case viewport::DisplayMode::Baked: return QObject::tr("Lightmaps from Apex's own bake of the current map.");
+    case viewport::DisplayMode::Vrad: return QObject::tr("Lightmaps from the last VRAD compile.");
+    case viewport::DisplayMode::Hybrid:
+        return QObject::tr("The last VRAD compile's lightmaps, with the faces near later edits rebaked by Apex.");
+    }
+    return {};
+}
+
+std::span<const OverlayInfo> overlayInfos() { return kOverlayInfos; }
 
 void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view) {
     if (!view.overlays.grid) return;
@@ -526,7 +571,7 @@ void PaneWindow::resetIndirectHistory() {
     // Only a Lit pane with the option enabled accumulates probe history; without RayQuery or the
     // swapchain there is nothing built yet, and the default off path must not take a device wait.
     const auto* vp = accessor_();
-    if (!swapchain_ || !vp || vp->mode != viewport::DisplayMode::Lit || !vp->overlays.realtimeIndirect ||
+    if (!swapchain_ || !vp || vp->mode != viewport::DisplayMode::Realtime || !vp->overlays.realtimeIndirect ||
         !realtimeIndirectAvailable())
         return;
     if (auto* renderer = host_.renderer(swapchain_->format())) renderer->resetIndirect(scene_);
@@ -545,7 +590,7 @@ double PaneWindow::tick(bool forceDraw) {
     if (resizeDragging_ && !swapchain_) return -1.0;
     const bool retiring = swapchain_ && swapchain_->hasRetiredSwapchains();
     const auto* vp = accessor_();
-    const bool accumulating = vp && vp->mode == viewport::DisplayMode::Lit && vp->overlays.realtimeIndirect &&
+    const bool accumulating = vp && vp->mode == viewport::DisplayMode::Realtime && vp->overlays.realtimeIndirect &&
                               host_.context() && host_.context()->info().rayQuery;
     if ((!dirty_ && !forceDraw && !retiring && !accumulating) || !isExposed() || failed_) return -1.0;
     return draw();
@@ -768,6 +813,15 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
         if (window_) window_->requestRedraw();
         emit edited(pane_);
     });
+    overlaysButton_ = new QToolButton(header);
+    overlaysButton_->setObjectName(QStringLiteral("PaneOverlaysButton"));
+    // A glyph like the pane menu's: a text label widened the header past the quad layout's drag room.
+    overlaysButton_->setText(QString(QChar(0x25E7)));
+    overlaysButton_->setToolTip(tr("Overlays: show or hide this viewport's grid, entity helpers, compile leak... "
+                                   "(View > Viewport overlays)"));
+    overlaysButton_->setAutoRaise(true);
+    connect(overlaysButton_, &QToolButton::clicked, this, &PaneFrame::showOverlays);
+    row->addWidget(overlaysButton_);
     row->addWidget(makeCollapseButton([this] { emit collapseRequested(pane_); }, header));
     menuButton_ = new QToolButton;
     menuButton_->setObjectName(QStringLiteral("PaneMenuButton"));
@@ -832,11 +886,11 @@ void PaneFrame::restyle() {
 void PaneFrame::refreshTitle() {
     const auto* vp = accessor_();
     if (!vp) return;
-    QString text = viewName(*vp) + QStringLiteral("  |  ") + modeName(vp->mode);
-    if (vp->mode == viewport::DisplayMode::Lit && vp->overlays.realtimeIndirect)
+    QString text = viewName(*vp) + QStringLiteral("  |  ") + displayModeName(vp->mode);
+    if (vp->mode == viewport::DisplayMode::Realtime && vp->overlays.realtimeIndirect)
         text += window_ && window_->realtimeIndirectAvailable() ? tr("  |  indirect: probes (approximation)") :
                                                                tr("  |  indirect: unavailable (requires ray query)");
-    if (vp->compare) text += tr("  (A/B: swaps with %1)").arg(modeName(*vp->compare));
+    if (vp->compare) text += tr("  (A/B: swaps with %1)").arg(displayModeName(*vp->compare));
     if (maximized_) text += tr("  (maximized)");
     title_->setText(text);
 }
@@ -878,6 +932,70 @@ void PaneFrame::edit(const std::function<void(viewport::Viewport&)>& change) {
         if (window_) window_->requestRedraw();
         emit edited(pane_);
     }
+}
+
+OverlayPanel::OverlayPanel(QWidget* parent) : QFrame(parent, Qt::Popup) {
+    setObjectName(QStringLiteral("OverlayPanel"));
+    setFrameShape(QFrame::StyledPanel);
+    auto* column = new QVBoxLayout(this);
+    column->setContentsMargins(8, 6, 8, 8);
+    column->setSpacing(2);
+    const char* group = nullptr;
+    for (const auto& info : overlayInfos()) {
+        if (!group || std::string_view(group) != info.group) {
+            group = info.group;
+            auto* heading = new QLabel(tr(group), this);
+            heading->setObjectName(QStringLiteral("OverlayGroup"));
+            QFont font = heading->font();
+            font.setBold(true);
+            heading->setFont(font);
+            if (!boxes_.empty()) column->addSpacing(4);
+            column->addWidget(heading);
+        }
+        auto* box = new QCheckBox(tr(info.label), this);
+        box->setToolTip(tr(info.description));
+        box->setStatusTip(tr(info.description));
+        column->addWidget(box);
+        boxes_.emplace_back(info.field, box);
+        connect(box, &QCheckBox::toggled, this, [this, field = info.field](bool on) { emit toggled(field, on); });
+    }
+}
+
+void OverlayPanel::sync(const viewport::Overlays& overlays, bool realtimeIndirect) {
+    for (const auto& [field, box] : boxes_) {
+        const QSignalBlocker block(box);
+        box->setChecked(overlays.*field);
+        if (field == &viewport::Overlays::realtimeIndirect) box->setEnabled(realtimeIndirect);
+    }
+}
+
+QCheckBox* OverlayPanel::box(OverlayField field) const {
+    for (const auto& [f, box] : boxes_) if (f == field) return box;
+    return nullptr;
+}
+
+void PaneFrame::showOverlays() {
+    const auto* vp = accessor_();
+    if (!vp) return;
+    if (!overlayPanel_) {
+        overlayPanel_ = new OverlayPanel(this);
+        connect(overlayPanel_, &OverlayPanel::toggled, this, [this](OverlayField field, bool on) {
+            edit([field, on](viewport::Viewport& v) { v.overlays.*field = on; });
+        });
+    }
+    overlayPanel_->sync(vp->overlays, window_ && window_->realtimeIndirectAvailable());
+    overlayPanel_->adjustSize();
+    // Below the button, right-aligned to it, and kept on the pane's screen.
+    QPoint at = overlaysButton_->mapToGlobal(QPoint(overlaysButton_->width() - overlayPanel_->width(),
+                                                    overlaysButton_->height()));
+    if (const auto* screen = overlaysButton_->screen()) {
+        const QRect area = screen->availableGeometry();
+        at.setX(std::clamp(at.x(), area.left(), std::max(area.left(), area.right() - overlayPanel_->width())));
+        at.setY(std::clamp(at.y(), area.top(), std::max(area.top(), area.bottom() - overlayPanel_->height())));
+    }
+    overlayPanel_->move(at);
+    overlayPanel_->show();
+    overlayPanel_->activateWindow();
 }
 
 void PaneFrame::buildMenu() {
@@ -926,15 +1044,20 @@ void PaneFrame::buildMenu() {
     }
 
     auto* mode = menu_->addMenu(tr("Display mode"));
+    mode->setToolTipsVisible(true);
     auto* modeGroup = new QActionGroup(mode);
-    for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat, viewport::DisplayMode::Textured,
-                         viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
-                         viewport::DisplayMode::Hybrid}) {
-        auto* a = mode->addAction(modeName(m), this, [edit, m] { edit([m](viewport::Viewport& v) { v.mode = m; }); });
+    const auto addMode = [&](QMenu* menu, viewport::DisplayMode m) {
+        auto* a = menu->addAction(displayModeName(m), this, [edit, m] { edit([m](viewport::Viewport& v) { v.mode = m; }); });
+        a->setToolTip(displayModeDescription(m));
         a->setCheckable(true);
         a->setChecked(vp->mode == m);
         modeGroup->addAction(a);
-    }
+    };
+    for (const auto m : viewport::kCommonModes) addMode(mode, m);
+    // Flat and the single-source lightmap views are for inspection; the common list stays short.
+    auto* advanced = mode->addMenu(tr("Advanced"));
+    advanced->setToolTipsVisible(true);
+    for (const auto m : viewport::kAdvancedModes) addMode(advanced, m);
     mode->addSeparator();
     mode->addAction(tr("Bake settings..."), this, [this] { showBakeSettings(this); });
     mode->addAction(tr("VRAD settings..."), this, [this] { showVradSettings(this); });
@@ -948,12 +1071,12 @@ void PaneFrame::buildMenu() {
     auto* quickBaked = compare->addAction(tr("A/B: probes \u2194 baked"), this, [edit] {
         edit([](viewport::Viewport& v) { viewport::toggleBakedCompare(v); });
     });
-    quickBaked->setEnabled(vp->mode == viewport::DisplayMode::Lit ||
+    quickBaked->setEnabled(vp->mode == viewport::DisplayMode::Realtime ||
                            vp->mode == viewport::DisplayMode::Baked ||
                            vp->compare == viewport::DisplayMode::Baked);
-    for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
+    for (const auto m : {viewport::DisplayMode::Realtime, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
                          viewport::DisplayMode::Hybrid}) {
-        auto* a = compare->addAction(tr("A/B with %1").arg(modeName(m)), this, [edit, m] {
+        auto* a = compare->addAction(tr("A/B with %1").arg(displayModeName(m)), this, [edit, m] {
             edit([m](viewport::Viewport& v) { v.compare = m; });
         });
         a->setEnabled(vp->mode != m);
@@ -965,34 +1088,8 @@ void PaneFrame::buildMenu() {
     compare->addAction(tr("Compare off"), this, [edit] { edit([](viewport::Viewport& v) { v.compare.reset(); }); })
         ->setEnabled(vp->compare.has_value());
 
-    auto* overlays = menu_->addMenu(tr("Overlays"));
-    struct OverlayEntry { const char* label; bool viewport::Overlays::*field; };
-    const OverlayEntry entries[] = {{"Grid", &viewport::Overlays::grid},
-                                    {"Entity helpers", &viewport::Overlays::entityHelpers},
-                                    {"Bounds", &viewport::Overlays::bounds},
-                                    {"Normals", &viewport::Overlays::normals},
-                                    {"Nodraw faces", &viewport::Overlays::nodrawFaces},
-                                    {"Tool textures: fixed brightness", &viewport::Overlays::toolFixedBrightness},
-                                    {"Entity names", &viewport::Overlays::entityNames},
-                                    {"Compile leak", &viewport::Overlays::leak},
-                                    {"Compile portals", &viewport::Overlays::portals},
-                                    {"Cordons", &viewport::Overlays::cordons},
-                                    {"Backface culling", &viewport::Overlays::backfaceCulling},
-                                    {"Luxel density (Baked, VRAD)", &viewport::Overlays::luxelDensity},
-                                    {"Realtime indirect", &viewport::Overlays::realtimeIndirect},
-                                    {"Approximate bounce (Lit)", &viewport::Overlays::approxBounce}};
-    for (const auto& entry : entries) {
-        auto* a = overlays->addAction(tr(entry.label));
-        a->setCheckable(true);
-        a->setChecked(vp->overlays.*(entry.field));
-        if (entry.field == &viewport::Overlays::realtimeIndirect) {
-            a->setEnabled(window_ && window_->realtimeIndirectAvailable());
-            a->setToolTip(tr("Ray-traced diffuse approximation; requires ray query support."));
-        }
-        connect(a, &QAction::toggled, this, [edit, field = entry.field](bool on) {
-            edit([field, on](viewport::Viewport& v) { v.overlays.*field = on; });
-        });
-    }
+    // The panel stays open across toggles; a menu would close after each one.
+    menu_->addAction(tr("Overlays..."), this, [this] { QTimer::singleShot(0, this, &PaneFrame::showOverlays); });
 
     menu_->addSeparator();
     addAreaActions(*menu_, {[this](viewport::Orientation o) { emit splitRequested(pane_, o); },

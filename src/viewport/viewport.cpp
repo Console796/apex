@@ -54,9 +54,10 @@ Result<bool> readBool(const json::Value::Object& o, std::string_view key, bool f
 
 constexpr struct { DisplayMode mode; const char* name; } kModes[] = {
     {DisplayMode::Wireframe, "wireframe"}, {DisplayMode::Flat, "flat"},
-    {DisplayMode::Textured, "textured"},   {DisplayMode::Lit, "lit"},
+    {DisplayMode::Textured, "textured"},   {DisplayMode::Realtime, "realtime"},
     {DisplayMode::Baked, "baked"},         {DisplayMode::Vrad, "vrad"},
-    {DisplayMode::Hybrid, "hybrid"}};
+    {DisplayMode::Hybrid, "hybrid"},
+    {DisplayMode::Realtime, "lit"}}; // Read-only alias for layouts saved before the rename; nameOf finds "realtime" first.
 
 } // namespace
 
@@ -112,10 +113,10 @@ void applyPreset(Viewport& viewport, Preset preset) {
 }
 
 void toggleBakedCompare(Viewport& viewport) {
-    // The pane menu gates this to the Lit and Baked sides; the swaps reuse the same idiom as the
+    // The pane menu gates this to the Realtime and Baked sides; the swaps reuse the same idiom as the
     // 0.7.5 "Swap A/B" so arming through "A/B with Baked" and this flip share one state machine.
     if (viewport.mode == DisplayMode::Baked)
-        std::swap(viewport.mode, viewport.compare.emplace(DisplayMode::Lit));
+        std::swap(viewport.mode, viewport.compare.emplace(DisplayMode::Realtime));
     else
         std::swap(viewport.mode, viewport.compare.emplace(DisplayMode::Baked));
 }

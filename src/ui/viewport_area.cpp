@@ -426,6 +426,13 @@ bool ViewportArea::editActiveViewport(const std::function<void(viewport::Viewpor
     return true;
 }
 
+bool ViewportArea::showOverlays() {
+    auto* f = frame(layout_.active());
+    if (!f || !activeViewport()) return false;
+    f->showOverlays();
+    return true;
+}
+
 QString ViewportArea::missingAssetTooltip(Ray ray) const {
     if (!session_ || !document_ || !gameContent_ || session_->document() != document_) return {};
     const auto hit = session_->picks().first(ray);
@@ -986,7 +993,7 @@ void ViewportArea::tick() {
         if (id == layout_.active()) {
             if (ms >= 0.0) emit frameTimeChanged(ms);
             const auto* vp = layout_.viewport(id);
-            emit lightingBudgetChanged(vp && vp->mode == viewport::DisplayMode::Lit, f->window()->clusterOverflow(),
+            emit lightingBudgetChanged(vp && vp->mode == viewport::DisplayMode::Realtime, f->window()->clusterOverflow(),
                                          f->window()->shadowOverflow());
         }
     }

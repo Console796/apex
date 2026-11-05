@@ -4,6 +4,7 @@
 #include "ui/area_frame.hpp"
 #include "ui/key_chord.hpp"
 #include "ui/viewport_area.hpp"
+#include "ui/viewport_pane.hpp"
 #include "viewport/viewport.hpp"
 
 #include <QAction>
@@ -19,38 +20,6 @@ namespace {
 
 constexpr const char* kView = "View";
 
-QString displayModeName(viewport::DisplayMode mode) {
-    switch (mode) {
-    case viewport::DisplayMode::Wireframe: return QStringLiteral("Wireframe");
-    case viewport::DisplayMode::Flat: return QStringLiteral("Flat");
-    case viewport::DisplayMode::Textured: return QStringLiteral("Textured");
-    case viewport::DisplayMode::Lit: return QStringLiteral("Lit");
-    case viewport::DisplayMode::Baked: return QStringLiteral("Baked");
-    case viewport::DisplayMode::Vrad: return QStringLiteral("VRAD");
-    case viewport::DisplayMode::Hybrid: return QStringLiteral("Hybrid");
-    }
-    return {};
-}
-
-struct OverlayEntry {
-    const char* label;
-    bool viewport::Overlays::*field;
-};
-constexpr OverlayEntry kOverlays[] = {{"Grid", &viewport::Overlays::grid},
-                                      {"Entity helpers", &viewport::Overlays::entityHelpers},
-                                      {"Bounds", &viewport::Overlays::bounds},
-                                      {"Normals", &viewport::Overlays::normals},
-                                      {"Nodraw faces", &viewport::Overlays::nodrawFaces},
-                                      {"Tool textures: fixed brightness", &viewport::Overlays::toolFixedBrightness},
-                                      {"Entity names", &viewport::Overlays::entityNames},
-                                      {"Compile leak", &viewport::Overlays::leak},
-                                      {"Compile portals", &viewport::Overlays::portals},
-                                      {"Cordons", &viewport::Overlays::cordons},
-                                      {"Backface culling", &viewport::Overlays::backfaceCulling},
-                                      {"Luxel density (Baked, VRAD)", &viewport::Overlays::luxelDensity},
-                                      {"Realtime indirect", &viewport::Overlays::realtimeIndirect},
-                                      {"Approximate bounce (Lit)", &viewport::Overlays::approxBounce}};
-
 }  // namespace
 
 void registerViewportCommands(CommandRegistry& registry, ViewportArea& area) {
@@ -60,19 +29,20 @@ void registerViewportCommands(CommandRegistry& registry, ViewportArea& area) {
         if (vp) {
             const auto mode = vp->mode;
             r.add({.id = "view.display_mode", .title = "Display mode", .category = kView,
-                   .description = "Switch the active viewport between Wireframe, Flat, Textured, Lit, Baked, VRAD and Hybrid.",
-                   .keywords = {"view", "type", "shading", "render"},
+                   .description = "Switch the active viewport between Wireframe, Textured, Realtime and Hybrid, or the "
+                                  "advanced Flat, Baked and VRAD.",
+                   .keywords = {"view", "type", "shading", "render", "lit", "lighting"},
                    .options = [=, &area] {
                        std::vector<PaletteOption> options;
-                       for (const auto m : {viewport::DisplayMode::Wireframe, viewport::DisplayMode::Flat,
-                                            viewport::DisplayMode::Textured, viewport::DisplayMode::Lit,
-                                            viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
-                                            viewport::DisplayMode::Hybrid}) {
-                           options.push_back({.label = displayModeName(m), .checked = m == mode,
+                       const auto add = [&](viewport::DisplayMode m, bool advanced) {
+                           options.push_back({.label = displayModeName(m), .detail = advanced ? "advanced" : "",
+                                              .checked = m == mode,
                                               .run = [&area, m] {
                                                   area.editActiveViewport([m](viewport::Viewport& v) { v.mode = m; });
                                               }});
-                       }
+                       };
+                       for (const auto m : viewport::kCommonModes) add(m, false);
+                       for (const auto m : viewport::kAdvancedModes) add(m, true);
                        return options;
                    }});
 
@@ -145,7 +115,7 @@ void registerViewportCommands(CommandRegistry& registry, ViewportArea& area) {
                    .keywords = {"toggle", "show", "hide"},
                    .options = [&area, overlays] {
                        std::vector<PaletteOption> options;
-                       for (const auto& entry : kOverlays) {
+                       for (const auto& entry : overlayInfos()) {
                            const bool on = overlays.*(entry.field);
                            options.push_back({.label = QString::fromLatin1(entry.label), .detail = on ? "on" : "off",
                                               .checked = on,
@@ -158,11 +128,11 @@ void registerViewportCommands(CommandRegistry& registry, ViewportArea& area) {
                    }});
 
             r.add({.id = "view.compare", .title = "Compare light source", .category = kView,
-                   .description = "A/B this viewport against another light source, e.g. Lit vs Baked vs VRAD.",
+                   .description = "A/B this viewport against another light source, e.g. Realtime vs Baked vs VRAD.",
                    .keywords = {"ab", "a/b", "swap"},
                    .options = [&area, mode, compare = vp->compare] {
                        std::vector<PaletteOption> options;
-                       for (const auto m : {viewport::DisplayMode::Lit, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
+                       for (const auto m : {viewport::DisplayMode::Realtime, viewport::DisplayMode::Baked, viewport::DisplayMode::Vrad,
                                             viewport::DisplayMode::Hybrid}) {
                            if (m == mode) continue;
                            options.push_back({.label = QStringLiteral("A/B with %1").arg(displayModeName(m)),

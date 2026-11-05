@@ -1209,13 +1209,12 @@ void Renderer::recordPass(VkCommandBuffer commands, const DrawList& list, bool s
         planeToCamera[2] = Vec4(Vec3(grid.normal), 0.0f);
         planeToCamera[3] = Vec4(Vec3(-grid.normal * height), 1.0f);
         push.viewProjection *= planeToCamera;
-        if (grid.bounds) {
-            // Surface-anchored grid: pull depth toward the camera by a relative amount so it wins
-            // against the coplanar face on every device. Dynamic depth bias units are
-            // implementation-defined and left holes on RADV. Reversed Z: larger is closer.
-            constexpr float kSurfaceBias = 2e-4f;
-            for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= 1.0f + kSurfaceBias;
-        }
+        // Pull depth toward the camera by a relative amount so the grid wins against a coplanar
+        // face on every device, bounded to a face or not (a floor on the world grid plane z-fought).
+        // Dynamic depth bias units are implementation-defined and left holes on RADV. Reversed Z:
+        // larger is closer.
+        constexpr float kSurfaceBias = 2e-4f;
+        for (int c = 0; c < 4; ++c) push.viewProjection[c][2] *= 1.0f + kSurfaceBias;
         push.colour = grid.colour;
         push.p0 = Vec4(wrapped, major.x, grid.spacing);
         const double extent = grid.fadeDistance * 2.0;
