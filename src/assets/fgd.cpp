@@ -9,6 +9,7 @@
 #include <set>
 #include <iterator>
 #include <sstream>
+#include <type_traits>
 #include <toolpp/FGD.h>
 
 namespace apex::assets {
@@ -136,11 +137,26 @@ public:
         catch (const std::overflow_error&) {} // Toolpp uses stream overflow for EOF.
     }
 };
-template <typename T> void mergeFields(std::vector<T>& into, const std::vector<T>& from, bool replace) {
+// Flag lists inherited from several bases accumulate by bit (a later base adds flags, or relabels one), as in Hammer.
+void unionFlags(EntityProperty& into, const EntityProperty& from) {
+    for (const auto& flag : from.flags) {
+        auto it = std::ranges::find(into.flags, flag.bit, &EntityProperty::Flag::bit);
+        if (it == into.flags.end()) into.flags.push_back(flag);
+        else *it = flag;
+    }
+    std::uint64_t defaults = 0;
+    for (const auto& flag : into.flags)
+        if (flag.defaultValue) defaults |= flag.bit;
+    into.defaultValue = std::to_string(defaults);
+}
+template <typename T> void mergeFields(std::vector<T>& into, const std::vector<T>& from, bool replace, bool accumulateFlags = false) {
     for (const auto& field : from) {
         auto it = std::ranges::find_if(into, [&](const auto& old) { return ciEquals(old.name, field.name); });
         if (it == into.end()) into.push_back(field);
-        else if (replace) *it = field;
+        else if constexpr (std::is_same_v<T, EntityProperty>) {
+            if (accumulateFlags && it->type == "flags" && field.type == "flags") unionFlags(*it, field);
+            else if (replace) *it = field;
+        } else if (replace) *it = field;
     }
 }
 } // namespace
@@ -248,9 +264,10 @@ Result<EntityClassTable> loadEntityClasses(std::span<const std::filesystem::path
                 return resolved;
             }
             helpers.insert(helpers.end(), base->second.helpers.begin(), base->second.helpers.end());
-            mergeFields(properties, base->second.properties, false);
-            mergeFields(inputs, base->second.inputs, false);
-            mergeFields(outputs, base->second.outputs, false);
+            // Later bases override earlier ones (BaseClusteredDynLight redefines BaseClusteredLight's keys).
+            mergeFields(properties, base->second.properties, true, true);
+            mergeFields(inputs, base->second.inputs, true);
+            mergeFields(outputs, base->second.outputs, true);
             if (!entity.color) {
                 entity.color = base->second.color;
             }

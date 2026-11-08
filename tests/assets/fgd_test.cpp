@@ -103,7 +103,7 @@ TEST_CASE("FGD property order spans kinds includes bases and overrides") {
     CHECK(cls->maxs == std::array<double, 3>{5, 6, 7});
     CHECK(table->find("Second")->properties[0].defaultValue == "second");
     REQUIRE(table->find("inherited"));
-    CHECK(table->find("inherited")->properties[0].defaultValue == "base");
+    CHECK(table->find("inherited")->properties[0].defaultValue == "second"); // Later base wins.
 }
 
 TEST_CASE("FGD helpers preserve raw arguments declaration order and all inherited helpers") {
@@ -225,4 +225,26 @@ TEST_CASE("FGD helper corpus parses all supported kinds and reports unknown name
     MESSAGE("Unknown FGD helpers: {", names.str(), "}");
     MESSAGE("Inherited helper counts: sphere=", counts["sphere"], ", line=", counts["line"],
         ", studio=", counts["studio"]);
+}
+
+TEST_CASE("FGD later bases override earlier ones, flag lists accumulate, and the entity overrides all bases") {
+    GameTree tree;
+    tree.put("game.fgd", R"(@BaseClass = Light [ spawnflags(flags) = [ 1: "Dark" : 0 ] ]
+        @BaseClass base(Light) = Clustered [ spawnflags(flags) = [ 1: "Dark" : 0 2: "Shadowed" : 0 ] ]
+        @BaseClass base(Clustered) = Dyn [ mode(integer) : "Mode" : 2 ]
+        @BaseClass = Extra [ spawnflags(flags) = [ 4: "Always" : 1 ] ]
+        @PointClass base(Light, Dyn, Extra) = lamp []
+        @PointClass base(Light, Dyn) = own [ mode(integer) : "Mode" : 5 ]
+    )");
+    auto table = loadEntityClasses(tree.root / "game.fgd");
+    REQUIRE(table);
+    const auto* lamp = table->find("lamp");
+    REQUIRE(lamp);
+    const auto flags = std::ranges::find(lamp->properties, "spawnflags", &EntityProperty::name);
+    REQUIRE(flags != lamp->properties.end());
+    CHECK(flags->flags.size() == 3); // Light's 1, Clustered's 2, Extra's 4: accumulated, not replaced
+    CHECK(flags->defaultValue == "4");
+    const auto* own = table->find("own");
+    REQUIRE(own);
+    CHECK(std::ranges::find(own->properties, "mode", &EntityProperty::name)->defaultValue == "5");
 }
