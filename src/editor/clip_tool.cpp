@@ -37,39 +37,98 @@ const char* snapName(SnapKind kind) {
 }
 }
 
+std::vector<std::pair<NodeId, Handle<document::Solid>>> ClipTool::selectedSolids() const {
+    std::vector<std::pair<NodeId, Handle<document::Solid>>> result;
+    const auto selected = expandSelection(*session_.document(), session_.groups(), session_.selection());
+    for (const auto node : selected.solidsAndEntities) {
+        const auto handle = session_.document()->handle(node);
+        if (handle && std::holds_alternative<Handle<document::Solid>>(*handle))
+            result.emplace_back(node, std::get<Handle<document::Solid>>(*handle));
+    }
+    return result;
+}
+
 SnapResult ClipTool::snap(const InputEvent& event, const ToolView& view) const {
+    // Only the selected solids are snap targets; other geometry is invisible to the cursor.
+    std::set<NodeId> only;
+    for (const auto& [node, solid] : selectedSolids()) only.insert(node);
     std::optional<SurfacePlane> fallback;
-    if (view.orthographic && !session_.workPlane().pinned() && !session_.picks().first(view.cursorRay)) {
+    if (view.orthographic && !session_.workPlane().pinned() &&
+        !session_.picks().first(view.cursorRay, [&](NodeId node) { return only.contains(node); })) {
         const auto normal = -glm::normalize(view.cameraForward);
         const auto u = glm::normalize(glm::cross(view.cameraForward, view.cameraUp));
         fallback = SurfacePlane{session_.fallbackPlane().origin, normal, u, glm::cross(normal, u), {}};
     }
-    return session_.snap(view.cursorRay, view, transformModifiers(session_.preset(), event).suspend, fallback);
+    return session_.snap(view.cursorRay, view, transformModifiers(session_.preset(), event).suspend,
+                         fallback, true, {}, std::move(only));
+}
+
+std::vector<ClipTool::Source> ClipTool::clippableSources(std::string& warning) const {
+    std::vector<Source> result;
+    for (const auto& [node, handle] : selectedSolids()) {
+        const auto& block = *session_.document()->get(handle)->block;
+        if (hasDisplacement(block)) { warning = "Skipping displacement solids: topology is read-only"; continue; }
+        const auto source = geometry::solidGeometry(block);
+        if (!source) { warning = "Skipping invalid solids"; continue; }
+        result.push_back({handle, source->poly});
+    }
+    return result;
+}
+
+// Orthographic gestures cut along the view direction and have no third point. Otherwise the cut
+// is perpendicular to a face containing both points, so the third point sits above that face.
+void ClipTool::inferThird(Gesture& g, std::span<const Source> sources) const {
+    if (g.thirdManual && g.points.size() == 3) return;
+    g.points.resize(std::min<std::size_t>(g.points.size(), 2));
+    g.thirdManual = false;
+    if (g.points.size() < 2 || g.viewDirection) return;
+    const double length = glm::length(g.points[1] - g.points[0]);
+    if (!(length > 1e-6)) return;
+    constexpr double onFace = 0.01;
+    const auto line = (g.points[1] - g.points[0]) / length;
+    std::vector<const geometry::Face*> containing;
+    for (const auto& source : sources) for (const auto& face : source.poly.faces)
+        if (std::abs(face.plane.signedDistance(g.points[0])) <= onFace &&
+            std::abs(face.plane.signedDistance(g.points[1])) <= onFace) containing.push_back(&face);
+    // Along a shared edge several faces qualify: prefer the one most facing the camera, and skip any
+    // whose perpendicular cut would just lie in another face (e.g. the line runs along a box edge).
+    std::ranges::sort(containing, std::greater{}, [&](const geometry::Face* face) {
+        return glm::dot(face->plane.normal, -g.cameraForward);
+    });
+    for (const auto* face : containing) {
+        const auto cut = glm::cross(line, face->plane.normal);
+        if (!(glm::length(cut) > 1e-6)) continue;
+        const auto cutNormal = glm::normalize(cut);
+        const bool inFace = std::ranges::any_of(containing, [&](const geometry::Face* other) {
+            return std::abs(glm::dot(other->plane.normal, cutNormal)) > 1.0 - 1e-6;
+        });
+        if (inFace) continue;
+        g.points.push_back((g.points[0] + g.points[1]) * 0.5 + face->plane.normal * (length * 0.5));
+        return;
+    }
 }
 
 void ClipTool::rebuild(Gesture& g) {
     g.pieces.clear();
     g.warning.clear();
-    if (g.points.size() < 2 || (g.points.size() < 3 && !g.viewDirection)) return;
+    if (g.points.size() < 2) return;
+    std::string skipped;
+    const auto sources = clippableSources(skipped);
+    inferThird(g, sources);
+    if (g.points.size() < 3 && !g.viewDirection) return;
+    if (g.points.size() == 2 && glm::length(g.points[1] - g.points[0]) < 1e-6) return; // Second point still being dragged out.
     const auto third = g.points.size() == 3 ? g.points[2] : g.points[0] + *g.viewDirection;
     const auto cross = glm::cross(g.points[1] - g.points[0], third - g.points[0]);
     if (!(glm::length(cross) > 1e-9)) { g.warning = "Clip points must define a plane"; return; }
     const auto plane = Plane::fromPoints(g.points[0], g.points[1], third);
-    const auto selected = expandSelection(*session_.document(), session_.groups(), session_.selection());
-    for (const auto node : selected.solidsAndEntities) {
-        const auto handle = session_.document()->handle(node);
-        if (!handle || !std::holds_alternative<Handle<document::Solid>>(*handle)) continue;
-        const auto& block = *session_.document()->get(*handle)->block;
-        if (hasDisplacement(block)) { g.warning = "Skipping displacement solids: topology is read-only"; continue; }
-        const auto source = geometry::solidGeometry(block);
-        if (!source) { g.warning = "Skipping invalid solids"; continue; }
+    g.warning = skipped;
+    for (const auto& source : sources) {
         try {
-            auto split = geometry::split(source->poly, plane);
+            auto split = geometry::split(source.poly, plane);
             if (!split.front || !split.back) continue;
-            capAttributes(source->poly, *split.front);
-            capAttributes(source->poly, *split.back);
-            g.pieces.push_back({std::get<Handle<document::Solid>>(*handle),
-                                std::move(*split.front), std::move(*split.back)});
+            capAttributes(source.poly, *split.front);
+            capAttributes(source.poly, *split.back);
+            g.pieces.push_back({source.solid, std::move(*split.front), std::move(*split.back)});
         } catch (const std::invalid_argument&) {
             g.warning = "Cannot clip: resulting geometry is degenerate";
             g.pieces.clear();
@@ -124,7 +183,14 @@ void ClipTool::stepBack(InputSource source) {
     auto& g = it->second;
     g.dragging.reset();
     g.snapped.reset();
-    if (!g.points.empty()) g.points.pop_back();
+    if (g.points.size() == 3 && g.thirdManual) {
+        g.thirdManual = false; // Back to the inferred third point, if there is one.
+        g.points.pop_back();
+    } else {
+        if (g.points.size() > 1) g.points.resize(1);
+        else g.points.clear();
+        g.thirdManual = false;
+    }
     if (g.points.empty()) forget(source);
     else rebuild(g);
     publish();
@@ -184,12 +250,25 @@ Handled ClipTool::input(const InputEvent& e, const ToolView& view) {
                 g.dragging = i;
             }
         }
+        g.cameraForward = view.cameraForward;
         if (g.dragging) return true;
-        if (g.points.size() == 3) return true;
         const auto snapped = snap(e, view);
         if (snapped.kind == SnapKind::None) return true;
-        if (g.points.size() < 2) g.viewDirection = view.orthographic ? std::optional{view.cameraForward} : std::nullopt;
-        g.points.push_back(snapped.point);
+        const bool lineDrawn = g.points.size() == 2 && glm::length(g.points[1] - g.points[0]) > 1e-6;
+        if (lineDrawn && !g.viewDirection) {
+            // No face to infer the cut plane from: the third point is placed by hand.
+            g.points.push_back(snapped.point);
+            g.thirdManual = true;
+        } else {
+            // Press anywhere else starts a new cut; the second point follows the pointer until release.
+            if (g.points.size() >= 2) { g.points.clear(); g.thirdManual = false; }
+            if (g.points.empty()) {
+                g.viewDirection = view.orthographic ? std::optional{view.cameraForward} : std::nullopt;
+                g.points.push_back(snapped.point);
+            }
+            g.points.push_back(snapped.point);
+        }
+        g.dragging = g.points.size() - 1;
         g.snapped = snapped;
         rebuild(g);
         publish();
@@ -197,13 +276,22 @@ Handled ClipTool::input(const InputEvent& e, const ToolView& view) {
     }
     if (it != gestures_.end() && it->second.dragging && (e.kind == InputKind::Move || release)) {
         auto& g = it->second;
+        g.cameraForward = view.cameraForward;
         const auto snapped = snap(e, view);
         if (snapped.kind != SnapKind::None) {
             g.points[*g.dragging] = snapped.point;
+            if (*g.dragging == 2) g.thirdManual = true;
             g.snapped = snapped;
             rebuild(g);
         }
-        if (release || !e.left) g.dragging.reset();
+        if (release || !e.left) {
+            // A click without a drag only places the first point; the next click places the second.
+            if (*g.dragging == 1 && g.points.size() == 2 && glm::length(g.points[1] - g.points[0]) < 1e-6) {
+                g.points.pop_back();
+                rebuild(g);
+            }
+            g.dragging.reset();
+        }
         publish();
         return true;
     }
@@ -228,7 +316,10 @@ ToolReadout ClipTool::readout() const {
     const auto it = current_ ? gestures_.find(*current_) : gestures_.end();
     const std::string keep = keep_ == Keep::Front ? "front" : keep_ == Keep::Back ? "back" : "both";
     if (it != gestures_.end() && !it->second.warning.empty()) return {{"Clip"}, {}, it->second.warning, true};
-    return {{"Clip"}, {}, "Keep " + keep + "; place points, drag handles; Enter clips; Shift+X cycles", false};
+    const bool needsThird = it != gestures_.end() && it->second.points.size() == 2 && !it->second.viewDirection &&
+        glm::length(it->second.points[1] - it->second.points[0]) > 1e-6;
+    if (needsThird) return {{"Clip"}, {}, "Keep " + keep + "; click a third point to set the cut plane", false};
+    return {{"Clip"}, {}, "Keep " + keep + "; drag to cut, drag handles to adjust; Enter clips; Shift+X cycles", false};
 }
 
 } // namespace apex::editor

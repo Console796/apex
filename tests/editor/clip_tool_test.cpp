@@ -314,19 +314,89 @@ TEST_CASE("clip per pane cleanup preserves other gestures and never notifies on 
 
 TEST_CASE("clip placement uses vertex edge then surface grid and preset snap suspension") {
     for (const auto* preset : {&hammerPreset(), &blenderPreset()}) for (bool suspended : {false, true}) {
-        Scene scene;
-        scene.session.setPreset(*preset);
-        scene.session.setGridSize(8);
         const std::array<DVec3, 3> raw{{{64, 62, 62}, {64, 1, 62}, {64, 19, 23}}};
         const std::array<DVec3, 3> snapped{{{64, 64, 64}, {64, 0, 64}, {64, 16, 24}}};
         const std::array names{"vertex", "midpoint", "grid"};
         for (std::size_t i = 0; i < raw.size(); ++i) {
+            Scene scene; // A click without a drag only places the first point.
+            scene.session.setPreset(*preset);
+            scene.session.setGridSize(8);
             place(scene.session, raw[i], {-1, 0, 0}, true, 1, suspended);
             const auto overlay = scene.session.activeToolObject().overlay({}, 1);
-            REQUIRE(overlay.worldPoints.size() == i + 1);
+            REQUIRE(overlay.worldPoints.size() == 1);
             checkPoint(overlay.worldPoints.back().position, suspended ? raw[i] : snapped[i]);
             CHECK(overlay.labels.back().text == (suspended ? "surface" : names[i]));
         }
+    }
+}
+
+TEST_CASE("clip points snap only to the selected solid even when another solid is in front") {
+    Scene scene;
+    addBox(scene.doc, {100, -64, -64}, {140, 64, 64});
+    for (const bool suspended : {false, true}) {
+        const DVec3 raw = suspended ? DVec3{64, 0, 0} : DVec3{64, 62, 62};
+        place(scene.session, raw, {-1, 0, 0}, true, 1, suspended);
+        const auto overlay = scene.session.activeToolObject().overlay({}, 1);
+        REQUIRE(overlay.worldPoints.size() == 1);
+        checkPoint(overlay.worldPoints.back().position, suspended ? raw : DVec3{64, 64, 64});
+        scene.session.activeToolObject().cancel();
+    }
+}
+
+TEST_CASE("clip drag infers the third point from the face and the third point can be moved") {
+    Scene scene;
+    const auto before = *scene.doc.write();
+    const auto top = DVec3{0, 0, -1};
+    const auto drag = [&](DVec3 from, DVec3 to, DVec3 direction) {
+        auto press = event(InputKind::Press);
+        press.alt = true;
+        REQUIRE(scene.session.input(press, viewAt(from, direction)));
+        auto move = press; move.kind = InputKind::Move;
+        REQUIRE(scene.session.input(move, viewAt(to, direction)));
+        auto release = move; release.kind = InputKind::Release; release.left = false;
+        REQUIRE(scene.session.input(release, viewAt(to, direction)));
+    };
+    SUBCASE("inferred plane") {
+        drag({-32, 0, 64}, {32, 0, 64}, top);
+        auto overlay = scene.session.activeToolObject().overlay({}, 1);
+        REQUIRE(overlay.worldPoints.size() == 3);
+        checkPoint(overlay.worldPoints[0].position, {-32, 0, 64});
+        checkPoint(overlay.worldPoints[1].position, {32, 0, 64});
+        checkPoint(overlay.worldPoints[2].position, {0, 0, 96});
+        REQUIRE(scene.session.preview().replacements().size() == 1);
+        CHECK(scene.session.preview().replacements().begin()->second.volume() ==
+              doctest::Approx(128.0 * 64 * 128));
+        // Dragging the third point keeps points 1 and 2 and replaces the inferred plane.
+        drag({0, 0, 96}, {0, 64, 0}, {0, -1, 0});
+        overlay = scene.session.activeToolObject().overlay({}, 1);
+        REQUIRE(overlay.worldPoints.size() == 3);
+        checkPoint(overlay.worldPoints[0].position, {-32, 0, 64});
+        checkPoint(overlay.worldPoints[1].position, {32, 0, 64});
+        checkPoint(overlay.worldPoints[2].position, {0, 64, 0});
+        REQUIRE(scene.session.preview().replacements().size() == 1);
+        const auto wedge = scene.session.preview().replacements().begin()->second.volume();
+        const double corner = 2048.0 * 128; // Cut through the line and (0, 64, 0): a 64 x 64 triangle prism.
+        CHECK((wedge == doctest::Approx(corner) || wedge == doctest::Approx(128.0 * 128 * 128 - corner)));
+        // Stepping back resets the third point to the inferred one.
+        auto right = event(InputKind::Press); right.button = PointerButton::Right;
+        REQUIRE(scene.session.input(right, {}));
+        overlay = scene.session.activeToolObject().overlay({}, 1);
+        REQUIRE(overlay.worldPoints.size() == 3);
+        checkPoint(overlay.worldPoints[2].position, {0, 0, 96});
+        key(scene.session, "Enter");
+        CHECK(solids(scene.doc).size() == 1);
+        REQUIRE(scene.session.perform("edit.undo"));
+        CHECK(*scene.doc.write() == before);
+    }
+    SUBCASE("a line along a box edge has no useful inferred plane") {
+        drag({64, -32, 64}, {64, 32, 64}, top);
+        CHECK(scene.session.activeToolObject().overlay({}, 1).worldPoints.size() == 2);
+        CHECK(scene.session.preview().empty());
+    }
+    SUBCASE("no face means the third point is clicked") {
+        drag({-32, -200, 200}, {32, -200, 200}, top);
+        CHECK(scene.session.activeToolObject().overlay({}, 1).worldPoints.size() == 2);
+        CHECK(scene.session.preview().empty());
     }
 }
 
