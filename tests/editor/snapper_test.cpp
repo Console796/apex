@@ -57,6 +57,34 @@ TEST_CASE("snapper vertex beats edge and grid and midpoint beats closest point")
     checkPoint(grid.point, {16, 48, 0});
 }
 
+TEST_CASE("snapper restricted to a node ignores other solids in front of it") {
+    Document doc(parsed());
+    const auto below = addBox(doc, {-50, -50, -20}, {50, 50, 0});
+    const auto above = addBox(doc, {-50, -50, 10}, {50, 50, 30});
+    PickIndex index(doc);
+    WorkPlaneState plane;
+    SnapSettings settings;
+    settings.gridSize = 16;
+    const auto view = topView();
+    const auto restricted = [&](DVec3 target, std::set<NodeId> only) {
+        return Snapper(doc, index, plane, settings, ground).snap(toward(view, target), view, {false, {}, true, {}, std::move(only)});
+    };
+    const auto free = snap(doc, index, toward(view, {49, 49, 0}), view);
+    CHECK(free.node == id(doc, above));
+    const auto vertex = restricted({49, 49, 0}, {id(doc, below)});
+    CHECK(vertex.kind == SnapKind::Vertex);
+    CHECK(vertex.node == id(doc, below));
+    checkPoint(vertex.point, {50, 50, 0});
+    const auto grid = restricted({20, 47, 0}, {id(doc, below)});
+    CHECK(grid.kind == SnapKind::Grid);
+    CHECK(grid.node == id(doc, below));
+    checkPoint(grid.point, {16, 48, 0});
+    const auto none = restricted({49, 49, 0}, {});
+    CHECK(none.kind == SnapKind::Grid);
+    CHECK_FALSE(none.node);
+    checkPoint(none.point, {48, 48, 0});
+}
+
 TEST_CASE("snapper radius is eight pixels at two zooms in both projections") {
     Document doc(parsed());
     addBox(doc, {-50, -50, -20}, {50, 50, 0});

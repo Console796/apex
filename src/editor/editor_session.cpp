@@ -163,12 +163,12 @@ void EditorSession::unpinWorkPlane() {
 }
 SnapResult EditorSession::snap(Ray ray, const ToolView& view, bool suspended,
                                std::optional<SurfacePlane> plane, bool edges,
-                               std::vector<FeatureRef> excluded) const {
+                               std::vector<FeatureRef> excluded, std::optional<std::set<NodeId>> only) const {
     if (!document_ || !picks_) return {};
     auto settings = snap_;
     settings.gridSize = gridSize_;
     return Snapper(*document_, *picks_, workPlane_, settings, fallbackPlane_).snap(
-        ray, view, {suspended, std::move(plane), edges, std::move(excluded)});
+        ray, view, {suspended, std::move(plane), edges, std::move(excluded), std::move(only)});
 }
 
 void EditorSession::setOverlayPalette(const OverlayPalette& palette) {

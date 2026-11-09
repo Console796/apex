@@ -155,7 +155,8 @@ public:
     void setOverlayPalette(const OverlayPalette& palette);
     SnapResult snap(Ray ray, const ToolView& view, bool suspended = false,
                     std::optional<SurfacePlane> plane = {}, bool edges = true,
-                    std::vector<FeatureRef> excluded = {}) const;
+                    std::vector<FeatureRef> excluded = {},
+                    std::optional<std::set<NodeId>> only = {}) const;
     void pointerClick(Ray ray, Modifiers modifiers = {}, bool sameSpot = false);
     void marquee(std::span<const Plane> planes, Modifiers modifiers = {});
     void selectNode(NodeId node, Modifiers modifiers = {});

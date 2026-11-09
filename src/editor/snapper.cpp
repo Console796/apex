@@ -10,11 +10,13 @@ Snapper::Snapper(const document::Document& document, const PickIndex& picks,
 
 SnapResult Snapper::snap(Ray ray, const ToolView& view, const SnapRequest& request) const {
     const bool suspended = request.suspended || settings_.suspended;
-    const auto hit = picks_.first(ray);
+    const std::function<bool(NodeId)> allowed = [&](NodeId node) { return request.only->contains(node); };
+    const auto hit = request.only ? picks_.first(ray, allowed) : picks_.first(ray);
     if (!suspended) {
         const auto features = picks_.nearestFeature(ray, 8.0, view, [&](const FeatureRef& feature) {
-            return std::ranges::find(request.excluded, feature) == request.excluded.end();
-        });
+            return std::ranges::find(request.excluded, feature) == request.excluded.end() &&
+                   (!request.only || allowed(feature.node));
+        }, request.only ? allowed : std::function<bool(NodeId)>{});
         const auto result = [](const FeatureHit& feature, SnapKind kind) {
             return SnapResult{feature.point, kind, feature.node, feature.side};
         };
@@ -25,6 +27,7 @@ SnapResult Snapper::snap(Ray ray, const ToolView& view, const SnapRequest& reque
     if (suspended && hit && !request.plane) return {hit->point, SnapKind::Surface, hit->node, hit->side};
 
     auto resolved = workPlane_.resolve();
+    if (request.only && resolved && resolved->source != WorkPlaneSource::Pinned) resolved.reset();
     SurfacePlane plane = request.plane ? *request.plane : resolved ? resolved->plane : fallback_;
     std::optional<NodeId> node;
     std::optional<SideId> side;

@@ -91,6 +91,9 @@ public:
     // is the exit face. Edge/corner ties choose SideId. t follows the unnormalized Ray.
     std::vector<Hit> pick(Ray ray, double tMax = std::numeric_limits<double>::infinity()) const;
     std::optional<Hit> first(Ray ray) const;
+    // Nearest hit among nodes accepted by `allow`; everything else is transparent to the ray.
+    // Instance contents never match.
+    std::optional<Hit> first(Ray ray, const std::function<bool(NodeId)>& allow) const;
     std::optional<AABB> bounds(NodeId node, std::optional<SideId> side = std::nullopt) const;
     // Inside means signedDistance <= 0. Touching clips face polygons; a frustum entirely
     // inside a solid is intentionally not reported. Entity boxes use volume intersection.
@@ -100,8 +103,10 @@ public:
 
     // Solid features only. Occlusion is tested along each feature's camera ray: occluded
     // geometry is never a fallback. Equal pixel distances prefer depth, then node/side.
+    // With `occluders`, only the accepted nodes can hide a feature.
     FeatureHits nearestFeature(Ray ray, double pixelRadius, const ToolView& view,
-                               const std::function<bool(const FeatureRef&)>& allow = {}) const;
+                               const std::function<bool(const FeatureRef&)>& allow = {},
+                               const std::function<bool(NodeId)>& occluders = {}) const;
 
 private:
     struct Item {

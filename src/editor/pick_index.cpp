@@ -444,6 +444,21 @@ std::optional<Hit> PickIndex::first(Ray ray) const {
     return best;
 }
 
+std::optional<Hit> PickIndex::first(Ray ray, const std::function<bool(NodeId)>& allow) const {
+    std::optional<Hit> best;
+    tree_.raycast(ray, std::numeric_limits<double>::infinity(),
+        [&](std::uint32_t leaf, double limit) -> std::optional<double> {
+            const auto id = leaves_.at(leaf);
+            if (allow(id)) {
+                if (auto hit = intersect(id, ray, limit)) {
+                    if (!best || hitLess(*hit, *best)) best = hit;
+                }
+            }
+            return best ? std::optional(best->t) : std::nullopt;
+        });
+    return best;
+}
+
 std::vector<NodeId> PickIndex::frustum(std::span<const Plane> planes, Mode mode) const {
     std::vector<NodeId> result;
     tree_.queryPlanes(planes, [&](std::uint32_t leaf, bool inside) {
@@ -502,7 +517,8 @@ std::vector<NearHit> PickIndex::nearest(DVec3 point, double radius) const {
 }
 
 FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolView& view,
-                                      const std::function<bool(const FeatureRef&)>& allow) const {
+                                      const std::function<bool(const FeatureRef&)>& allow,
+                                      const std::function<bool(NodeId)>& occluders) const {
     FeatureHits result;
     if (!(pixelRadius >= 0.0 && std::isfinite(pixelRadius))) return result;
     const auto forward = glm::normalize(view.cameraForward);
@@ -545,7 +561,8 @@ FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolVie
         const auto delta = point - origin;
         const double length = glm::length(delta);
         if (!(length > 0.0)) return;
-        const auto hit = first({origin, delta / length});
+        const Ray toFeature{origin, delta / length};
+        const auto hit = occluders ? first(toFeature, occluders) : first(toFeature);
         if (hit && hit->t < length - 1e-5) return;
         const FeatureHit candidate{node, side, point, distance, depth, feature};
         if (!best || std::tie(candidate.pixels, candidate.depth, candidate.node, candidate.side) <
