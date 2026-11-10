@@ -188,6 +188,14 @@ TEST_CASE("Face Properties fields show mixed values, coalesce focused typing and
     CHECK(editor::faceSnapshot(scene.doc, top)->face.material == "apex/browsed");
     CHECK(scene.session.newSolidStyle().material == "apex/browsed");
 
+    auto* nodraw = panel.findChild<QPushButton*>("faceMaterialNodraw");
+    REQUIRE(nodraw);
+    nodraw->click();
+    CHECK(editor::faceSnapshot(scene.doc, top)->face.material == "tools/toolsnodraw");
+    CHECK(scene.session.newSolidStyle().material == "tools/toolsnodraw");
+    scene.doc.undo();
+    CHECK(editor::faceSnapshot(scene.doc, top)->face.material == "apex/browsed");
+
     // Typing a material writes nothing until Return, then one edit.
     auto* material = panel.findChild<QLineEdit*>("faceMaterial");
     REQUIRE(material);

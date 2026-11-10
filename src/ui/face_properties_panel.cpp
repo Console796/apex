@@ -72,7 +72,11 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     material_->setObjectName(QStringLiteral("faceMaterial"));
     auto* browse = new QPushButton(tr("Browse…"), materialRow);
     browse->setObjectName(QStringLiteral("faceMaterialBrowse"));
+    auto* nodraw = new QPushButton(tr("Nodraw"), materialRow);
+    nodraw->setObjectName(QStringLiteral("faceMaterialNodraw"));
+    nodraw->setToolTip(tr("Apply tools/toolsnodraw to the selected faces"));
     materialLayout->addWidget(material_, 1);
+    materialLayout->addWidget(nodraw);
     materialLayout->addWidget(browse);
     controls->addWidget(materialRow);
 
@@ -242,6 +246,11 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
             self->edit(editor::FaceField::Material, value, nextToken());
             self->session_->setNewSolidMaterial(value.toStdString()); // The browsed texture becomes the active one.
         });
+    });
+    connect(nodraw, &QPushButton::clicked, this, [this] {
+        // The most used texture: one click, and it becomes the active material like a browsed one.
+        edit(editor::FaceField::Material, QStringLiteral("tools/toolsnodraw"), nextToken());
+        if (session_) session_->setNewSolidMaterial("tools/toolsnodraw");
     });
     connect(uvView_, &UvView::statusMessage, this, &FacePropertiesPanel::statusMessage);
     refresh();
