@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QMouseEvent>
 #include <QFrame>
 #include <QPointF>
 #include <QWindow>
 #include <QTimer>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
@@ -19,6 +21,7 @@
 #include "ui/transform_input.hpp"
 #include "viewport/controllers.hpp"
 #include "viewport/layout.hpp"
+#include "viewport/right_gate.hpp"
 
 class QCheckBox;
 class QDropEvent;
@@ -88,6 +91,10 @@ public:
     std::uint32_t recreateCount() const { return swapchain_ ? swapchain_->recreateCount() : 0; }
 
     void releaseCapture();
+    // Sticky FPV: mouse-look and WASD/Q/E without holding a button, tools suspended. Only for a
+    // perspective camera with no gizmo, modal or pie active; false when it could not change.
+    bool setFpv(bool on);
+    bool fpv() const { return fpv_; }
     void setEditorSession(editor::EditorSession* session) {
         transform_.setSession(session);
         session_ = session;
@@ -101,6 +108,7 @@ signals:
     void pressed();             // Any mouse press: the pane becomes active and takes focus.
     void modelPlacementFailed(const QString& message);
     void cameraChanged();       // Navigation moved the camera.
+    void fpvChanged(bool on);   // Sticky FPV mode started or ended.
 
 protected:
     bool event(QEvent* event) override;
@@ -112,6 +120,7 @@ private:
     void drawMarquee(VkCommandBuffer commands, VkExtent2D extent);
     bool handleKey(QKeyEvent* event);
     void applyNavigation(double dt);
+    void commitFly(QPointF position);
     QSize pixelSize() const;
     void destroySwapchain();
     double draw();
@@ -146,6 +155,11 @@ private:
     double scroll_ = 0.0;
     bool forward_ = false, back_ = false, left_ = false, right_ = false, up_ = false, down_ = false;
     bool grabbed_ = false;
+    // A right press is held back until it is a tap (a tool click) or a fly (camera only).
+    viewport::RightGate rightGate_;
+    std::unique_ptr<QMouseEvent> pendingPress_;
+    bool replaying_ = false;
+    bool fpv_ = false;
     bool modelDragOver_ = false;  // A browser model drag is over the pane: no thumbnail work.
     QElapsedTimer sinceTick_;
     QElapsedTimer traceClock_;
@@ -225,6 +239,7 @@ private:
     QLabel* title_ = nullptr;
     QLabel* bakeStatus_ = nullptr;
     QLabel* mode_ = nullptr;
+    QLabel* fpvBadge_ = nullptr;
     ToolParameterStrip* parameters_ = nullptr;
     QToolButton* menuButton_ = nullptr;
     QToolButton* overlaysButton_ = nullptr;

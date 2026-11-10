@@ -288,6 +288,44 @@ void PaneWindow::releaseCapture() {
     modelDragOver_ = false;
     delta_ = {};
     forward_ = back_ = left_ = right_ = up_ = down_ = false;
+    rightGate_.cancel();
+    pendingPress_.reset();
+    if (fpv_) {
+        fpv_ = false;
+        dirty_ = true;
+        emit fpvChanged(false);
+    }
+}
+
+bool PaneWindow::setFpv(bool on) {
+    if (on == fpv_) return true;
+    if (!on) {
+        pointerLock_.cancel();
+        if (fpv_) releaseCapture();
+        return true;
+    }
+    const auto* vp = accessor_();
+    if (!session_ || !session_->document() || !vp || vp->camera.isOrtho() || transform_.owns() ||
+        session_->pie() || buttons_ != Qt::NoButton)
+        return false;
+    cancelSelectionGesture();
+    transform_.cancelPointer(true);
+    session_->clearHover();
+    const QPointF here = mapFromGlobal(QCursor::pos());
+    pointerLock_.press(Qt::RightButton, here);
+    if (!pointerLock_.active()) return false;
+    fpv_ = true;
+    cursor_ = last_ = here;
+    delta_ = {};
+    dirty_ = true;
+    emit fpvChanged(true);
+    return true;
+}
+
+void PaneWindow::commitFly(QPointF position) {
+    pendingPress_.reset();
+    last_ = position;
+    pointerLock_.press(Qt::RightButton, position);
 }
 
 bool PaneWindow::event(QEvent* e) {
@@ -364,7 +402,7 @@ bool PaneWindow::event(QEvent* e) {
         // must not trigger window shortcuts.
         // F9 remains available to annotate an input trace during a bad navigation gesture.
         if (static_cast<QKeyEvent*>(e)->key() != Qt::Key_F9 &&
-            (transform_.owns() || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton))) {
+            (transform_.owns() || fpv_ || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton))) {
             e->accept();
             return true;
         }
@@ -398,7 +436,7 @@ bool PaneWindow::event(QEvent* e) {
 }
 
 bool PaneWindow::interacting() const {
-    return resizeDragging_ || grabbed_ || modelDragOver_ || buttons_ != Qt::NoButton || transform_.owns() ||
+    return resizeDragging_ || grabbed_ || fpv_ || modelDragOver_ || buttons_ != Qt::NoButton || transform_.owns() ||
         forward_ || back_ || left_ || right_ || up_ || down_ || scroll_ != 0.0 || !delta_.isNull();
 }
 
@@ -414,6 +452,18 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
     const bool release = e->type() == QEvent::MouseButtonRelease;
     cursor_ = e->position();
     pointerInside_ = true;
+    if (fpv_) {
+        // Sticky FPV owns the pointer: the tools see nothing until it ends.
+        if (press) {
+            requestActivate();
+            emit pressed();
+        } else if (!release) {
+            if (pointerLock_.active()) pointerLock_.move(e->position());
+            else delta_ += e->position() - last_;
+        }
+        last_ = e->position();
+        return true;
+    }
     if (!press && !release && buttons_ != Qt::NoButton && (buttons_ & ~e->buttons()) != Qt::NoButton) {
         // A release outside the window is never delivered here: follow the real button state, or
         // the view would keep navigating when the pointer comes back.
@@ -421,14 +471,51 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         buttons_ &= e->buttons();
         pointerLock_.buttons(buttons_);
         if (lost.testFlag(Qt::LeftButton)) cancelSelectionGesture();
+        if (lost.testFlag(Qt::RightButton)) {
+            rightGate_.cancel();
+            pendingPress_.reset();
+        }
         if (buttons_ == Qt::NoButton && grabbed_) {
             setMouseGrabEnabled(false);
             grabbed_ = false;
         }
         last_ = e->position();
     }
+    // A right press is held back so a tool never sees the start of a fly: a tap is replayed to it as
+    // a normal click on release, and a drag or a fly key commits to the camera alone.
+    if (press && e->button() == Qt::RightButton && !replaying_) {
+        const auto* vp = accessor_();
+        if (vp && session_ && session_->document() && !vp->camera.isOrtho() && !transform_.owns() &&
+            !session_->pie()) {
+            requestActivate();
+            emit pressed();
+            buttons_ = e->buttons();
+            last_ = e->position();
+            if (!grabbed_) grabbed_ = setMouseGrabEnabled(true);
+            rightGate_.press(e->position().x(), e->position().y());
+            pendingPress_.reset(e->clone());
+            return true;
+        }
+    }
+    bool toolSkipped = false;
+    if (release && e->button() == Qt::RightButton && rightGate_.active()) {
+        if (rightGate_.release() == viewport::RightGate::Outcome::Tap && pendingPress_) {
+            const std::unique_ptr<QMouseEvent> held = std::move(pendingPress_);
+            replaying_ = true;
+            handleMouse(held.get());
+            replaying_ = false;
+        } else {
+            toolSkipped = true; // The tool never saw this right press.
+        }
+    } else if (!press && !release && rightGate_.active()) {
+        if (rightGate_.pending()) {
+            if (!rightGate_.move(e->position().x(), e->position().y())) return true;
+            commitFly(e->position());
+        }
+        toolSkipped = true;
+    }
     bool consumed = false;
-    if (const auto* vp = accessor_(); vp && session_)
+    if (const auto* vp = accessor_(); vp && session_ && !toolSkipped)
         consumed = transform_.mouse(*e, vp->camera, QSizeF(width(), height()));
     if (transform_.takeDirty()) dirty_ = true;
     if (consumed) {
@@ -452,7 +539,7 @@ bool PaneWindow::handleMouse(QMouseEvent* e) {
         if (!grabbed_) grabbed_ = setMouseGrabEnabled(true);
         const auto* vp = accessor_();
         if (e->button() == Qt::MiddleButton ||
-            (e->button() == Qt::RightButton && vp && !vp->camera.isOrtho()))
+            (e->button() == Qt::RightButton && vp && !vp->camera.isOrtho() && !replaying_))
             pointerLock_.press(e->button(), e->position());
     } else if (release) {
         // A fast flick can finish between ticks. Apply its last relative events
@@ -496,8 +583,31 @@ void PaneWindow::drawMarquee(VkCommandBuffer commands, VkExtent2D extent) {
 bool PaneWindow::handleKey(QKeyEvent* e) {
     modifiers_ = e->modifiers();
     const bool down = e->type() == QEvent::KeyPress;
-    const bool navigating = buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton);
-    if (session_) {
+    const bool navigating = fpv_ || buttons_.testFlag(Qt::RightButton) || buttons_.testFlag(Qt::MiddleButton);
+    if (session_ && down && !e->isAutoRepeat() && !transform_.owns() && !buttons_.testFlag(Qt::RightButton) &&
+        !buttons_.testFlag(Qt::MiddleButton)) {
+        if (const auto chord = keyChord(*e);
+            chord && session_->keymap().lookup(*chord, editor::BindingContext::forTool(session_->activeTool())) ==
+                         "view.fpv_toggle") {
+            e->accept();
+            setFpv(!fpv_);
+            return true;
+        }
+    }
+    if (rightGate_.pending() && down) {
+        switch (e->key()) {
+        case Qt::Key_W: case Qt::Key_Up: case Qt::Key_S: case Qt::Key_Down: case Qt::Key_A: case Qt::Key_Left:
+        case Qt::Key_D: case Qt::Key_Right: case Qt::Key_E: case Qt::Key_Q:
+            if (rightGate_.key()) commitFly(cursor_);
+            break;
+        default: break;
+        }
+    }
+    if (fpv_ && !e->isAutoRepeat() && e->key() == Qt::Key_Escape) {
+        setFpv(false);
+        return true;
+    }
+    if (session_ && !fpv_) {
         const auto* vp = accessor_();
         const bool consumed = vp && transform_.key(*e, vp->camera, QSizeF(width(), height()), !navigating);
         if (transform_.takeDirty()) dirty_ = true;
@@ -523,8 +633,9 @@ bool PaneWindow::handleKey(QKeyEvent* e) {
 void PaneWindow::applyNavigation(double dt) {
     delta_ += pointerLock_.takeDelta();
     if (auto* vp = accessor_()) {
+        if (fpv_ && vp->camera.isOrtho()) setFpv(false);
         const bool keys = forward_ || back_ || left_ || right_ || up_ || down_;
-        if (buttons_ != Qt::NoButton || keys || scroll_ != 0.0) {
+        if (buttons_ != Qt::NoButton || fpv_ || keys || scroll_ != 0.0) {
             viewport::NavInput in;
             in.cursor = {cursor_.x(), cursor_.y()};
             in.cursorDelta = {delta_.x(), delta_.y()};
@@ -533,7 +644,7 @@ void PaneWindow::applyNavigation(double dt) {
             in.dt = dt;
             in.left = buttons_.testFlag(Qt::LeftButton);
             in.middle = buttons_.testFlag(Qt::MiddleButton);
-            in.right = buttons_.testFlag(Qt::RightButton);
+            in.right = fpv_ || (buttons_.testFlag(Qt::RightButton) && !rightGate_.pending());
             in.shift = modifiers_.testFlag(Qt::ShiftModifier);
             in.ctrl = modifiers_.testFlag(Qt::ControlModifier);
             in.alt = modifiers_.testFlag(Qt::AltModifier);
@@ -800,6 +911,11 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     mode_->setToolTip(tr("Current editing mode"));
     mode_->hide();
     row->addWidget(mode_);
+    fpvBadge_ = new QLabel(tr("FPV"));
+    fpvBadge_->setObjectName(QStringLiteral("PaneFpv"));
+    fpvBadge_->setToolTip(tr("FPV camera: mouse-look with WASD/Q/E. Tab or Esc to leave; tools are suspended."));
+    fpvBadge_->hide();
+    row->addWidget(fpvBadge_);
     instanceVisibilityButton_ = new QToolButton(header);
     instanceVisibilityButton_->setObjectName(QStringLiteral("instanceVisibilityToggle"));
     instanceVisibilityButton_->setAutoRaise(true);
@@ -848,6 +964,7 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
         container_->setMinimumSize(80, 60);
         new KeyForwarder(container_, window_);
         window_->transformInput().setWidget(container_);
+        connect(window_, &PaneWindow::fpvChanged, this, [this](bool on) { fpvBadge_->setVisible(on); });
         connect(window_, &PaneWindow::pressed, this, [this] {
             container_->setFocus(Qt::MouseFocusReason);
             emit activated(pane_);
@@ -880,7 +997,8 @@ void PaneFrame::restyle() {
         "#PaneTitle { color: %3; }"
         "#PaneUnavailable { color: %3; background: %4; }"
         "#PaneMode { color: %5; background: %6; border-radius: 3px; padding: 1px 8px; margin-right: 4px; }"
-        "#PaneMode[entity=\"true\"] { background: %7; }")
+        "#PaneMode[entity=\"true\"] { background: %7; }"
+        "#PaneFpv { color: %5; background: %7; border-radius: 3px; padding: 1px 8px; margin-right: 4px; font-weight: bold; }")
         .arg((active_ ? t.accent : t.border).name(), t.panel.name(), (active_ ? t.text : t.textDim).name(),
              t.base.name(), t.textOnAccent.name(), t.accent.name(), t.warn.name()));
 }
