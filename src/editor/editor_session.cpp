@@ -44,6 +44,11 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     activeToolObject().activate();
     selection_.observe([this](const Selection&) {
         if (activeTool_ == "tool.select" && selectTool().lightEdit_.active()) selectTool().endTransform();
+        // Selecting a face makes its material the active one, so new solids and applies match it.
+        const auto active = selection_.active();
+        if (document_ && selection_.mode() == SelectionMode::Faces && active)
+            if (const auto* side = std::get_if<document::SideId>(&*active))
+                if (const auto face = faceSnapshot(*document_, *side)) newSolidStyle_.material = face->face.material;
         notify();
     });
 }

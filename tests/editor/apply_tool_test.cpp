@@ -166,3 +166,16 @@ TEST_CASE("Blender lift with alignment uses Ctrl Shift Alt and makes the clicked
     REQUIRE(s.session.applyMaterialWrapped(Scene::ray({1, 0, 0})));
     CHECK(s.face({1, 0, 0}).face.material == "apex/after-lift");
 }
+TEST_CASE("Selecting a face makes its material the active material") {
+    Scene s;
+    const auto top = s.side({0, 0, 1}), right = s.side({1, 0, 0});
+    s.session.selection().select(right);
+    REQUIRE(s.session.setFaceField(FaceField::Material, std::string("apex/right")));
+    s.session.selection().select(top);
+    CHECK(s.session.newSolidStyle().material == s.face({0, 0, 1}).face.material);
+    CHECK(s.session.newSolidStyle().material != "apex/right");
+    s.session.selection().select(right);
+    CHECK(s.session.newSolidStyle().material == "apex/right");
+    s.session.setNewSolidMaterial("apex/manual");
+    CHECK(s.session.newSolidStyle().material == "apex/manual"); // Only a selection change overrides it.
+}

@@ -186,6 +186,7 @@ TEST_CASE("Face Properties fields show mixed values, coalesce focused typing and
     CHECK(browse->isEnabled());
     browse->click(); REQUIRE(choose); CHECK(browseWhat == "the selected faces"); choose("apex/browsed");
     CHECK(editor::faceSnapshot(scene.doc, top)->face.material == "apex/browsed");
+    CHECK(scene.session.newSolidStyle().material == "apex/browsed");
 
     // Typing a material writes nothing until Return, then one edit.
     auto* material = panel.findChild<QLineEdit*>("faceMaterial");

@@ -238,7 +238,9 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
         if (!materialBrowser_ || !material_) return;
         QPointer<FacePropertiesPanel> self(this);
         materialBrowser_(material_->text(), tr("the selected faces"), [self](QString value) {
-            if (self && self->session_) self->edit(editor::FaceField::Material, value, nextToken());
+            if (!self || !self->session_) return;
+            self->edit(editor::FaceField::Material, value, nextToken());
+            self->session_->setNewSolidMaterial(value.toStdString()); // The browsed texture becomes the active one.
         });
     });
     connect(uvView_, &UvView::statusMessage, this, &FacePropertiesPanel::statusMessage);
