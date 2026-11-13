@@ -223,6 +223,9 @@ TEST_CASE("[overlay] transform carries the quad's world corners and texture rang
             const DVec3 expected = linear * quad.corner(i) + translation;
             CHECK(glm::length(moved.corner(i) - expected) < 1e-9);
         }
+        // The basis the engine rebuilds (V = N x U) is the stored one, mirrors included.
+        CHECK(glm::length(glm::cross(moved.normal, moved.basisU) - moved.basisV) < 1e-12);
+        CHECK(std::abs(glm::dot(moved.basisU, moved.normal)) < 1e-12);
         CHECK(moved.startU == quad.startU);
         CHECK(moved.endV == quad.endV);
         // The normal stays perpendicular to the transformed face plane.

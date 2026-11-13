@@ -1,4 +1,5 @@
 #include "fixtures.hpp"
+#include "document/overlay_fragments.hpp"
 #include "editor/transform.hpp"
 #include "geometry/tolerances.hpp"
 
@@ -362,4 +363,55 @@ TEST_CASE("transform document write rejection rolls back the whole gesture") {
     CHECK(doc.write().value() == before);
     CHECK(doc.undoCount() == count);
     CHECK(notifications == 0);
+}
+
+TEST_CASE("[overlay] transforms carry an info_overlay's quad with the faces it lies on") {
+    const char* empty = "versioninfo\n{\n\"editorversion\" \"400\"\n}\nworld\n{\n\"id\" \"1\"\n\"classname\" \"worldspawn\"\n}\n";
+    const auto overlayArea = [](const Document& doc, NodeHandle overlay) {
+        const auto geometry = document::overlayGeometry(doc, *doc.get(overlay)->block);
+        CHECK(geometry.missing.empty());
+        double area = 0.0;
+        for (const auto& piece : geometry.pieces) area += geometry::fragmentArea(piece.fragment);
+        return area;
+    };
+    const std::array transforms{
+        std::pair{"move", Transform::translate({40, -24, 8})},
+        std::pair{"rotate", Transform::rotate({1, 0, 0}, 90.0, {10, 0, 0})},
+        std::pair{"rotate oblique", Transform::rotate({1, 2, 3}, 37.0)},
+        std::pair{"mirror", Transform::mirror({1, 0, 0}, {16, 0, 0})},
+        std::pair{"scale", Transform::scale({2, 1, 1})},
+    };
+    for (const auto& [name, transform] : transforms) {
+        CAPTURE(name);
+        Document doc(parsed(empty));
+        NodeHandle w{};
+        for (const auto r : doc.roots())
+            if (doc.get(*doc.handle(r))->block->key() == "world") w = *doc.handle(r);
+        const auto box = addBox(doc, {-64, -64, -64}, {64, 64, 0}, w);
+        SideId top = 0;
+        for (const auto& face : geometry::solidGeometry(*doc.get(box)->block)->poly.faces)
+            if (face.plane.normal.z > 0.999) top = static_cast<SideId>(face.sideId);
+        // A quad turned 30 degrees on the box's top, so a scale along X skews it.
+        auto quad = geometry::faceAlignedQuad({8, 4, 0}, {0, 0, 1}, {0.866, 0.5, 0}, {48, 24});
+        auto text = std::string("entity { id 0 classname info_overlay material overlays/test sides \"") +
+                    std::to_string(top) + "\" origin \"8 4 0\" ";
+        for (const auto& [key, value] : geometry::overlayKeys(quad)) text += key + " \"" + value + "\" ";
+        const auto overlay = addBlock(doc, text + "}");
+        const double before = overlayArea(doc, overlay);
+        REQUIRE(before == doctest::Approx(48.0 * 24.0));
+
+        const std::array selection{id(doc, box), id(doc, overlay)};
+        REQUIRE(commitTransform(doc, selection, transform, {}, "Transform"));
+        const auto moved = geometry::parseOverlay(*doc.get(overlay)->block);
+        REQUIRE(moved);
+        for (std::size_t i = 0; i < 4; ++i)
+            CHECK(glm::length(moved->corner(i) - transform.point(quad.corner(i))) < 1e-6);
+        CHECK(glm::length(glm::cross(moved->normal, moved->basisU) - moved->basisV) < 1e-9);
+        // Still wholly on the (moved) top face: the area scales only with the map.
+        const double scale = std::string_view(name) == "scale" ? 2.0 : 1.0;
+        CHECK(overlayArea(doc, overlay) == doctest::Approx(before * scale));
+        CHECK(doc.get(overlay)->block->find("sides")->decodedValue() == std::to_string(top));
+        REQUIRE(doc.undo());
+        CHECK(glm::length(geometry::parseOverlay(*doc.get(overlay)->block)->origin - quad.origin) < 1e-9);
+    }
 }

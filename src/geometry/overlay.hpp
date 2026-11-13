@@ -104,8 +104,10 @@ std::vector<OverlayQuad> transitionQuads(const TransitionShape& shape, const Pla
                                          std::span<const std::vector<DVec3>> landPolygons);
 
 // Carry an overlay through p -> linear * p + translation (moves, rotations, scales and mirrors of
-// the entity with its faces). The basis stays unit length; uv points scale with the map along
-// each axis, so the quad's world corners are the mapped corners.
+// the entity with its faces). The result's basis is orthonormal with BasisV = BasisNormal x
+// BasisU, as the engine rebuilds it, and its uv points are the mapped corners in that basis, so
+// the quad's world corners are exactly the mapped corners. The normal follows the faces
+// (inverse transpose).
 OverlayQuad transformOverlay(const OverlayQuad& quad, const DMat3& linear, DVec3 translation);
 
 } // namespace apex::geometry

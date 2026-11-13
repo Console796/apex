@@ -374,14 +374,20 @@ std::vector<OverlayQuad> transitionQuads(const TransitionShape& shape, const Pla
 
 OverlayQuad transformOverlay(const OverlayQuad& quad, const DMat3& linear, DVec3 translation) {
     if (!(std::abs(glm::determinant(linear)) > 1e-12)) throw std::invalid_argument("singular overlay transform");
+    // The engine ignores the stored BasisV and rebuilds it as BasisNormal x BasisU, so the moved
+    // quad keeps that right-handed, orthonormal basis and re-expresses the moved corners in it.
+    // A mirror or a skewing scale then still lands every corner where the map sends it.
     OverlayQuad out = quad;
     out.origin = linear * quad.origin + translation;
-    const DVec3 u = linear * quad.basisU, v = linear * quad.basisV;
-    const double su = glm::length(u), sv = glm::length(v);
-    out.basisU = u / su;
-    out.basisV = v / sv;
     out.normal = unit(glm::transpose(glm::inverse(linear)) * quad.normal);
-    for (std::size_t i = 0; i < 4; ++i) out.points[i] = {quad.points[i].x * su, quad.points[i].y * sv};
+    DVec3 u = linear * quad.basisU;
+    u -= out.normal * glm::dot(u, out.normal);
+    out.basisU = unit(u);
+    out.basisV = glm::cross(out.normal, out.basisU);
+    for (std::size_t i = 0; i < 4; ++i) {
+        const DVec3 d = linear * quad.corner(i) + translation - out.origin;
+        out.points[i] = {glm::dot(d, out.basisU), glm::dot(d, out.basisV)};
+    }
     return out;
 }
 

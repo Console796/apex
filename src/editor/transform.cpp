@@ -1,6 +1,7 @@
 #include "document/displacement.hpp"
 #include "document/entity_helpers.hpp"
 #include "editor/transform.hpp"
+#include "document/overlay_fragments.hpp"
 
 #include "core/strings.hpp"
 
@@ -260,6 +261,14 @@ Result<EntityTransform> applyToEntity(const document::Document& doc, NodeId enti
         result.angles = anglesFromForward(forward, up);
         if (spotlight) result.keys["pitch"] = std::to_string(-result.angles->x);
     }
+    // Plan 0.8 D10: an info_overlay's quad goes with it. Its side list names faces, not places, so
+    // it is unchanged; a malformed quad is left as it was.
+    if (document::overlayKind(*node->block) == document::OverlayKind::Overlay)
+        if (const auto quad = geometry::parseOverlay(*node->block);
+            quad && !quad->problem() && std::abs(glm::determinant(transform.linear())) > 1e-12)
+            for (auto& [key, value] : geometry::overlayKeys(
+                     geometry::transformOverlay(*quad, transform.linear(), transform.translation())))
+                result.keys[key] = std::move(value);
     if (cls) {
         for (const auto& property : cls->properties) {
             const auto* value = node->block->find(property.name);
