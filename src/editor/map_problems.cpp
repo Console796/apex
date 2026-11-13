@@ -2,6 +2,7 @@
 
 #include "core/strings.hpp"
 #include "document/cordon.hpp"
+#include "editor/overlay_problems.hpp"
 #include "geometry/solid_geometry.hpp"
 
 #include <algorithm>
@@ -250,6 +251,7 @@ ProblemRegistry ProblemRegistry::builtin() {
     registry.add("entities", entityShape);
     registry.add("player-start", playerStart);
     registry.add("cordons", emptyCordons);
+    registry.add("overlays", overlayProblems);
     return registry;
 }
 

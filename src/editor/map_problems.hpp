@@ -13,7 +13,8 @@ namespace apex::editor {
 enum class ProblemSeverity { Error, Warning, Note }; // error: the compile is likely to fail
 enum class ProblemKind {
     InvalidSolid, MissingAsset, BrokenConnection, UnknownClass, DuplicateName, InstanceProblem,
-    OutOfRange, EmptyBrushEntity, MissingOrigin, MissingPlayerStart, EmptyCordon
+    OutOfRange, EmptyBrushEntity, MissingOrigin, MissingPlayerStart, EmptyCordon,
+    EmptyOverlay // 0.8 D11 rule 4 (overlay_problems.hpp)
 };
 struct Problem {
     ProblemSeverity severity = ProblemSeverity::Warning;

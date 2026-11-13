@@ -115,11 +115,13 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
                            src/geometry/displacement.cpp
+                           src/geometry/overlay.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.cpp
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp
                             src/document/instance_fixup.cpp src/document/instance_collapse.cpp src/document/sidelist_remap.cpp src/document/cordon.cpp
                             src/document/displacement.cpp
+                            src/document/overlay_fragments.cpp src/document/sidelist_upkeep.cpp
            DEPS apex_geometry apex_core)
 apex_layer(lighting SOURCES src/lighting/light.cpp src/lighting/sky_visibility.cpp src/lighting/charting.cpp src/lighting/cpu_accel.cpp src/lighting/bake_scene.cpp src/lighting/bake_casters.cpp src/lighting/baker.cpp src/lighting/bake_session.cpp src/lighting/bake_diff.cpp src/lighting/bsp_lightmaps.cpp DEPS apex_geometry apex_document apex_core)
 target_link_libraries(apex_lighting PRIVATE embree sourcepp::bsppp)
@@ -132,6 +134,7 @@ apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/bake_instances.cpp src/editor/vrad_roundtrip.cpp src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
                           src/editor/connection_model.cpp src/editor/incoming_connections.cpp src/editor/rename_propagation.cpp src/editor/inspector_model.cpp src/editor/placement.cpp
+                          src/editor/overlay_problems.cpp
            DEPS apex_document apex_geometry apex_core apex_compile)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/addon_authoring.cpp src/assets/unmounted_addons.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp src/assets/model_bake.cpp src/assets/model_pose.cpp
