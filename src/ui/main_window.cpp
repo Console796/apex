@@ -111,7 +111,7 @@ QIcon appIcon() {
 
 namespace {
 constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
-    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure"};
+    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure", "tool.overlay"};
 }
 
 namespace {

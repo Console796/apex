@@ -13,6 +13,7 @@
 #include "editor/clip_tool.hpp"
 #include "editor/apply_tool.hpp"
 #include "editor/measure_tool.hpp"
+#include "editor/overlay_tool.hpp"
 #include "editor/vertex_tool.hpp"
 #include "editor/hide_ops.hpp"
 #include "editor/instance_key_types.hpp"
@@ -42,6 +43,7 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Vertex, std::make_unique<VertexTool>(*this));
     tools_.emplace(Tool::Apply, std::make_unique<ApplyTool>(*this));
     tools_.emplace(Tool::Measure, std::make_unique<MeasureTool>(*this));
+    tools_.emplace(Tool::Overlay, std::make_unique<OverlayTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) {
         if (activeTool_ == "tool.select" && selectTool().lightEdit_.active()) selectTool().endTransform();

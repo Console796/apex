@@ -60,6 +60,7 @@ public:
         static constexpr const char* Vertex = "tool.vertex";
         static constexpr const char* Apply = "tool.apply";
         static constexpr const char* Measure = "tool.measure";
+        static constexpr const char* Overlay = "tool.overlay";
     };
     const ToolId& activeTool() const { return activeTool_; }
     void setActiveTool(ToolId tool);
@@ -347,6 +348,7 @@ private:
     friend class PrimitiveTool;
     friend class ClipTool;
     friend class MeasureTool;
+    friend class OverlayTool;
     friend class EntityTool;
     friend class VertexTool;
     SelectTool& selectTool();

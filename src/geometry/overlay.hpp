@@ -72,7 +72,7 @@ inline constexpr double kOverlayMinCosine = 1e-3;
 
 // Clips the quad against a flat convex polygon (counter-clockwise from outside, with its outward
 // normal). Points are projected along quad.normal onto the polygon's plane. Empty when nothing of
-// the quad lands on the polygon or the face is edge-on or facing away.
+// the quad lands on the polygon or the face is edge-on (a face facing away still receives it).
 std::optional<OverlayFragment> clipOverlay(const OverlayQuad& quad, std::span<const DVec3> polygon, DVec3 faceNormal,
                                            std::uint32_t side = 0);
 // Clips against every triangle of a displacement mesh, each lifted onto its own plane.
