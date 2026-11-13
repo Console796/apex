@@ -1,0 +1,256 @@
+// Apex-authored fixture (MIT): test1_disp.vmf with the (96 -1440) corner chamfered by side 361, so the displaced top (side 355) has five corners (Problems: non-quad).
+versioninfo
+{
+	"editorextension" "strata"
+	"editorversion" "400"
+	"editorbuild" "10773"
+	"mapversion" "7"
+	"formatversion" "100"
+	"prefab" "0"
+}
+visgroups
+{
+}
+world
+{
+	"id" "1"
+	"mapversion" "7"
+	"classname" "worldspawn"
+	"detailmaterial" "detail/detailsprites"
+	"detailvbsp" "detail.vbsp"
+	"maxblobcount" "250"
+	"maxprojectedtextures" "8"
+	"maxpropscreenwidth" "-1"
+	"skyname" "sky_black_nofog"
+	solid
+	{
+		"id" "637"
+		side
+		{
+			"id" "355"
+			"plane" "(-96 -1440 64) (96 -1440 64) (96 -1632 64)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 -96 -1440 64"
+				"point" "1 96 -1440 64"
+				"point" "2 96 -1632 64"
+				"point" "3 -96 -1632 64"
+			}
+			"material" "NATURE/DIRTFLOOR004C"
+			"uaxis" "[1 0 0 0] 0.25"
+			"vaxis" "[0 -1 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+			dispinfo
+			{
+				"power" "3"
+				"startposition" "[-96 -1632 64]"
+				"flags" "0"
+				"elevation" "0"
+				"subdiv" "0"
+				normals
+				{
+					"row0" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row1" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row2" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row3" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row4" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row5" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row6" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row7" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row8" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+				}
+				distances
+				{
+					"row0" "19.9938 26.7752 28.5518 33.6546 30.9758 29.7086 36.2254 34.5643 16.6979"
+					"row1" "15.8692 25.4564 26.7067 26.7946 22.9976 19.4746 27.8144 25.3528 9.43417"
+					"row2" "4.79086 13.7952 17.3419 15.1857 15.2469 16.0232 14.1881 7.93674 1.31003"
+					"row3" "1.4485 4.36803 4.52782 5.75604 10.6164 13.4123 13.0457 8.09362 2.38475"
+					"row4" "0 0 0 0 1.58509 5.59151 11.5494 12.8437 5.45066"
+					"row5" "0 0 0 0 1.6047 7.70393 17.363 16.5555 6.9591"
+					"row6" "0 0 0 0 2.69266 11.0596 16.7051 13.3214 2.79361"
+					"row7" "0 0 0 0 0.950363 4.80321 7.042 2.95599 0.252274"
+					"row8" "0 0 0 0 0 0 0 0 0"
+				}
+				offsets
+				{
+					"row0" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row1" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row2" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row3" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row4" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row5" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row6" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row7" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+					"row8" "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+				}
+				offset_normals
+				{
+					"row0" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row1" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row2" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row3" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row4" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row5" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row6" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row7" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+					"row8" "0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1 0 0 1"
+				}
+				alphas
+				{
+					"row0" "-96 -72 -48 -24 0 24 48 72 0"
+					"row1" "-96 -72 -48 -24 0 24 48 72 0"
+					"row2" "-96 -72 -48 -24 0 24 48 72 0"
+					"row3" "-96 -72 -48 -24 0 24 48 72 0"
+					"row4" "-96 -72 -48 -24 0 24 48 72 0"
+					"row5" "-96 -72 -48 -24 0 24 48 72 0"
+					"row6" "-96 -72 -48 -24 0 24 48 72 0"
+					"row7" "-96 -72 -48 -24 0 24 48 72 0"
+					"row8" "-96 -72 -48 -24 0 24 48 72 0"
+				}
+				triangle_tags
+				{
+					"row0" "9 9 9 9 9 9 9 9 9 9 9 9 9 9 1 9"
+					"row1" "9 9 9 9 9 9 9 9 9 9 9 9 9 1 1 9"
+					"row2" "9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"
+					"row3" "9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"
+					"row4" "9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"
+					"row5" "9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"
+					"row6" "9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"
+					"row7" "9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"
+				}
+				allowed_verts
+				{
+					"5" "18446744073709551615 18446744073709551615 18446744073709551615 18446744073709551615 8589934591"
+				}
+			}
+		}
+		side
+		{
+			"id" "356"
+			"plane" "(-96 -1632 0) (96 -1632 0) (96 -1440 0)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 -96 -1632 0"
+				"point" "1 96 -1632 0"
+				"point" "2 96 -1440 0"
+				"point" "3 -96 -1440 0"
+			}
+			"material" "NATURE/DIRTFLOOR004C"
+			"uaxis" "[1 0 0 0] 0.25"
+			"vaxis" "[0 -1 0 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "357"
+			"plane" "(-96 -1440 64) (-96 -1632 64) (-96 -1632 0)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 -96 -1440 64"
+				"point" "1 -96 -1632 64"
+				"point" "2 -96 -1632 0"
+				"point" "3 -96 -1440 0"
+			}
+			"material" "NATURE/DIRTFLOOR004C"
+			"uaxis" "[0 1 0 0] 0.25"
+			"vaxis" "[0 0 -1 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "358"
+			"plane" "(96 -1440 0) (96 -1632 0) (96 -1632 64)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 96 -1440 0"
+				"point" "1 96 -1632 0"
+				"point" "2 96 -1632 64"
+				"point" "3 96 -1440 64"
+			}
+			"material" "NATURE/DIRTFLOOR004C"
+			"uaxis" "[0 1 0 0] 0.25"
+			"vaxis" "[0 0 -1 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "359"
+			"plane" "(96 -1440 64) (-96 -1440 64) (-96 -1440 0)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 96 -1440 64"
+				"point" "1 -96 -1440 64"
+				"point" "2 -96 -1440 0"
+				"point" "3 96 -1440 0"
+			}
+			"material" "NATURE/DIRTFLOOR004C"
+			"uaxis" "[1 0 0 0] 0.25"
+			"vaxis" "[0 0 -1 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "360"
+			"plane" "(96 -1632 0) (-96 -1632 0) (-96 -1632 64)"
+			point_data
+			{
+				"numpts" "4"
+				"point" "0 96 -1632 0"
+				"point" "1 -96 -1632 0"
+				"point" "2 -96 -1632 64"
+				"point" "3 96 -1632 64"
+			}
+			"material" "NATURE/DIRTFLOOR004C"
+			"uaxis" "[1 0 0 0] 0.25"
+			"vaxis" "[0 0 -1 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		side
+		{
+			"id" "361"
+			"plane" "(64 -1440 0) (96 -1472 0) (96 -1472 64)"
+			"material" "NATURE/DIRTFLOOR004C"
+			"uaxis" "[1 0 0 0] 0.25"
+			"vaxis" "[0 0 -1 0] 0.25"
+			"rotation" "0"
+			"lightmapscale" "16"
+			"smoothing_groups" "0"
+		}
+		editor
+		{
+			"color" "0 133 230"
+			"visgroupshown" "1"
+			"visgroupautoshown" "1"
+		}
+	}
+}
+cameras
+{
+	"activecamera" "0"
+	camera
+	{
+		"position" "[67.7098 -1283.76 141.52]"
+		"look" "[-50.9315 -1543.88 94.4457]"
+	}
+}
+cordons
+{
+	"active" "0"
+}

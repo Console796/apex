@@ -1,5 +1,6 @@
 #include "lighting/bsp_lightmaps.hpp"
 
+#include "document/displacement.hpp"
 #include "document/document.hpp"
 #include "geometry/solid_geometry.hpp"
 
@@ -142,12 +143,9 @@ SideOwners sideOwners(const document::Document& document) {
         if (const auto* solid = std::get_if<Handle<document::Solid>>(&*handle)) {
             const auto* node = document.get(*solid);
             if (auto shape = geometry::solidGeometry(*node->block)) {
-                std::set<std::uint32_t> displacements;
-                for (const auto* side : node->block->findAll("side"))
-                    if (const auto* sideId = side->find("id"); sideId && side->find("dispinfo"))
-                        if (const auto value = sideId->asInt()) displacements.insert(std::uint32_t(*value));
+                const auto displacements = document::displacedSides(*node->block);
                 for (const auto& face : shape->poly.faces) {
-                    if (displacements.contains(face.sideId)) continue;
+                    if (displacements.contains(static_cast<document::SideId>(face.sideId))) continue;
                     SideOwner owner{node->id, face.sideId, face.plane, {}};
                     for (const auto index : face.vertices) owner.loop.push_back(shape->poly.vertices[index]);
                     owners.push_back(std::move(owner));

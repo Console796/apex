@@ -1,13 +1,17 @@
 #include "editor/face_edit.hpp"
 #include "editor/editor_session.hpp"
 #include "core/strings.hpp"
+#include "document/displacement.hpp"
 #include "document/vmf.hpp"
+#include "editor/map_problems.hpp"
 #include "geometry/solid_geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <climits>
+#include <map>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 
 namespace apex::editor {
@@ -281,4 +285,62 @@ Result<FaceApplyResult> EditorSession::applyMaterialWrapped(Ray ray) {
         return FaceApplyResult{true, fallback};
     } catch (const std::exception& e) { return std::unexpected(invalid(e)); }
 }
+DisplacementSummary summarizeDisplacements(const document::Document& doc, std::span<const document::SideId> sides) {
+    DisplacementSummary summary;
+    bool first = true;
+    const auto merge = [](auto& field, auto value, bool initial) {
+        if (initial) field = value;
+        else if (field && *field != value) field.reset();
+    };
+    std::map<document::NodeId, std::optional<geometry::SolidGeometry>> solids;
+    for (const auto id : sides) {
+        const auto location = doc.side(id);
+        const auto* solid = location ? doc.get(location->solid) : nullptr;
+        if (!solid || !solid->block) continue;
+        const kv1::Node* side = nullptr;
+        std::size_t face = 0;
+        for (const auto& child : solid->block->children()) {
+            if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+            if (face++ == location->faceIndex) { side = &child; break; }
+        }
+        if (!side || !document::isDisplaced(*side)) continue;
+        ++summary.displaced;
+        auto [cached, inserted] = solids.try_emplace(solid->id);
+        if (inserted) if (auto built = geometry::solidGeometry(*solid->block)) cached->second = std::move(*built);
+        const auto* poly = cached->second ? &cached->second->poly : nullptr;
+        for (auto& problem : displacementProblems(*solid->block, *side, poly, solid->id))
+            summary.problems.push_back(std::move(problem.text));
+        const auto disp = document::parseDisplacement(*side->find("dispinfo"));
+        if (!disp) continue;
+        ++summary.readable;
+        merge(summary.power, disp->power, first);
+        merge(summary.flags, disp->flags, first);
+        merge(summary.elevation, disp->elevation, first);
+        for (const auto alpha : disp->alphas) {
+            summary.alphaMin = summary.alphaMin ? std::min(*summary.alphaMin, alpha) : alpha;
+            summary.alphaMax = summary.alphaMax ? std::max(*summary.alphaMax, alpha) : alpha;
+        }
+        first = false;
+    }
+    return summary;
+}
+
+std::vector<std::string> displacementFlagNames(int flags) {
+    std::vector<std::string> names;
+    const auto bits = static_cast<unsigned>(flags);
+    for (unsigned bit = 0; bit < 32; ++bit) {
+        const unsigned mask = 1u << bit;
+        if (!(bits & mask)) continue;
+        if (mask == 2u) names.emplace_back("NoPhys");
+        else if (mask == 4u) names.emplace_back("NoHull");
+        else if (mask == 8u) names.emplace_back("NoRay");
+        else {
+            std::ostringstream text;
+            text << "0x" << std::hex << mask;
+            names.push_back(text.str());
+        }
+    }
+    return names;
+}
+
 } // namespace apex::editor

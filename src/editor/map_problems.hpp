@@ -2,6 +2,7 @@
 
 #include "editor/asset_report.hpp"
 #include "editor/instance_expansion.hpp"
+#include "geometry/convex_polyhedron.hpp"
 
 #include <functional>
 #include <string>
@@ -13,7 +14,8 @@ namespace apex::editor {
 enum class ProblemSeverity { Error, Warning, Note }; // error: the compile is likely to fail
 enum class ProblemKind {
     InvalidSolid, MissingAsset, BrokenConnection, UnknownClass, DuplicateName, InstanceProblem,
-    OutOfRange, EmptyBrushEntity, MissingOrigin, MissingPlayerStart, EmptyCordon
+    OutOfRange, EmptyBrushEntity, MissingOrigin, MissingPlayerStart, EmptyCordon,
+    DisplacementNonQuad, DisplacementAlphaRange, DisplacementUnreadable
 };
 struct Problem {
     ProblemSeverity severity = ProblemSeverity::Warning;
@@ -46,6 +48,12 @@ private:
     std::vector<std::string> names_;
     std::vector<ProblemCheck> checks_;
 };
+
+// Plan 0.8 D1/D2: the problems of one side block (none for a flat side): a dispinfo that does not
+// parse, a displacement on a non-quad base face (skipped when poly is null), alphas outside 0..255.
+// The problem selects `select`; its text names the side and the solid by their VMF IDs.
+std::vector<Problem> displacementProblems(const kv1::Node& solid, const kv1::Node& side,
+                                          const geometry::ConvexPolyhedron* poly, document::NodeId select);
 
 int countProblems(const std::vector<Problem>& problems, ProblemSeverity severity);
 const char* severityName(ProblemSeverity severity);

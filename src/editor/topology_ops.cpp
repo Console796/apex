@@ -1,5 +1,7 @@
 #include "editor/topology_ops.hpp"
 
+#include "document/displacement.hpp"
+
 #include "editor/editor_session.hpp"
 #include "editor/face_edit.hpp"
 #include "editor/group_ops.hpp"
@@ -110,7 +112,7 @@ void replace(document::Transaction& tx, const document::Document& doc, SolidHand
 }
 }
 bool hasDisplacement(const kv1::Node& block) {
-    return std::ranges::any_of(block.findAll("side"), [](const auto* side) { return side->find("dispinfo"); });
+    return std::ranges::any_of(block.findAll("side"), [](const auto* side) { return document::isDisplaced(*side); });
 }
 Result<void> carve(EditorSession& session) {
     const auto carvers = inputs(session);

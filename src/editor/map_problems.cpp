@@ -2,12 +2,16 @@
 
 #include "core/strings.hpp"
 #include "document/cordon.hpp"
+#include "document/displacement.hpp"
+#include "geometry/displacement.hpp"
 #include "geometry/solid_geometry.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <iterator>
 #include <set>
+#include <sstream>
 
 namespace apex::editor {
 namespace {
@@ -225,7 +229,63 @@ void emptyCordons(const ProblemContext& context, std::vector<Problem>& out) {
                            "Cordon \"" + cordon.name + "\" holds nothing", {cordon.id}, "select"});
     }
 }
+void displacements(const ProblemContext& context, std::vector<Problem>& out) {
+    for (const auto& solid : scan(context.doc).solids) {
+        const auto handle = context.doc.handle(solid.id);
+        const auto* node = handle ? context.doc.get(*handle) : nullptr;
+        if (!node || !node->block) continue;
+        const auto sides = node->block->findAll("side");
+        if (std::ranges::none_of(sides, [](const kv1::Node* side) { return document::isDisplaced(*side); })) continue;
+        const auto geometry = geometry::solidGeometry(*node->block);
+        const auto* poly = geometry ? &geometry->poly : nullptr;
+        for (const auto* side : sides) {
+            auto found = displacementProblems(*node->block, *side, poly, solid.world ? solid.id : solid.owner);
+            std::ranges::move(found, std::back_inserter(out));
+        }
+    }
+}
 } // namespace
+
+std::vector<Problem> displacementProblems(const kv1::Node& solid, const kv1::Node& side,
+                                          const geometry::ConvexPolyhedron* poly, NodeId select) {
+    std::vector<Problem> out;
+    if (!document::isDisplaced(side)) return out;
+    const auto* idNode = side.find("id");
+    const auto sideId = idNode ? std::optional<int>(idNode->asInt().value_or(0)) : std::nullopt;
+    const auto where = "Displacement on side " + (sideId ? std::to_string(*sideId) : std::string("?")) +
+                       " of solid " + value(solid, "id");
+    const auto disp = document::parseDisplacement(*side.find("dispinfo"));
+    if (!disp) {
+        out.push_back({ProblemSeverity::Error, ProblemKind::DisplacementUnreadable,
+                       where + " cannot be read: " + disp.error().what(), {select}, "select"});
+        return out;
+    }
+    if (const auto problem = disp->problem()) {
+        out.push_back({ProblemSeverity::Error, ProblemKind::DisplacementUnreadable,
+                       where + " cannot be read: " + *problem, {select}, "select"});
+        return out;
+    }
+    if (poly && sideId) {
+        const auto face = std::ranges::find(poly->faces, static_cast<std::uint32_t>(*sideId), &geometry::Face::sideId);
+        if (face != poly->faces.end() && !geometry::displacementCorners(*poly, *face))
+            out.push_back({ProblemSeverity::Error, ProblemKind::DisplacementNonQuad,
+                           where + " is on a non-quad face (VBSP: \"Trying to create a non-quad displacement!\")", {select}, "select"});
+    }
+    if (!disp->alphas.empty()) {
+        const auto [low, high] = std::ranges::minmax(disp->alphas);
+        if (low < 0.0 || high > 255.0) {
+            const auto number = [](double value) {
+                std::ostringstream text;
+                text << value;
+                return text.str();
+            };
+            out.push_back({ProblemSeverity::Warning, ProblemKind::DisplacementAlphaRange,
+                           where + " has alpha out of range (" + number(low) + " to " + number(high) +
+                               "; 0 to 255 expected)", {select}, "select"});
+        }
+    }
+    return out;
+}
 
 void ProblemRegistry::add(std::string name, ProblemCheck check) {
     names_.push_back(std::move(name));
@@ -250,6 +310,7 @@ ProblemRegistry ProblemRegistry::builtin() {
     registry.add("entities", entityShape);
     registry.add("player-start", playerStart);
     registry.add("cordons", emptyCordons);
+    registry.add("displacements", displacements);
     return registry;
 }
 

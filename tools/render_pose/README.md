@@ -78,7 +78,7 @@ returns an error if it cannot fit. Callers can supply a different maximum up to 
 `uv(face, world)` uses the chart's worldToLuxel/offset/mins and the texel-centre +0.5 convention.
 
 Create `BakedLightmaps` with the render Context/TextureHeap, then call `upload(baker.resolve())`.
-`RenderMirror::setLightmaps(maps)` schedules remeshing with a 44-byte BrushVertex (one additional
+`RenderMirror::setLightmaps(maps)` schedules remeshing with a 48-byte BrushVertex (one additional
 UV pair). The mesher uses the exact bake fragment polygons and original surface texture mapping.
 Faces retain their source SideId/selection ranges. Unmatched/edited charts use current geometry
 and negative UVs. Fragment matching uses the source NodeId, SideId and the ordered chart loops;

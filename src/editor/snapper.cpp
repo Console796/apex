@@ -25,6 +25,9 @@ SnapResult Snapper::snap(Ray ray, const ToolView& view, const SnapRequest& reque
         if (request.edges && features.edge) return result(*features.edge, SnapKind::Edge);
     }
     if (suspended && hit && !request.plane) return {hit->point, SnapKind::Surface, hit->node, hit->side};
+    // A sculpted surface has no grid plane: off its vertices, the cursor lands on the mesh itself.
+    if (hit && hit->displacement && !request.plane && !workPlane_.pinned())
+        return {hit->point, SnapKind::Surface, hit->node, hit->side};
 
     auto resolved = workPlane_.resolve();
     if (request.only && resolved && resolved->source != WorkPlaneSource::Pinned) resolved.reset();

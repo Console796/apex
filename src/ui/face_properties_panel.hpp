@@ -64,6 +64,7 @@ private:
     std::vector<QToolButton*> alignment_;
     QToolButton* smoothingSummary_ = nullptr;
     QComboBox* extrapolation_ = nullptr;
+    QLabel* displacement_ = nullptr; // Read-only Displacement section (0.8.2).
     std::vector<document::SideId> shown_; // The faces the fields show.
     bool queued_ = false, rebuilding_ = false;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;

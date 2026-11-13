@@ -34,18 +34,24 @@ struct FaceRange {
     DVec3 centre{0.0};
     DVec3 normal{0.0}; // Unit outward plane normal.
     document::SideId side = 0;
-    bool displacement = false; // Baked retains the existing Lit path for unsupported displacement sides.
+    bool displacement = false; // document::isDisplaced; Baked keeps the Lit path for these (no disp lightmaps yet).
     std::uint32_t firstIndex = 0, indexCount = 0;
     std::uint32_t firstEdgeIndex = 0, edgeIndexCount = 0;
 };
 
 // Faces of one material, in one batch. Vertices are relative to SolidMesh::origin.
+// Index layout: [displaced meshes | flat faces | displaced sides' flat base faces]. Draws use
+// [0, drawIndexCount); shadow casters and the scene BVH use [casterFirstIndex, indices.size()), so
+// a displacement casts as its flat base face, as before displacements were drawn (plan 0.8 D8:
+// displaced casters wait for 0.8.5's probe). Without displacements both cover every index.
 struct BatchMesh {
     std::string material; // Lower-case.
     std::vector<BrushVertex> vertices;
     std::vector<std::uint32_t> indices; // Triangle list.
-    std::vector<std::uint32_t> edges;   // Line list.
+    std::vector<std::uint32_t> edges;   // Line list; a displaced side lists every triangle edge.
     std::vector<FaceRange> faces;
+    std::uint32_t drawIndexCount = 0;
+    std::uint32_t casterFirstIndex = 0;
 };
 
 struct SolidMesh {
@@ -68,8 +74,14 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
                             const LightmapAtlas* lightmaps = nullptr, std::uint64_t solidId = 0,
                             const LightmapPlacement* placement = nullptr);
 
+// Displaced sides (document::isDisplaced) are meshed by geometry::displacementMesh (plan 0.8 D2, D8):
+// texture UVs are the side's projection at the flat (undisplaced) grid point, as VBSP and the engine
+// interpolate the base face's corner texcoords, normals are area-weighted over the displaced
+// triangles, and BrushVertex::alpha carries the clamped paint alpha. A side whose dispinfo does not
+// parse, or whose base face is not a quad, draws as its flat face. Bounds include displaced vertices.
 // Same mesher for preview values and parsed committed solids. Face material and UV data are used
-// verbatim; invalid polyhedra fail before any vertices are emitted.
+// verbatim; invalid polyhedra fail before any vertices are emitted. Preview values carry no
+// displacements, so they mesh flat.
 Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                             const std::function<TextureSize(std::string_view)>& sizeOf,
                             const LightmapAtlas* lightmaps = nullptr, std::uint64_t solidId = 0,

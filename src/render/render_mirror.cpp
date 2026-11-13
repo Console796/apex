@@ -86,7 +86,8 @@ std::shared_ptr<const lighting::TriangleMesh> retainMesh(std::span<const BrushVe
 struct GpuBatch {
     std::string material;
     Buffer vertices, indices, edges;
-    std::uint32_t indexCount = 0, edgeCount = 0;
+    std::uint32_t indexCount = 0, edgeCount = 0; // indexCount: the drawn indices (BatchMesh::drawIndexCount).
+    std::uint32_t casterFirst = 0, casterCount = 0; // Shadow-caster and scene-BVH range (BatchMesh layout).
     std::vector<FaceRange> faces;
     std::shared_ptr<const lighting::TriangleMesh> cpuMesh;
 };
@@ -738,7 +739,9 @@ struct RenderMirror::Impl {
             gpu.vertices = std::move(*vertices);
             gpu.indices = std::move(*indices);
             gpu.edges = std::move(*edges);
-            gpu.indexCount = static_cast<std::uint32_t>(batch.indices.size());
+            gpu.indexCount = batch.drawIndexCount;
+            gpu.casterFirst = batch.casterFirstIndex;
+            gpu.casterCount = static_cast<std::uint32_t>(batch.indices.size()) - batch.casterFirstIndex;
             gpu.edgeCount = static_cast<std::uint32_t>(batch.edges.size());
             gpu.cpuMesh = retainMesh(batch.vertices, batch.indices);
             solid.batches.push_back(std::move(gpu));
@@ -1960,8 +1963,14 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                                    ((!options.showNodraw && isNodraw(batch.material, state)) ||
                                     (!options.showToolFaces && isToolFace(batch.material, state))));
             if (textured && material != m.materials.end()) draw.alpha = material->second.alpha;
-            if (list.shadowCasters && m.brushCasts(id) && blocksSky(batch.material) &&
-                !isSkyMaterial(batch.material, state && state->sky)) list.shadowCasters->push_back(draw);
+            if (list.shadowCasters && batch.casterCount && m.brushCasts(id) && blocksSky(batch.material) &&
+                !isSkyMaterial(batch.material, state && state->sky)) {
+                // Displacements cast as their flat base faces (BatchMesh's caster range), as before D8.
+                MeshDraw caster = draw;
+                caster.firstIndex = batch.casterFirst;
+                caster.indexCount = batch.casterCount;
+                list.shadowCasters->push_back(caster);
+            }
             switch (options.mode) {
             case DisplayMode::Baked:
             case DisplayMode::Lit:
@@ -2062,8 +2071,13 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.colour.a = state.shape.opacity;
             if (state.node) {
                 if (textured) draw.alpha = material.alpha; // Ghosts stay uniformly translucent.
-                if (list.shadowCasters && m.brushCasts(state.node) && blocksSky(batch.material) &&
-                    !isSkyMaterial(batch.material, material.sky)) list.shadowCasters->push_back(draw);
+                if (list.shadowCasters && batch.casterCount && m.brushCasts(state.node) && blocksSky(batch.material) &&
+                    !isSkyMaterial(batch.material, material.sky)) {
+                    MeshDraw caster = draw;
+                    caster.firstIndex = batch.casterFirst;
+                    caster.indexCount = batch.casterCount;
+                    list.shadowCasters->push_back(caster);
+                }
                 if (m.selected.contains(state.node)) draw.highlight = m.highlight.selectTint;
                 else if (m.highlight.hover == state.node) draw.highlight = m.highlight.hoverTint;
                 const bool hideFill = options.mode != DisplayMode::Wireframe &&

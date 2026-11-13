@@ -213,6 +213,13 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
         if (session_ && index >= 0)
             session_->setFaceExtrapolation(static_cast<editor::FaceExtrapolation>(extrapolation_->itemData(index).toInt()));
     });
+    displacement_ = new QLabel(content_);
+    displacement_->setObjectName(QStringLiteral("faceDisplacement"));
+    displacement_->setWordWrap(true);
+    displacement_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    displacement_->setToolTip(tr("Read-only: displacement editing comes with the Displacement tool."));
+    displacement_->hide();
+    controls->addWidget(displacement_);
     controlsScroll_->setWidget(content_);
     layout_->addWidget(controlsScroll_);
 
@@ -387,6 +394,30 @@ void FacePropertiesPanel::refresh() {
                                                     : tr("Smoothing: %1").arg(labels.join(QStringLiteral(", ")));
     smoothingSummary_->setText(summary);
     smoothingSummary_->setToolTip(summary);
+
+    const auto disp = attached ? editor::summarizeDisplacements(*document_, sides) : editor::DisplacementSummary{};
+    displacement_->setVisible(disp.displaced != 0);
+    if (disp.displaced != 0) {
+        const auto mixed = tr("mixed");
+        QStringList lines;
+        lines << tr("<b>Displacement</b> (%1 of %2 faces, read-only)").arg(disp.displaced).arg(sides.size());
+        if (disp.readable != 0) {
+            lines << tr("Power: %1").arg(disp.power ? tr("%1 (%2×%2 grid)").arg(*disp.power).arg(disp.gridSize()) : mixed);
+            QString flags = mixed;
+            if (disp.flags) {
+                QStringList names;
+                for (const auto& name : editor::displacementFlagNames(*disp.flags)) names << fromStd(name);
+                flags = (names.isEmpty() ? tr("none") : names.join(QStringLiteral(", "))) +
+                        QStringLiteral(" (%1)").arg(*disp.flags);
+            }
+            lines << tr("Flags: %1").arg(flags);
+            lines << tr("Elevation: %1").arg(disp.elevation ? display(*disp.elevation) : mixed);
+            if (disp.alphaMin && disp.alphaMax)
+                lines << tr("Alpha: %1 to %2").arg(display(*disp.alphaMin), display(*disp.alphaMax));
+        }
+        for (const auto& problem : disp.problems) lines << QStringLiteral("⚠ ") + fromStd(problem).toHtmlEscaped();
+        displacement_->setText(lines.join(QStringLiteral("<br>")));
+    }
 
     if (enabled && session_->selection().active()) {
         const auto active = std::get<document::SideId>(*session_->selection().active());

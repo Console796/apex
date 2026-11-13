@@ -1,6 +1,7 @@
 #include "lighting/bake_casters.hpp"
 
 #include "core/strings.hpp"
+#include "document/displacement.hpp"
 #include "document/document.hpp"
 
 #include <map>
@@ -36,18 +37,14 @@ Result<BakeOcclusion> bakeCastersFromDocument(
         if (eligible && std::holds_alternative<Handle<document::Solid>>(handle)) {
             auto shape = geometry::solidGeometry(*node->block);
             if (!shape) return std::unexpected(shape.error());
+            const auto displaced = document::displacedSides(*node->block);
             for (const auto& face : shape->poly.faces) {
                 const auto name = toLowerAscii(face.material);
                 const auto flags = material ? material(name) : BakeMaterial{};
                 const bool sky = flags.sky || name.starts_with("tools/toolsskybox");
                 const bool nodraw = flags.nodraw || name == "tools/toolsnodraw";
                 if (name.starts_with("tools/") && !sky && !nodraw) continue;
-                bool displacement = false;
-                for (const auto* side : node->block->findAll("side"))
-                    if (const auto* value = side->find("id"); value &&
-                        value->asInt().value_or(-1) == static_cast<int>(face.sideId) && side->find("dispinfo"))
-                        displacement = true;
-                if (displacement) continue;
+                if (displaced.contains(static_cast<document::SideId>(face.sideId))) continue;
                 const auto found = fragments.find({id, face.sideId});
                 if (found != fragments.end()) {
                     for (const auto index : found->second) append(faces[index].vertices, sky, index);

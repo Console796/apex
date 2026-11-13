@@ -1,6 +1,7 @@
 #include "lighting/bake_scene.hpp"
 
 #include "core/strings.hpp"
+#include "document/displacement.hpp"
 #include "document/document.hpp"
 #include "document/entity_transform.hpp"
 
@@ -66,18 +67,14 @@ Result<BakeScene> bakeSceneFromDocument(
     for (const auto* solid : solids) {
         auto shape = geometry::solidGeometry(*solid->block);
         if (!shape) return std::unexpected(shape.error().withContext("bake solid " + std::to_string(solid->id)));
-        std::set<std::uint32_t> displacements;
-        for (const auto* side : solid->block->findAll("side")) {
-            if (const auto* id = side->find("id"); id && side->find("dispinfo"))
-                if (const auto value = id->asInt()) displacements.insert(static_cast<std::uint32_t>(*value));
-        }
+        const auto displacements = document::displacedSides(*solid->block);
         for (const auto& face : shape->poly.faces) {
             const auto name = toLowerAscii(face.material);
             const auto flags = material ? material(name) : BakeMaterial{};
             if (flags.sky || flags.nodraw || flags.noLight || name.starts_with("tools/toolsskybox") ||
                 name == "tools/toolsnodraw" || name == "tools/toolstrigger" ||
                 name == "tools/toolsclip" || name == "tools/toolsplayerclip" ||
-                name == "tools/toolsnpcclip" || displacements.contains(face.sideId)) continue;
+                name == "tools/toolsnpcclip" || displacements.contains(static_cast<document::SideId>(face.sideId))) continue;
             const auto [it, inserted] = materials.try_emplace(name, static_cast<std::uint32_t>(scene.materials.size()));
             if (inserted) scene.materials.push_back(name);
             try {

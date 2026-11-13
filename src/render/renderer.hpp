@@ -48,8 +48,11 @@ struct BrushVertex {
     float uv[2];
     std::uint32_t material; // Texture slot, used when MeshDraw::texture == kVertexMaterial.
     float lightmapUv[2] = {-1.0f, -1.0f}; // Negative: no chart, Baked brush diffuse is black.
+    // Displacement paint alpha, clamp(alpha, 0, 255) / 255; 0 elsewhere (WVT's base texture).
+    // Not yet a vertex attribute: 0.8.4's WorldVertexTransition blend binds it (location 5).
+    float alpha = 0.0f;
 };
-static_assert(sizeof(BrushVertex) == 44);
+static_assert(sizeof(BrushVertex) == 48);
 
 // Per-instance data of an entity box, 88 bytes; local corners and draw-relative origin.
 struct BoxInstance {

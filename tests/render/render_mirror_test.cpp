@@ -10,6 +10,9 @@
 #include "render/scene_accel.hpp"
 #include "render/texture_heap.hpp"
 #include "render/view_math.hpp"
+#include "document/displacement.hpp"
+#include "geometry/displacement.hpp"
+#include "geometry/solid_geometry.hpp"
 #include "editor/preview.hpp"
 #include "editor/pick_index.hpp"
 #include "editor/instance_expansion.hpp"
@@ -20,6 +23,8 @@
 
 #include <algorithm>
 #include <fstream>
+#include <cctype>
+#include <functional>
 #include <iostream>
 #include <iterator>
 #include <memory>
@@ -2717,4 +2722,262 @@ TEST_CASE("mirror: shadow brush entity caster rules match VRAD") {
     const auto list = scene.mirror.buildDrawList(options);
     REQUIRE(list.shadowCasters);
     CHECK(list.shadowCasters->size() == (casts ? 6u : 5u));
+}
+
+// Plan 0.8 D8: displaced sides draw as their D2 mesh (test1_disp: solid 637, side 355, power 3).
+namespace {
+
+constexpr document::SideId kDispSide = 355;
+
+// test1_disp with the test tree's checker in place of the game material. `edit` rewrites the text first.
+std::unique_ptr<document::Document> dispDocument(const std::function<void(std::string&)>& edit = {}) {
+    auto text = readFixture("disp/test1_disp.vmf");
+    for (std::size_t at; (at = text.find("NATURE/DIRTFLOOR004C")) != std::string::npos;)
+        text.replace(at, std::string_view("NATURE/DIRTFLOOR004C").size(), "test/floor");
+    if (edit) edit(text);
+    return documentOf(text);
+}
+
+// Replaces the value of `key` in the first `block` after the displaced side's dispinfo.
+void setDispRow(std::string& text, std::string_view block, std::string_view key, std::string_view value) {
+    const auto dispinfo = text.find("dispinfo");
+    REQUIRE(dispinfo != std::string::npos);
+    auto start = dispinfo;
+    if (block != "dispinfo") { // The block's own keyword, not a longer one (offsets, not offset_normals).
+        for (start = text.find(block, dispinfo); start != std::string::npos; start = text.find(block, start + 1))
+            if (std::isspace(static_cast<unsigned char>(text[start + block.size()]))) break;
+    }
+    REQUIRE(start != std::string::npos);
+    const auto row = text.find("\"" + std::string(key) + "\" \"", start);
+    REQUIRE(row != std::string::npos);
+    const auto open = row + key.size() + 4, close = text.find('"', open);
+    text.replace(open, close - open, value);
+}
+
+const kv1::Node& dispSolid(const document::Document& doc) {
+    const auto handle = findSolid(doc, "test/floor");
+    REQUIRE(handle);
+    return *doc.get(*handle)->block;
+}
+
+const kv1::Node& dispSideBlock(const kv1::Node& solid) {
+    for (const auto* side : solid.findAll("side"))
+        if (side->find("id")->asInt() == kDispSide) return *side;
+    FAIL("no displaced side");
+    throw;
+}
+
+struct DispOracle {
+    geometry::Face face;
+    geometry::Displacement disp;
+    geometry::DisplacementMesh mesh, flat; // flat: the same grid with no distances or offsets.
+};
+
+DispOracle dispOracle(const kv1::Node& solid) {
+    auto solidGeom = geometry::solidGeometry(solid);
+    REQUIRE(solidGeom);
+    const auto face = std::ranges::find_if(solidGeom->poly.faces, [](const auto& f) { return f.sideId == kDispSide; });
+    REQUIRE(face != solidGeom->poly.faces.end());
+    auto disp = document::parseDisplacement(*dispSideBlock(solid).find("dispinfo"));
+    REQUIRE(disp);
+    const auto corners = geometry::displacementCorners(solidGeom->poly, *face);
+    REQUIRE(corners);
+    auto zeroed = *disp;
+    std::ranges::fill(zeroed.distances, 0.0);
+    std::ranges::fill(zeroed.offsets, DVec3(0.0));
+    return {*face, *disp, geometry::displacementMesh(*corners, *disp).value(),
+            geometry::displacementMesh(*corners, zeroed).value()};
+}
+
+const FaceRange* faceOf(const BatchMesh& batch, document::SideId side) {
+    const auto found = std::ranges::find_if(batch.faces, [&](const FaceRange& f) { return f.side == side; });
+    return found == batch.faces.end() ? nullptr : &*found;
+}
+
+DVec3 worldOf(const SolidMesh& mesh, const BrushVertex& v) {
+    return mesh.origin + DVec3(v.position[0], v.position[1], v.position[2]);
+}
+
+TextureSize dispTexture(std::string_view) { return {16, 16}; }
+
+} // namespace
+
+TEST_CASE("solid meshing: a displaced side is its D2 mesh with flat-grid UVs, smooth normals and alpha") {
+    const auto doc = dispDocument();
+    const auto& solid = dispSolid(*doc);
+    const auto oracle = dispOracle(solid);
+    auto mesh = meshSolid(solid, dispTexture);
+    REQUIRE(mesh);
+    REQUIRE(mesh->batches.size() == 1);
+    const auto& batch = mesh->batches[0];
+    const auto* face = faceOf(batch, kDispSide);
+    REQUIRE(face);
+    CHECK(face->displacement);
+    CHECK(face->indexCount == 3u * 2u * 8u * 8u);
+    // Layout: the displaced mesh first, five flat sides, then the base face for casters only.
+    CHECK(face->firstIndex == 0);
+    CHECK(batch.drawIndexCount == 3u * 128u + 5u * 6u);
+    CHECK(batch.casterFirstIndex == 3u * 128u);
+    CHECK(batch.indices.size() == batch.drawIndexCount + 6u);
+    for (const auto& other : batch.faces) {
+        if (other.side == kDispSide) continue;
+        CHECK_FALSE(other.displacement);
+        CHECK(other.firstIndex >= batch.casterFirstIndex);
+        CHECK(other.firstIndex + other.indexCount <= batch.drawIndexCount);
+    }
+    // Every grid edge once: rows, columns and one diagonal per quad.
+    CHECK(face->edgeIndexCount == 2u * (9u * 8u * 2u + 64u));
+
+    double maxZ = -1e9;
+    std::size_t movedUv = 0, sloped = 0;
+    for (std::size_t t = 0; t < oracle.mesh.triangles.size(); ++t) {
+        for (std::size_t k = 0; k < 3; ++k) {
+            const auto grid = oracle.mesh.triangles[t][k];
+            const auto& v = batch.vertices[batch.indices[face->firstIndex + 3 * t + k]];
+            const auto p = worldOf(*mesh, v);
+            CHECK(glm::distance(p, oracle.mesh.positions[grid]) < 1e-3);
+            maxZ = std::max(maxZ, oracle.mesh.positions[grid].z);
+            const auto uv = geometry::uvAt(oracle.face, oracle.flat.positions[grid], 16, 16);
+            CHECK(std::abs(v.uv[0] - uv.x) < 1e-4);
+            CHECK(std::abs(v.uv[1] - uv.y) < 1e-4);
+            if (glm::distance(uv, geometry::uvAt(oracle.face, oracle.mesh.positions[grid], 16, 16)) > 1e-3) ++movedUv;
+            const DVec3 n(v.normal[0], v.normal[1], v.normal[2]);
+            CHECK(std::abs(glm::length(n) - 1.0) < 1e-4);
+            CHECK(n.z > 0.0);
+            if (n.z < 0.999) ++sloped;
+            CHECK(v.alpha == doctest::Approx(std::clamp(oracle.disp.alphas[grid], 0.0, 255.0) / 255.0));
+            CHECK(v.lightmapUv[0] < 0.0f);
+        }
+    }
+    CHECK(movedUv == 0); // Vertical displacement under a top-down projection moves no UV.
+    CHECK(sloped > 0);   // Smooth normals follow the terrain, not the base plane.
+    CHECK(maxZ > 64.0 + 30.0);
+    CHECK(mesh->bounds.max.z >= maxZ - 1e-9);
+    // Area-weighted normal of a corner grid vertex (one or two triangles), recomputed here.
+    const auto& positions = oracle.mesh.positions;
+    DVec3 expected(0.0);
+    for (const auto& t : oracle.mesh.triangles)
+        if (t[0] == 0 || t[1] == 0 || t[2] == 0)
+            expected += glm::cross(positions[t[1]] - positions[t[0]], positions[t[2]] - positions[t[0]]);
+    expected = glm::normalize(expected);
+    bool checked = false;
+    for (std::size_t i = 0; i < face->indexCount; ++i) {
+        const auto& v = batch.vertices[batch.indices[face->firstIndex + i]];
+        if (glm::distance(worldOf(*mesh, v), positions[0]) > 1e-3) continue;
+        CHECK(glm::distance(DVec3(v.normal[0], v.normal[1], v.normal[2]), expected) < 1e-4);
+        checked = true;
+    }
+    CHECK(checked);
+}
+
+TEST_CASE("solid meshing: displacement UVs come from the flat grid point, not the displaced one") {
+    // A sideways offset moves the vertex across the projection: the UV must stay at the flat point.
+    const auto doc = dispDocument([](std::string& text) {
+        setDispRow(text, "offsets", "row0", "16 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0");
+    });
+    const auto& solid = dispSolid(*doc);
+    const auto oracle = dispOracle(solid);
+    REQUIRE(glm::distance(oracle.mesh.positions[0], oracle.flat.positions[0]) > 16.0);
+    auto mesh = meshSolid(solid, dispTexture);
+    REQUIRE(mesh);
+    const auto& batch = mesh->batches[0];
+    const auto* face = faceOf(batch, kDispSide);
+    REQUIRE(face);
+    bool checked = false;
+    for (std::size_t i = 0; i < face->indexCount; ++i) {
+        const auto& v = batch.vertices[batch.indices[face->firstIndex + i]];
+        if (glm::distance(worldOf(*mesh, v), oracle.mesh.positions[0]) > 1e-3) continue;
+        const auto flat = geometry::uvAt(oracle.face, oracle.flat.positions[0], 16, 16);
+        const auto moved = geometry::uvAt(oracle.face, oracle.mesh.positions[0], 16, 16);
+        REQUIRE(glm::distance(flat, moved) > 0.1);
+        CHECK(std::abs(v.uv[0] - flat.x) < 1e-4);
+        CHECK(std::abs(v.uv[1] - flat.y) < 1e-4);
+        checked = true;
+    }
+    CHECK(checked);
+}
+
+TEST_CASE("solid meshing: a displacement that does not parse draws as its flat face") {
+    std::function<void(std::string&)> edit;
+    SUBCASE("bad power") { edit = [](std::string& text) { setDispRow(text, "dispinfo", "power", "9"); }; }
+    SUBCASE("short row") { edit = [](std::string& text) { setDispRow(text, "distances", "row3", "1 2 3"); }; }
+    const auto doc = dispDocument(edit);
+    const auto& solid = dispSolid(*doc);
+    CHECK(document::isDisplaced(dispSideBlock(solid)));
+    auto mesh = meshSolid(solid, dispTexture);
+    REQUIRE(mesh);
+    REQUIRE(mesh->batches.size() == 1);
+    const auto& batch = mesh->batches[0];
+    const auto* face = faceOf(batch, kDispSide);
+    REQUIRE(face);
+    CHECK(face->displacement); // Still a displacement: Baked keeps the Lit path for it.
+    CHECK(face->indexCount == 6u);
+    CHECK(face->edgeIndexCount == 8u);
+    CHECK(batch.drawIndexCount == 36u);
+    CHECK(batch.casterFirstIndex == 0u);
+    CHECK(batch.indices.size() == 36u);
+    CHECK(mesh->bounds.max.z == doctest::Approx(64.0));
+}
+
+TEST_CASE("mirror: a displacement draws displaced in every mode, casts flat and highlights its mesh") {
+    REQUIRE_GPU();
+    Scene scene(*g, dispDocument([](std::string& text) {
+        text += R"(entity { id 900 classname light_environment angles "-50 30 0" pitch "-50" _light "255 240 220 400" _ambient "40 50 60 40" })";
+    }));
+    const auto solid = findSolid(*scene.doc, "test/floor");
+    REQUIRE(solid);
+    const auto id = scene.doc->get(*solid)->id;
+    for (const auto mode : {DisplayMode::Wireframe, DisplayMode::Flat, DisplayMode::Textured, DisplayMode::Lit,
+                            DisplayMode::Baked}) {
+        CAPTURE(int(mode));
+        MirrorViewOptions options;
+        options.mode = mode;
+        const auto list = scene.mirror.buildDrawList(options);
+        std::uint32_t drawn = 0;
+        for (const auto& draw : list.meshes) drawn += draw.indexCount;
+        CHECK(drawn == 3u * 128u + 5u * 6u);
+        for (const auto& draw : list.meshes) CHECK(draw.bounds.max.z + draw.origin.z > 64.0 + 30.0);
+        if (mode == DisplayMode::Baked) {
+            // Displaced faces keep the Lit path in Baked (no displacement lightmaps before 0.8.5).
+            const auto lit = std::ranges::count_if(list.meshes, [](const MeshDraw& d) { return !d.bakedBrush; });
+            CHECK(lit == 1);
+        }
+        if (list.shadowCasters) {
+            REQUIRE(list.shadowCasters->size() == 1);
+            CHECK(list.shadowCasters->front().firstIndex == 3u * 128u);
+            CHECK(list.shadowCasters->front().indexCount == 6u * 6u);
+        }
+    }
+    // Face selection of the displaced side tints and outlines exactly its mesh.
+    Highlight sides;
+    sides.selectedSides = {kDispSide};
+    scene.mirror.setHighlight(sides);
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Textured;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.outlines.size() == 1);
+    CHECK(list.outlines[0].firstIndex == 0u);
+    CHECK(list.outlines[0].indexCount == 3u * 128u);
+    CHECK(list.outlines[0].edgeIndexCount == 2u * (9u * 8u * 2u + 64u));
+    select(scene.mirror, {id});
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.outlines.size() == 1);
+    CHECK(list.outlines[0].indexCount == 3u * 128u + 5u * 6u);
+    select(scene.mirror, {});
+}
+
+TEST_CASE("mirror: displacement golden images") {
+    REQUIRE_GPU();
+    // Texture scale 4 (64 units per checker repeat) so the grid reads at 128 px; a lightmapped
+    // material so Lit shades it, and no skybox (the test tree has none to show).
+    Scene scene(*g, dispDocument([](std::string& text) {
+        for (std::size_t at; (at = text.find("] 0.25\"")) != std::string::npos;) text.replace(at, 7, "] 4\"");
+        for (std::size_t at; (at = text.find("test/floor")) != std::string::npos;) text.replace(at, 10, "test/plain_lmg");
+        text.replace(text.find("sky_black_nofog"), 15, "");
+        text += R"(entity { id 900 classname light_environment angles "-50 30 0" pitch "-50" _light "255 240 220 400" _ambient "40 50 60 40" })";
+    }));
+    const auto view = makeView({-150.0, -1680.0, 170.0}, {23.4, 43.8, 0.0});
+    golden::check("displacement_textured", drawFrame(*g, scene.mirror, DisplayMode::Textured, false, view), *g->context);
+    golden::check("displacement_lit", drawFrame(*g, scene.mirror, DisplayMode::Lit, false, view), *g->context);
+    golden::check("displacement_wireframe", drawFrame(*g, scene.mirror, DisplayMode::Wireframe, false, view), *g->context);
 }

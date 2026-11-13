@@ -343,4 +343,17 @@ void Transaction::setDisplacement(SideId sideId, const geometry::Displacement& v
     throw std::invalid_argument("side index out of range");
 }
 
+bool isDisplaced(const kv1::Node& side) {
+    const auto* dispinfo = side.find("dispinfo");
+    return dispinfo && dispinfo->kind() == kv1::NodeKind::Block;
+}
+
+std::set<SideId> displacedSides(const kv1::Node& solid) {
+    std::set<SideId> result;
+    for (const auto* side : solid.findAll("side"))
+        if (const auto* id = side->find("id"); id && isDisplaced(*side))
+            if (const auto value = id->asInt()) result.insert(static_cast<SideId>(*value));
+    return result;
+}
+
 } // namespace apex::document

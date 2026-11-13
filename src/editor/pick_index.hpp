@@ -5,6 +5,7 @@
 #include "document/entity_transform.hpp"
 #include "document/instance_contents.hpp"
 #include "geometry/bvh.hpp"
+#include "geometry/displacement.hpp"
 
 #include <functional>
 #include <limits>
@@ -38,13 +39,16 @@ struct Hit {
     DVec3 point, normal;
     double t;
     bool modelTriangle = false; // Model surfaces have no brush SideId.
+    bool displacement = false;  // A displaced side's triangle mesh, not its flat base face.
 };
 struct NearHit {
     NodeId node;
     DVec3 point;
     double distance;
 };
-enum class FeatureKind { Vertex, Edge };
+// DisplacementVertex is a displacement grid vertex: a is its row-major grid index, b its SideId.
+// It is reported as FeatureHits::vertex, so a caller that edits brush vertices checks the kind.
+enum class FeatureKind { Vertex, Edge, DisplacementVertex };
 struct FeatureRef {
     NodeId node = 0;
     FeatureKind kind = FeatureKind::Vertex;
@@ -62,6 +66,14 @@ struct FeatureHits {
     std::optional<FeatureHit> vertex, midpoint, edge;
 };
 enum class Mode { Enclosed, Touching };
+
+// A displaced side's mesh (plan 0.8 D2/D8), built once per solid change. A side whose dispinfo
+// does not parse or whose base face is not a quad has none and is picked as its flat face.
+struct DisplacementSurface {
+    SideId side = 0;
+    geometry::DisplacementMesh mesh;
+    AABB bounds;
+};
 
 // The document must outlive the index (including an attached observer). Queries use owned
 // polyhedra; no pointers into the document survive a call. Call apply after commits/undo/redo,
@@ -86,6 +98,8 @@ public:
                              document::InstanceVisibility visibility = document::InstanceVisibility::Normal);
     std::size_t size() const { return items_.size(); }
     std::size_t skippedSolids() const { return failed_.size(); }
+    // The meshed displacement of a side of an indexed solid, or null.
+    const DisplacementSurface* displacement(NodeId node, SideId side) const;
 
     // One nearest forward face per solid, counting both orientations. From inside, this
     // is the exit face. Edge/corner ties choose SideId. t follows the unnormalized Ray.
@@ -115,6 +129,9 @@ private:
         bool entity;
         EntityPickShape shape;
         document::EntityPose pose;
+        std::vector<DisplacementSurface> displacements; // Replace their flat faces in every query.
+        AABB box; // poly bounds grown by the displacement meshes.
+        bool displaced(std::uint32_t side) const;
     };
     const document::Document& doc_;
     EntityBoundsProvider bounds_;

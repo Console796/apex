@@ -18,6 +18,8 @@
 #include <QSettings>
 #include <QThread>
 #include <QToolButton>
+#include <fstream>
+#include <sstream>
 
 #include "document/document.hpp"
 #include "document/vmf.hpp"
@@ -553,4 +555,36 @@ TEST_CASE("UV view rotate handle snaps to 15 degrees and a tile edge drag scales
         return glm::dot(p, uv.uaxis) / uv.scaleU + uv.shiftU;
     };
     CHECK(std::remainder(texel(scaled, centre) - texel(face.face.uv, centre), w) == doctest::Approx(0).epsilon(1e-6));
+}
+
+TEST_CASE("Face Properties shows a read-only Displacement section for displaced faces") {
+    app();
+    std::ifstream in(std::string(APEX_FIXTURE_DIR) + "/vmf/disp/test1_disp.vmf", std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream text;
+    text << in.rdbuf();
+    document::Document doc(editor_test::parsed(text.str()));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.selection().setMode(editor::SelectionMode::Faces);
+    session.selection().select(document::SideId{356}); // The flat bottom.
+
+    ui::FacePropertiesPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    panel.show();
+    app().processEvents();
+    auto* section = panel.findChild<QLabel*>("faceDisplacement");
+    REQUIRE(section);
+    CHECK_FALSE(section->isVisible());
+
+    session.selection().select(document::SideId{355});
+    app().processEvents();
+    panel.refresh();
+    CHECK(section->isVisible());
+    CHECK(section->text().contains("Power: 3 (9×9 grid)"));
+    CHECK(section->text().contains("Flags: none (0)"));
+    CHECK(section->text().contains("Elevation: 0"));
+    CHECK(section->text().contains("Alpha: -96 to 72"));
+    CHECK(section->text().contains("alpha out of range"));
 }

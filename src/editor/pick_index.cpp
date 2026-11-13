@@ -1,6 +1,7 @@
 #include "editor/pick_index.hpp"
 
 #include "core/strings.hpp"
+#include "document/displacement.hpp"
 #include "document/entity_transform.hpp"
 #include "editor/tool.hpp"
 #include "geometry/tolerances.hpp"
@@ -34,9 +35,8 @@ bool inFace(const ConvexPolyhedron& poly, const Face& face, DVec3 point) {
     return true;
 }
 
-bool clippedFace(const ConvexPolyhedron& poly, const Face& face, std::span<const Plane> planes) {
-    std::vector<DVec3> polygon, next;
-    for (const auto index : face.vertices) polygon.push_back(poly.vertices[index]);
+bool clippedPolygon(std::vector<DVec3> polygon, std::span<const Plane> planes) {
+    std::vector<DVec3> next;
     for (const auto& plane : planes) {
         if (polygon.empty()) return false;
         next.clear();
@@ -52,6 +52,92 @@ bool clippedFace(const ConvexPolyhedron& poly, const Face& face, std::span<const
         polygon.swap(next);
     }
     return !polygon.empty();
+}
+
+bool clippedFace(const ConvexPolyhedron& poly, const Face& face, std::span<const Plane> planes) {
+    std::vector<DVec3> polygon;
+    for (const auto index : face.vertices) polygon.push_back(poly.vertices[index]);
+    return clippedPolygon(std::move(polygon), planes);
+}
+
+// Möller-Trumbore, both orientations; t follows the unnormalized ray.
+std::optional<double> rayTriangle(const Ray& ray, DVec3 a, DVec3 b, DVec3 c) {
+    const auto e1 = b - a, e2 = c - a;
+    const auto p = glm::cross(ray.dir, e2);
+    const double det = glm::dot(e1, p);
+    if (det == 0.0) return std::nullopt;
+    const auto s = ray.origin - a;
+    const double u = glm::dot(s, p) / det;
+    if (u < 0.0 || u > 1.0) return std::nullopt;
+    const auto q = glm::cross(s, e1);
+    const double v = glm::dot(ray.dir, q) / det;
+    if (v < 0.0 || u + v > 1.0) return std::nullopt;
+    return glm::dot(e2, q) / det;
+}
+
+bool rayHitsBox(const Ray& ray, const AABB& box, double tMax) {
+    constexpr double pad = 1e-6;
+    double near = 0.0, far = tMax;
+    for (int axis = 0; axis < 3; ++axis) {
+        const double lo = box.min[axis] - pad, hi = box.max[axis] + pad;
+        if (ray.dir[axis] == 0.0) {
+            if (ray.origin[axis] < lo || ray.origin[axis] > hi) return false;
+            continue;
+        }
+        double a = (lo - ray.origin[axis]) / ray.dir[axis], b = (hi - ray.origin[axis]) / ray.dir[axis];
+        if (a > b) std::swap(a, b);
+        near = std::max(near, a);
+        far = std::min(far, b);
+        if (near > far) return false;
+    }
+    return true;
+}
+
+// Ericson, Real-Time Collision Detection 5.1.5.
+DVec3 closestOnTriangle(DVec3 p, DVec3 a, DVec3 b, DVec3 c) {
+    const auto ab = b - a, ac = c - a, ap = p - a;
+    const double d1 = glm::dot(ab, ap), d2 = glm::dot(ac, ap);
+    if (d1 <= 0.0 && d2 <= 0.0) return a;
+    const auto bp = p - b;
+    const double d3 = glm::dot(ab, bp), d4 = glm::dot(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) return b;
+    const double vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) return a + ab * (d1 / (d1 - d3));
+    const auto cp = p - c;
+    const double d5 = glm::dot(ab, cp), d6 = glm::dot(ac, cp);
+    if (d6 >= 0.0 && d5 <= d6) return c;
+    const double vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) return a + ac * (d2 / (d2 - d6));
+    const double va = d3 * d6 - d5 * d4;
+    if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0)
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    const double denominator = va + vb + vc;
+    if (denominator == 0.0) return a;
+    return a + ab * (vb / denominator) + ac * (vc / denominator);
+}
+
+// D8: each displaced side meshed once per solid change, from the side's own dispinfo. A side that
+// does not parse or mesh (non-quad base) keeps its flat face; map_problems reports it.
+std::vector<DisplacementSurface> meshDisplacements(const kv1::Node& solid, const ConvexPolyhedron& poly) {
+    std::vector<DisplacementSurface> result;
+    for (const auto* side : solid.findAll("side")) {
+        if (!document::isDisplaced(*side)) continue;
+        const auto* id = side->find("id");
+        const auto value = id ? std::optional<int>(id->asInt().value_or(0)) : std::nullopt;
+        if (!value) continue;
+        const auto face = std::ranges::find(poly.faces, static_cast<std::uint32_t>(*value), &Face::sideId);
+        if (face == poly.faces.end()) continue;
+        const auto disp = document::parseDisplacement(*side->find("dispinfo"));
+        if (!disp) continue;
+        const auto corners = geometry::displacementCorners(poly, *face);
+        if (!corners) continue;
+        auto mesh = geometry::displacementMesh(*corners, *disp);
+        if (!mesh) continue;
+        DisplacementSurface surface{static_cast<SideId>(*value), std::move(*mesh), {}};
+        for (const auto& position : surface.mesh.positions) surface.bounds.expand(position);
+        result.push_back(std::move(surface));
+    }
+    return result;
 }
 
 bool boxIntersects(const ConvexPolyhedron& box, std::span<const Plane> planes) {
@@ -106,11 +192,26 @@ bool hitLess(const Hit& a, const Hit& b) {
 
 } // namespace
 
+bool PickIndex::Item::displaced(std::uint32_t side) const {
+    return std::ranges::any_of(displacements, [&](const DisplacementSurface& surface) {
+        return surface.side == static_cast<SideId>(side);
+    });
+}
+
+const DisplacementSurface* PickIndex::displacement(NodeId node, SideId side) const {
+    const auto item = items_.find(node);
+    if (item == items_.end()) return nullptr;
+    for (const auto& surface : item->second.displacements)
+        if (surface.side == side) return &surface;
+    return nullptr;
+}
+
 std::optional<AABB> PickIndex::bounds(NodeId node, std::optional<SideId> side) const {
     const auto item = items_.find(node);
     if (item == items_.end()) return std::nullopt;
     const auto& poly = item->second.poly;
-    if (!side) return poly.bounds();
+    if (!side) return item->second.box;
+    if (const auto* surface = displacement(node, *side)) return surface->bounds;
     for (const auto& face : poly.faces) {
         if (static_cast<SideId>(face.sideId) != *side) continue;
         AABB result;
@@ -180,6 +281,7 @@ void PickIndex::refresh(NodeId id, bool building) {
     ConvexPolyhedron poly;
     EntityPickShape shape;
     document::EntityPose pose;
+    std::vector<DisplacementSurface> displacements;
     const bool entity = std::holds_alternative<Handle<document::Entity>>(*handle);
     if (std::holds_alternative<Handle<document::Solid>>(*handle)) {
         auto geometry = geometry::solidGeometry(*node->block);
@@ -189,6 +291,7 @@ void PickIndex::refresh(NodeId id, bool building) {
             return;
         }
         poly = std::move(geometry->poly);
+        displacements = meshDisplacements(*node->block, poly);
     } else if (entity) {
         std::string classname;
         if (const auto* value = node->block->find("classname")) {
@@ -254,18 +357,22 @@ void PickIndex::refresh(NodeId id, bool building) {
         remove(id);
         return;
     }
-    const auto bounds = poly.bounds();
+    auto bounds = poly.bounds();
+    for (const auto& surface : displacements) bounds.expand(surface.bounds);
     if (const auto it = items_.find(id); it != items_.end()) {
         it->second.poly = std::move(poly);
         it->second.shape = std::move(shape);
         it->second.pose = pose;
+        it->second.displacements = std::move(displacements);
+        it->second.box = bounds;
         if (!building) tree_.update(it->second.leaf, bounds);
     } else {
         if (nextLeaf_ == std::numeric_limits<std::uint32_t>::max()) {
             throw std::overflow_error("PickIndex leaf IDs exhausted; rebuild required");
         }
         const auto leaf = nextLeaf_++;
-        items_.emplace(id, Item{leaf, std::move(poly), entity, std::move(shape), pose});
+        items_.emplace(id, Item{leaf, std::move(poly), entity, std::move(shape), pose,
+                                std::move(displacements), bounds});
         leaves_.emplace(leaf, id);
         if (!building) tree_.insert(leaf, bounds);
     }
@@ -291,7 +398,7 @@ void PickIndex::rebuild() {
     for (const auto root : doc_.roots()) walk(walk, root);
     std::vector<geometry::Bvh::Item> leaves;
     leaves.reserve(items_.size());
-    for (const auto& [id, item] : items_) leaves.push_back({item.leaf, item.poly.bounds()});
+    for (const auto& [id, item] : items_) leaves.push_back({item.leaf, item.box});
     tree_.build(leaves);
 }
 
@@ -383,12 +490,13 @@ std::optional<Hit> PickIndex::intersect(NodeId id, Ray ray, double tMax) const {
             const double t = glm::dot(e2, q) / det;
             if (!(t >= 0.0 && t <= limit) || (best && t >= best->t)) return std::nullopt;
             const auto normal = glm::normalize(item.pose.basis * glm::cross(e1, e2));
-            best = Hit{id, std::nullopt, ray.at(t), normal, t, true};
+            best = Hit{id, std::nullopt, ray.at(t), normal, t, true, false};
             return t;
         });
         return best;
     }
     for (const auto& face : item.poly.faces) {
+        if (item.displaced(face.sideId)) continue;
         const double denominator = glm::dot(face.plane.normal, ray.dir);
         if (denominator == 0.0) continue;
         const double t = -face.plane.signedDistance(ray.origin) / denominator;
@@ -398,6 +506,21 @@ std::optional<Hit> PickIndex::intersect(NodeId id, Ray ray, double tMax) const {
         Hit hit{id, item.entity ? std::nullopt : std::optional(static_cast<SideId>(face.sideId)),
                 point, face.plane.normal, t};
         if (!best || hitLess(hit, *best)) best = hit;
+    }
+    for (const auto& surface : item.displacements) {
+        if (!rayHitsBox(ray, surface.bounds, best ? std::min(best->t, tMax) : tMax)) continue;
+        const auto& mesh = surface.mesh;
+        for (const auto& triangle : mesh.triangles) {
+            const auto a = mesh.positions[triangle[0]], b = mesh.positions[triangle[1]],
+                       c = mesh.positions[triangle[2]];
+            const auto t = rayTriangle(ray, a, b, c);
+            if (!t || !(*t >= 0.0 && *t <= tMax) || (best && *t > best->t)) continue;
+            const auto normal = glm::cross(b - a, c - a);
+            const double length = glm::length(normal);
+            if (!(length > 0.0)) continue;
+            Hit hit{id, surface.side, ray.at(*t), normal / length, *t, false, true};
+            if (!best || hitLess(hit, *best)) best = hit;
+        }
     }
     return best;
 }
@@ -464,16 +587,24 @@ std::vector<NodeId> PickIndex::frustum(std::span<const Plane> planes, Mode mode)
     tree_.queryPlanes(planes, [&](std::uint32_t leaf, bool inside) {
         const auto id = leaves_.at(leaf);
         const auto& item = items_.at(id);
+        const auto contained = [&](DVec3 p) {
+            return std::ranges::all_of(planes, [&](const Plane& plane) { return plane.signedDistance(p) <= 0.0; });
+        };
         if (!inside) {
-            inside = std::ranges::all_of(item.poly.vertices, [&](DVec3 p) {
-                return std::ranges::all_of(planes, [&](const Plane& plane) {
-                    return plane.signedDistance(p) <= 0.0;
+            inside = std::ranges::all_of(item.poly.vertices, contained) &&
+                std::ranges::all_of(item.displacements, [&](const DisplacementSurface& surface) {
+                    return std::ranges::all_of(surface.mesh.positions, contained);
                 });
-            });
         }
         if (!inside && mode == Mode::Touching) {
             inside = std::ranges::any_of(item.poly.faces, [&](const Face& face) {
-                return clippedFace(item.poly, face, planes);
+                return !item.displaced(face.sideId) && clippedFace(item.poly, face, planes);
+            }) || std::ranges::any_of(item.displacements, [&](const DisplacementSurface& surface) {
+                const auto& mesh = surface.mesh;
+                return std::ranges::any_of(mesh.triangles, [&](const auto& triangle) {
+                    return clippedPolygon({mesh.positions[triangle[0]], mesh.positions[triangle[1]],
+                                           mesh.positions[triangle[2]]}, planes);
+                });
             });
             if (!inside && item.entity) inside = boxIntersects(item.poly, planes);
         }
@@ -501,12 +632,23 @@ std::vector<NearHit> PickIndex::nearest(DVec3 point, double radius) const {
     std::vector<NearHit> result;
     tree_.queryRadius(point, radius, [&](std::uint32_t leaf, double) {
         const auto id = leaves_.at(leaf);
-        const auto& poly = items_.at(id).poly;
+        const auto& item = items_.at(id);
+        const auto& poly = item.poly;
         NearHit best{id, DVec3{0.0}, std::numeric_limits<double>::infinity()};
         for (const auto& face : poly.faces) {
+            if (item.displaced(face.sideId)) continue;
             const auto candidate = closestOnFace(poly, face, point);
             const double distance = glm::length(candidate - point);
             if (distance < best.distance) best = {id, candidate, distance};
+        }
+        for (const auto& surface : item.displacements) {
+            const auto& mesh = surface.mesh;
+            for (const auto& triangle : mesh.triangles) {
+                const auto candidate = closestOnTriangle(point, mesh.positions[triangle[0]],
+                                                         mesh.positions[triangle[1]], mesh.positions[triangle[2]]);
+                const double distance = glm::length(candidate - point);
+                if (distance < best.distance) best = {id, candidate, distance};
+            }
         }
         if (best.distance <= radius) result.push_back(best);
     });
@@ -609,6 +751,13 @@ FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolVie
                 std::clamp(glm::dot(*cursor - *pa, segment) / length2, 0.0, 1.0);
             const double worldT = view.orthographic ? t : t * za / ((1.0 - t) * zb + t * za);
             consider(a + (b - a) * worldT, node, side, feature, result.edge);
+        }
+        // D8: displacement grid vertices snap like brush vertices.
+        for (const auto& surface : item.displacements) {
+            for (std::size_t i = 0; i < surface.mesh.positions.size(); ++i)
+                consider(surface.mesh.positions[i], node, surface.side,
+                         {node, FeatureKind::DisplacementVertex, i, static_cast<std::size_t>(surface.side)},
+                         result.vertex);
         }
     });
     return result;

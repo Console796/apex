@@ -59,7 +59,10 @@ std::optional<ElementHandle> VertexTool::hitElement(const InputEvent& event, con
         if (!hit || !hit->side || !solids.contains(hit->node)) return {};
         return ElementHandle{hit->node, ElementKind::Face, 0, 0, *hit->side};
     }
-    const auto features = session_.picks_->nearestFeature(view.cursorRay, 8.0, view);
+    // Displacement grid vertices are not brush vertices; this tool never edits them.
+    const auto features = session_.picks_->nearestFeature(view.cursorRay, 8.0, view, [](const FeatureRef& feature) {
+        return feature.kind != FeatureKind::DisplacementVertex;
+    });
     const auto eligible = [&](const FeatureHit& hit) { return solids.contains(hit.node); };
     if (mode_ == ElementMode::Vertex && features.vertex && eligible(*features.vertex))
         return ElementHandle{features.vertex->node, ElementKind::Vertex, features.vertex->feature.a};
