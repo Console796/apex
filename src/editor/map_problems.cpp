@@ -4,6 +4,7 @@
 #include "document/cordon.hpp"
 #include "document/displacement.hpp"
 #include "geometry/displacement.hpp"
+#include "editor/overlay_problems.hpp"
 #include "geometry/solid_geometry.hpp"
 
 #include <algorithm>
@@ -311,6 +312,7 @@ ProblemRegistry ProblemRegistry::builtin() {
     registry.add("player-start", playerStart);
     registry.add("cordons", emptyCordons);
     registry.add("displacements", displacements);
+    registry.add("overlays", overlayProblems);
     return registry;
 }
 

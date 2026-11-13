@@ -13,8 +13,10 @@
 #include "editor/clip_tool.hpp"
 #include "editor/apply_tool.hpp"
 #include "editor/measure_tool.hpp"
+#include "editor/overlay_tool.hpp"
 #include "editor/vertex_tool.hpp"
 #include "editor/hide_ops.hpp"
+#include "editor/instance_key_types.hpp"
 #include "editor/selection_expand.hpp"
 #include "editor/selection_undo.hpp"
 #include "editor/visibility.hpp"
@@ -41,6 +43,7 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Vertex, std::make_unique<VertexTool>(*this));
     tools_.emplace(Tool::Apply, std::make_unique<ApplyTool>(*this));
     tools_.emplace(Tool::Measure, std::make_unique<MeasureTool>(*this));
+    tools_.emplace(Tool::Overlay, std::make_unique<OverlayTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) {
         if (activeTool_ == "tool.select" && selectTool().lightEdit_.active()) selectTool().endTransform();
@@ -57,6 +60,7 @@ EditorSession::~EditorSession() { detach(); }
 void EditorSession::attach(document::Document& doc) {
     detach();
     document_ = &doc;
+    document_->setSideListTypes(instanceFgdTypes(entityClasses_).keyTypes); // 0.8 D11
     visgroupVisibility_ = buildVisgroupVisibility(doc);
     visgroupHistory_[doc.historyState()] = visgroupVisibility_;
     picks_ = std::make_unique<PickIndex>(doc, [this](const kv1::Node& block) -> std::optional<EntityPickShape> {
@@ -110,7 +114,10 @@ void EditorSession::refreshEntityBounds() {
 void EditorSession::detach() {
     if (transformActive()) endTransform();
     activeToolObject().cancel();
-    if (document_) document_->unobserve(documentObserver_);
+    if (document_) {
+        document_->unobserve(documentObserver_);
+        document_->setSideListTypes({}); // It refers to entityClasses_.
+    }
     document_ = nullptr;
     instanceExpansion_ = std::make_unique<InstanceExpansion>(*instanceTemplates_);
     visgroupHistory_.clear();
@@ -642,6 +649,7 @@ Result<void> EditorSession::runEdit(std::string label, AfterEdit policy,
 void EditorSession::setEntityClasses(assets::EntityClassTable classes) {
     entityClasses_ = std::move(classes);
     ++entityClassesRevision_;
+    if (document_) document_->setSideListTypes(instanceFgdTypes(entityClasses_).keyTypes);
     if (picks_) picks_->rebuild();
     notify();
 }

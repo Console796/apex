@@ -9,6 +9,7 @@
 #include "geometry/solid_geometry.hpp"
 #include "lighting/cpu_accel.hpp"
 #include "render/helper_shapes.hpp"
+#include "render/overlay_mirror.hpp"
 #include "render/solid_mesh.hpp"
 
 #include <algorithm>
@@ -691,6 +692,21 @@ struct RenderMirror::Impl {
         return uploadBuffer(context, heap.uploadRing(), std::as_bytes(std::span{data}), usage, flush);
     }
 
+    // 0.8 D10: info_overlay, info_overlay_transition and infodecal fragments (overlay_mirror.hpp).
+    OverlayMirror overlays;
+    OverlayMirror::Upload overlayUpload() {
+        return [this](std::span<const std::byte> bytes, VkBufferUsageFlags usage) {
+            return uploadBuffer(context, heap.uploadRing(), bytes, usage, true);
+        };
+    }
+    OverlayMirror::DecalSize decalSize() {
+        return [this](const std::string& name) -> std::optional<DVec2> {
+            const auto& state = resolveMaterial(name);
+            if (state.loading) return std::nullopt;
+            return DVec2(state.size.width, state.size.height);
+        };
+    }
+
     void complete(NodeId id, std::uint64_t version, Result<SolidMesh> mesh) {
         const auto it = solids.find(id);
         if (it == solids.end() || it->second.version != version) return; // Stale or removed.
@@ -1315,6 +1331,7 @@ struct RenderMirror::Impl {
         for (const NodeId id : dirty) {
             if (solids.contains(id)) requestMesh(id);
         }
+        if (overlays.apply(doc, changes, overlayUpload(), decalSize(), garbage)) redraw = true;
         refreshHelpers();
         if (entitiesDirty) redraw = true;
         collectGarbage();
@@ -1713,6 +1730,7 @@ bool RenderMirror::pump() {
     impl_->jobs.drainCompletions();
     impl_->pumpModels();
     impl_->pumpMaterials();
+    if (impl_->overlays.refreshDecals(impl_->overlayUpload(), impl_->decalSize(), impl_->garbage)) impl_->redraw = true;
     impl_->meshPreviews();
     impl_->collectGarbage();
     // Hidden contents are never drawn, so their dirty flags would never clear.
@@ -2034,6 +2052,20 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             }
         }
     }
+    if (textured) m.overlays.draw(list.meshes, {
+        [&](const std::string& name) {
+            const auto& state = m.resolveMaterial(name);
+            return OverlayMirror::Material{state.slot, state.alpha};
+        },
+        [&](NodeId overlay, NodeId solid, DVec3 origin) -> std::optional<std::uint32_t> {
+            const auto found = m.solids.find(solid);
+            if (replaced.contains(solid) || (found != m.solids.end() && found->second.hidden)) return std::nullopt;
+            return previewIndex(m.effectivePreview.contains(solid) ? solid : overlay, origin);
+        },
+        [&](NodeId overlay) {
+            return m.selected.contains(overlay) ? m.highlight.selectTint
+                                                : m.highlight.hover == overlay ? m.highlight.hoverTint : Vec4(0.0f);
+        }});
     for (const auto& state : m.previewGeometry) {
         if (state.node) {
             const auto original = m.solids.find(state.node);

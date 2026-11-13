@@ -1,6 +1,7 @@
 #include "document/document.hpp"
 
 #include "core/strings.hpp"
+#include "document/sidelist_upkeep.hpp"
 #include "geometry/face_uv.hpp"
 
 #include <algorithm>
@@ -696,7 +697,7 @@ Transaction::Transaction(Document& doc, std::string label) : doc_(&doc) {
 Transaction::Transaction(Transaction&& other) noexcept
     : doc_(std::exchange(other.doc_, nullptr)), entry_(std::move(other.entry_)),
       deltaIndex_(std::move(other.deltaIndex_)),
-      key_(std::move(other.key_)), operations_(other.operations_) {}
+      key_(std::move(other.key_)), operations_(other.operations_), lineage_(std::move(other.lineage_)) {}
 Transaction::~Transaction() {
     if (doc_) {
         doc_->restore(entry_, false);
@@ -1091,8 +1092,9 @@ void Transaction::rebuildSolidImpl(Handle<Solid> h, const geometry::ConvexPolyhe
     for (std::size_t n = 0; n < plan.size(); ++n) {
         if (plan[n].matched) continue;
         const auto& parent = before->poly.faces[*plan[n].inheritFrom];
-        block.insert(insertAt++, newSide(*sides.at(parent.sideId), poly, poly.faces[n],
-                                       Document::allocate(doc_->nextSide_), parent)).value();
+        const auto sideId = Document::allocate(doc_->nextSide_);
+        lineage_[sideId] = {static_cast<SideId>(parent.sideId), parent.plane};
+        block.insert(insertAt++, newSide(*sides.at(parent.sideId), poly, poly.faces[n], sideId, parent)).value();
     }
     touch(id, Dirty::Geometry);
     doc_->updateSolidSides(id, false);
@@ -1126,7 +1128,32 @@ Handle<Solid> Transaction::createFragment(Handle<Solid> source,
     }
     for (const auto* editor : original.findAll("editor")) block.append(*editor).value();
     if (!parent && doc_->node(id)->parent) parent = doc_->handle(doc_->node(id)->parent);
-    return std::get<Handle<Solid>>(create(std::move(block), parent));
+    const auto created = std::get<Handle<Solid>>(create(std::move(block), parent));
+    // Sides keep plan order through create(), which only replaces their IDs.
+    std::size_t n = 0;
+    for (const auto& side : doc_->node(checked(created))->block->children()) {
+        if (side.kind() != kv1::NodeKind::Block || !ciEquals(side.key(), "side") || n >= plan.size()) continue;
+        const auto& old = before->poly.faces[plan[n].matched ? *plan[n].matched : *plan[n].inheritFrom];
+        if (const auto* key = side.find("id"))
+            if (const auto number = key->asInt()) lineage_[*number] = {static_cast<SideId>(old.sideId), old.plane};
+        ++n;
+    }
+    return created;
+}
+void Transaction::applySideListRules() {
+    std::vector<SideId> vanished;
+    std::set<SideId> seen;
+    for (const auto& delta : entry_.deltas) {
+        if (!delta.before || !std::holds_alternative<Solid>(*delta.before)) continue;
+        for (const auto& side : base(*delta.before).block->children()) {
+            if (side.kind() != kv1::NodeKind::Block || !ciEquals(side.key(), "side")) continue;
+            if (const auto* key = side.find("id"))
+                if (const auto number = key->asInt(); number && seen.insert(*number).second && !doc_->side(*number))
+                    vanished.push_back(*number);
+        }
+    }
+    for (auto& edit : sideListUpkeep(*doc_, doc_->sideListTypes_, vanished, lineage_))
+        setKeyValue(edit.entity, std::move(edit.key), std::move(edit.value));
 }
 void Transaction::setSelection(SelectionBlob before, SelectionBlob after) {
     if (!doc_) throw std::logic_error("transaction already finished");
@@ -1135,6 +1162,7 @@ void Transaction::setSelection(SelectionBlob before, SelectionBlob after) {
 }
 ChangeSet Transaction::commit(bool coalesce, std::string coalesceKey) {
     if (!doc_) throw std::logic_error("transaction already finished");
+    applySideListRules(); // 0.8 D11 rules 2 and 3, inside this undo step.
     doc_->restoredSelection_.reset();
     for (auto& delta : entry_.deltas) {
         if (doc_->handle(delta.id)) delta.after = doc_->value(delta.id);

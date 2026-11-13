@@ -15,7 +15,8 @@ enum class ProblemSeverity { Error, Warning, Note }; // error: the compile is li
 enum class ProblemKind {
     InvalidSolid, MissingAsset, BrokenConnection, UnknownClass, DuplicateName, InstanceProblem,
     OutOfRange, EmptyBrushEntity, MissingOrigin, MissingPlayerStart, EmptyCordon,
-    DisplacementNonQuad, DisplacementAlphaRange, DisplacementUnreadable
+    DisplacementNonQuad, DisplacementAlphaRange, DisplacementUnreadable,
+    EmptyOverlay // 0.8 D11 rule 4 (overlay_problems.hpp)
 };
 struct Problem {
     ProblemSeverity severity = ProblemSeverity::Warning;

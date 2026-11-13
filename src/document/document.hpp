@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/handle.hpp"
+#include "document/instance_fixup.hpp"
 #include "document/vmf.hpp"
 #include "geometry/face_matching.hpp"
 #include "geometry/solid_geometry.hpp"
@@ -64,6 +65,11 @@ struct SideLocation {
     Handle<Solid> solid;
     std::size_t faceIndex = 0;
     bool operator==(const SideLocation&) const = default;
+};
+// 0.8 D11 rule 3: where a face created in a transaction came from (see sidelist_upkeep.hpp).
+struct SideLineage {
+    SideId parent = 0;
+    Plane parentPlane;
 };
 struct ChangeSet {
     std::vector<NodeHandle> created;
@@ -138,6 +144,9 @@ public:
     std::size_t historyBytes() const { return historyBytes_; }
     std::size_t undoCap() const { return cap_; }
     void setUndoCap(std::size_t bytes);
+    // 0.8 D11: FGD key types that name sidelist keys; commits keep those lists in step with the
+    // faces (sidelist_upkeep.hpp). VBSP's own overlay and cubemap keys apply without it.
+    void setSideListTypes(InstanceKeyTypes types) { sideListTypes_ = std::move(types); }
     using Observer = std::function<void(const ChangeSet&)>;
     std::size_t observe(Observer observer);
     void unobserve(std::size_t token);
@@ -185,6 +194,7 @@ private:
     std::optional<SelectionBlob> restoredSelection_;
     std::size_t cap_, historyBytes_ = 0, nextObserver_ = 1;
     std::map<std::size_t, Observer> observers_;
+    InstanceKeyTypes sideListTypes_;
     bool active_ = false, notifying_ = false, coalesceAllowed_ = false;
 
     NodeId import(const kv1::Node& block, NodeId parent);
@@ -266,6 +276,8 @@ private:
     std::unordered_map<NodeId, std::size_t> deltaIndex_;
     std::optional<std::pair<NodeId, std::string>> key_;
     std::size_t operations_ = 0;
+    std::map<SideId, SideLineage> lineage_; // Faces this transaction created, by new side ID.
+    void applySideListRules();
     NodeId checked(NodeHandle handle) const;
     void touch(NodeId id, Dirty flags);
     void detach(NodeId id);
