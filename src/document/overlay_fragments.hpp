@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -69,7 +70,11 @@ using DecalSize = std::function<DVec2(std::string_view material)>;
 // The infodecal approximation (D10, Bite 9): the nearest face whose plane is within half the
 // decal's larger extent of its origin (tool textures excluded), then the decal square aligned to
 // that face's texture U axis, clipped against every coplanar face it touches.
-OverlayGeometry decalGeometry(SurfaceLookup& surfaces, const kv1::Node& entity, DVec2 size);
+// `surfaces` may be every face of the map or any superset of those within reach (decalCandidates).
+OverlayGeometry decalGeometry(std::span<const OverlaySurface> surfaces, const kv1::Node& entity, DVec2 size);
+// The faces a decal of any size up to `reach` world units could land on, for recomputing it when
+// its material's size becomes known without consulting the document again.
+std::vector<OverlaySurface> decalCandidates(SurfaceLookup& surfaces, const kv1::Node& entity, double reach);
 
 // The fragments of an info_overlay, info_overlay_transition or infodecal. Sides that fail to
 // resolve are listed in `missing`; a malformed basis sets `problem` and yields no pieces.

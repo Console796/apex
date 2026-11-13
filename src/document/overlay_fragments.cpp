@@ -124,21 +124,45 @@ std::optional<geometry::OverlayFragment> clipToSurface(const geometry::OverlayQu
     return geometry::clipOverlay(quad, surface.polygon, surface.normal, side);
 }
 
-OverlayGeometry decalGeometry(SurfaceLookup& surfaces, const kv1::Node& entity, DVec2 size) {
+namespace {
+std::optional<DVec3> decalOrigin(const kv1::Node& entity) {
+    const auto* originKey = entity.find("origin");
+    if (!originKey) return std::nullopt;
+    const auto parsed = originKey->asVec3();
+    if (!parsed) return std::nullopt;
+    return DVec3{(*parsed)[0], (*parsed)[1], (*parsed)[2]};
+}
+
+} // namespace
+
+std::vector<OverlaySurface> decalCandidates(SurfaceLookup& surfaces, const kv1::Node& entity, double reach) {
+    std::vector<OverlaySurface> result;
+    const auto origin = decalOrigin(entity);
+    if (!origin) return result;
+    for (auto& surface : surfaces.all()) {
+        if (surface.polygon.size() < 3 || toolMaterial(surface.material)) continue;
+        // Within reach of the origin's plane hit, or coplanar with a face that is.
+        if (std::abs(glm::dot(surface.normal, *origin - surface.polygon[0])) > reach) continue;
+        DVec3 lo = surface.polygon[0], hi = lo;
+        for (const auto& p : surface.polygon) { lo = glm::min(lo, p); hi = glm::max(hi, p); }
+        if (glm::any(glm::lessThan(*origin + reach, lo)) || glm::any(glm::greaterThan(*origin - reach, hi))) continue;
+        result.push_back(std::move(surface));
+    }
+    return result;
+}
+
+OverlayGeometry decalGeometry(std::span<const OverlaySurface> all, const kv1::Node& entity, DVec2 size) {
     OverlayGeometry result;
     result.kind = OverlayKind::Decal;
     result.approximate = true;
     result.material = text(entity, "texture");
-    const auto* originKey = entity.find("origin");
-    const auto parsed = originKey ? std::optional(originKey->asVec3()) : std::nullopt;
-    if (!parsed || !*parsed) {
+    const auto found = decalOrigin(entity);
+    if (!found) {
         result.problem = "decal has no origin";
         return result;
     }
-    const auto& xyz = **parsed;
-    const DVec3 origin{xyz[0], xyz[1], xyz[2]};
+    const DVec3 origin = *found;
     const double reach = std::max({size.x, size.y, 1.0}) * 0.5;
-    const auto all = surfaces.all();
     const OverlaySurface* nearest = nullptr;
     double best = reach;
     for (const auto& surface : all) {
@@ -179,7 +203,7 @@ OverlayGeometry overlayGeometry(SurfaceLookup& surfaces, const kv1::Node& entity
     }
     if (*kind == OverlayKind::Decal) {
         const auto material = text(entity, "texture");
-        return decalGeometry(surfaces, entity, decalSize ? decalSize(material) : DVec2{64.0});
+        return decalGeometry(surfaces.all(), entity, decalSize ? decalSize(material) : DVec2{64.0});
     }
     OverlayGeometry result;
     result.kind = *kind;

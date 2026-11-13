@@ -23,6 +23,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 
 using namespace apex;
 using namespace apex::render;
@@ -2717,4 +2718,70 @@ TEST_CASE("mirror: shadow brush entity caster rules match VRAD") {
     const auto list = scene.mirror.buildDrawList(options);
     REQUIRE(list.shadowCasters);
     CHECK(list.shadowCasters->size() == (casts ? 6u : 5u));
+}
+
+// Plan 0.8 D10: overlays draw their fragments on the faces they list, follow edits to those faces,
+// and vanish with them.
+TEST_CASE("mirror: an info_overlay draws on its face and follows the face's solid") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    auto& mirror = scene.mirror;
+    const auto red = findSolid(*scene.doc, "test/red");
+    REQUIRE(red.has_value());
+    const auto shape = geometry::solidGeometry(*scene.doc->get(*red)->block);
+    REQUIRE(shape);
+    const geometry::Face* top = nullptr;
+    for (const auto& face : shape->poly.faces)
+        if (face.plane.normal.z > 0.999) top = &face;
+    REQUIRE(top);
+    const auto bounds = shape->poly.bounds();
+    const DVec3 centre{(bounds.min.x + bounds.max.x) / 2, (bounds.min.y + bounds.max.y) / 2, bounds.max.z};
+    const double half = (bounds.max.x - bounds.min.x) / 4; // Half the face's width: well inside it.
+    std::ostringstream text;
+    text << "entity { id 0 classname info_overlay material test/blue origin \"" << centre.x << ' ' << centre.y << ' '
+         << centre.z << "\" BasisOrigin \"" << centre.x << ' ' << centre.y << ' ' << centre.z
+         << "\" BasisU \"1 0 0\" BasisV \"0 1 0\" BasisNormal \"0 0 1\" uv0 \"" << -half << ' ' << -half
+         << " 0\" uv1 \"" << -half << ' ' << half << " 0\" uv2 \"" << half << ' ' << half << " 0\" uv3 \"" << half << ' '
+         << -half << " 0\" StartU 0 EndU 1 StartV 1 EndV 0 sides \"" << top->sideId << "\" }";
+    auto parsed = kv1::parse(text.str());
+    REQUIRE(parsed);
+    const auto above = makeView(centre + DVec3{0, 0, 120}, {89.9, 0.0, 0.0});
+    const auto before = drawFrame(*g, mirror, DisplayMode::Textured, false, above);
+    const auto overlayDraws = [&](DisplayMode mode) {
+        MirrorViewOptions options;
+        options.mode = mode;
+        options.view = above;
+        const auto list = mirror.buildDrawList(options);
+        return std::ranges::count_if(list.meshes, [](const MeshDraw& d) { return !d.edgeOverlay && d.alpha == AlphaMode::Test; });
+    };
+    CHECK(overlayDraws(DisplayMode::Textured) == 0);
+    {
+        auto tx = scene.doc->begin("overlay");
+        tx.create(parsed->root().children()[0]);
+        tx.commit();
+    }
+    REQUIRE(mirror.settle());
+    CHECK(overlayDraws(DisplayMode::Textured) == 1);
+    const auto drawn = drawFrame(*g, mirror, DisplayMode::Textured, false, above);
+    const auto blue = count(drawn, bluish);
+    CHECK(blue > count(before, bluish) + 50);
+    CHECK(count(drawn, reddish) + 50 < count(before, reddish));
+    // Lit shades it like the face under it: still visible, still blue.
+    CHECK(overlayDraws(DisplayMode::Lit) == 1);
+    CHECK(count(drawFrame(*g, mirror, DisplayMode::Lit, false, above, true), bluish) > count(before, bluish) + 50);
+    // Flat and Wireframe leave overlays out.
+    CHECK(overlayDraws(DisplayMode::Flat) == 0);
+    CHECK(overlayDraws(DisplayMode::Wireframe) == 0);
+    // Deleting the solid removes the face; the overlay stays (D11 rule 4) but draws nothing.
+    {
+        auto tx = scene.doc->begin("delete");
+        tx.destroy(*red);
+        tx.commit();
+    }
+    REQUIRE(mirror.settle());
+    CHECK(overlayDraws(DisplayMode::Textured) == 0);
+    REQUIRE(scene.doc->undo());
+    REQUIRE(mirror.settle());
+    CHECK(count(drawFrame(*g, mirror, DisplayMode::Textured, false, above), bluish) == blue);
+    CHECK(g->context->validation().errorCount() == 0);
 }
