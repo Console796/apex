@@ -74,7 +74,7 @@ Result<BakeScene> bakeSceneFromDocument(
             if (flags.sky || flags.nodraw || flags.noLight || name.starts_with("tools/toolsskybox") ||
                 name == "tools/toolsnodraw" || name == "tools/toolstrigger" ||
                 name == "tools/toolsclip" || name == "tools/toolsplayerclip" ||
-                name == "tools/toolsnpcclip" || displacements.contains(static_cast<document::SideId>(face.sideId))) continue;
+                name == "tools/toolsnpcclip" || !displacements.empty()) continue; // A displacement brush: no flat face in game.
             const auto [it, inserted] = materials.try_emplace(name, static_cast<std::uint32_t>(scene.materials.size()));
             if (inserted) scene.materials.push_back(name);
             try {

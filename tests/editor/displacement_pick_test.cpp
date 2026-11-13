@@ -92,6 +92,23 @@ TEST_CASE("a ray hits the sculpted surface of a displacement, not its flat base 
     CHECK_FALSE(index.first({{-500, -1620, 110}, {1, 0, 0}}));
 }
 
+TEST_CASE("a displacement brush's other sides cannot be picked or snapped to") {
+    // VBSP emits no face or collision for them and Hammer hides them (plan 0.8, 0.8.2 as built).
+    Document doc(parsed(fixture()));
+    PickIndex index(doc);
+    const auto solid = solidId(doc);
+    // Below the flat base (z = 64), through the brush's side walls: nothing is hit.
+    CHECK_FALSE(index.first({{-500, -1512, 32}, {1, 0, 0}}));
+    // A slab under the displaced surface touches only the hidden box.
+    CHECK(index.frustum(planes({-200, -1700, 1}, {200, -1400, 40}), Mode::Touching).empty());
+    // The brush's corners are not snap features; its grid vertices are.
+    const DVec3 corner = index.displacement(solid, kSide)->mesh.positions[0];
+    const auto features = index.nearestFeature({{corner.x, corner.y, 400}, {0, 0, -1}}, 8.0, overhead(corner),
+        [](const FeatureRef&) { return true; });
+    REQUIRE(features.vertex);
+    CHECK(features.vertex->feature.kind == FeatureKind::DisplacementVertex);
+}
+
 TEST_CASE("marquee selection and selection bounds include displaced vertices") {
     Document doc(parsed(fixture()));
     PickIndex index(doc);
@@ -99,11 +116,12 @@ TEST_CASE("marquee selection and selection bounds include displaced vertices") {
     const auto bounds = index.bounds(solid);
     REQUIRE(bounds);
     CHECK(bounds->max.z == doctest::Approx(100.225399).epsilon(1e-6)); // Oracle vertex 6.
-    CHECK(bounds->min.z == doctest::Approx(0));
     const auto sideBounds = index.bounds(solid, kSide);
     REQUIRE(sideBounds);
     CHECK(sideBounds->max.z == doctest::Approx(100.225399).epsilon(1e-6));
     CHECK(sideBounds->min.z == doctest::Approx(64));
+    // The brush's other sides are hidden, so the solid's bounds are its displaced surface's.
+    CHECK(bounds->min.z == doctest::Approx(sideBounds->min.z));
     REQUIRE(index.displacement(solid, kSide));
     CHECK(index.displacement(solid, kSide)->mesh.positions.size() == 81);
 

@@ -356,4 +356,8 @@ std::set<SideId> displacedSides(const kv1::Node& solid) {
     return result;
 }
 
+bool hiddenByDisplacement(const std::set<SideId>& displaced, SideId side) {
+    return !displaced.empty() && !displaced.contains(side);
+}
+
 } // namespace apex::document

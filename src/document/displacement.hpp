@@ -28,4 +28,9 @@ Result<std::optional<geometry::Displacement>> displacement(const Document& doc, 
 std::set<SideId> displacedSides(const kv1::Node& solid);
 bool isDisplaced(const kv1::Node& side);
 
+// A displacement brush's other sides do not exist in game: VBSP emits no face and no collision for
+// them, and Hammer hides them. True for a side of a solid with displacedSides `displaced` that is
+// not itself displaced; such a side is not drawn, picked, lit or baked.
+bool hiddenByDisplacement(const std::set<SideId>& displaced, SideId side);
+
 } // namespace apex::document

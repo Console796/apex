@@ -612,15 +612,18 @@ TEST_CASE("baker: document adapter charts brush sides and filters compile materi
     auto poly = geometry::ConvexPolyhedron::fromPlanes(planes);
     REQUIRE(poly);
     auto block = geometry::solidBlock(*poly, {"brick/test"});
+    // A displacement brush bakes no flat face at all: neither its displaced side nor the others.
+    auto displaced = block;
+    displaced.findAll("side")[3]->append(kv1::Node::block("dispinfo")).value();
     const std::array<std::string, 6> names{"TOOLS/TOOLSSKYBOX2D", "tools/toolsnodraw", "custom/nolight",
-                                         "brick/displacement", "brick/test", "brick/test"};
+                                         "tools/toolsclip", "brick/test", "brick/test"};
     auto sides = block.findAll("side");
     REQUIRE(sides.size() == names.size());
     for (std::size_t i = 0; i < sides.size(); ++i)
         *sides[i]->find("material") = kv1::Node::value("material", names[i]);
-    sides[3]->append(kv1::Node::block("dispinfo")).value();
     auto tx = document.begin("bake input");
     const auto solid = tx.create(std::move(block), document.handle(document.roots()[0]));
+    tx.create(std::move(displaced), document.handle(document.roots()[0]));
     auto light = kv1::Node::block("entity");
     light.append(kv1::Node::value("classname", "light_environment")).value();
     light.append(kv1::Node::value("_light", "255 255 255 255")).value();

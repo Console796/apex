@@ -145,7 +145,7 @@ SideOwners sideOwners(const document::Document& document) {
             if (auto shape = geometry::solidGeometry(*node->block)) {
                 const auto displacements = document::displacedSides(*node->block);
                 for (const auto& face : shape->poly.faces) {
-                    if (displacements.contains(static_cast<document::SideId>(face.sideId))) continue;
+                    if (!displacements.empty()) continue; // Displaced sides wait for 0.8.5; the rest have no face in game.
                     SideOwner owner{node->id, face.sideId, face.plane, {}};
                     for (const auto index : face.vertices) owner.loop.push_back(shape->poly.vertices[index]);
                     owners.push_back(std::move(owner));

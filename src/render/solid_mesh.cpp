@@ -84,6 +84,8 @@ Result<SolidMesh> meshPolyhedron(const geometry::ConvexPolyhedron& poly,
     try {
     for (const geometry::Face& face : polyhedron->faces) {
         if (face.vertices.size() < 3) continue;
+        // A displacement brush's other sides are neither drawn nor cast (no face in game).
+        if (document::hiddenByDisplacement(displacements.sides, static_cast<document::SideId>(face.sideId))) continue;
         const auto [it, inserted] = batchIndex.try_emplace(lower(face.material), mesh.batches.size());
         if (inserted) {
             mesh.batches.push_back({it->first, {}, {}, {}, {}});

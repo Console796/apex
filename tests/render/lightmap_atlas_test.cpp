@@ -216,8 +216,10 @@ TEST_CASE("lightmap atlas: displacement sides retain their separate shading flag
     sides[4]->append(kv1::Node::block("dispinfo")).value();
     auto mesh = meshSolid(block, [](std::string_view) { return TextureSize{}; });
     REQUIRE(mesh);
-    REQUIRE(mesh->batches[0].faces.size() == 6);
-    for (const auto& face : mesh->batches[0].faces) CHECK(face.displacement == (face.side == 5));
+    // The brush's other sides have no face in game, so only the displaced side is meshed.
+    REQUIRE(mesh->batches[0].faces.size() == 1);
+    CHECK(mesh->batches[0].faces[0].side == 5);
+    CHECK(mesh->batches[0].faces[0].displacement);
 }
 
 TEST_CASE("lightmap atlas: restart retains same-side radiance with resized charts") {

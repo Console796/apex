@@ -2814,17 +2814,13 @@ TEST_CASE("solid meshing: a displaced side is its D2 mesh with flat-grid UVs, sm
     REQUIRE(face);
     CHECK(face->displacement);
     CHECK(face->indexCount == 3u * 2u * 8u * 8u);
-    // Layout: the displaced mesh first, five flat sides, then the base face for casters only.
+    // Layout: the displaced mesh, then its base face for casters only. The brush's five other sides
+    // have no face in game (Hammer hides them too), so they are not meshed at all.
+    CHECK(batch.faces.size() == 1);
     CHECK(face->firstIndex == 0);
-    CHECK(batch.drawIndexCount == 3u * 128u + 5u * 6u);
+    CHECK(batch.drawIndexCount == 3u * 128u);
     CHECK(batch.casterFirstIndex == 3u * 128u);
     CHECK(batch.indices.size() == batch.drawIndexCount + 6u);
-    for (const auto& other : batch.faces) {
-        if (other.side == kDispSide) continue;
-        CHECK_FALSE(other.displacement);
-        CHECK(other.firstIndex >= batch.casterFirstIndex);
-        CHECK(other.firstIndex + other.indexCount <= batch.drawIndexCount);
-    }
     // Every grid edge once: rows, columns and one diagonal per quad.
     CHECK(face->edgeIndexCount == 2u * (9u * 8u * 2u + 64u));
 
@@ -2913,9 +2909,11 @@ TEST_CASE("solid meshing: a displacement that does not parse draws as its flat f
     CHECK(face->displacement); // Still a displacement: Baked keeps the Lit path for it.
     CHECK(face->indexCount == 6u);
     CHECK(face->edgeIndexCount == 8u);
-    CHECK(batch.drawIndexCount == 36u);
+    // Only the flat displaced side: the brush's other sides stay hidden.
+    CHECK(batch.faces.size() == 1);
+    CHECK(batch.drawIndexCount == 6u);
     CHECK(batch.casterFirstIndex == 0u);
-    CHECK(batch.indices.size() == 36u);
+    CHECK(batch.indices.size() == 6u);
     CHECK(mesh->bounds.max.z == doctest::Approx(64.0));
 }
 
@@ -2935,7 +2933,7 @@ TEST_CASE("mirror: a displacement draws displaced in every mode, casts flat and 
         const auto list = scene.mirror.buildDrawList(options);
         std::uint32_t drawn = 0;
         for (const auto& draw : list.meshes) drawn += draw.indexCount;
-        CHECK(drawn == 3u * 128u + 5u * 6u);
+        CHECK(drawn == 3u * 128u); // The brush's other sides are hidden.
         for (const auto& draw : list.meshes) CHECK(draw.bounds.max.z + draw.origin.z > 64.0 + 30.0);
         if (mode == DisplayMode::Baked) {
             // Displaced faces keep the Lit path in Baked (no displacement lightmaps before 0.8.5).
@@ -2945,7 +2943,7 @@ TEST_CASE("mirror: a displacement draws displaced in every mode, casts flat and 
         if (list.shadowCasters) {
             REQUIRE(list.shadowCasters->size() == 1);
             CHECK(list.shadowCasters->front().firstIndex == 3u * 128u);
-            CHECK(list.shadowCasters->front().indexCount == 6u * 6u);
+            CHECK(list.shadowCasters->front().indexCount == 6u); // The flat base face only.
         }
     }
     // Face selection of the displaced side tints and outlines exactly its mesh.
@@ -2962,7 +2960,7 @@ TEST_CASE("mirror: a displacement draws displaced in every mode, casts flat and 
     select(scene.mirror, {id});
     list = scene.mirror.buildDrawList(options);
     REQUIRE(list.outlines.size() == 1);
-    CHECK(list.outlines[0].indexCount == 3u * 128u + 5u * 6u);
+    CHECK(list.outlines[0].indexCount == 3u * 128u);
     select(scene.mirror, {});
 }
 

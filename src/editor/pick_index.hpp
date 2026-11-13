@@ -130,8 +130,11 @@ private:
         EntityPickShape shape;
         document::EntityPose pose;
         std::vector<DisplacementSurface> displacements; // Replace their flat faces in every query.
-        AABB box; // poly bounds grown by the displacement meshes.
-        bool displaced(std::uint32_t side) const;
+        AABB box; // Bounds of the flat faces queries use, grown by the displacement meshes.
+        // Flat faces no query sees: meshed displacements, and a displacement brush's other sides
+        // (document::hiddenByDisplacement).
+        std::set<SideId> hiddenFaces;
+        bool flatHidden(std::uint32_t side) const { return hiddenFaces.contains(static_cast<SideId>(side)); }
     };
     const document::Document& doc_;
     EntityBoundsProvider bounds_;

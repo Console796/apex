@@ -44,7 +44,7 @@ Result<BakeOcclusion> bakeCastersFromDocument(
                 const bool sky = flags.sky || name.starts_with("tools/toolsskybox");
                 const bool nodraw = flags.nodraw || name == "tools/toolsnodraw";
                 if (name.starts_with("tools/") && !sky && !nodraw) continue;
-                if (displaced.contains(static_cast<document::SideId>(face.sideId))) continue;
+                if (!displaced.empty()) continue; // Displaced sides wait for 0.8.5; the rest have no face in game.
                 const auto found = fragments.find({id, face.sideId});
                 if (found != fragments.end()) {
                     for (const auto index : found->second) append(faces[index].vertices, sky, index);

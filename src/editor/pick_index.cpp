@@ -192,12 +192,6 @@ bool hitLess(const Hit& a, const Hit& b) {
 
 } // namespace
 
-bool PickIndex::Item::displaced(std::uint32_t side) const {
-    return std::ranges::any_of(displacements, [&](const DisplacementSurface& surface) {
-        return surface.side == static_cast<SideId>(side);
-    });
-}
-
 const DisplacementSurface* PickIndex::displacement(NodeId node, SideId side) const {
     const auto item = items_.find(node);
     if (item == items_.end()) return nullptr;
@@ -282,6 +276,7 @@ void PickIndex::refresh(NodeId id, bool building) {
     EntityPickShape shape;
     document::EntityPose pose;
     std::vector<DisplacementSurface> displacements;
+    std::set<SideId> hiddenFaces;
     const bool entity = std::holds_alternative<Handle<document::Entity>>(*handle);
     if (std::holds_alternative<Handle<document::Solid>>(*handle)) {
         auto geometry = geometry::solidGeometry(*node->block);
@@ -292,6 +287,11 @@ void PickIndex::refresh(NodeId id, bool building) {
         }
         poly = std::move(geometry->poly);
         displacements = meshDisplacements(*node->block, poly);
+        const auto displaced = document::displacedSides(*node->block);
+        for (const auto& face : poly.faces)
+            if (document::hiddenByDisplacement(displaced, static_cast<SideId>(face.sideId)))
+                hiddenFaces.insert(static_cast<SideId>(face.sideId));
+        for (const auto& surface : displacements) hiddenFaces.insert(surface.side);
     } else if (entity) {
         std::string classname;
         if (const auto* value = node->block->find("classname")) {
@@ -357,14 +357,20 @@ void PickIndex::refresh(NodeId id, bool building) {
         remove(id);
         return;
     }
-    auto bounds = poly.bounds();
+    AABB bounds;
+    if (hiddenFaces.empty()) bounds = poly.bounds();
+    else for (const auto& face : poly.faces)
+        if (!hiddenFaces.contains(static_cast<SideId>(face.sideId)))
+            for (const auto vertex : face.vertices) bounds.expand(poly.vertices[vertex]);
     for (const auto& surface : displacements) bounds.expand(surface.bounds);
+    if (bounds.empty()) bounds = poly.bounds();
     if (const auto it = items_.find(id); it != items_.end()) {
         it->second.poly = std::move(poly);
         it->second.shape = std::move(shape);
         it->second.pose = pose;
         it->second.displacements = std::move(displacements);
         it->second.box = bounds;
+        it->second.hiddenFaces = std::move(hiddenFaces);
         if (!building) tree_.update(it->second.leaf, bounds);
     } else {
         if (nextLeaf_ == std::numeric_limits<std::uint32_t>::max()) {
@@ -372,7 +378,7 @@ void PickIndex::refresh(NodeId id, bool building) {
         }
         const auto leaf = nextLeaf_++;
         items_.emplace(id, Item{leaf, std::move(poly), entity, std::move(shape), pose,
-                                std::move(displacements), bounds});
+                                std::move(displacements), bounds, std::move(hiddenFaces)});
         leaves_.emplace(leaf, id);
         if (!building) tree_.insert(leaf, bounds);
     }
@@ -496,7 +502,7 @@ std::optional<Hit> PickIndex::intersect(NodeId id, Ray ray, double tMax) const {
         return best;
     }
     for (const auto& face : item.poly.faces) {
-        if (item.displaced(face.sideId)) continue;
+        if (item.flatHidden(face.sideId)) continue;
         const double denominator = glm::dot(face.plane.normal, ray.dir);
         if (denominator == 0.0) continue;
         const double t = -face.plane.signedDistance(ray.origin) / denominator;
@@ -598,7 +604,7 @@ std::vector<NodeId> PickIndex::frustum(std::span<const Plane> planes, Mode mode)
         }
         if (!inside && mode == Mode::Touching) {
             inside = std::ranges::any_of(item.poly.faces, [&](const Face& face) {
-                return !item.displaced(face.sideId) && clippedFace(item.poly, face, planes);
+                return !item.flatHidden(face.sideId) && clippedFace(item.poly, face, planes);
             }) || std::ranges::any_of(item.displacements, [&](const DisplacementSurface& surface) {
                 const auto& mesh = surface.mesh;
                 return std::ranges::any_of(mesh.triangles, [&](const auto& triangle) {
@@ -636,7 +642,7 @@ std::vector<NearHit> PickIndex::nearest(DVec3 point, double radius) const {
         const auto& poly = item.poly;
         NearHit best{id, DVec3{0.0}, std::numeric_limits<double>::infinity()};
         for (const auto& face : poly.faces) {
-            if (item.displaced(face.sideId)) continue;
+            if (item.flatHidden(face.sideId)) continue;
             const auto candidate = closestOnFace(poly, face, point);
             const double distance = glm::length(candidate - point);
             if (distance < best.distance) best = {id, candidate, distance};
@@ -718,6 +724,7 @@ FeatureHits PickIndex::nearestFeature(Ray ray, double pixelRadius, const ToolVie
         std::map<std::size_t, SideId> vertices;
         std::map<std::pair<std::size_t, std::size_t>, SideId> edges;
         for (const auto& face : poly.faces) {
+            if (item.flatHidden(face.sideId)) continue; // Displacements snap by their grid vertices below.
             const auto side = static_cast<SideId>(face.sideId);
             for (std::size_t i = 0; i < face.vertices.size(); ++i) {
                 const auto a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.size()];
