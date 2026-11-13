@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QIntValidator>
 #include <QLocale>
 #include <climits>
@@ -27,6 +28,7 @@
 #include <atomic>
 
 #include "core/strings.hpp"
+#include "document/overlay_fragments.hpp"
 #include "ui/uv_view.hpp"
 #include "ui/game_content.hpp"
 #include "ui/theme.hpp"
@@ -200,6 +202,20 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     }
     smoothingGrid->hide();
     controls->addWidget(smoothingGrid);
+    overlaysCaption_ = new QLabel(tr("Overlays on this face"), content_);
+    controls->addWidget(overlaysCaption_);
+    overlays_ = new QListWidget(content_);
+    overlays_->setObjectName(QStringLiteral("faceOverlays"));
+    overlays_->setToolTip(tr("Overlays whose side list names this face, and decals placed on it. Double-click to select."));
+    overlays_->setMaximumHeight(96);
+    overlays_->hide();
+    controls->addWidget(overlays_);
+    connect(overlays_, &QListWidget::itemDoubleClicked, this, [this](QListWidgetItem* item) {
+        if (!session_ || !item) return;
+        auto& selection = session_->selection();
+        selection.setMode(editor::SelectionMode::Objects);
+        selection.select(static_cast<document::NodeId>(item->data(Qt::UserRole).toULongLong()));
+    });
     connect(smoothingSummary_, &QToolButton::clicked, smoothingGrid, [smoothingGrid] { smoothingGrid->setVisible(!smoothingGrid->isVisible()); });
     connect(world, &QPushButton::clicked, this, [this] {
         if (session_) if (auto result = session_->alignFaces(editor::FaceAlignment::World); !result)
@@ -388,6 +404,8 @@ void FacePropertiesPanel::refresh() {
     smoothingSummary_->setText(summary);
     smoothingSummary_->setToolTip(summary);
 
+    refreshOverlays(enabled && session_->selection().active()
+        ? std::optional(std::get<document::SideId>(*session_->selection().active())) : std::nullopt);
     if (enabled && session_->selection().active()) {
         const auto active = std::get<document::SideId>(*session_->selection().active());
         if (const auto face = editor::faceSnapshot(*document_, active)) {
@@ -422,6 +440,43 @@ void FacePropertiesPanel::refresh() {
         for (auto* button : alignment_) { const QSignalBlocker block(button); button->setChecked(false); }
     }
     rebuilding_ = false;
+}
+void FacePropertiesPanel::refreshOverlays(std::optional<document::SideId> side) {
+    overlays_->clear();
+    overlays_->hide(); // Shown only when it has rows, so an empty list takes no room from the UV view.
+    if (!side || !document_) {
+        overlaysCaption_->setText(tr("Overlays on this face: none"));
+        return;
+    }
+    const auto add = [&](document::NodeId id, bool approximate) {
+        const auto handle = document_->handle(id);
+        const auto* node = handle ? document_->get(*handle) : nullptr;
+        if (!node || !node->block) return;
+        const auto value = [&](std::string_view key) {
+            const auto* found = node->block->find(key);
+            return found ? fromStd(found->decodedValue().value_or("")) : QString{};
+        };
+        QString label = value("classname");
+        if (const auto name = value("targetname"); !name.isEmpty()) label += QStringLiteral(" \"%1\"").arg(name);
+        label += QStringLiteral(" #%1").arg(id);
+        const auto material = value(approximate ? "texture" : "material");
+        if (!material.isEmpty()) label += QStringLiteral(" · ") + material;
+        if (approximate) label += tr(" (approximate)");
+        auto* item = new QListWidgetItem(label, overlays_);
+        item->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(id));
+        item->setToolTip(approximate
+            ? tr("Approximate: the engine chooses an infodecal's face at map load; Apex shows it on the nearest face.")
+            : tr("Lists this face in its sides. Double-click to select it."));
+    };
+    for (const auto id : document::overlaysOnSide(*document_, *side)) add(id, false);
+    const auto decalSize = [this](std::string_view material) {
+        const auto [w, h] = session_ ? session_->faceTextureSize(material) : std::pair{64, 64};
+        return DVec2{double(w), double(h)};
+    };
+    for (const auto id : document::decalsOnSide(*document_, *side, decalSize)) add(id, true);
+    overlays_->setVisible(overlays_->count() > 0);
+    overlaysCaption_->setText(overlays_->count() ? tr("Overlays on this face (%1)").arg(overlays_->count())
+                                                 : tr("Overlays on this face: none"));
 }
 void FacePropertiesPanel::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);

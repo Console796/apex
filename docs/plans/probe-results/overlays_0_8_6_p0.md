@@ -75,3 +75,24 @@ BasisV is not stored. Presumably the engine rebuilds it as `normal × basisU` (S
 flip flag in the third component of a uv point, which this layout no longer has). A mirrored
 overlay (BasisV = `basisU × normal`) would need a flag somewhere, and `unknown1` is the likely
 place. No corpus overlay is mirrored, so this is unconfirmed; a mirrored probe map would settle it.
+
+## Oracle results (tests/document/overlay_oracle_test.cpp)
+
+`tools/overlay_oracle.py` compiled the 21 corpus maps that have an overlay with a non-empty
+`sides` with the native vbsp (`-instancepath` set to the corpus root). Three failed to compile
+because a nested instance is missing from the install (`elevator_arrival_dirty_base`,
+`coop_spawn_room_bridge` and `two_player_airlock_underground`). They are recorded as `skip` lines
+in the fixture. The 18 that compiled give:
+
+- **43 overlays matched.** All 43 visible listed overlays match their lump entry exactly: quad,
+  BasisU, BasisNormal and texture range. The rebuilt BasisV (N × U) equals the VMF's.
+- **10 hidden overlays are not compiled.** VBSP leaves entities inside `hidden { }` wrappers out
+  of the compile. Both `destructed_*_soundscape_override_alt` maps compile with no overlays at all.
+- **4 overlays compile with no faces.** In `bts_wall_module_512x1024_01a`, the listed sides
+  produce no compiled face in the sealed probe map. VBSP still keeps the overlay.
+- **3 overlays sit on back-facing faces.** In `shaft_vista_v2`, `observation_room_256x128_1b` and
+  `departure_elevator_column_blocker`, the listed face's normal is opposite to BasisNormal. VBSP
+  keeps these overlays and the engine draws them. Apex used to reject faces facing away; it now
+  clips onto them, with the winding flipped to match the face.
+- **Area check.** The worst shortfall of Apex's clipped area against the area the quad covers on
+  the compiled faces is 1.8e-4 of the area, from BSP float vertices.

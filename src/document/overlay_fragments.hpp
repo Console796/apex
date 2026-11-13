@@ -84,6 +84,9 @@ OverlayGeometry overlayGeometry(const Document& doc, const kv1::Node& entity, co
 // The overlay-like entities that list `side`, by node ID (Face Properties' "Overlays on this face").
 std::vector<NodeId> overlaysOnSide(const Document& doc, SideId side);
 
+// The infodecals whose D10 approximation lands on `side` (decals list no faces; the engine chooses).
+std::vector<NodeId> decalsOnSide(const Document& doc, SideId side, const DecalSize& decalSize);
+
 // Every entity node of the document, depth first, including those inside hidden containers.
 std::vector<NodeId> entityNodes(const Document& doc);
 

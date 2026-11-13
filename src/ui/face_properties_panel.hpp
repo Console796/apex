@@ -6,6 +6,7 @@
 #include <QSize>
 #include <QMetaObject>
 #include <functional>
+#include <optional>
 
 class QCheckBox;
 class QComboBox;
@@ -13,6 +14,7 @@ class QLineEdit;
 class QLabel;
 class QVBoxLayout;
 class QToolButton;
+class QListWidget;
 class QScrollArea;
 class QResizeEvent;
 
@@ -64,6 +66,9 @@ private:
     std::vector<QToolButton*> alignment_;
     QToolButton* smoothingSummary_ = nullptr;
     QComboBox* extrapolation_ = nullptr;
+    QLabel* overlaysCaption_ = nullptr;
+    QListWidget* overlays_ = nullptr; // Plan 0.8 D12: "Overlays on this face".
+    void refreshOverlays(std::optional<document::SideId> side);
     std::vector<document::SideId> shown_; // The faces the fields show.
     bool queued_ = false, rebuilding_ = false;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;

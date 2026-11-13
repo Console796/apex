@@ -277,4 +277,19 @@ std::vector<NodeId> overlaysOnSide(const Document& doc, SideId side) {
     return result;
 }
 
+std::vector<NodeId> decalsOnSide(const Document& doc, SideId side, const DecalSize& decalSize) {
+    std::vector<NodeId> result;
+    std::optional<std::vector<OverlaySurface>> surfaces; // Built only when the map has a decal.
+    for (const auto id : entityNodes(doc)) {
+        const auto* node = doc.get(*doc.handle(id));
+        if (!node || !node->block || overlayKind(*node->block) != OverlayKind::Decal) continue;
+        if (!surfaces) surfaces = SurfaceLookup(doc).all();
+        const DVec2 size = decalSize ? decalSize(text(*node->block, "texture")) : DVec2{64.0};
+        const auto geometry = decalGeometry(*surfaces, *node->block, size);
+        if (std::ranges::any_of(geometry.pieces, [&](const OverlayPiece& piece) { return piece.fragment.side == side; }))
+            result.push_back(id);
+    }
+    return result;
+}
+
 } // namespace apex::document

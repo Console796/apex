@@ -9,6 +9,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QLineEdit>
+#include <QListWidget>
+#include <sstream>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QLabel>
@@ -553,4 +555,53 @@ TEST_CASE("UV view rotate handle snaps to 15 degrees and a tile edge drag scales
         return glm::dot(p, uv.uaxis) / uv.scaleU + uv.shiftU;
     };
     CHECK(std::remainder(texel(scaled, centre) - texel(face.face.uv, centre), w) == doctest::Approx(0).epsilon(1e-6));
+}
+
+TEST_CASE("Face Properties lists the overlays on the active face and marks decals approximate") {
+    (void)app();
+    Scene scene;
+    const auto top = scene.side({0, 0, 1});
+    REQUIRE(top > 0);
+    // The top face's centre, where a decal lands.
+    auto geometry = geometry::solidGeometry(*scene.doc.get(*scene.doc.handle(scene.box))->block);
+    REQUIRE(geometry);
+    DVec3 centre{0.0};
+    for (const auto& face : geometry->poly.faces)
+        if (static_cast<document::SideId>(face.sideId) == top) {
+            for (const auto index : face.vertices)
+                centre += geometry->poly.vertices[index] / double(face.vertices.size());
+        }
+    editor_test::addBlock(scene.doc, "entity { id 0 classname info_overlay targetname sign material overlays/sign "
+                                     "BasisOrigin \"0 0 0\" BasisU \"1 0 0\" BasisV \"0 1 0\" BasisNormal \"0 0 1\" "
+                                     "uv0 \"-8 -8 0\" uv1 \"-8 8 0\" uv2 \"8 8 0\" uv3 \"8 -8 0\" sides \"" +
+                                         std::to_string(top) + "\" }");
+    std::ostringstream decal;
+    decal << "entity { id 0 classname infodecal texture decals/splat origin \"" << centre.x << ' ' << centre.y << ' '
+          << centre.z << "\" }";
+    editor_test::addBlock(scene.doc, decal.str());
+    ui::FacePropertiesPanel panel;
+    panel.setDocument(&scene.doc);
+    panel.setEditorSession(&scene.session);
+    scene.session.selection().select(top);
+    panel.refresh();
+    auto* list = panel.findChild<QListWidget*>("faceOverlays");
+    REQUIRE(list);
+    REQUIRE(list->count() == 2);
+    CHECK(list->item(0)->text().startsWith("info_overlay \"sign\""));
+    CHECK_FALSE(list->item(0)->text().contains("approximate"));
+    CHECK(list->item(1)->text().startsWith("infodecal"));
+    CHECK(list->item(1)->text().contains("(approximate)"));
+    CHECK(list->item(1)->toolTip().contains("Approximate"));
+    // Another face lists nothing.
+    scene.session.selection().select(scene.side({0, 0, -1}));
+    panel.refresh();
+    CHECK(list->count() == 0);
+    // Double-click selects the overlay.
+    scene.session.selection().select(top);
+    panel.refresh();
+    emit list->itemDoubleClicked(list->item(0));
+    CHECK(scene.session.selection().mode() == editor::SelectionMode::Objects);
+    REQUIRE(scene.session.selection().active());
+    CHECK(std::get<document::NodeId>(*scene.session.selection().active()) ==
+          static_cast<document::NodeId>(list->item(0) ? list->item(0)->data(Qt::UserRole).toULongLong() : 0));
 }
