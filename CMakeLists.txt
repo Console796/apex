@@ -273,6 +273,8 @@ if(APEX_BUILD_TESTS)
   target_link_libraries(apex_vmf_dump PRIVATE apex_document apex_geometry apex_core apex_warnings)
   add_executable(apex_disp_reference tools/disp_reference/main.cpp)
   target_link_libraries(apex_disp_reference PRIVATE sourcepp::bsppp apex_warnings)
+  add_executable(apex_overlay_reference tools/overlay_reference/main.cpp)
+  target_link_libraries(apex_overlay_reference PRIVATE sourcepp::bsppp apex_warnings)
 endif()
 
 if(APEX_BUILD_FUZZ)

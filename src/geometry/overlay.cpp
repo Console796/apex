@@ -98,12 +98,15 @@ std::vector<std::vector<DVec2>> convexPieces(const std::array<DVec2, 4>& points)
     return {{at(0), at(1), at(2)}, {at(0), at(2), at(3)}};
 }
 
-// Appends the clipped pieces on one planar polygon to `out`.
-bool clipInto(const OverlayQuad& quad, std::span<const DVec3> polygon, DVec3 faceNormal, OverlayFragment& out) {
+// Appends the clipped pieces on one planar polygon to `out`. `facing` is +1 to accept only faces
+// whose normal is along quad.normal, -1 only against it, 0 either.
+bool clipInto(const OverlayQuad& quad, std::span<const DVec3> polygon, DVec3 faceNormal, OverlayFragment& out,
+              int facing = 0) {
     if (polygon.size() < 3) return false;
     const DVec3 n = unit(faceNormal);
     const double along = glm::dot(n, quad.normal);
-    if (!(along > kOverlayMinCosine)) return false;
+    if (!(std::abs(along) > kOverlayMinCosine)) return false;
+    if (facing != 0 && (along > 0.0) != (facing > 0)) return false;
     std::vector<DVec2> window;
     window.reserve(polygon.size());
     for (const auto& p : polygon) {
@@ -124,7 +127,10 @@ bool clipInto(const OverlayQuad& quad, std::span<const DVec3> polygon, DVec3 fac
             const double t = (dist - glm::dot(n, flat)) / glm::dot(n, quad.normal);
             out.vertices.push_back({flat + quad.normal * t, quad.texCoord(p)});
         }
-        for (std::uint32_t i = 1; i + 1 < clipped.size(); ++i) out.triangles.push_back({first, first + i, first + i + 1});
+        // Wind each triangle counter-clockwise seen from outside the face.
+        for (std::uint32_t i = 1; i + 1 < clipped.size(); ++i)
+            out.triangles.push_back(along > 0.0 ? std::array{first, first + i, first + i + 1}
+                                                : std::array{first, first + i + 1, first + i});
         any = true;
     }
     return any;
@@ -258,13 +264,20 @@ std::optional<OverlayFragment> clipOverlay(const OverlayQuad& quad, std::span<co
 std::optional<OverlayFragment> clipOverlay(const OverlayQuad& quad, const DisplacementMesh& mesh, std::uint32_t side) {
     OverlayFragment fragment;
     fragment.side = side;
+    // The surface takes the quad on the side it faces as a whole; triangles folded back against
+    // it (overhangs) would cover the same ground twice.
+    DVec3 total{0.0};
+    for (const auto& triangle : mesh.triangles)
+        total += glm::cross(mesh.positions.at(triangle[1]) - mesh.positions.at(triangle[0]),
+                            mesh.positions.at(triangle[2]) - mesh.positions.at(triangle[0]));
+    const int facing = glm::dot(total, quad.normal) >= 0.0 ? 1 : -1;
     DVec3 normalSum{0.0};
     for (const auto& triangle : mesh.triangles) {
         const std::array<DVec3, 3> corners{mesh.positions.at(triangle[0]), mesh.positions.at(triangle[1]),
                                            mesh.positions.at(triangle[2])};
         const DVec3 normal = glm::cross(corners[1] - corners[0], corners[2] - corners[0]);
         if (!(glm::length(normal) > 0.0)) continue;
-        if (clipInto(quad, corners, normal, fragment)) normalSum += normal;
+        if (clipInto(quad, corners, normal, fragment, facing)) normalSum += normal;
     }
     if (fragment.triangles.empty()) return std::nullopt;
     fragment.normal = unit(normalSum);

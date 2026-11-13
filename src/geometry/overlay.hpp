@@ -64,8 +64,10 @@ struct OverlayFragment {
     std::vector<std::array<std::uint32_t, 3>> triangles;
 };
 
-// Faces whose normal is within this cosine of the projection direction, or facing away from it,
-// receive nothing (the projection is too oblique to be meaningful).
+// Faces whose normal is within this cosine of perpendicular to the projection direction receive
+// nothing (the projection is too oblique to be meaningful). A face facing away from BasisNormal
+// still receives the overlay, as in the engine: shipped maps list such faces (the BSP oracle has
+// three) and VBSP keeps them.
 inline constexpr double kOverlayMinCosine = 1e-3;
 
 // Clips the quad against a flat convex polygon (counter-clockwise from outside, with its outward

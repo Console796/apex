@@ -117,9 +117,17 @@ TEST_CASE("[overlay] clipping onto a flat face keeps the overlap and lifts it on
     REQUIRE(lifted);
     for (const auto& v : lifted->vertices) CHECK(v.position.z == doctest::Approx(-40));
 
-    // Disjoint, facing away and edge-on faces get nothing.
+    // A face facing away from the basis normal still takes it, as in the engine, wound to face out.
+    const auto away = clipOverlay(quad, std::vector<DVec3>(big.rbegin(), big.rend()), {0, 0, -1});
+    REQUIRE(away);
+    CHECK(fragmentArea(*away) == doctest::Approx(32.0 * 32.0));
+    for (const auto& t : away->triangles) {
+        const auto& v = away->vertices;
+        CHECK(glm::cross(v[t[1]].position - v[t[0]].position, v[t[2]].position - v[t[0]].position).z < 0.0);
+    }
+
+    // Disjoint and edge-on faces get nothing.
     CHECK_FALSE(clipOverlay(quad, square(100, 100, 200, 200), {0, 0, 1}));
-    CHECK_FALSE(clipOverlay(quad, std::vector<DVec3>(big.rbegin(), big.rend()), {0, 0, -1}));
     const std::vector<DVec3> wall{{0, -64, -64}, {0, 64, -64}, {0, 64, 64}, {0, -64, 64}};
     CHECK_FALSE(clipOverlay(quad, wall, {1, 0, 0}));
 }
