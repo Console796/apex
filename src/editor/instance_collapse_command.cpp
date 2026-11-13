@@ -79,6 +79,7 @@ Result<InstanceCollapseReport> stageInstanceCollapse(EditorSession& session, doc
             if (plan->objectCount > 0) {
                 auto pasted = stagePaste(doc, tx, plan->fragment, pasteOptions);
                 if (!pasted) return std::unexpected(pasted.error());
+                // Sidelist keys already follow the fresh side ids: stagePaste remaps them (0.8 D11).
                 const auto parentGroup = integer(plan->parentMembership, "groupid");
                 std::vector<int> parentVisgroups;
                 for (const auto* v : plan->parentMembership.findAll("visgroupid"))
@@ -89,24 +90,6 @@ Result<InstanceCollapseReport> stageInstanceCollapse(EditorSession& session, doc
                     for (const auto vg : parentVisgroups) tx.setEditor(*h, document::EditorEdit::addVisgroup(vg));
                     // Root groups and ungrouped objects inherit the instance's group.
                     if (!item.group && parentGroup) tx.setEditor(*h, document::EditorEdit::setGroup(parentGroup));
-                    if (item.kind != EditedObjects::Item::Kind::Entity) continue;
-                    // Paste gave every side a fresh id; side lists (overlays) follow them.
-                    const auto exported = doc.exportSubtree(item.node);
-                    const auto classname = value(exported, "classname");
-                    for (const auto& child : exported.children()) {
-                        if (child.kind() != kv1::NodeKind::Value ||
-                            fgd.keyTypes(classname, child.key()) != document::InstanceKeyType::SideList) continue;
-                        std::string mapped;
-                        const std::string listText = child.decodedValue().value_or("");
-                        for (const auto word : split(listText, ' ')) {
-                            const auto old = kv1::Node::value("", std::string(word)).asInt();
-                            const auto found = old ? pasted->sideIds.find(*old) : pasted->sideIds.end();
-                            if (found == pasted->sideIds.end()) continue;
-                            if (!mapped.empty()) mapped += ' ';
-                            mapped += std::to_string(found->second);
-                        }
-                        tx.setKeyValue(*h, std::string(child.key()), std::move(mapped));
-                    }
                 }
                 created.items.insert(created.items.end(), pasted->items.begin(), pasted->items.end());
                 created.groupParents.insert(pasted->groupParents.begin(), pasted->groupParents.end());

@@ -2,7 +2,9 @@
 
 #include "core/strings.hpp"
 #include "document/connection_codec.hpp"
+#include "document/displacement.hpp"
 #include "document/entity_transform.hpp"
+#include "document/sidelist_remap.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -87,26 +89,11 @@ void transformSolid(Kv& solid, const EntityPose& pose) {
                 }
             }
         }
-        // Displacements carry world-space start positions and direction vectors.
+        // Displacements carry world-space start positions and direction vectors (plan 0.8 D4).
+        // A dispinfo that does not parse is left as written.
         if (auto* disp = side.find("dispinfo")) {
-            if (auto* start = disp->find("startposition")) {
-                auto s = start->decodedValue().value_or("");
-                if (s.size() >= 2) s = s.substr(1, s.size() - 2);
-                (void)start->setValue("[" + vector(pose.basis * vec(s) + pose.origin) + "]");
-            }
-            for (auto& field : disp->children()) {
-                if (!block(field, "normals") && !block(field, "offsets") && !block(field, "offset_normals")) continue;
-                for (auto& row : field.children()) {
-                    const auto raw = row.decodedValue().value_or("");
-                    const auto words = split(raw, ' ');
-                    std::string out;
-                    for (std::size_t i = 0; i + 2 < words.size(); i += 3) {
-                        if (!out.empty()) out += ' ';
-                        out += vector(pose.basis * vec(std::string(words[i]) + ' ' + std::string(words[i+1]) + ' ' + std::string(words[i+2])));
-                    }
-                    (void)row.setValue(out);
-                }
-            }
+            if (const auto parsed = parseDisplacement(*disp))
+                (void)writeDisplacement(*disp, geometry::transformDisplacement(*parsed, pose.basis, pose.origin));
         }
     }
 }
@@ -242,18 +229,8 @@ struct Collapse {
                 return options.keyTypes ? options.keyTypes(cls, key) : defaultInstanceKeyType(cls, key);
             };
             obj = fixedInstanceKeys(obj, fixup, types, options.isClassname);
-            for (auto& value : obj.children()) {
-                if (value.kind() != kv1::NodeKind::Value || types(text(obj, "classname"), value.key()) != InstanceKeyType::SideList) continue;
-                const auto raw = value.decodedValue().value_or("");
-                std::string mapped;
-                for (auto word : split(raw, ' ')) {
-                    const int old = Kv::value("", std::string(word)).asInt().value_or(0);
-                    if (!sides.contains(old)) continue;
-                    if (!mapped.empty()) mapped += ' ';
-                    mapped += std::to_string(sides[old]);
-                }
-                (void)value.setValue(mapped);
-            }
+            // Faces the instance does not own cannot exist in the map: drop them.
+            (void)remapSideLists(obj, types, sides, UnmappedSide::Drop);
             if (block(obj, "entity")) transformEntity(obj, pose, options);
             else transformSolid(obj, pose);
         }

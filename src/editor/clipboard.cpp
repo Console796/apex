@@ -2,6 +2,8 @@
 
 #include "core/strings.hpp"
 #include "document/connection_codec.hpp"
+#include "document/sidelist_remap.hpp"
+#include "editor/instance_key_types.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -509,6 +511,8 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
 
     auto used = existingNames(doc);
     const auto world = worldHandle(doc);
+    // Sidelist keys (overlay `sides`) follow each copy's fresh side ids (0.8 D11 rule 1).
+    const auto fgd = options.classes ? instanceFgdTypes(*options.classes) : InstanceFgdTypes{};
     const DVec3 centre = bounds.empty() ? DVec3{0.0} : bounds.center();
     EditedObjects result;
     Transform previous = placement;
@@ -570,6 +574,8 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
         }
 
         std::vector<NodeId> moved;
+        std::vector<NodeId> entities;
+        std::map<int, int> sides; // This copy's source side id -> created side id.
         const auto groupNodeOf = [&](std::optional<int> id) -> std::optional<NodeId> {
             if (!id) return std::nullopt;
             if (const auto it = groupNodes.find(*id); it != groupNodes.end()) return it->second;
@@ -580,7 +586,7 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             const auto group = rewriteEditor(block, groupMap, &visMap, wrapperId);
             const auto handle = tx.create(std::move(block), world);
             const auto node = doc.get(handle)->id;
-            recordSideIds(source, doc.exportSubtree(node), result.sideIds);
+            recordSideIds(source, doc.exportSubtree(node), sides);
             moved.push_back(node);
             EditedObjects::Item item;
             item.node = node;
@@ -600,8 +606,9 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             }
             const auto handle = tx.create(std::move(block));
             const auto node = doc.get(handle)->id;
-            recordSideIds(source, doc.exportSubtree(node), result.sideIds);
+            recordSideIds(source, doc.exportSubtree(node), sides);
             moved.push_back(node);
+            entities.push_back(node);
             EditedObjects::Item item;
             item.node = node;
             item.kind = Kind::Entity;
@@ -609,6 +616,15 @@ Result<EditedObjects> stagePaste(const document::Document& doc, document::Transa
             item.group = groupNodeOf(group);
             result.items.push_back(std::move(item));
         }
+        // Faces outside the pasted set keep their ids, as in Hammer.
+        for (const auto node : entities) {
+            auto exported = doc.exportSubtree(node);
+            const auto handle = doc.handle(node);
+            if (!handle) continue;
+            for (auto& [key, value] : document::remapSideLists(exported, fgd.keyTypes, sides, document::UnmappedSide::Keep))
+                tx.setKeyValue(*handle, std::move(key), std::move(value));
+        }
+        for (const auto& [from, to] : sides) result.sideIds[from] = to;
         if (current.matrix() != DMat4{1.0} && !moved.empty()) {
             if (auto done = stageTransform(doc, tx, moved, current, {options.textureLock.value_or(true), options.classes}); !done)
                 return std::unexpected(done.error());

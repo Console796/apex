@@ -18,6 +18,10 @@
 #include <variant>
 #include <vector>
 
+namespace apex::geometry {
+struct Displacement;
+}
+
 namespace apex::document {
 
 using NodeId = std::uint64_t;
@@ -234,6 +238,9 @@ public:
     void setEditor(NodeHandle handle, EditorEdit edit);
     // Side identity is stable; the face index is resolved internally for each write.
     void setSideKeyValue(SideId side, std::string key, std::string value);
+    // D1: write a side's dispinfo (created if absent), changing only rows that differ. An equal
+    // value is a no-op; an invalid one throws invalid_argument. Defined in displacement.cpp.
+    void setDisplacement(SideId side, const geometry::Displacement& value);
     // The polyhedron supplies vertices and UVs. Input side IDs must remain unchanged.
     void setSolidGeometry(Handle<Solid> solid, const geometry::SolidGeometry& geometry);
     // Preserve matched side blocks; allocate IDs for new faces, ignoring input sideId.

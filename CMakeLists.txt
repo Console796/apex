@@ -114,10 +114,12 @@ target_link_libraries(apex_compile PRIVATE sourcepp::toolpp)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_uv.cpp src/geometry/face_matching.cpp
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
+                           src/geometry/displacement.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.cpp
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp
-                            src/document/instance_fixup.cpp src/document/instance_collapse.cpp src/document/cordon.cpp
+                            src/document/instance_fixup.cpp src/document/instance_collapse.cpp src/document/sidelist_remap.cpp src/document/cordon.cpp
+                            src/document/displacement.cpp
            DEPS apex_geometry apex_core)
 apex_layer(lighting SOURCES src/lighting/light.cpp src/lighting/sky_visibility.cpp src/lighting/charting.cpp src/lighting/cpu_accel.cpp src/lighting/bake_scene.cpp src/lighting/bake_casters.cpp src/lighting/baker.cpp src/lighting/bake_session.cpp src/lighting/bake_diff.cpp src/lighting/bsp_lightmaps.cpp DEPS apex_geometry apex_document apex_core)
 target_link_libraries(apex_lighting PRIVATE embree sourcepp::bsppp)
@@ -265,6 +267,8 @@ if(APEX_BUILD_TESTS)
   target_link_libraries(apex_vtf_stats PRIVATE sourcepp::vtfpp apex_warnings)
   add_executable(apex_vmf_dump tools/vmf_dump/main.cpp)
   target_link_libraries(apex_vmf_dump PRIVATE apex_document apex_geometry apex_core apex_warnings)
+  add_executable(apex_disp_reference tools/disp_reference/main.cpp)
+  target_link_libraries(apex_disp_reference PRIVATE sourcepp::bsppp apex_warnings)
 endif()
 
 if(APEX_BUILD_FUZZ)

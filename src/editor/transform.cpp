@@ -1,3 +1,4 @@
+#include "document/displacement.hpp"
 #include "document/entity_helpers.hpp"
 #include "editor/transform.hpp"
 
@@ -309,9 +310,20 @@ Result<void> stageTransform(const document::Document& doc, document::Transaction
         if (!solid) return std::unexpected(solid.error());
         solids.emplace(id, std::move(*solid));
     }
+    // D4: a displaced side's dispinfo moves with its base face (read before any write).
+    std::vector<std::pair<SideId, geometry::Displacement>> displacements;
+    for (const auto& [id, solid] : solids)
+        for (const auto& face : solid.poly.faces) {
+            const auto side = static_cast<SideId>(face.sideId);
+            auto disp = document::displacement(doc, side);
+            if (!disp) return std::unexpected(disp.error());
+            if (*disp) displacements.emplace_back(side, std::move(**disp));
+        }
     try {
         for (const auto& [id, solid] : solids)
             tx.setSolidGeometry(std::get<Handle<document::Solid>>(*doc.handle(id)), solid);
+        for (const auto& [side, disp] : displacements)
+            tx.setDisplacement(side, geometry::transformDisplacement(disp, transform.linear(), transform.translation()));
         for (const auto& [id, entity] : entities) {
             const auto h = *doc.handle(id);
             if (entity.origin) tx.setKeyValue(h, "origin", vectorText(*entity.origin));
