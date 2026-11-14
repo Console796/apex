@@ -14,6 +14,8 @@
 #include "editor/apply_tool.hpp"
 #include "editor/measure_tool.hpp"
 #include "editor/overlay_tool.hpp"
+#include "editor/displacement_edit.hpp"
+#include "editor/displacement_tool.hpp"
 #include "editor/vertex_tool.hpp"
 #include "editor/hide_ops.hpp"
 #include "editor/instance_key_types.hpp"
@@ -44,6 +46,7 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Apply, std::make_unique<ApplyTool>(*this));
     tools_.emplace(Tool::Measure, std::make_unique<MeasureTool>(*this));
     tools_.emplace(Tool::Overlay, std::make_unique<OverlayTool>(*this));
+    tools_.emplace(Tool::Displacement, std::make_unique<DisplacementTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) {
         if (activeTool_ == "tool.select" && selectTool().lightEdit_.active()) selectTool().endTransform();
@@ -406,6 +409,14 @@ bool EditorSession::perform(const ActionId& action) {
             result = hollow(*this, *thickness);
         }
         topologyMessage_ = result ? "" : result.error().what();
+        notify();
+        return result.has_value();
+    }
+    if (action == "edit.destroy_displacement") {
+        if (transformActive()) return false;
+        activeToolObject().cancel();
+        const auto result = destroyDisplacements(*this, displacementTargets(*this));
+        topologyMessage_ = result ? result->message : result.error().what();
         notify();
         return result.has_value();
     }

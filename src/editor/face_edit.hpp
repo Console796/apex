@@ -40,14 +40,15 @@ struct DisplacementSummary {
     std::size_t displaced = 0; // Selected faces that carry a dispinfo.
     std::size_t readable = 0;  // Of those, the ones that parse.
     std::optional<int> power, flags;
+    int flagsAll = 0, flagsAny = 0;           // Bits set on every / some readable displaced face.
     std::optional<double> elevation;
     std::optional<double> alphaMin, alphaMax; // Over every readable displaced face.
     std::vector<std::string> problems;        // map_problems' texts for the selected faces.
     int gridSize() const { return power ? (1 << *power) + 1 : 0; }
 };
 DisplacementSummary summarizeDisplacements(const document::Document& doc, std::span<const document::SideId> sides);
-// Hammer's dispinfo "flags" bits (CCoreDispSurface: 2 NoPhys, 4 NoHull, 8 NoRay). Other set bits are
-// named by value, e.g. "0x1", so nothing is hidden.
+// Hammer's dispinfo "flags" bits (geometry::Displacement::kFlag*). Other set bits are named by
+// value, e.g. "0x1", so nothing is hidden.
 std::vector<std::string> displacementFlagNames(int flags);
 
 } // namespace apex::editor

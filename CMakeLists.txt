@@ -114,8 +114,8 @@ target_link_libraries(apex_compile PRIVATE sourcepp::toolpp)
 apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face_uv.cpp src/geometry/face_matching.cpp
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
-                           src/geometry/displacement.cpp
-                           src/geometry/overlay.cpp
+                           src/geometry/displacement.cpp src/geometry/displacement_rebase.cpp
+                           src/geometry/overlay.cpp src/geometry/displacement_ops.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.cpp
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp
@@ -135,6 +135,7 @@ apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_
                           src/editor/bake_instances.cpp src/editor/vrad_roundtrip.cpp src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
                           src/editor/connection_model.cpp src/editor/incoming_connections.cpp src/editor/rename_propagation.cpp src/editor/inspector_model.cpp src/editor/placement.cpp
                           src/editor/overlay_problems.cpp src/editor/overlay_placement.cpp src/editor/overlay_tool.cpp
+                          src/editor/displacement_edit.cpp src/editor/displacement_tool.cpp
            DEPS apex_document apex_geometry apex_core apex_compile)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/addon_authoring.cpp src/assets/unmounted_addons.cpp
                          src/assets/vmt.cpp src/assets/vtf.cpp src/assets/fgd.cpp src/assets/model_bake.cpp src/assets/model_pose.cpp

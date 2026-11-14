@@ -111,7 +111,7 @@ QIcon appIcon() {
 
 namespace {
 constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
-    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure", "tool.overlay"};
+    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure", "tool.overlay", "tool.displacement"};
 }
 
 namespace {
@@ -912,6 +912,8 @@ void MainWindow::updateEditorActions() {
                 id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world" ||
                 id == "edit.carve" || id == "edit.hollow" || id == "edit.merge" || id == "edit.create_prefab")
                 action->setEnabled(objects);
+            // Faces mode selects sides, not nodes.
+            if (id == "edit.destroy_displacement") action->setEnabled(have && !session_.selection().ordered().empty());
             if (id == "edit.paste" || id == "edit.paste_in_place" || id == "edit.paste_special")
                 action->setEnabled(have && clipboardHasFragment_);
         }
@@ -1354,6 +1356,21 @@ void MainWindow::buildEntityUi() {
             updateEditorActions();
         });
     }
+    {
+        // The Displacement tool's mode applies with Enter or this button (plan 0.8 D6).
+        const auto* entry = editor::actionRegistry().find("displacement.apply");
+        auto* action = new QAction(tr("Apply"), this);
+        action->setObjectName(fromStd(entry->id));
+        action->setToolTip(fromStd(entry->description));
+        editorActions_.emplace(entry->id, action);
+        auto* button = new QToolButton(bar);
+        button->setDefaultAction(action);
+        toolOptions_[editor::EditorSession::Tool::Displacement].push_back(static_cast<QWidgetAction*>(bar->addWidget(button)));
+        connect(action, &QAction::triggered, this, [this] {
+            session_.perform("displacement.apply");
+            updateEditorActions();
+        });
+    }
     entityClass_ = new QComboBox(bar);
     entityClass_->setObjectName(QStringLiteral("entityClassPicker"));
     entityClass_->setEditable(true);
@@ -1490,7 +1507,10 @@ bool MainWindow::performEditAction(const editor::ActionId& id) {
         openPrefabDialog();
     } else {
         ok = session_.perform(id);
-        if (!ok) say((id != "edit.carve" && id != "edit.hollow" && id != "edit.merge") || session_.topologyMessage().empty() ?
+        const bool reports = id == "edit.carve" || id == "edit.hollow" || id == "edit.merge" ||
+                             id == "edit.destroy_displacement";
+        if (ok && id == "edit.destroy_displacement") say(QString::fromStdString(session_.topologyMessage()));
+        if (!ok) say(!reports || session_.topologyMessage().empty() ?
             tr("%1: nothing to do").arg(fromStd(editor::actionRegistry().find(id)->name)) :
             QString::fromStdString(session_.topologyMessage()));
     }
@@ -1590,7 +1610,8 @@ void MainWindow::buildClipboardUi() {
     edit->addSeparator();
     for (const char* id : {"edit.cut", "edit.copy", "edit.paste", "edit.paste_in_place", "edit.paste_special",
                            "edit.duplicate", "edit.delete", "edit.group", "edit.ungroup", "edit.tie_to_entity",
-                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge", "edit.create_prefab"}) {
+                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge", "edit.destroy_displacement",
+                           "edit.create_prefab"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = edit->addAction(fromStd(entry->name));
         action->setObjectName(fromStd(entry->id));

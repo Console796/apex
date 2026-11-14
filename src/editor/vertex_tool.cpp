@@ -1,9 +1,12 @@
 #include "editor/vertex_tool.hpp"
 #include "editor/topology_ops.hpp"
 
+#include "document/displacement.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/selection_expand.hpp"
+#include "geometry/displacement_rebase.hpp"
 #include "geometry/solid_geometry.hpp"
+#include "geometry/tolerances.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -11,6 +14,67 @@
 #include <sstream>
 
 namespace apex::editor {
+namespace {
+std::string refusal(std::string reason) {
+    return "Invalid move: " + std::move(reason) + "; Destroy displacement first to edit it freely";
+}
+
+// Plan 0.8 D5 for a vertex edit of a displacement brush. A displaced side's own vertices do not
+// move. The edit may move the brush's other vertices only while each displaced face survives as one
+// quad whose corners change affinely; the displacement is then re-based (D4) so its mesh follows.
+// Returns the re-based displacements, or the reason the move is refused.
+Result<std::vector<std::pair<SideId, geometry::Displacement>>> displacementRule(
+    const kv1::Node& block, const geometry::ConvexPolyhedron& before, std::span<const std::size_t> moved,
+    const VertexEditResult& after) {
+    using Out = std::vector<std::pair<SideId, geometry::Displacement>>;
+    const auto refuse = [](std::string reason) -> Result<Out> {
+        return std::unexpected(Error{ErrorCode::InvalidArgument, refusal(std::move(reason))});
+    };
+    Out result;
+    for (const auto* side : block.findAll("side")) {
+        if (!document::isDisplaced(*side)) continue;
+        const auto* idValue = side->find("id");
+        const auto id = idValue ? idValue->asInt().value_or(0) : 0;
+        if (id <= 0) return refuse("a displaced side has no ID");
+        const auto sideId = static_cast<std::uint32_t>(id);
+        const auto old = std::ranges::find(before.faces, sideId, &geometry::Face::sideId);
+        if (old == before.faces.end()) return refuse("a displaced side has no face");
+        if (std::ranges::any_of(old->vertices, [&](std::size_t v) { return std::ranges::find(moved, v) != moved.end(); }))
+            return refuse("a displaced side's vertices cannot move");
+        std::optional<std::size_t> face;
+        for (const auto& [index, owner] : *after.correspondence) if (owner == sideId) {
+            if (face) return refuse("the move would split a displaced face");
+            face = index;
+        }
+        if (!face) return refuse("the move would remove a displaced face");
+        const auto disp = document::parseDisplacement(*side->find("dispinfo"));
+        if (!disp) return refuse("a displacement does not parse");
+        const auto oldCorners = geometry::displacementCorners(before, *old);
+        const auto newCorners = geometry::displacementCorners(after.poly, after.poly.faces[*face]);
+        if (!oldCorners || !newCorners) return refuse("a displaced face must keep its 4 corners");
+        // Corners correspond through vertex provenance, not loop order (the loop may start elsewhere).
+        std::array<DVec3, 4> mapped;
+        for (std::size_t k = 0; k < 4; ++k) {
+            const auto source = std::ranges::find_if(old->vertices, [&](std::size_t v) {
+                return glm::distance(before.vertices[v], (*oldCorners)[k]) <= geometry::kPointMergeEps;
+            });
+            std::optional<DVec3> image;
+            for (const auto v : after.poly.faces[*face].vertices)
+                if (source != old->vertices.end() && std::ranges::find(after.vertexSources[v], *source) != after.vertexSources[v].end())
+                    image = after.poly.vertices[v];
+            const bool corner = image && std::ranges::any_of(*newCorners, [&](DVec3 c) {
+                return glm::distance(c, *image) <= geometry::kPointMergeEps;
+            });
+            if (!corner) return refuse("a displaced face must keep its 4 corners");
+            mapped[k] = *image;
+        }
+        auto rebased = geometry::rebaseDisplacement(*oldCorners, mapped, *disp);
+        if (!rebased) return refuse("a displaced face would not change by an affine map");
+        if (*rebased != *disp) result.emplace_back(static_cast<SideId>(sideId), std::move(*rebased));
+    }
+    return result;
+}
+}
 
 std::map<NodeId, geometry::SolidGeometry> VertexTool::selectedSolids() const {
     std::map<NodeId, geometry::SolidGeometry> result;
@@ -23,7 +87,7 @@ std::map<NodeId, geometry::SolidGeometry> VertexTool::selectedSolids() const {
         const auto handle = session_.document()->handle(node);
         if (!handle || !std::holds_alternative<Handle<document::Solid>>(*handle)) continue;
         const auto* solid = session_.document()->get(std::get<Handle<document::Solid>>(*handle));
-        if (!solid || hasDisplacement(*solid->block)) continue;
+        if (!solid) continue;
         const auto geometry = geometry::solidGeometry(*solid->block);
         if (geometry) result.emplace(node, *geometry);
     }
@@ -70,7 +134,35 @@ std::optional<ElementHandle> VertexTool::hitElement(const InputEvent& event, con
         return ElementHandle{features.midpoint->node, ElementKind::Edge,
             features.midpoint->feature.a, features.midpoint->feature.b};
     (void)event;
-    return {};
+    // A displacement brush's flat sides are not picked (document::hiddenByDisplacement), so its brush
+    // vertices and edges have no pick features. The tool still edits that brush (D5): hit them here
+    // in screen space, nearest pixel first, then nearest the camera.
+    const auto cursor = worldToPixel(view, view.cursorRay.at(1000.0));
+    if (!cursor) return {};
+    std::optional<ElementHandle> best;
+    double bestPixels = 8.0, bestDepth = 0.0;
+    const auto consider = [&](ElementHandle handle, DVec3 point) {
+        const auto pixel = worldToPixel(view, point);
+        if (!pixel) return;
+        const double pixels = glm::length(*pixel - *cursor);
+        const double depth = glm::dot(point - view.cameraPosition, view.cameraForward);
+        if (pixels > bestPixels + 1e-9 || (best && std::abs(pixels - bestPixels) <= 1e-9 && depth >= bestDepth)) return;
+        best = handle;
+        bestPixels = pixels;
+        bestDepth = depth;
+    };
+    for (const auto& [node, geometry] : solids) {
+        const auto* solid = session_.document()->get(*session_.document()->handle(node));
+        if (!solid || !hasDisplacement(*solid->block)) continue;
+        const auto& poly = geometry.poly;
+        if (mode_ == ElementMode::Vertex)
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i) consider({node, ElementKind::Vertex, i}, poly.vertices[i]);
+        else for (const auto& face : poly.faces) for (std::size_t i = 0; i < face.vertices.size(); ++i) {
+            const auto a = face.vertices[i], b = face.vertices[(i + 1) % face.vertices.size()];
+            consider({node, ElementKind::Edge, std::min(a, b), std::max(a, b)}, (poly.vertices[a] + poly.vertices[b]) * 0.5);
+        }
+    }
+    return best;
 }
 
 bool VertexTool::selectElement(ElementHandle element, bool add, bool toggle) {
@@ -269,6 +361,17 @@ bool VertexTool::publish(const Transform& transform, const ToolView* view, const
     status_.clear();
     for (auto& [node, source] : sources_) {
         auto evaluated = evaluateVertexEdit(source.poly, source.vertices, actual);
+        if (evaluated) {
+            auto rule = displacementRule(*source.block, source.poly, source.vertices, *evaluated);
+            if (rule) source.displacements = std::move(*rule);
+            else {
+                preview_.clear();
+                previewValid_ = false;
+                status_ = rule.error().what();
+                session_.notify();
+                return false;
+            }
+        }
         if (!evaluated) {
             preview_.clear();
             previewValid_ = false;
@@ -421,19 +524,6 @@ Handled VertexTool::input(const InputEvent& event, const ToolView& view) {
         if (gizmo || element) return true;
     }
     if (event.kind == InputKind::Press && event.button == PointerButton::Left) {
-        if (elements_.empty()) {
-            const auto expanded = expandSelection(*session_.document(), *session_.groups_, session_.selection());
-            for (const auto node : expanded.solidsAndEntities) {
-                const auto handle = session_.document()->handle(node);
-                if (!handle || !std::holds_alternative<Handle<document::Solid>>(*handle)) continue;
-                const auto* solid = session_.document()->get(std::get<Handle<document::Solid>>(*handle));
-                if (solid && hasDisplacement(*solid->block)) {
-                    status_ = "Displacement solids are read-only in Vertex mode";
-                    session_.notify();
-                    return true;
-                }
-            }
-        }
         const auto context = gizmoContext();
         const auto gizmo = context ? hitTestGizmo(session_.gizmoMode(), *context,
             gizmoViewFor(view, context->pivot), view.cursorRay) : std::nullopt;
@@ -532,6 +622,7 @@ bool VertexTool::commit() {
             for (const auto& [node, source] : sources_) {
                 (void)node;
                 tx.rebuildSolid(source.handle, source.result.poly, source.result.correspondence);
+                for (const auto& [side, displacement] : source.displacements) tx.setDisplacement(side, displacement);
             }
         });
     } catch (const std::exception& error) {

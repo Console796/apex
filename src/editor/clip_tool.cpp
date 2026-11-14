@@ -1,8 +1,10 @@
 #include "editor/clip_tool.hpp"
 #include "editor/topology_ops.hpp"
+#include "document/displacement.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/selection_expand.hpp"
 #include "geometry/face_matching.hpp"
+#include "geometry/tolerances.hpp"
 
 #include <algorithm>
 
@@ -34,6 +36,20 @@ const char* snapName(SnapKind kind) {
     case SnapKind::None: return "";
     }
     return "";
+}
+// Whether piece still has the face of side `id` exactly as source had it (no cut, same corners).
+bool wholeFace(const geometry::ConvexPolyhedron& source, const geometry::ConvexPolyhedron& piece, std::uint32_t id) {
+    const auto before = std::ranges::find(source.faces, id, &geometry::Face::sideId);
+    const auto after = std::ranges::find_if(piece.faces, [&](const geometry::Face& face) {
+        return !face.isCap && face.sideId == id;
+    });
+    if (before == source.faces.end() || after == piece.faces.end() || before->vertices.size() != after->vertices.size())
+        return false;
+    return std::ranges::all_of(before->vertices, [&](std::size_t v) {
+        return std::ranges::any_of(after->vertices, [&](std::size_t w) {
+            return glm::distance(source.vertices[v], piece.vertices[w]) <= geometry::kPlanarEps;
+        });
+    });
 }
 }
 
@@ -67,10 +83,10 @@ std::vector<ClipTool::Source> ClipTool::clippableSources(std::string& warning) c
     std::vector<Source> result;
     for (const auto& [node, handle] : selectedSolids()) {
         const auto& block = *session_.document()->get(handle)->block;
-        if (hasDisplacement(block)) { warning = "Skipping displacement solids: topology is read-only"; continue; }
         const auto source = geometry::solidGeometry(block);
         if (!source) { warning = "Skipping invalid solids"; continue; }
-        result.push_back({handle, source->poly});
+        const auto displaced = document::displacedSides(block);
+        result.push_back({handle, source->poly, {displaced.begin(), displaced.end()}});
     }
     return result;
 }
@@ -126,6 +142,32 @@ void ClipTool::rebuild(Gesture& g) {
         try {
             auto split = geometry::split(source.poly, plane);
             if (!split.front || !split.back) continue;
+            // D5: a clip may remove or reshape a displacement brush's flat sides, never its displaced
+            // faces. The solid that stays in place keeps every displaced face whole (same side, same
+            // corners), so its dispinfo stays valid unchanged.
+            bool front = true, back = true;
+            for (const auto id : source.displaced) {
+                const bool inFront = wholeFace(source.poly, *split.front, id);
+                const bool inBack = wholeFace(source.poly, *split.back, id);
+                if (!inFront && !inBack) {
+                    g.warning = "Cannot clip through a displaced face; Destroy displacement first";
+                    g.pieces.clear();
+                    return;
+                }
+                front = front && inFront;
+                back = back && inBack;
+            }
+            if (!source.displaced.empty()) {
+                const bool kept = keep_ == Keep::Front ? front : keep_ == Keep::Back ? back : front || back;
+                if (!kept) {
+                    g.warning = keep_ == Keep::Both ? "Cannot clip: displaced faces would end up in both pieces"
+                                                    : "Cannot clip away a displaced face; keep its side or Destroy displacement first";
+                    g.pieces.clear();
+                    return;
+                }
+                // Keep both: the piece with the displaced faces is the one rebuilt in place.
+                if (keep_ == Keep::Both && !front) std::swap(split.front, split.back);
+            }
             capAttributes(source.poly, *split.front);
             capAttributes(source.poly, *split.back);
             g.pieces.push_back({source.solid, std::move(*split.front), std::move(*split.back)});

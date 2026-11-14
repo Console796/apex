@@ -324,7 +324,9 @@ TEST_CASE("tool pie pins every registry tool action to the fixed layout") {
     }
     CHECK(layoutSlots(menu).size() == 8);
     for (const auto& action : actionRegistry().entries())
-        // The pie's eight slots are full; the Overlay tool (0.8 D12) is on the Tools drop-down and Shift+O.
-        if (action.category == "Tool" && action.id.starts_with("tool.") && action.id != "tool.overlay")
+        // The pie's eight slots are full; the Overlay tool (0.8 D12) and the Displacement tool (D6) are on
+        // the Tools drop-down.
+        if (action.category == "Tool" && action.id.starts_with("tool.") && action.id != "tool.overlay" &&
+            action.id != "tool.displacement")
             CHECK(actions.contains(action.id));
 }

@@ -4,6 +4,7 @@
 #include "editor/snapper.hpp"
 #include "editor/tool.hpp"
 #include "editor/vertex_edit.hpp"
+#include "geometry/displacement.hpp"
 
 namespace apex::editor {
 
@@ -50,6 +51,8 @@ private:
         geometry::ConvexPolyhedron poly;
         std::vector<std::size_t> vertices;
         VertexEditResult result;
+        // D5: displaced sides re-based for result, staged with the rebuild in one transaction.
+        std::vector<std::pair<SideId, geometry::Displacement>> displacements;
     };
     struct Pane {
         std::optional<GizmoHandle> hovered, dragged;

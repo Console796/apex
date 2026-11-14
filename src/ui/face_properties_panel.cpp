@@ -233,9 +233,43 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     displacement_->setObjectName(QStringLiteral("faceDisplacement"));
     displacement_->setWordWrap(true);
     displacement_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    displacement_->setToolTip(tr("Read-only: displacement editing comes with the Displacement tool."));
+    displacement_->setToolTip(tr("Create, sew and subdivide with the Displacement tool; Edit > Destroy Displacement "
+                                 "makes the faces flat again."));
     displacement_->hide();
     controls->addWidget(displacement_);
+    displacementEdit_ = new QWidget(content_);
+    displacementEdit_->setObjectName(QStringLiteral("faceDisplacementEdit"));
+    auto* dispRow = new QHBoxLayout(displacementEdit_);
+    dispRow->setContentsMargins(0, 0, 0, 0);
+    dispRow->addWidget(new QLabel(tr("Power"), displacementEdit_));
+    displacementPower_ = new QComboBox(displacementEdit_);
+    displacementPower_->setObjectName(QStringLiteral("faceDisplacementPower"));
+    for (int power = geometry::Displacement::kMinPower; power <= geometry::Displacement::kMaxPower; ++power)
+        displacementPower_->addItem(QString::number(power), power);
+    displacementPower_->setToolTip(tr("Rebuilds the grid. Only a flat, unpainted displacement can change power; "
+                                      "a sculpted one is refused rather than resampled."));
+    dispRow->addWidget(displacementPower_);
+    const std::pair<const char*, int> flagBoxes[] = {{"NoPhys", geometry::Displacement::kFlagNoPhys},
+                                                     {"NoHull", geometry::Displacement::kFlagNoHull},
+                                                     {"NoRay", geometry::Displacement::kFlagNoRay}};
+    for (const auto& [name, mask] : flagBoxes) {
+        auto* box = new QCheckBox(QString::fromLatin1(name), displacementEdit_);
+        box->setObjectName(QStringLiteral("faceDisplacement%1").arg(QLatin1String(name)));
+        dispRow->addWidget(box);
+        displacementFlags_.emplace_back(box, mask);
+        // A click sets the flag on every selected displacement, or clears it when all have it.
+        connect(box, &QCheckBox::clicked, this, [this, mask] {
+            if (!session_ || rebuilding_) return;
+            reportDisplacementEdit(editor::setDisplacementFlags(*session_, shown_, mask, (displacementFlagsAll_ & mask) == 0));
+        });
+    }
+    dispRow->addStretch();
+    connect(displacementPower_, qOverload<int>(&QComboBox::activated), this, [this](int index) {
+        if (!session_ || rebuilding_ || index < 0) return;
+        reportDisplacementEdit(editor::setDisplacementPower(*session_, shown_, displacementPower_->itemData(index).toInt()));
+    });
+    displacementEdit_->hide();
+    controls->addWidget(displacementEdit_);
     controlsScroll_->setWidget(content_);
     layout_->addWidget(controlsScroll_);
 
@@ -416,7 +450,7 @@ void FacePropertiesPanel::refresh() {
     if (disp.displaced != 0) {
         const auto mixed = tr("mixed");
         QStringList lines;
-        lines << tr("<b>Displacement</b> (%1 of %2 faces, read-only)").arg(disp.displaced).arg(sides.size());
+        lines << tr("<b>Displacement</b> (%1 of %2 faces)").arg(disp.displaced).arg(sides.size());
         if (disp.readable != 0) {
             lines << tr("Power: %1").arg(disp.power ? tr("%1 (%2×%2 grid)").arg(*disp.power).arg(disp.gridSize()) : mixed);
             QString flags = mixed;
@@ -433,6 +467,17 @@ void FacePropertiesPanel::refresh() {
         }
         for (const auto& problem : disp.problems) lines << QStringLiteral("⚠ ") + fromStd(problem).toHtmlEscaped();
         displacement_->setText(lines.join(QStringLiteral("<br>")));
+    }
+    displacementEdit_->setVisible(disp.readable != 0);
+    displacementFlagsAll_ = disp.flagsAll;
+    {
+        const QSignalBlocker block(displacementPower_);
+        displacementPower_->setCurrentIndex(disp.power ? displacementPower_->findData(*disp.power) : -1);
+    }
+    for (const auto& [box, mask] : displacementFlags_) {
+        const QSignalBlocker block(box);
+        const bool all = (disp.flagsAll & mask) != 0, any = (disp.flagsAny & mask) != 0;
+        box->setCheckState(all ? Qt::Checked : any ? Qt::PartiallyChecked : Qt::Unchecked);
     }
 
     refreshOverlays(enabled && session_->selection().active()
@@ -471,6 +516,10 @@ void FacePropertiesPanel::refresh() {
         for (auto* button : alignment_) { const QSignalBlocker block(button); button->setChecked(false); }
     }
     rebuilding_ = false;
+}
+void FacePropertiesPanel::reportDisplacementEdit(const Result<editor::DisplacementEditReport>& result) {
+    emit statusMessage(fromStd(result ? result->message : std::string(result.error().what())));
+    requestRefresh();
 }
 void FacePropertiesPanel::refreshOverlays(std::optional<document::SideId> side) {
     overlays_->clear();

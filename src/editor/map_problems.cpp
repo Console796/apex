@@ -4,6 +4,7 @@
 #include "document/cordon.hpp"
 #include "document/displacement.hpp"
 #include "geometry/displacement.hpp"
+#include "geometry/displacement_ops.hpp"
 #include "editor/overlay_problems.hpp"
 #include "geometry/solid_geometry.hpp"
 
@@ -245,6 +246,52 @@ void displacements(const ProblemContext& context, std::vector<Problem>& out) {
         }
     }
 }
+// D6: neighbouring displacements whose shared base edge has a gap. Unreadable and non-quad
+// displacements are left to the checks above.
+void unsewnDisplacements(const ProblemContext& context, std::vector<Problem>& out) {
+    std::vector<geometry::DisplacementPatch> patches;
+    struct Owner { int side; NodeId select; };
+    std::vector<Owner> owners;
+    for (const auto& solid : scan(context.doc).solids) {
+        const auto handle = context.doc.handle(solid.id);
+        const auto* node = handle ? context.doc.get(*handle) : nullptr;
+        if (!node || !node->block) continue;
+        const auto sides = node->block->findAll("side");
+        if (std::ranges::none_of(sides, [](const kv1::Node* side) { return document::isDisplaced(*side); })) continue;
+        const auto geometry = geometry::solidGeometry(*node->block);
+        if (!geometry) continue;
+        for (const auto* side : sides) {
+            if (!document::isDisplaced(*side)) continue;
+            const auto* idNode = side->find("id");
+            if (!idNode) continue;
+            const auto sideId = idNode->asInt();
+            if (!sideId) continue;
+            auto disp = document::parseDisplacement(*side->find("dispinfo"));
+            if (!disp || disp->problem()) continue;
+            const auto face = std::ranges::find(geometry->poly.faces, static_cast<std::uint32_t>(*sideId), &geometry::Face::sideId);
+            if (face == geometry->poly.faces.end()) continue;
+            const auto corners = geometry::displacementCorners(geometry->poly, *face);
+            if (!corners) continue;
+            patches.push_back({*corners, std::move(*disp)});
+            owners.push_back({static_cast<int>(*sideId), solid.world ? solid.id : solid.owner});
+        }
+    }
+    if (patches.size() < 2) return;
+    const auto seams = geometry::displacementSeams(patches);
+    if (!seams) return;
+    for (const auto& seam : *seams) {
+        if (!(seam.gap > kUnsewnDisplacementGap)) continue;
+        std::ostringstream gap;
+        gap << seam.gap;
+        std::vector<NodeId> objects{owners[seam.a].select};
+        if (owners[seam.b].select != owners[seam.a].select) objects.push_back(owners[seam.b].select);
+        out.push_back({ProblemSeverity::Warning, ProblemKind::DisplacementUnsewn,
+                       "Unsewn displacement edge between sides " + std::to_string(owners[seam.a].side) + " and " +
+                           std::to_string(owners[seam.b].side) + " (gap " + gap.str() +
+                           " units; select both and Sew with the Displacement tool)",
+                       objects, "select"});
+    }
+}
 } // namespace
 
 std::vector<Problem> displacementProblems(const kv1::Node& solid, const kv1::Node& side,
@@ -312,6 +359,7 @@ ProblemRegistry ProblemRegistry::builtin() {
     registry.add("player-start", playerStart);
     registry.add("cordons", emptyCordons);
     registry.add("displacements", displacements);
+    registry.add("displacement-seams", unsewnDisplacements);
     registry.add("overlays", overlayProblems);
     return registry;
 }

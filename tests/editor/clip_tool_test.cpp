@@ -279,7 +279,8 @@ TEST_CASE("clip non crossing and displacement solids stay untouched") {
         Scene scene;
         if (displacement) {
             auto block = geometry::solidBlock(geometry_test::build(geometry_test::boxSides({-64, -64, -64}, {64, 64, 64})), {"fixture"});
-            REQUIRE(block.find("side")->append(editor_test::block("dispinfo { power 2 }")));
+            // The +z side: the plane x = 0 cuts it, so the clip refuses (plan 0.8 D5).
+            REQUIRE(block.findAll("side").at(4)->append(editor_test::block("dispinfo { power 2 }")));
             auto tx = scene.doc.begin("displacement fixture");
             tx.destroy(scene.solid);
             scene.solid = std::get<Handle<Solid>>(tx.create(block));

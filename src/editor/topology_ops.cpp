@@ -22,7 +22,12 @@ using Poly = geometry::ConvexPolyhedron;
 using SolidHandle = Handle<document::Solid>;
 auto failure(std::string message) { return std::unexpected(Error{ErrorCode::InvalidArgument, std::move(message)}); }
 struct Input { SolidHandle handle; Poly poly; };
-Result<std::vector<Input>> inputs(const EditorSession& session) {
+// Plan 0.8 D5: carve, hollow and merge refuse displacement solids, as 0.3 D11 did: resampling a
+// displacement onto new faces is lossy, and dropping it silently loses data.
+std::string displacementRefusal(std::string_view action) {
+    return std::string(action) + "; Destroy displacement first to edit its solid";
+}
+Result<std::vector<Input>> inputs(const EditorSession& session, std::string_view refusal) {
     if (!session.document()) return failure("No document");
     const auto& doc = *session.document();
     auto nodes = expandSelection(doc, session.groups(), session.selection()).solidsAndEntities;
@@ -32,7 +37,7 @@ Result<std::vector<Input>> inputs(const EditorSession& session) {
         if (!h || !std::holds_alternative<SolidHandle>(*h)) continue;
         const auto handle = std::get<SolidHandle>(*h);
         const auto& block = *doc.get(handle)->block;
-        if (hasDisplacement(block)) return failure("Displacement solids are read-only for topology tools");
+        if (hasDisplacement(block)) return failure(displacementRefusal(refusal));
         const auto poly = geometry::solidGeometry(block);
         if (!poly) return failure("Cannot edit invalid solid geometry");
         result.push_back({handle, poly->poly});
@@ -115,7 +120,7 @@ bool hasDisplacement(const kv1::Node& block) {
     return std::ranges::any_of(block.findAll("side"), [](const auto* side) { return document::isDisplaced(*side); });
 }
 Result<void> carve(EditorSession& session) {
-    const auto carvers = inputs(session);
+    const auto carvers = inputs(session, "Displacement solids cannot carve");
     if (!carvers) return std::unexpected(carvers.error());
     auto& doc = *session.document();
     std::set<document::NodeId> selected;
@@ -135,7 +140,8 @@ Result<void> carve(EditorSession& session) {
                 double remaining = 0;
                 for (const auto& p : pieces) remaining += p.volume();
                 if (source->poly.volume() - remaining > 1e-6) {
-                    if (hasDisplacement(*doc.get(*solid)->block)) return failure("Cannot carve a displacement target: topology is read-only");
+                    if (hasDisplacement(*doc.get(*solid)->block))
+                        return failure(displacementRefusal("Carve cannot cut a displacement target"));
                     edits.emplace_back(*solid, std::move(pieces));
                 }
             }
@@ -152,7 +158,7 @@ Result<void> carve(EditorSession& session) {
 }
 Result<void> hollow(EditorSession& session, double thickness) {
     if (!std::isfinite(thickness) || thickness == 0) return failure("Hollow thickness must be finite and nonzero");
-    const auto selected = inputs(session);
+    const auto selected = inputs(session, "Displacement solids cannot be hollowed");
     if (!selected) return std::unexpected(selected.error());
     std::vector<std::vector<Poly>> walls;
     try {
@@ -200,7 +206,7 @@ Result<void> hollow(EditorSession& session, double thickness) {
     return {};
 }
 Result<MergePlan> planMerge(const EditorSession& session) {
-    const auto selected = inputs(session);
+    const auto selected = inputs(session, "Displacement solids cannot be merged");
     if (!selected) return std::unexpected(selected.error());
     if (selected->size() < 2) return failure("Select at least two solids to merge");
     std::vector<DVec3> points;
@@ -237,7 +243,8 @@ Result<void> commitMerge(EditorSession& session, const MergePlan& plan) {
     if (!session.document() || plan.inputs.empty()) return failure("No merge inputs");
     for (const auto h : plan.inputs) {
         const auto* solid = session.document()->get(h);
-        if (!solid || hasDisplacement(*solid->block)) return failure("Merge inputs changed or contain a displacement");
+        if (!solid) return failure("Merge inputs changed");
+        if (hasDisplacement(*solid->block)) return failure(displacementRefusal("Displacement solids cannot be merged"));
     }
     session.edit("Merge solids", [&](document::Transaction& tx) {
         tx.rebuildSolid(plan.inputs.front(), plan.hull);

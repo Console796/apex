@@ -61,6 +61,7 @@ public:
         static constexpr const char* Apply = "tool.apply";
         static constexpr const char* Measure = "tool.measure";
         static constexpr const char* Overlay = "tool.overlay";
+        static constexpr const char* Displacement = "tool.displacement";
     };
     const ToolId& activeTool() const { return activeTool_; }
     void setActiveTool(ToolId tool);

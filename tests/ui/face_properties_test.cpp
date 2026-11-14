@@ -23,6 +23,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "document/displacement.hpp"
 #include "document/document.hpp"
 #include "document/vmf.hpp"
 #include "editor/editor_session.hpp"
@@ -589,6 +590,74 @@ TEST_CASE("Face Properties shows a read-only Displacement section for displaced 
     CHECK(section->text().contains("Elevation: 0"));
     CHECK(section->text().contains("Alpha: -96 to 72"));
     CHECK(section->text().contains("alpha out of range"));
+}
+
+TEST_CASE("Face Properties edits displacement flags and power") {
+    app();
+    std::ifstream in(std::string(APEX_FIXTURE_DIR) + "/vmf/disp/test1_disp.vmf", std::ios::binary);
+    REQUIRE(in);
+    std::ostringstream text;
+    text << in.rdbuf();
+    document::Document doc(editor_test::parsed(text.str()));
+    editor::EditorSession session;
+    session.attach(doc);
+    session.selection().setMode(editor::SelectionMode::Faces);
+    session.selection().select(document::SideId{355});
+
+    ui::FacePropertiesPanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    QStringList messages;
+    QObject::connect(&panel, &ui::FacePropertiesPanel::statusMessage, [&](const QString& m) { messages << m; });
+    panel.show();
+    app().processEvents();
+    panel.refresh();
+    auto* edit = panel.findChild<QWidget*>("faceDisplacementEdit");
+    auto* power = panel.findChild<QComboBox*>("faceDisplacementPower");
+    auto* noPhys = panel.findChild<QCheckBox*>("faceDisplacementNoPhys");
+    auto* noRay = panel.findChild<QCheckBox*>("faceDisplacementNoRay");
+    REQUIRE(edit);
+    REQUIRE(power);
+    REQUIRE(noPhys);
+    REQUIRE(noRay);
+    CHECK(edit->isVisible());
+    CHECK(power->currentData().toInt() == 3);
+    CHECK(noPhys->checkState() == Qt::Unchecked);
+
+    const auto flags = [&] { return document::displacement(doc, 355).value()->flags; };
+    noPhys->click();
+    panel.refresh();
+    CHECK(flags() == geometry::Displacement::kFlagNoPhys);
+    CHECK(doc.undoLabels().back() == "Set displacement flags");
+    CHECK(noPhys->checkState() == Qt::Checked);
+    noRay->click();
+    panel.refresh();
+    CHECK(flags() == (geometry::Displacement::kFlagNoPhys | geometry::Displacement::kFlagNoRay));
+    noPhys->click(); // All selected have it: the click clears it.
+    panel.refresh();
+    CHECK(flags() == geometry::Displacement::kFlagNoRay);
+    CHECK(noPhys->checkState() == Qt::Unchecked);
+
+    // test1's displacement is painted: a power change is refused, and says why.
+    const auto undo = doc.undoCount();
+    emit power->activated(power->findData(2));
+    CHECK(doc.undoCount() == undo);
+    REQUIRE_FALSE(messages.isEmpty());
+    CHECK(messages.back().contains("sculpted or painted"));
+    panel.refresh();
+    CHECK(power->currentData().toInt() == 3);
+
+    // A flat one changes power and keeps its flags.
+    REQUIRE(session.perform("edit.destroy_displacement"));
+    REQUIRE(editor::createDisplacements(session, std::vector<document::SideId>{355}, 3, 0));
+    REQUIRE(editor::setDisplacementFlags(session, std::vector<document::SideId>{355}, geometry::Displacement::kFlagNoHull, true));
+    panel.refresh();
+    emit power->activated(power->findData(4));
+    CHECK(document::displacement(doc, 355).value()->power == 4);
+    CHECK(flags() == geometry::Displacement::kFlagNoHull);
+    CHECK(doc.undoLabels().back() == "Set displacement power");
+    panel.refresh();
+    CHECK(power->currentData().toInt() == 4);
 }
 
 TEST_CASE("Face Properties lists the overlays on the active face and marks decals approximate") {

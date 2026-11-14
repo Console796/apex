@@ -16,6 +16,7 @@ enum class ProblemKind {
     InvalidSolid, MissingAsset, BrokenConnection, UnknownClass, DuplicateName, InstanceProblem,
     OutOfRange, EmptyBrushEntity, MissingOrigin, MissingPlayerStart, EmptyCordon,
     DisplacementNonQuad, DisplacementAlphaRange, DisplacementUnreadable,
+    DisplacementUnsewn, // 0.8 D6: neighbours sharing a base edge whose vertices differ by more than 0.1 units
     EmptyOverlay // 0.8 D11 rule 4 (overlay_problems.hpp)
 };
 struct Problem {
@@ -55,6 +56,9 @@ private:
 // The problem selects `select`; its text names the side and the solid by their VMF IDs.
 std::vector<Problem> displacementProblems(const kv1::Node& solid, const kv1::Node& side,
                                           const geometry::ConvexPolyhedron* poly, document::NodeId select);
+
+// Plan 0.8 D6: a seam is unsewn when its vertices are more than this far apart.
+inline constexpr double kUnsewnDisplacementGap = 0.1;
 
 int countProblems(const std::vector<Problem>& problems, ProblemSeverity severity);
 const char* severityName(ProblemSeverity severity);

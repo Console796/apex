@@ -26,7 +26,7 @@ TEST_CASE("Tools drop-down shares actions and follows active tool and options") 
     auto* view = window.findChild<QMenu*>("menuView");
     REQUIRE(tools); REQUIRE(transform); REQUIRE(button); REQUIRE(view);
     CHECK(button->popupMode() == QToolButton::InstantPopup);
-    REQUIRE(button->menu()->actions().size() == 9);
+    REQUIRE(button->menu()->actions().size() == 10);
     for (auto* action : button->menu()->actions()) {
         CHECK(view->actions().contains(action));
         CHECK_FALSE(transform->actions().contains(action));
@@ -57,6 +57,9 @@ TEST_CASE("Tools drop-down shares actions and follows active tool and options") 
                 ++entityOptions;
                 CHECK(widgetAction->isVisible() == entity);
             }
+            else if (auto* tool = qobject_cast<QToolButton*>(widgetAction->defaultWidget());
+                     tool && tool->defaultAction() && tool->defaultAction()->objectName() == "displacement.apply")
+                CHECK(widgetAction->isVisible() == (action->objectName() == "tool.displacement"));
             else CHECK(widgetAction->isVisible() == (action->objectName() == "tool.vertex"));
         }
         CHECK(entityOptions == 2);

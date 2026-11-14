@@ -30,6 +30,7 @@ private:
     struct Source {
         Handle<document::Solid> solid;
         geometry::ConvexPolyhedron poly;
+        std::vector<std::uint32_t> displaced; // document::displacedSides
     };
     // Points 1 and 2 are dragged out. Point 3 is inferred from the face the line lies on (or the
     // view direction in orthographic views) until the user places or drags it.

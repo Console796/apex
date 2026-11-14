@@ -315,6 +315,8 @@ DisplacementSummary summarizeDisplacements(const document::Document& doc, std::s
         ++summary.readable;
         merge(summary.power, disp->power, first);
         merge(summary.flags, disp->flags, first);
+        summary.flagsAll = first ? disp->flags : summary.flagsAll & disp->flags;
+        summary.flagsAny |= disp->flags;
         merge(summary.elevation, disp->elevation, first);
         for (const auto alpha : disp->alphas) {
             summary.alphaMin = summary.alphaMin ? std::min(*summary.alphaMin, alpha) : alpha;
@@ -331,9 +333,9 @@ std::vector<std::string> displacementFlagNames(int flags) {
     for (unsigned bit = 0; bit < 32; ++bit) {
         const unsigned mask = 1u << bit;
         if (!(bits & mask)) continue;
-        if (mask == 2u) names.emplace_back("NoPhys");
-        else if (mask == 4u) names.emplace_back("NoHull");
-        else if (mask == 8u) names.emplace_back("NoRay");
+        if (mask == unsigned(geometry::Displacement::kFlagNoPhys)) names.emplace_back("NoPhys");
+        else if (mask == unsigned(geometry::Displacement::kFlagNoHull)) names.emplace_back("NoHull");
+        else if (mask == unsigned(geometry::Displacement::kFlagNoRay)) names.emplace_back("NoRay");
         else {
             std::ostringstream text;
             text << "0x" << std::hex << mask;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "editor/displacement_edit.hpp"
 #include "editor/editor_session.hpp"
 
 #include <QWidget>
@@ -66,7 +67,12 @@ private:
     std::vector<QToolButton*> alignment_;
     QToolButton* smoothingSummary_ = nullptr;
     QComboBox* extrapolation_ = nullptr;
-    QLabel* displacement_ = nullptr; // Read-only Displacement section (0.8.2).
+    QLabel* displacement_ = nullptr; // Displacement section: summary (0.8.2) ...
+    QWidget* displacementEdit_ = nullptr; // ... and its editable power and flags (0.8.3).
+    QComboBox* displacementPower_ = nullptr;
+    std::vector<std::pair<QCheckBox*, int>> displacementFlags_;
+    int displacementFlagsAll_ = 0;
+    void reportDisplacementEdit(const Result<editor::DisplacementEditReport>& result);
     QLabel* overlaysCaption_ = nullptr;
     QListWidget* overlays_ = nullptr; // Plan 0.8 D12: "Overlays on this face".
     void refreshOverlays(std::optional<document::SideId> side);

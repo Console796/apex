@@ -321,7 +321,7 @@ TEST_CASE("vertex tool draws with the session's overlay palette") {
     CHECK(overlay.worldTriangles.front().colour.a < 1.0f);
 }
 
-TEST_CASE("vertex topology refuses displacement solids with a reason") {
+TEST_CASE("vertex tool refuses to move a displaced side's vertices with a reason") {
     Scene scene;
     auto block = geometry::solidBlock(geometry_test::build(geometry_test::boxSides({-64,-64,-64}, {64,64,64})), {"apex/displacement"});
     REQUIRE(block.find("side")->append(editor_test::block("dispinfo { power 2 }")));
@@ -332,10 +332,15 @@ TEST_CASE("vertex topology refuses displacement solids with a reason") {
     scene.session.selection().select(scene.doc.get(scene.solid)->id);
     const auto before = *scene.doc.write();
     const auto count = scene.doc.undoCount();
+    // Plan 0.8 D5: the first side (+x) is displaced and (64, 64, 64) is one of its vertices.
     selectVertex(scene, {64,64,64});
-    CHECK(scene.tool().elements().empty());
-    CHECK(scene.tool().readout().status.find("Displacement") != std::string::npos);
+    CHECK(scene.tool().elements().size() == 1);
+    startGrab(scene, {64,64,64});
+    modalKey(scene, "Z"); modalKey(scene, "1"); modalKey(scene, "6");
+    CHECK(scene.tool().readout().warn);
+    CHECK(scene.tool().readout().status.find("displaced side's vertices") != std::string::npos);
     CHECK(scene.session.preview().empty());
+    modalKey(scene, "Enter");
     CHECK(*scene.doc.write() == before);
     CHECK(scene.doc.undoCount() == count);
 }
