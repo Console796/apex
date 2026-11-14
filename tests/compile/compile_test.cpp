@@ -380,6 +380,58 @@ TEST_CASE("compile diagnostics: one golden test per rule over captured logs") {
     }
 }
 
+TEST_CASE("compile diagnostics: a vbsp crash while finding displacement neighbors suggests a leak") {
+    // Plan 0.8 bite #8. A captured-style excerpt, not a real capture: leak.vbsp.log cut where vbsp
+    // segfaults in a leaking map with displacements (no "**** leaked ****", no .lin file).
+    // TODO(0.8.3): replace with a log the real P2CE vbsp writes for such a map once one is captured.
+    const std::vector<std::string> log{
+        "Valve Software - vbsp (Apr 23 2026)",
+        "Loading <work>/disp_leak.vmf",
+        "ProcessBlock_Thread : 0...1...2...3...4...5...6...7...8...9...10 (0)",
+        "Processing areas...",
+        "done (0)",
+        "Building Faces...done (0)",
+        "FixTjuncs...",
+        "PruneNodes...",
+        "WriteBSP...",
+        "done (0)",
+        "Finding displacement neighbors...",
+    };
+    SUBCASE("a signal (-1 from the runners, 128 + N from a shell) adds the rule") {
+        for (const int code : {-1, 139}) {
+            const auto found = parseLog("vbsp", log, code);
+            REQUIRE(found.size() == 1);
+            CHECK(found[0].rule == "vbsp.displacement_crash");
+            CHECK(found[0].severity == Severity::Error);
+            CHECK(found[0].text.find("probably leaks") != std::string::npos);
+            CHECK(found[0].text.find("hidden") != std::string::npos);
+            CHECK(found[0].objects.empty());
+        }
+    }
+    SUBCASE("a clean exit, an ordinary failure or a crash in another step does not") {
+        CHECK(parseLog("vbsp", log).empty());
+        CHECK(parseLog("vbsp", log, 0).empty());
+        CHECK(parseLog("vbsp", log, 1).empty());
+        auto later = log;
+        later.push_back("Finding lightmap sample positions...");
+        CHECK(parseLog("vbsp", later, -1).empty());
+        CHECK(parseLog("vvis", log, -1).empty());
+        // The real leak log passes this step and exits normally.
+        CHECK(std::ranges::none_of(parseLog("vbsp", logLines("leak.vbsp.log"), 0),
+                                   [](const Diagnostic& d) { return d.rule == "vbsp.displacement_crash"; }));
+    }
+    SUBCASE("collectDiagnostics passes the step's exit code") {
+        std::vector<StepResult> steps(1);
+        steps[0].program = "/b/vbsp";
+        steps[0].lines = log;
+        steps[0].exitCode = -1;
+        const auto all = collectDiagnostics(steps);
+        REQUIRE(all.size() == 1);
+        CHECK(all[0].rule == "vbsp.displacement_crash");
+        CHECK(summarize(all, steps).tools.at("vbsp").errors == 1);
+    }
+}
+
 TEST_CASE("compile diagnostics: steps, tool names and summary") {
     CHECK(toolName("/x/bin/linux64/vbsp") == "vbsp");
     std::vector<StepResult> steps(3);

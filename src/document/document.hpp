@@ -251,6 +251,9 @@ public:
     // D1: write a side's dispinfo (created if absent), changing only rows that differ. An equal
     // value is a no-op; an invalid one throws invalid_argument. Defined in displacement.cpp.
     void setDisplacement(SideId side, const geometry::Displacement& value);
+    // D5's Destroy displacement: removes the side's dispinfo block, so the side is flat again.
+    // A flat side is a no-op; an unknown side throws invalid_argument. Defined in displacement.cpp.
+    void removeDisplacement(SideId side);
     // The polyhedron supplies vertices and UVs. Input side IDs must remain unchanged.
     void setSolidGeometry(Handle<Solid> solid, const geometry::SolidGeometry& geometry);
     // Preserve matched side blocks; allocate IDs for new faces, ignoring input sideId.

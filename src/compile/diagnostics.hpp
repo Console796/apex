@@ -43,7 +43,9 @@ struct DiagnosticSummary {
 // The tool a step ran: the executable's file name without directory or extension, lower-cased.
 std::string toolName(const std::string& program);
 // Rules are per tool and built from logs the real Linux tools wrote (tests/compile/logs).
-std::vector<Diagnostic> parseLog(const std::string& tool, const std::vector<std::string>& lines);
+// exitCode is the step's (StepResult::exitCode): some rules key on how the tool ended.
+std::vector<Diagnostic> parseLog(const std::string& tool, const std::vector<std::string>& lines,
+                                 std::optional<int> exitCode = std::nullopt);
 std::vector<Diagnostic> collectDiagnostics(const std::vector<StepResult>& steps);
 DiagnosticSummary summarize(const std::vector<Diagnostic>& diagnostics, const std::vector<StepResult>& steps);
 

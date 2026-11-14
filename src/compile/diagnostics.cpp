@@ -11,6 +11,10 @@ std::string trimmed(std::string line) {
     while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
     return line;
 }
+// A process that ended on a signal: the runners report -1 for a crash, and a shell reports 128 + N.
+bool crashed(std::optional<int> code) {
+    return code && (*code < 0 || (*code > 128 && *code < 128 + 65));
+}
 } // namespace
 
 std::string toolName(const std::string& program) {
@@ -19,7 +23,8 @@ std::string toolName(const std::string& program) {
     return name;
 }
 
-std::vector<Diagnostic> parseLog(const std::string& tool, const std::vector<std::string>& lines) {
+std::vector<Diagnostic> parseLog(const std::string& tool, const std::vector<std::string>& lines,
+                                 std::optional<int> exitCode) {
     static const std::regex brush(R"(^Brush (\d+): (.+)$)");
     static const std::regex side(R"(^Side (\d+)$)");
     static const std::regex texture(R"(^Texture: (.+)$)");
@@ -37,9 +42,11 @@ std::vector<Diagnostic> parseLog(const std::string& tool, const std::vector<std:
         brushError = leak = nullptr;
         return found.back();
     };
+    std::string step; // vbsp's last step heading ("WriteBSP...")
     for (auto raw : lines) {
         const auto line = trimmed(std::move(raw));
         std::smatch m;
+        if (line.ends_with("...")) step = line;
         if (tool == "vbsp") {
             if (std::regex_match(line, m, brush)) {
                 auto& d = add(Severity::Error, "vbsp.brush", "Brush " + m[1].str() + ": " + m[2].str());
@@ -68,6 +75,12 @@ std::vector<Diagnostic> parseLog(const std::string& tool, const std::vector<std:
             add(Severity::Error, "vvis.portals", "No portal file was written (" + m[1].str() + "); a leak stops vvis");
         }
     }
+    // Plan 0.8 bite #8: in a map with displacements a leak can crash vbsp while it finds displacement
+    // neighbours, before it writes the .lin file, so vbsp.leak never fires and the log just stops.
+    if (tool == "vbsp" && crashed(exitCode) && step.starts_with("Finding displacement neighbors"))
+        add(Severity::Error, "vbsp.displacement_crash",
+            "vbsp crashed while finding displacement neighbors: the map probably leaks. Compile once with the "
+            "displacements' solids hidden (or cordoned off) to find the leak");
     return found;
 }
 
@@ -75,7 +88,7 @@ std::vector<Diagnostic> collectDiagnostics(const std::vector<StepResult>& steps)
     std::vector<Diagnostic> all;
     for (std::size_t i = 0; i < steps.size(); ++i) {
         if (steps[i].program.empty()) continue;
-        for (auto& d : parseLog(toolName(steps[i].program), steps[i].lines)) {
+        for (auto& d : parseLog(toolName(steps[i].program), steps[i].lines, steps[i].exitCode)) {
             d.step = i;
             all.push_back(std::move(d));
         }

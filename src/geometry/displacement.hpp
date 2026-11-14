@@ -19,6 +19,14 @@ namespace apex::geometry {
 // are not clamped (VBSP copies them unclamped into DISP_VERTS).
 struct Displacement {
     static constexpr int kMinPower = 2, kMaxPower = 4;
+    // The one place for dispinfo bit meanings. Both are from memory of Source's CCoreDispSurface
+    // and builddisp.h, not yet checked against a Hammer fixture (plan 0.8 D3 fixture 6).
+    // "flags": 2 NoPhys, 4 NoHull, 8 NoRay.
+    static constexpr int kFlagNoPhys = 2, kFlagNoHull = 4, kFlagNoRay = 8;
+    // "triangle_tags": walkable and buildable, each with a force bit and a forced value.
+    // test1's tags agree with the slope rule for kTagBuildable (displacement_test.cpp).
+    static constexpr int kTagWalkable = 1, kTagForceWalkable = 2, kTagForceWalkableValue = 4;
+    static constexpr int kTagBuildable = 8, kTagForceBuildable = 16, kTagForceBuildableValue = 32;
 
     int power = 0;
     DVec3 startPosition{0.0};

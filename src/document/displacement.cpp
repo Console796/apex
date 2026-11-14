@@ -290,7 +290,8 @@ Result<void> writeDisplacement(kv1::Node& dispinfo, const Displacement& value) {
             const auto count = words(entry->decodedValue().value_or("")).size();
             (void)entry->setValue(allowedText(value.allowedVerts, count));
         } else {
-            allowed->append(kv1::Node::value("10", allowedText(value.allowedVerts, 10))).value();
+            // A new block takes Strata Hammer's form (five unsigned 64-bit words, test1_disp.vmf).
+            allowed->append(kv1::Node::value("5", allowedText(value.allowedVerts, 5))).value();
         }
     }
     dispinfo = std::move(block);
@@ -334,6 +335,34 @@ void Transaction::setDisplacement(SideId sideId, const geometry::Displacement& v
         if (const auto current = parseDisplacement(*dispinfo); current && *current == value) return;
         if (const auto written = writeDisplacement(*dispinfo, value); !written)
             throw std::invalid_argument(written.error().what());
+        touch(id, Dirty::Geometry);
+        doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
+        key_ = {id, "side:" + std::to_string(location->faceIndex) + ":dispinfo"};
+        ++operations_;
+        return;
+    }
+    throw std::invalid_argument("side index out of range");
+}
+
+void Transaction::removeDisplacement(SideId sideId) {
+    if (!doc_) throw std::logic_error("transaction already finished");
+    const auto location = doc_->side(sideId);
+    if (!location) throw std::invalid_argument("unknown side ID");
+    const auto id = checked(location->solid);
+    auto block = *doc_->node(id)->block;
+    std::size_t face = 0;
+    for (auto& child : block.children()) {
+        if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+        if (face++ != location->faceIndex) continue;
+        bool removed = false;
+        for (std::size_t i = child.children().size(); i-- > 0;) {
+            const auto& entry = child.children()[i];
+            if (entry.kind() == kv1::NodeKind::Block && ciEquals(entry.key(), "dispinfo")) {
+                child.remove(i).value();
+                removed = true;
+            }
+        }
+        if (!removed) return;
         touch(id, Dirty::Geometry);
         doc_->node(id)->block = std::make_shared<const kv1::Node>(std::move(block));
         key_ = {id, "side:" + std::to_string(location->faceIndex) + ":dispinfo"};
