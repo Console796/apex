@@ -59,6 +59,14 @@ DVec2 LightmapAtlas::uv(std::size_t face, DVec3 world) const {
     return (DVec2(rect.x, rect.y) + local + 0.5) / double(size);
 }
 
+DVec2 LightmapAtlas::displacementUv(std::size_t face, int row, int column, int size) const {
+    const auto& chart = faces.at(face).chart;
+    const auto& rect = rects.at(face);
+    const double last = std::max(1, size - 1);
+    const DVec2 local{column / last * chart.extents[0], row / last * chart.extents[1]};
+    return (DVec2(rect.x, rect.y) + local + 0.5) / double(this->size);
+}
+
 void LightmapAtlas::bindInstances(std::span<const document::InstanceSolidOrigin> origins) {
     for (const auto& origin : origins) {
         bool baked = false;
@@ -109,12 +117,25 @@ std::vector<std::vector<Vec3>> LightmapAtlas::retainRadiance(
         } else if (previous->templateOfSide.contains(key)) continue;
         const auto found = previous->fragments.find(key);
         if (found == previous->fragments.end()) continue;
+        if (face.displaced()) {
+            const auto old = std::ranges::find_if(found->second, [&](auto k) { return previous->faces[k].displaced(); });
+            if (old == found->second.end()) continue;
+            if (covered) (*covered)[i] = 1;
+            const auto oldDims = previous->faces[*old].chart.dimensions;
+            const auto at = [](int x, int from, int to) { return from > 1 ? int(std::lround(double(x) * (to - 1) / (from - 1))) : 0; };
+            for (int y = 0; y < dims[1]; ++y) for (int x = 0; x < dims[0]; ++x)
+                retained[i][std::size_t(y * dims[0] + x)] = radiance[*old][std::size_t(
+                    at(y, dims[1], oldDims[1]) * oldDims[0] + at(x, dims[0], oldDims[0]))];
+            continue;
+        }
+        if (std::ranges::all_of(found->second, [&](auto k) { return previous->faces[k].displaced(); })) continue;
         if (covered) (*covered)[i] = 1;
         for (int y = 0; y < dims[1]; ++y) for (int x = 0; x < dims[0]; ++x) {
             const auto world = face.chart.worldAt({x, y});
             double best = std::numeric_limits<double>::max();
             Vec3 value{0};
             for (const auto old : found->second) {
+                if (previous->faces[old].displaced()) continue;
                 const auto& chart = previous->faces[old].chart;
                 DVec2 local;
                 for (int axis = 0; axis < 2; ++axis)

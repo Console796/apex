@@ -22,6 +22,11 @@ inline constexpr std::uint32_t kMaterialSelfIllum = 2048u;
 inline constexpr std::uint32_t kMaterialLocalRefract = 4096u; // Refract with $localrefract: unlit, offset base.
 inline constexpr std::uint32_t kMaterialParallax = 8192u;     // PBR $parallax: height in the bump alpha.
 inline constexpr std::uint32_t kMaterialColour2 = 16384u;    // Multiply albedo by colour2 (linear).
+// WorldVertexTransition (0.8.4): base2Slot blends over the base by vertex alpha (0 shows the base);
+// bump2Slot and mrao2Slot, when present, blend with it. BlendModulate reshapes the blend by
+// blendModulateSlot: smoothstep(g - r, g + r, alpha), as Source's LightmappedGeneric does.
+inline constexpr std::uint32_t kMaterialBlend = 32768u;
+inline constexpr std::uint32_t kMaterialBlendModulate = 65536u;
 inline constexpr std::uint32_t kNoTexture = 0xFFFFFFFFu;
 inline constexpr std::uint32_t kDefaultEnvmapCube = 0u; // TextureHeap's kDefaultCubeSlot.
 
@@ -47,8 +52,12 @@ struct alignas(16) GpuMaterial {
     Vec4 parallaxParams{0, 0, 1, 0}; // $parallaxdepth, $parallaxcenter, $parallaxscale; w reserved
     Vec4 colour2{1, 1, 1, 0};        // $color2 decoded by 2.2, applied with kMaterialColour2
     Vec4 bounce{0.5f, 0.5f, 0.5f, 0}; // Linear bake reflectivity; w: 1 sky, 2 non-emitting tool.
+    std::uint32_t base2Slot = kNoTexture;         // $basetexture2, with kMaterialBlend.
+    std::uint32_t bump2Slot = kNoTexture;         // $bumpmap2 (linear).
+    std::uint32_t blendModulateSlot = kNoTexture; // $blendmodulatetexture (linear), with kMaterialBlendModulate.
+    std::uint32_t mrao2Slot = kNoTexture;         // PBR's $mraotexture2 (linear).
 };
-static_assert(sizeof(GpuMaterial) == 224);
+static_assert(sizeof(GpuMaterial) == 240);
 static_assert(alignof(GpuMaterial) == 16);
 static_assert(offsetof(GpuMaterial, mraoSlot) == 16);
 static_assert(offsetof(GpuMaterial, phongExponentSlot) == 20);
@@ -68,5 +77,9 @@ static_assert(offsetof(GpuMaterial, refractParams) == 160);
 static_assert(offsetof(GpuMaterial, parallaxParams) == 176);
 static_assert(offsetof(GpuMaterial, colour2) == 192);
 static_assert(offsetof(GpuMaterial, bounce) == 208);
+static_assert(offsetof(GpuMaterial, base2Slot) == 224);
+static_assert(offsetof(GpuMaterial, bump2Slot) == 228);
+static_assert(offsetof(GpuMaterial, blendModulateSlot) == 232);
+static_assert(offsetof(GpuMaterial, mrao2Slot) == 236);
 
 } // namespace apex::render

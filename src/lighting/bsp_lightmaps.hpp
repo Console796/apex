@@ -3,7 +3,9 @@
 #include "lighting/bake_scene.hpp"
 
 #include <filesystem>
+#include <array>
 #include <map>
+#include <optional>
 #include <span>
 
 namespace apex::lighting {
@@ -32,9 +34,14 @@ struct SideOwner {
     std::uint32_t sideId = 0;
     Plane plane;
     std::vector<DVec3> loop;
+    // A displaced side (plan 0.8.5): its D2 mesh and base quad in Source grid order (displacementGridCorners).
+    // Only displacement fragments map to it, and only they carry these.
+    std::optional<geometry::DisplacementMesh> displacement;
+    std::array<DVec3, 4> gridCorners{};
 };
 using SideOwners = std::vector<SideOwner>;
-// Every non-displacement side of every solid in the document (instances must already be expanded).
+// Every side of every solid in the document that has a face in game (instances must already be expanded):
+// all sides of a brush without displacements, and the displaced sides (with their mesh) of one with them.
 SideOwners sideOwners(const document::Document& document);
 
 struct BspMapStats {
@@ -46,10 +53,14 @@ struct BspMapStats {
 
 // The compiled lightmaps in the layout LightmapAtlas takes. faces[i] has the exact VRAD lattice
 // (luxel (x, y) is the sample at stored mins + (x, y)); radiance[i] holds its luxels. Fragments that
-// are displacements, carry no light, or lie on no side's plane and polygon
-// are left out, so the viewport shows them black. A fragment belongs to the side whose plane it lies on
-// (normal within float noise, distance within 0.25) and whose polygon contains all its vertices; when
-// the FACEIDS lump did name a side, only that side is considered. Several such sides is ambiguous.
+// carry no light or lie on no side's plane and polygon are left out, so the viewport shows them black.
+// A flat fragment belongs to the side whose plane it lies on (normal within float noise, distance within
+// 0.25) and whose polygon contains all its vertices; when the FACEIDS lump did name a side, only that side
+// is considered. Several such sides is ambiguous. A displacement fragment (its BSP face is the base quad)
+// belongs to the displaced side whose plane it lies on and whose four corners it matches within 0.25; it
+// becomes that side's displaced BakeFace with the fragment's chart and a lattice for the fragment's extents
+// (P0: luxel (s, t) at grid fraction (t / extents[1], s / extents[0])). Flat fragments never map to
+// displaced sides, nor the reverse.
 struct BspLightmaps {
     std::vector<BakeFace> faces;
     std::vector<std::vector<Vec3>> radiance;

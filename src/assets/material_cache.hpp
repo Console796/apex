@@ -18,6 +18,11 @@ struct CachedMaterial {
     std::optional<Texture> envmapMaskTexture;    // Linear data.
     std::optional<Texture> selfIllumMaskTexture; // Linear data.
     std::optional<Texture> skyHdrTexture; // Sky $hdrbasetexture, before tone mapping.
+    // WorldVertexTransition's second layer (with texture2), all linear data: $bumpmap2,
+    // $blendmodulatetexture and PBR's $mraotexture2.
+    std::optional<Texture> bump2Texture;
+    std::optional<Texture> blendModulateTexture;
+    std::optional<Texture> mrao2Texture;
 };
 enum class MaterialState { Unloaded, Loading, Ready, Failed };
 

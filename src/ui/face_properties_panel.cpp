@@ -14,6 +14,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QIntValidator>
+#include <QMessageBox>
 #include <QLocale>
 #include <climits>
 #include <QPointer>
@@ -21,6 +22,7 @@
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
+#include <QTabWidget>
 #include <QTimer>
 #include <QToolButton>
 #include <array>
@@ -43,6 +45,9 @@ QString display(double value) { return QString::number(value, 'g', 12); }
 
 FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("facePropertiesPanel"));
+    confirm_ = [this](const QString& title, const QString& text) {
+        return QMessageBox::question(this, title, text) == QMessageBox::Yes;
+    };
     layout_ = new QVBoxLayout(this);
     layout_->setContentsMargins(2, 2, 2, 2);
     hint_ = new QLabel(tr("Select faces (face selection mode)"), this);
@@ -50,9 +55,19 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     hint_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     hint_->setFixedHeight(fontMetrics().height() + 4);
     layout_->addWidget(hint_);
-    uvView_ = new UvView(this);
-    layout_->addWidget(uvView_, 1);
-    controlsScroll_ = new QScrollArea(this);
+    // Hammer's Face Edit split: the texture controls on one tab, the displacement's on another, so
+    // a displaced face's settings are not below the fold of a scrolled list.
+    tabs_ = new QTabWidget(this);
+    tabs_->setObjectName(QStringLiteral("facePropertiesTabs"));
+    tabs_->setDocumentMode(true);
+    layout_->addWidget(tabs_, 1);
+    auto* materialPage = new QWidget(tabs_);
+    auto* materialPageLayout = new QVBoxLayout(materialPage);
+    materialPageLayout->setContentsMargins(0, 2, 0, 0);
+    tabs_->addTab(materialPage, tr("Material"));
+    uvView_ = new UvView(materialPage);
+    materialPageLayout->addWidget(uvView_, 1);
+    controlsScroll_ = new QScrollArea(materialPage);
     controlsScroll_->setWidgetResizable(true);
     controlsScroll_->setMinimumSize(0, 0);
     controlsScroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
@@ -229,15 +244,31 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
         if (session_ && index >= 0)
             session_->setFaceExtrapolation(static_cast<editor::FaceExtrapolation>(extrapolation_->itemData(index).toInt()));
     });
-    displacement_ = new QLabel(content_);
+    controlsScroll_->setWidget(content_);
+    materialPageLayout->addWidget(controlsScroll_);
+
+    auto* displacementScroll = new QScrollArea(tabs_);
+    displacementScroll->setWidgetResizable(true);
+    displacementScroll->setMinimumSize(0, 0);
+    auto* displacementPage = new QWidget(displacementScroll);
+    displacementPage->setObjectName(QStringLiteral("faceDisplacementPage"));
+    auto* dispControls = new QVBoxLayout(displacementPage);
+    dispControls->setContentsMargins(2, 2, 2, 2);
+    dispControls->setSpacing(3);
+    displacementNone_ = new QLabel(tr("No displaced face is selected. The Displacement tool creates, sews, sculpts "
+                                      "and paints displacements."), displacementPage);
+    displacementNone_->setObjectName(QStringLiteral("faceDisplacementNone"));
+    displacementNone_->setWordWrap(true);
+    dispControls->addWidget(displacementNone_);
+    displacement_ = new QLabel(displacementPage);
     displacement_->setObjectName(QStringLiteral("faceDisplacement"));
     displacement_->setWordWrap(true);
     displacement_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    displacement_->setToolTip(tr("Create, sew and subdivide with the Displacement tool; Edit > Destroy Displacement "
-                                 "makes the faces flat again."));
+    displacement_->setToolTip(tr("Create, sew, sculpt and paint with the Displacement tool; Edit > Destroy "
+                                 "Displacement makes the faces flat again."));
     displacement_->hide();
-    controls->addWidget(displacement_);
-    displacementEdit_ = new QWidget(content_);
+    dispControls->addWidget(displacement_);
+    displacementEdit_ = new QWidget(displacementPage);
     displacementEdit_->setObjectName(QStringLiteral("faceDisplacementEdit"));
     auto* dispRow = new QHBoxLayout(displacementEdit_);
     dispRow->setContentsMargins(0, 0, 0, 0);
@@ -246,8 +277,8 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     displacementPower_->setObjectName(QStringLiteral("faceDisplacementPower"));
     for (int power = geometry::Displacement::kMinPower; power <= geometry::Displacement::kMaxPower; ++power)
         displacementPower_->addItem(QString::number(power), power);
-    displacementPower_->setToolTip(tr("Rebuilds the grid. Only a flat, unpainted displacement can change power; "
-                                      "a sculpted one is refused rather than resampled."));
+    displacementPower_->setToolTip(tr("The grid's density. A sculpted or painted displacement is resampled: "
+                                      "raising keeps its shape exactly, lowering drops the detail in between."));
     dispRow->addWidget(displacementPower_);
     const std::pair<const char*, int> flagBoxes[] = {{"NoPhys", geometry::Displacement::kFlagNoPhys},
                                                      {"NoHull", geometry::Displacement::kFlagNoHull},
@@ -266,12 +297,21 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     dispRow->addStretch();
     connect(displacementPower_, qOverload<int>(&QComboBox::activated), this, [this](int index) {
         if (!session_ || rebuilding_ || index < 0) return;
-        reportDisplacementEdit(editor::setDisplacementPower(*session_, shown_, displacementPower_->itemData(index).toInt()));
+        const int power = displacementPower_->itemData(index).toInt();
+        if (session_->document() && editor::displacementPowerLosesDetail(*session_->document(), shown_, power) &&
+            !confirm_(tr("Lower displacement power"),
+                      tr("Lowering the power to %1 drops the sculpted and painted detail between the remaining "
+                         "vertices. Undo brings it back.").arg(power))) {
+            refresh(); // Back to the current power.
+            return;
+        }
+        reportDisplacementEdit(editor::setDisplacementPower(*session_, shown_, power));
     });
     displacementEdit_->hide();
-    controls->addWidget(displacementEdit_);
-    controlsScroll_->setWidget(content_);
-    layout_->addWidget(controlsScroll_);
+    dispControls->addWidget(displacementEdit_);
+    dispControls->addStretch();
+    displacementScroll->setWidget(displacementPage);
+    tabs_->addTab(displacementScroll, tr("Displacement"));
 
     const auto connectText = [&](QLineEdit* field, editor::FaceField kind) {
         field->installEventFilter(this);
@@ -341,6 +381,10 @@ void FacePropertiesPanel::setGameContent(GameContent* content) {
     }
     requestRefresh();
 }
+void FacePropertiesPanel::setConfirm(std::function<bool(const QString&, const QString&)> confirm) {
+    confirm_ = std::move(confirm);
+}
+
 void FacePropertiesPanel::setMaterialBrowser(
     std::function<void(QString, QString, std::function<void(QString)>)> browser) {
     materialBrowser_ = std::move(browser);
@@ -446,6 +490,9 @@ void FacePropertiesPanel::refresh() {
     smoothingSummary_->setToolTip(summary);
 
     const auto disp = attached ? editor::summarizeDisplacements(*document_, sides) : editor::DisplacementSummary{};
+    // The tab's label counts the displaced faces, so a selection with any shows it from the Material tab.
+    tabs_->setTabText(1, disp.displaced ? tr("Displacement (%1)").arg(disp.displaced) : tr("Displacement"));
+    displacementNone_->setVisible(disp.displaced == 0);
     displacement_->setVisible(disp.displaced != 0);
     if (disp.displaced != 0) {
         const auto mixed = tr("mixed");

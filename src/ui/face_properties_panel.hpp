@@ -17,6 +17,7 @@ class QVBoxLayout;
 class QToolButton;
 class QListWidget;
 class QScrollArea;
+class QTabWidget;
 class QResizeEvent;
 
 namespace apex::ui {
@@ -31,6 +32,9 @@ public:
     void setEditorSession(editor::EditorSession* session);
     void setGameContent(GameContent* content);
     void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
+    // Asks before an edit that drops detail (lowering a sculpted displacement's power); true goes
+    // ahead. The default is a Yes/No message box.
+    void setConfirm(std::function<bool(const QString& title, const QString& text)> confirm);
     void refresh();
     QSize minimumSizeHint() const override { return {160, 96}; }
 
@@ -49,6 +53,7 @@ private:
     editor::EditorSession* session_ = nullptr;
     std::size_t documentObserver_ = 0, sessionObserver_ = 0;
     QVBoxLayout* layout_ = nullptr;
+    QTabWidget* tabs_ = nullptr; // Material (UV view and texture controls) and Displacement.
     QWidget* content_ = nullptr;
     QScrollArea* controlsScroll_ = nullptr;
     UvView* uvView_ = nullptr;
@@ -67,7 +72,8 @@ private:
     std::vector<QToolButton*> alignment_;
     QToolButton* smoothingSummary_ = nullptr;
     QComboBox* extrapolation_ = nullptr;
-    QLabel* displacement_ = nullptr; // Displacement section: summary (0.8.2) ...
+    QLabel* displacementNone_ = nullptr; // The Displacement tab when no displaced face is selected.
+    QLabel* displacement_ = nullptr; // Displacement tab: summary (0.8.2) ...
     QWidget* displacementEdit_ = nullptr; // ... and its editable power and flags (0.8.3).
     QComboBox* displacementPower_ = nullptr;
     std::vector<std::pair<QCheckBox*, int>> displacementFlags_;
@@ -79,5 +85,6 @@ private:
     std::vector<document::SideId> shown_; // The faces the fields show.
     bool queued_ = false, rebuilding_ = false;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;
+    std::function<bool(const QString&, const QString&)> confirm_;
 };
 } // namespace apex::ui

@@ -62,6 +62,17 @@ std::vector<DVec3> clipToSide(const SideOwner& side, std::span<const DVec3> loop
     return out;
 }
 
+// A displacement fragment is its side's base quad (VBSP's point_data, which Apex writes from the planes):
+// the same plane and four corners, each within the plane tolerance of one of the side's.
+bool sameQuad(const SideOwner& side, const BspFragment& fragment) {
+    if (fragment.vertices.size() != 4 || glm::dot(fragment.plane.normal, side.plane.normal) < kNormalAgreement)
+        return false;
+    for (const auto& corner : side.gridCorners)
+        if (std::ranges::none_of(fragment.vertices, [&](const DVec3& v) { return glm::distance(v, corner) <= kPlaneTolerance; }))
+            return false;
+    return true;
+}
+
 } // namespace
 
 Result<std::vector<BspFragment>> readBspFragments(const std::filesystem::path& path) {
@@ -144,9 +155,26 @@ SideOwners sideOwners(const document::Document& document) {
             const auto* node = document.get(*solid);
             if (auto shape = geometry::solidGeometry(*node->block)) {
                 const auto displacements = document::displacedSides(*node->block);
+                std::map<std::uint32_t, geometry::Displacement> parsed;
+                for (const auto* side : node->block->findAll("side")) {
+                    const auto* id = side->find("id");
+                    const auto* dispinfo = side->find("dispinfo");
+                    if (!id || !dispinfo || !document::isDisplaced(*side)) continue;
+                    if (auto disp = document::parseDisplacement(*dispinfo); disp && id->asInt())
+                        parsed.emplace(static_cast<std::uint32_t>(*id->asInt()), std::move(*disp));
+                }
                 for (const auto& face : shape->poly.faces) {
-                    if (!displacements.empty()) continue; // Displaced sides wait for 0.8.5; the rest have no face in game.
-                    SideOwner owner{node->id, face.sideId, face.plane, {}};
+                    SideOwner owner{node->id, face.sideId, face.plane, {}, {}, {}};
+                    if (!displacements.empty()) { // Only the displaced sides have a face in game.
+                        const auto disp = parsed.find(face.sideId);
+                        if (disp == parsed.end()) continue;
+                        const auto corners = geometry::displacementCorners(shape->poly, face);
+                        if (!corners) continue;
+                        auto mesh = geometry::displacementMesh(*corners, disp->second);
+                        if (!mesh) continue;
+                        owner.displacement = std::move(*mesh);
+                        owner.gridCorners = displacementGridCorners(*corners, disp->second.startPosition);
+                    }
                     for (const auto index : face.vertices) owner.loop.push_back(shape->poly.vertices[index]);
                     owners.push_back(std::move(owner));
                 }
@@ -163,7 +191,6 @@ BspLightmaps mapBspFragments(std::span<const BspFragment> fragments, const SideO
     std::set<std::pair<std::uint64_t, std::uint32_t>> sides;
     for (const auto& fragment : fragments) {
         ++result.stats.fragments;
-        if (fragment.displacement) { ++result.stats.displacement; continue; }
         if (fragment.luxels.empty()) { ++result.stats.noData; continue; }
         if (fragment.vertices.size() < 3) { ++result.stats.mismatched; continue; }
         BakeFace chartFace;
@@ -172,8 +199,31 @@ BspLightmaps mapBspFragments(std::span<const BspFragment> fragments, const SideO
                 {fragment.lightmapVectors[0].w, fragment.lightmapVectors[1].w}, fragment.mins, fragment.extents,
                 fragment.plane);
         } catch (const std::invalid_argument&) { ++result.stats.mismatched; continue; }
+        if (fragment.displacement) {
+            ++result.stats.displacement;
+            const auto side = std::ranges::find_if(owners, [&](const SideOwner& owner) {
+                return owner.displacement && (!fragment.hammerId || owner.sideId == fragment.hammerId) &&
+                       sameQuad(owner, fragment);
+            });
+            if (side == owners.end()) { ++result.stats.unowned; continue; }
+            BakeFace face = chartFace;
+            try {
+                face.lattice = displacementLattice(*side->displacement, side->gridCorners, fragment.extents);
+            } catch (const std::invalid_argument&) { ++result.stats.mismatched; continue; }
+            face.vertices = side->loop;
+            face.normal = side->plane.normal;
+            face.solidId = side->solidId;
+            face.sideId = side->sideId;
+            face.surface = side->displacement->positions;
+            result.faces.push_back(std::move(face));
+            result.radiance.push_back(fragment.luxels);
+            sides.insert({side->solidId, side->sideId});
+            ++result.stats.mapped;
+            continue;
+        }
         std::size_t pieces = 0;
         for (const auto& side : owners) {
+            if (side.displacement) continue;
             if (fragment.hammerId && side.sideId != fragment.hammerId) continue;
             if (glm::dot(fragment.plane.normal, side.plane.normal) < kNormalAgreement) continue;
             auto loop = clipToSide(side, fragment.vertices);

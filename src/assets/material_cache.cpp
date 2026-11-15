@@ -98,12 +98,19 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
     auto envmapBytes = material->envmapProbe() ? Blob{} : optionalBytes(material->envmap());
     auto envmapMaskBytes = optionalBytes(material->envmapMask());
     auto selfIllumMaskBytes = optionalBytes(material->selfIllumMask());
+    // The second layer's data textures matter only with $basetexture2.
+    const bool layered = !material->baseTexture2.empty();
+    auto bump2Bytes = optionalBytes(layered ? material->parameter("$bumpmap2") : "");
+    auto blendModulateBytes = optionalBytes(layered ? material->parameter("$blendmodulatetexture") : "");
+    auto mrao2Bytes = optionalBytes(layered ? material->parameter("$mraotexture2") : "");
     entry.state = MaterialState::Loading;
     entry.job = impl_->jobs.submit(Priority::Normal,
         [material = std::move(*material), bytes = std::move(*bytes), bytes2 = std::move(bytes2), bumpBytes = std::move(bumpBytes),
          mraoBytes = std::move(mraoBytes), exponentBytes = std::move(exponentBytes),
          envmapBytes = std::move(envmapBytes), envmapMaskBytes = std::move(envmapMaskBytes),
-         selfIllumMaskBytes = std::move(selfIllumMaskBytes), skyHdrBytes = std::move(skyHdrBytes)]
+         selfIllumMaskBytes = std::move(selfIllumMaskBytes), skyHdrBytes = std::move(skyHdrBytes),
+         bump2Bytes = std::move(bump2Bytes), blendModulateBytes = std::move(blendModulateBytes),
+         mrao2Bytes = std::move(mrao2Bytes)]
         (CancelToken token) mutable -> Result<CachedMaterial> {
             try {
                 if (token.cancelled()) {
@@ -113,7 +120,7 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
                 if (!texture) {
                     return std::unexpected(texture.error());
                 }
-                CachedMaterial result{std::move(material), std::move(*texture), {}, {}, {}, {}, {}, {}, {}};
+                CachedMaterial result{std::move(material), std::move(*texture), {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}};
                 if (!result.material.baseTexture2.empty()) {
                     auto second = decodeTexture(bytes2);
                     if (!second) {
@@ -135,6 +142,9 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
                 result.envmapMaskTexture = decodeLinear(envmapMaskBytes);
                 result.selfIllumMaskTexture = decodeLinear(selfIllumMaskBytes);
                 result.skyHdrTexture = decodeLinear(skyHdrBytes);
+                result.bump2Texture = decodeLinear(bump2Bytes);
+                result.blendModulateTexture = decodeLinear(blendModulateBytes);
+                result.mrao2Texture = decodeLinear(mrao2Bytes);
                 // Colour data: keeps the VTF's own encoding. Anything but a cube is unusable.
                 if (!envmapBytes.empty()) {
                     auto envmap = decodeTexture(envmapBytes);
@@ -163,7 +173,10 @@ std::shared_ptr<const CachedMaterial> MaterialCache::request(std::string_view na
                            (result->envmapTexture ? result->envmapTexture->byteSize() : 0) +
                            (result->envmapMaskTexture ? result->envmapMaskTexture->byteSize() : 0) +
                            (result->selfIllumMaskTexture ? result->selfIllumMaskTexture->byteSize() : 0) +
-                           (result->skyHdrTexture ? result->skyHdrTexture->byteSize() : 0);
+                           (result->skyHdrTexture ? result->skyHdrTexture->byteSize() : 0) +
+                           (result->bump2Texture ? result->bump2Texture->byteSize() : 0) +
+                           (result->blendModulateTexture ? result->blendModulateTexture->byteSize() : 0) +
+                           (result->mrao2Texture ? result->mrao2Texture->byteSize() : 0);
             impl->resident += loaded.bytes;
             loaded.data = std::make_shared<CachedMaterial>(std::move(*result));
             loaded.state = MaterialState::Ready;

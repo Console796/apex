@@ -341,7 +341,8 @@ struct Renderer::Impl {
                           {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BrushVertex, normal)},
                           {2, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(BrushVertex, uv)},
                           {3, 0, VK_FORMAT_R32_UINT, offsetof(BrushVertex, material)},
-                          {4, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(BrushVertex, lightmapUv)}};
+                          {4, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(BrushVertex, lightmapUv)},
+                          {5, 0, VK_FORMAT_R32_SFLOAT, offsetof(BrushVertex, alpha)}};
             break;
         case Input::Box:
             binding.stride = sizeof(BoxInstance);

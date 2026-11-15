@@ -13,12 +13,15 @@ struct Sphere {
     double radius = 0;
 };
 
+// A displaced face spans its displaced vertices as well as its flat base.
 Sphere boundsOf(const BakeFace& face) {
     if (face.vertices.empty()) return {};
     DVec3 low = face.vertices.front(), high = low;
-    for (const auto& p : face.vertices) { low = glm::min(low, p); high = glm::max(high, p); }
+    for (const auto& points : {std::span(face.vertices), std::span(face.surface)})
+        for (const auto& p : points) { low = glm::min(low, p); high = glm::max(high, p); }
     Sphere sphere{(low + high) * 0.5, 0};
-    for (const auto& p : face.vertices) sphere.radius = std::max(sphere.radius, glm::length(p - sphere.centre));
+    for (const auto& points : {std::span(face.vertices), std::span(face.surface)})
+        for (const auto& p : points) sphere.radius = std::max(sphere.radius, glm::length(p - sphere.centre));
     return sphere;
 }
 
@@ -44,6 +47,10 @@ std::uint64_t geometryHash(const BakeFace& face) {
     h.add(c.offset);
     h.add(c.origin);
     for (const auto& v : c.luxelToWorld) h.add(v);
+    h.add(face.lattice.size());
+    for (const auto& p : face.lattice) { h.add(p.position); h.add(p.normal); }
+    h.add(face.surface.size());
+    for (const auto& p : face.surface) h.add(p);
     return h.value;
 }
 
@@ -79,14 +86,15 @@ bool mayReceive(const Light& light, const BakeFace& face, const Sphere& s) {
     if (!hasDirect(light)) return false;
     switch (light.kind) {
     case LightKind::Ambient: return true;
-    case LightKind::Sun: return glm::dot(face.normal, -light.direction) > 0;
+    case LightKind::Sun: return face.displaced() || glm::dot(face.normal, -light.direction) > 0;
     case LightKind::Point:
     case LightKind::Spot: break;
     }
     const double range = effectiveRange(light, kLightThreshold);
     if (glm::length(s.centre - light.origin) > range + s.radius + kSlack) return false;
     // Entirely behind the face plane: cosine to the normal is non-positive for every vertex.
-    bool front = face.vertices.empty();
+    // A displaced surface may face any way, so it is never culled by its base plane.
+    bool front = face.vertices.empty() || face.displaced();
     for (const auto& p : face.vertices) front = front || glm::dot(face.normal, light.origin - p) > -kSlack;
     if (!front) return false;
     if (light.kind == LightKind::Spot && light.stopdot2 > -1) {

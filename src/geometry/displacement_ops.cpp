@@ -60,13 +60,7 @@ std::vector<std::size_t> boundary(int size) {
     return result;
 }
 
-// Patch p's vertex v lies on patch q's base edge: at q's vertex w (s == 0), or between q's
-// vertices w and w2 at fraction s.
-struct Match {
-    std::size_t p, v, q, w, w2;
-    double s = 0.0;
-    bool coincident() const { return s == 0.0; }
-};
+using Match = DisplacementVertexMatch;
 
 struct Analysis {
     std::vector<std::vector<DVec3>> positions; // Current mesh, per patch.
@@ -265,6 +259,12 @@ Result<std::size_t> sewDisplacements(std::span<DisplacementPatch> patches) {
     return changed;
 }
 
+Result<std::vector<DisplacementVertexMatch>> displacementVertexMatches(std::span<const DisplacementPatch> patches) {
+    auto analysis = analyse(patches);
+    if (!analysis) return std::unexpected(analysis.error());
+    return std::move(analysis->matches);
+}
+
 Result<std::vector<DisplacementSeam>> displacementSeams(std::span<const DisplacementPatch> patches) {
     const auto analysis = analyse(patches);
     if (!analysis) return std::unexpected(analysis.error());
@@ -284,25 +284,72 @@ Result<std::vector<DisplacementSeam>> displacementSeams(std::span<const Displace
     return result;
 }
 
-Result<void> subdivideDisplacement(std::span<const DVec3> corners, Displacement& disp) {
-    const auto mesh = displacementMesh(corners, disp);
-    if (!mesh) return std::unexpected(mesh.error());
-    const auto n = static_cast<std::size_t>(disp.size());
-    const auto& p = mesh->positions;
-    for (std::size_t i = 1; i + 1 < n; ++i)
-        for (std::size_t j = 1; j + 1 < n; ++j) {
-            const auto at = i * n + j;
-            const auto average = (p[at - n] + p[at + n] + p[at - 1] + p[at + 1]) * 0.25;
-            disp.offsets[at] += (average - p[at]) * 0.5;
-        }
-    disp.subdiv = 1;
-    return retagDisplacement(corners, disp);
-}
-
 bool displacementIsFlat(const Displacement& disp) {
     return std::ranges::all_of(disp.distances, [](double d) { return d == 0.0; }) &&
            std::ranges::all_of(disp.offsets, [](DVec3 o) { return o == DVec3{0.0}; }) &&
            std::ranges::all_of(disp.alphas, [](double a) { return a == 0.0; });
+}
+
+Result<Displacement> resampleDisplacement(std::span<const DVec3> corners, const Displacement& disp, int power) {
+    if (power < Displacement::kMinPower || power > Displacement::kMaxPower)
+        return std::unexpected(invalid("displacement power must be 2, 3 or 4"));
+    if (const auto problem = disp.problem()) return std::unexpected(invalid(*problem));
+    const auto baseNormal = displacementBaseNormal(corners);
+    if (!baseNormal) return std::unexpected(baseNormal.error());
+    Displacement result = disp;
+    result.power = power;
+    const auto n = static_cast<std::size_t>(disp.size());
+    const auto m = static_cast<std::size_t>(result.size());
+    result.normals.assign(m * m, *baseNormal);
+    result.distances.assign(m * m, 0.0);
+    result.offsets.assign(m * m, DVec3{0.0});
+    result.offsetNormals.assign(m * m, *baseNormal);
+    result.alphas.assign(m * m, 0.0);
+    // Both sizes are 2^p + 1, so the scale is a power of two and grid coordinates are exact.
+    const double scale = double(n - 1) / double(m - 1);
+    const auto cell = [&](double x) { return std::min(static_cast<std::size_t>(x), n - 2); };
+    for (std::size_t i = 0; i < m; ++i)
+        for (std::size_t j = 0; j < m; ++j) {
+            const auto at = i * m + j;
+            const double x = double(i) * scale, y = double(j) * scale;
+            if (x == std::floor(x) && y == std::floor(y)) {
+                const auto from = static_cast<std::size_t>(x) * n + static_cast<std::size_t>(y);
+                result.normals[at] = disp.normals[from];
+                result.distances[at] = disp.distances[from];
+                result.offsets[at] = disp.offsets[from];
+                result.offsetNormals[at] = disp.offsetNormals[from];
+                result.alphas[at] = disp.alphas[from];
+                continue;
+            }
+            const auto i0 = cell(x), j0 = cell(y);
+            const double fx = x - double(i0), fy = y - double(j0);
+            const std::array<std::size_t, 4> from{i0 * n + j0, i0 * n + j0 + 1, (i0 + 1) * n + j0, (i0 + 1) * n + j0 + 1};
+            const std::array<double, 4> weight{(1 - fx) * (1 - fy), (1 - fx) * fy, fx * (1 - fy), fx * fy};
+            DVec3 vector{0.0}, offsetNormal{0.0};
+            for (std::size_t k = 0; k < 4; ++k) {
+                vector += disp.normals[from[k]] * disp.distances[from[k]] * weight[k];
+                offsetNormal += disp.offsetNormals[from[k]] * weight[k];
+                result.offsets[at] += disp.offsets[from[k]] * weight[k];
+                result.alphas[at] += disp.alphas[from[k]] * weight[k];
+            }
+            if (const double length = glm::length(vector); length > kSewNoise) {
+                result.normals[at] = vector / length;
+                result.distances[at] = length;
+            }
+            if (const double length = glm::length(offsetNormal); length > kSewNoise)
+                result.offsetNormals[at] = offsetNormal / length;
+        }
+    constexpr int kForceBits = Displacement::kTagForceWalkable | Displacement::kTagForceWalkableValue |
+                               Displacement::kTagForceBuildable | Displacement::kTagForceBuildableValue;
+    result.triangleTags.assign(result.triangleCount(), 0);
+    for (std::size_t r = 0; r + 1 < m; ++r)
+        for (std::size_t c = 0; c + 1 < m; ++c) {
+            const auto old = cell(double(r) * scale) * (n - 1) + cell(double(c) * scale);
+            for (std::size_t k = 0; k < 2; ++k)
+                result.triangleTags[2 * (r * (m - 1) + c) + k] = disp.triangleTags[2 * old + k] & kForceBits;
+        }
+    if (auto tagged = retagDisplacement(corners, result); !tagged) return std::unexpected(tagged.error());
+    return result;
 }
 
 } // namespace apex::geometry

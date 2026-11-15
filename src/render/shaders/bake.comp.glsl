@@ -174,24 +174,38 @@ float skyVisibility(vec3 point, vec3 normal, uint key) {
     return openWeight > 0.0 ? visibleWeight / openWeight : 0.0;
 }
 
-vec3 directSample(Face face, uvec4 item) {
+// Lifted point and shading normal of a luxel corner (Baker's cornerSample): on the plane for a flat face;
+// for a displaced one (source.z), corner (dx, dy) of luxel (s, t) is lattice point (s + dx, t + dy), stored
+// from source.y as position, normal pairs with width + 1 points per row.
+vec3 cornerPoint(Face face, uvec4 item, uint corner, out vec3 normal) {
     const vec2 offsets[4] = vec2[](vec2(-0.5, -0.5), vec2(0.5, -0.5),
                                    vec2(-0.5, 0.5), vec2(0.5, 0.5));
     uint width = face.dimensionsVertices.x;
-    vec2 coordinate = vec2(item.y % width, item.y / width);
+    if (face.source.z != 0u) {
+        uint x = item.y % width + (corner & 1u), y = item.y / width + (corner >> 1u);
+        uint index = face.source.y + 2u * (y * (width + 1u) + x);
+        normal = Vertices(push.vertices).values[index + 1u].xyz;
+        return Vertices(push.vertices).values[index].xyz + normal;
+    }
+    normal = face.normal.xyz;
+    vec2 local = vec2(item.y % width, item.y / width) + offsets[corner];
+    return clampToFace(face, face.chartOrigin.xyz + local.x * face.luxelToWorld[0].xyz +
+                             local.y * face.luxelToWorld[1].xyz) + face.normal.xyz;
+}
+
+vec3 directSample(Face face, uvec4 item) {
     vec3 sum = vec3(0.0);
     for (uint corner = 0u; corner < 4u; ++corner) {
-        vec2 local = coordinate + offsets[corner];
-        vec3 point = clampToFace(face, face.chartOrigin.xyz + local.x * face.luxelToWorld[0].xyz +
-                                      local.y * face.luxelToWorld[1].xyz) + face.normal.xyz;
+        vec3 normal;
+        vec3 point = cornerPoint(face, item, corner, normal);
         float sky = -1.0;
         for (uint index = 0u; index < push.lightCount; ++index) {
             Light light = Lights(push.lights).values[index];
             if (light.kindDirect.y != 1u && light.kindDirect.y != 2u) continue;
-            vec3 value = irradiance(light, point, face.normal.xyz);
+            vec3 value = irradiance(light, point, normal);
             if (all(equal(value, vec3(0.0)))) continue;
             if (light.kindDirect.x == 5u) {
-                if (sky < 0.0) sky = skyVisibility(point, face.normal.xyz, sampleKey(item, corner, 0u));
+                if (sky < 0.0) sky = skyVisibility(point, normal, sampleKey(item, corner, 0u));
                 sum += value * sky;
             } else if (light.kindDirect.x == 3u) {
                 if (reachesSky(point, -light.directionStopdot.xyz)) sum += value;
@@ -205,18 +219,13 @@ vec3 directSample(Face face, uvec4 item) {
 
 vec3 bounceSample(Face face, uvec4 item) {
     if (push.hasGeometry == 0u) return vec3(0.0);
-    const vec2 offsets[4] = vec2[](vec2(-0.5, -0.5), vec2(0.5, -0.5),
-                                   vec2(-0.5, 0.5), vec2(0.5, 0.5));
-    uint width = face.dimensionsVertices.x;
-    vec2 coordinate = vec2(item.y % width, item.y / width);
-    vec3 axis = abs(face.normal.z) < 0.9 ? vec3(0, 0, 1) : vec3(0, 1, 0);
-    vec3 tangent = normalize(cross(axis, face.normal.xyz));
-    vec3 bitangent = cross(face.normal.xyz, tangent);
     vec3 sum = vec3(0.0);
     for (uint corner = 0u; corner < 4u; ++corner) {
-        vec2 local = coordinate + offsets[corner];
-        vec3 point = clampToFace(face, face.chartOrigin.xyz + local.x * face.luxelToWorld[0].xyz +
-                                      local.y * face.luxelToWorld[1].xyz) + face.normal.xyz;
+        vec3 normal;
+        vec3 point = cornerPoint(face, item, corner, normal);
+        vec3 axis = abs(normal.z) < 0.9 ? vec3(0, 0, 1) : vec3(0, 1, 0);
+        vec3 tangent = normalize(cross(axis, normal));
+        vec3 bitangent = cross(normal, tangent);
         uint key = sampleKey(item, corner, push.level);
         float rotation = unit(key);
         for (uint ray = 0u; ray < push.bounceRays; ++ray) {
@@ -224,7 +233,7 @@ vec3 bounceSample(Face face, uvec4 item) {
             float radius = sqrt(u);
             float phi = 2.0 * pi * (rotation + float(ray) * 0.6180339887498949);
             vec3 direction = tangent * (radius * cos(phi)) + bitangent * (radius * sin(phi)) +
-                             face.normal.xyz * sqrt(max(0.0, 1.0 - u));
+                             normal * sqrt(max(0.0, 1.0 - u));
             uvec4 primitive; float distance;
             if (!trace(point, direction, 3.402823466e38, primitive, distance) || primitive.x != 0u || primitive.y == noFace)
                 continue;

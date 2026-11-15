@@ -13,14 +13,14 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                assets/texture_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
-               lighting/light_test.cpp lighting/bsp_lightmaps_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp lighting/charting_test.cpp lighting/cpu_accel_test.cpp lighting/baker_test.cpp lighting/bake_session_test.cpp lighting/bake_diff_test.cpp lighting/bake_casters_test.cpp
+               lighting/light_test.cpp lighting/bsp_lightmaps_test.cpp lighting/sky_visibility_test.cpp lighting/specular_test.cpp lighting/charting_test.cpp lighting/cpu_accel_test.cpp lighting/baker_test.cpp lighting/bake_session_test.cpp lighting/bake_diff_test.cpp lighting/bake_casters_test.cpp lighting/displacement_lightmap_test.cpp
                geometry/corpus_test.cpp geometry/convex_polyhedron_test.cpp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
-               geometry/solid_geometry_test.cpp geometry/bvh_test.cpp geometry/displacement_test.cpp geometry/displacement_ops_test.cpp
+               geometry/solid_geometry_test.cpp geometry/bvh_test.cpp geometry/displacement_test.cpp geometry/displacement_ops_test.cpp geometry/displacement_sculpt_test.cpp
                geometry/overlay_test.cpp
 editor/cordon_test.cpp editor/compile_snapshot_test.cpp editor/vrad_roundtrip_test.cpp editor/diagnostic_lookup_test.cpp editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/instance_create_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/placement_item_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/measure_tool_test.cpp editor/overlay_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
                editor/pie_menu_test.cpp
-               editor/displacement_pick_test.cpp editor/displacement_topology_test.cpp editor/displacement_tool_test.cpp
+               editor/displacement_pick_test.cpp editor/displacement_topology_test.cpp editor/displacement_tool_test.cpp editor/displacement_sculpt_test.cpp
                editor/snapper_test.cpp editor/pick_index_test.cpp editor/pick_model_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp editor/preset_io_test.cpp
                editor/group_index_test.cpp editor/name_index_test.cpp editor/connection_model_test.cpp editor/incoming_connections_test.cpp editor/rename_propagation_test.cpp editor/connection_validation_test.cpp editor/instance_templates_test.cpp editor/instance_expansion_test.cpp editor/instance_watch_state_test.cpp assets/connection_corpus_test.cpp editor/editor_session_test.cpp editor/selection_test.cpp
                editor/selection_expand_test.cpp editor/selection_corpus_test.cpp editor/rearrange_corpus_test.cpp editor/hide_corpus_test.cpp editor/history_property_test.cpp editor/work_plane_test.cpp
@@ -45,7 +45,7 @@ doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
-add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp)
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/displacement_sculpt_measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp)
 target_link_libraries(apex_measure_tests PRIVATE apex_render apex_editor apex_assets sourcepp::vpkpp sourcepp::steampp apex_warnings doctest::doctest)
 doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")

@@ -23,6 +23,7 @@
 #include "document/instance_contents.hpp"
 #include "render/renderer.hpp"
 #include "geometry/convex_polyhedron.hpp"
+#include "geometry/displacement.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -49,6 +50,10 @@ struct PreviewGhost {
 struct PreviewGeometry {
     std::map<document::NodeId, std::map<std::string, std::string>> entityKeys;
     std::map<document::NodeId, geometry::ConvexPolyhedron> replacements;
+    // A replacement's displaced sides (plan 0.8 D6: a sculpt or paint stroke's live values). An
+    // unchanged replacement keeps its mesh from the previous revision, so a stroke re-meshes only
+    // the solids its last dab changed.
+    std::map<document::NodeId, std::map<document::SideId, geometry::Displacement>> displacements;
     std::vector<PreviewGhost> ghosts;
 };
 

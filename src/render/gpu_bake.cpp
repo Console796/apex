@@ -120,8 +120,8 @@ Result<std::shared_ptr<GpuBakeKernel>> GpuBakeKernel::create(
     std::uint32_t sourceOffset = 0;
     for (const auto& face : scene.faces) {
         const auto luxels = std::uint64_t(face.chart.dimensions[0]) * face.chart.dimensions[1];
-        if (face.vertices.size() > std::numeric_limits<std::uint32_t>::max() ||
-            vertices.size() > std::numeric_limits<std::uint32_t>::max() ||
+        if (face.vertices.size() + 2 * face.lattice.size() > std::numeric_limits<std::uint32_t>::max() ||
+            vertices.size() > std::numeric_limits<std::uint32_t>::max() - face.vertices.size() - 2 * face.lattice.size() ||
             luxels > std::numeric_limits<std::uint32_t>::max() - sourceOffset)
             return std::unexpected(Error{ErrorCode::InvalidArgument, "GPU bake scene is too large"});
         const auto firstVertex = static_cast<std::uint32_t>(vertices.size());
@@ -138,7 +138,12 @@ Result<std::shared_ptr<GpuBakeKernel>> GpuBakeKernel::create(
         gpu.dimensionsVertices = {static_cast<std::uint32_t>(face.chart.dimensions[0]),
             static_cast<std::uint32_t>(face.chart.dimensions[1]), firstVertex,
             static_cast<std::uint32_t>(face.vertices.size())};
-        gpu.source = {sourceOffset, 0, 0, 0};
+        // A displaced face's corner points (displacementLattice) follow in the vertex buffer as position, normal pairs.
+        gpu.source = {sourceOffset, static_cast<std::uint32_t>(vertices.size()), face.displaced() ? 1u : 0u, 0};
+        for (const auto& point : face.lattice) {
+            vertices.emplace_back(Vec3(point.position), 0);
+            vertices.emplace_back(Vec3(point.normal), 0);
+        }
         sourceOffset += static_cast<std::uint32_t>(luxels);
         faces.push_back(gpu);
     }

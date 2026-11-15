@@ -1,6 +1,6 @@
 #pragma once
 
-// Plan 0.8 D6: the Displacement tool's pure operations (Create, Sew, Subdivide) and the seam
+// Plan 0.8 D6: the Displacement tool's pure operations (Create, Sew, power resampling) and the seam
 // measure behind the "unsewn displacement edge" problem. Corners are always a base face's four
 // corners in geometry::Face order, as displacementMesh takes them.
 
@@ -51,6 +51,17 @@ inline constexpr double kSewBaseTolerance = 0.01;
 // and offsets change (the base stays put); tags are recomputed. Returns how many patches changed.
 Result<std::size_t> sewDisplacements(std::span<DisplacementPatch> patches);
 
+// How Sew matches neighbours, for callers that move shared vertices themselves (0.8.4's sculpt
+// stroke, plan §5 bite 6): patch p's boundary vertex v lies on patch q's base edge, at q's vertex w
+// (coincident, s == 0) or between q's vertices w and w2 at fraction s (a T-edge). Each coincident
+// pair is listed from both sides.
+struct DisplacementVertexMatch {
+    std::size_t p = 0, v = 0, q = 0, w = 0, w2 = 0;
+    double s = 0.0;
+    bool coincident() const { return s == 0.0; }
+};
+Result<std::vector<DisplacementVertexMatch>> displacementVertexMatches(std::span<const DisplacementPatch> patches);
+
 // The worst gap on each pair of patches that share a base edge (at least two matched vertices),
 // measured by the same matching as sewDisplacements. Sewn patches measure 0.
 struct DisplacementSeam {
@@ -59,14 +70,16 @@ struct DisplacementSeam {
 };
 Result<std::vector<DisplacementSeam>> displacementSeams(std::span<const DisplacementPatch> patches);
 
-// Apex's Subdivide (D6), a stand-in for Hammer's, whose exact rule is not known here: one
-// umbrella smoothing step (each interior vertex moves halfway to the average of its four grid
-// neighbours) stored in offsets, and subdiv set to 1. Boundary vertices stay, so sewn edges stay
-// sewn, and a flat grid is unchanged. Tags are recomputed.
-Result<void> subdivideDisplacement(std::span<const DVec3> corners, Displacement& disp);
-
 // True when nothing but the grid itself would be lost by rebuilding the displacement flat:
 // every distance, offset and alpha is 0.
 bool displacementIsFlat(const Displacement& disp);
+
+// The displacement at another power, keeping its shape, as Hammer's power change does. A vertex
+// that lies on the old grid copies its rows exactly; one between them takes the bilinear blend
+// of its four old neighbours' displacement vectors, offsets, offset normals and alphas, so a raise
+// is lossless (the mesh is the old one, piecewise bilinear) and keeps sewn edges sewn (edge
+// vertices blend along the edge only). A lower keeps every 2nd (or 4th) vertex and drops the rest.
+// Triangle tags keep the force bits of the old quad each new quad lies in and are recomputed.
+Result<Displacement> resampleDisplacement(std::span<const DVec3> corners, const Displacement& disp, int power);
 
 } // namespace apex::geometry

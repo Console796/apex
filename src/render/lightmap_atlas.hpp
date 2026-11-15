@@ -44,12 +44,17 @@ struct LightmapAtlas {
 
     static Result<LightmapAtlas> pack(std::span<const lighting::BakeFace> faces, int maxSize = 4096);
     DVec2 uv(std::size_t face, DVec3 world) const;
+    // A displaced face's lightmap UV at vertex (row, column) of its grid of `size` vertices per row (plan
+    // 0.8.5): luxel coordinate (column / (size - 1) * extents[0], row / (size - 1) * extents[1]), not `uv`'s
+    // projection.
+    DVec2 displacementUv(std::size_t face, int row, int column, int size) const;
     // Record where each expanded instance solid came from (expandBakeInstances); call after pack.
     void bindInstances(std::span<const document::InstanceSolidOrigin> origins);
     // Incremental-bake identity per face: instance faces by template placement/solid/side (stable across
     // edits, unlike the expansion's ids), the rest by source solid/side; plus the fragment ordinal.
     std::vector<lighting::FaceKey> faceKeys() const;
-    // CPU-only restart seed: nearest old luxel of the same source side, black for new sides.
+    // CPU-only restart seed: nearest old luxel of the same source side, black for new sides. A displaced
+    // face takes the old displaced face's luxel at the same grid fraction, never a flat one's (or the reverse).
     std::vector<std::vector<Vec3>> retainRadiance(
         const LightmapAtlas* previous, const std::vector<std::vector<Vec3>>& radiance,
         std::vector<char>* covered = nullptr) const;

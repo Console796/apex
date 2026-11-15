@@ -41,7 +41,8 @@ constexpr bool sceneMode(DisplayMode mode) { return mode == DisplayMode::Lit || 
 
 class SceneTarget;
 
-// Brush vertex, 44 bytes: camera-relative (draw-origin-relative) position, normal, uv, material.
+// Brush vertex, 48 bytes: camera-relative (draw-origin-relative) position, normal, uv, material,
+// lightmap uv and paint alpha.
 struct BrushVertex {
     float position[3];
     float normal[3];
@@ -49,7 +50,7 @@ struct BrushVertex {
     std::uint32_t material; // Texture slot, used when MeshDraw::texture == kVertexMaterial.
     float lightmapUv[2] = {-1.0f, -1.0f}; // Negative: no chart, Baked brush diffuse is black.
     // Displacement paint alpha, clamp(alpha, 0, 255) / 255; 0 elsewhere (WVT's base texture).
-    // Not yet a vertex attribute: 0.8.4's WorldVertexTransition blend binds it (location 5).
+    // Vertex attribute location 5: the WorldVertexTransition blend (kMaterialBlend).
     float alpha = 0.0f;
 };
 static_assert(sizeof(BrushVertex) == 48);

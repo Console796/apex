@@ -146,6 +146,22 @@ BakeScene cornerScene() {
     return scene;
 }
 
+// Plan 0.8.5: a displaced face as bakeDisplacementFace makes one, built directly: the flat quad's chart
+// with a luxel-corner lattice on a 12-unit bump (positions and analytic normals).
+void displace(BakeFace& face) {
+    const auto& chart = face.chart;
+    const DVec3 centre = chart.worldAt({0.5 * (chart.dimensions[0] - 1), 0.5 * (chart.dimensions[1] - 1)});
+    for (int y = 0; y <= chart.dimensions[1]; ++y) for (int x = 0; x <= chart.dimensions[0]; ++x) {
+        const DVec3 flat = chart.worldAt({std::clamp(x - 0.5, 0.0, chart.dimensions[0] - 1.0),
+                                          std::clamp(y - 0.5, 0.0, chart.dimensions[1] - 1.0)});
+        const DVec3 d = flat - centre;
+        const double height = 12.0 * std::exp(-(d.x * d.x + d.y * d.y) / (40.0 * 40.0));
+        const DVec3 gradient = -2.0 * height / (40.0 * 40.0) * DVec3{d.x, d.y, 0};
+        face.lattice.push_back({flat + DVec3{0, 0, height}, glm::normalize(DVec3{-gradient.x, -gradient.y, 1})});
+        face.surface.push_back(face.lattice.back().position);
+    }
+}
+
 BakeScene sealedRoom() {
     BakeScene scene;
     scene.faces = {
@@ -327,5 +343,35 @@ TEST_CASE("render: gpu bake session converges with CPU coverage-weighted parity"
     const auto b = coveredMean(input, gpu.baker().resolve());
     for (int channel = 0; channel < 3; ++channel)
         CHECK(b[channel] == doctest::Approx(a[channel]).epsilon(0.06));
+    CHECK(context->validation().errorCount() == 0);
+}
+
+TEST_CASE("render: gpu bake displaced lattices match CPU") {
+    auto* context = gpuContext();
+    if (!context) return;
+    context->validation().clear();
+    auto scene = cornerScene(); // Casters stay the flat quads: displacements do not cast in 0.8.5.
+    displace(scene.faces[0]);
+    REQUIRE(scene.faces[0].displaced());
+    BakerOptions options{.seed = 29, .threads = 1, .bounces = 1, .bounceRays = 256};
+    Baker cpu(scene, options);
+    Baker gpu(scene, options, gpuKernel(*context, scene, options));
+    cpu.step(); gpu.step();
+    const auto cpuDirect = cpu.resolveLevel(0), gpuDirect = gpu.resolveLevel(0);
+    MESSAGE("gpu bake displaced direct cpu=" << mean(cpuDirect).x << " gpu=" << mean(gpuDirect).x);
+    checkClose(cpuDirect, gpuDirect, 1e-3, 2e-5);
+    for (int pass = 0; pass < 4; ++pass) { cpu.bounce(1); gpu.bounce(1); }
+    const auto cpuBounce = cpu.resolveLevel(1), gpuBounce = gpu.resolveLevel(1);
+    const auto cpuMean = coveredMean(scene, cpuBounce), gpuMean = coveredMean(scene, gpuBounce);
+    MESSAGE("gpu bake displaced bounce cpu=" << cpuMean.x << " gpu=" << gpuMean.x);
+    for (int channel = 0; channel < 3; ++channel)
+        CHECK(gpuMean[channel] == doctest::Approx(cpuMean[channel]).epsilon(0.06));
+    checkClose(cpuBounce, gpuBounce, 0.45, std::max(1e-4, cpuMean.x * 0.03));
+    // The bump changes the direct result against the flat floor (the lattice is really used).
+    auto flat = cornerScene();
+    Baker flatCpu(flat, options);
+    flatCpu.step();
+    CHECK(mean(flatCpu.resolveLevel(0)).x != doctest::Approx(mean(cpuDirect).x).epsilon(1e-3));
+    for (const auto& error : context->validation().errors()) MESSAGE(error);
     CHECK(context->validation().errorCount() == 0);
 }

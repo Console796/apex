@@ -24,6 +24,27 @@ double unit(std::uint64_t key) {
     return static_cast<double>(mix(key) >> 11) * 0x1.0p-53;
 }
 
+constexpr std::array<DVec2, 4> kCornerOffsets{DVec2{-0.5, -0.5}, DVec2{0.5, -0.5},
+                                             DVec2{-0.5, 0.5}, DVec2{0.5, 0.5}};
+
+struct CornerSample {
+    DVec3 point;  // Lifted 1 unit off the surface.
+    DVec3 normal; // Shading normal.
+};
+
+// Corner `corner` (kCornerOffsets) of a luxel: on the plane for a flat face, from the lattice for a
+// displaced one (displacementLattice: corner (dx, dy) of luxel (s, t) is point (s + dx, t + dy)).
+CornerSample cornerSample(const BakeFace& face, std::size_t luxel, std::size_t corner) {
+    const auto width = static_cast<std::size_t>(face.chart.dimensions[0]);
+    if (face.displaced()) {
+        const auto x = luxel % width + (corner & 1u), y = luxel / width + (corner >> 1u);
+        const auto& p = face.lattice[y * (width + 1) + x];
+        return {p.position + p.normal, p.normal};
+    }
+    const DVec2 coordinate{static_cast<double>(luxel % width), static_cast<double>(luxel / width)};
+    return {clampToFace(face, face.chart.worldAt(coordinate + kCornerOffsets[corner])) + face.normal, face.normal};
+}
+
 } // namespace
 
 DVec3 clampToFace(const BakeFace& face, DVec3 point) {
@@ -68,6 +89,8 @@ Baker::Baker(BakeScene scene, BakerOptions options, std::shared_ptr<BakeKernel> 
         if (dims[0] <= 0 || dims[1] <= 0 || !std::isfinite(glm::length(face.normal)) ||
             std::abs(glm::length(face.normal) - 1.0) > 1e-6)
             throw std::invalid_argument("Baker: invalid chart dimensions or face normal");
+        if (face.displaced() && face.lattice.size() != std::size_t(dims[0] + 1) * std::size_t(dims[1] + 1))
+            throw std::invalid_argument("Baker: displacement lattice does not match its chart");
         if (options.bounces > 0)
             for (int c = 0; c < 3; ++c)
                 if (!std::isfinite(face.albedo[c]) || face.albedo[c] < 0 || face.albedo[c] > 1)
@@ -98,20 +121,16 @@ double Baker::skyVisibility(DVec3 point, DVec3 normal, std::uint64_t key) const 
 DVec3 Baker::sample(std::size_t faceIndex, std::size_t luxel) const {
     const auto& face = scene_.faces[faceIndex];
     const auto count = buffers_[faceIndex].samples[luxel];
-    const DVec2 coordinate{static_cast<double>(luxel % static_cast<std::size_t>(face.chart.dimensions[0])),
-                           static_cast<double>(luxel / static_cast<std::size_t>(face.chart.dimensions[0]))};
-    constexpr std::array<DVec2, 4> offsets{DVec2{-0.5, -0.5}, DVec2{0.5, -0.5},
-                                         DVec2{-0.5, 0.5}, DVec2{0.5, 0.5}};
     DVec3 sum{0};
-    for (std::size_t i = 0; i < offsets.size(); ++i) {
-        const DVec3 point = clampToFace(face, face.chart.worldAt(coordinate + offsets[i])) + face.normal;
+    for (std::size_t i = 0; i < kCornerOffsets.size(); ++i) {
+        const auto [point, normal] = cornerSample(face, luxel, i);
         double sky = -1; // One visibility estimate shared by every ambient light at this point.
         for (const auto& light : scene_.lights) {
             if (!hasDirect(light)) continue;
-            const DVec3 value = directIrradiance(light, point, face.normal);
+            const DVec3 value = directIrradiance(light, point, normal);
             if (value == DVec3{0}) continue;
             if (light.kind == LightKind::Ambient) {
-                if (sky < 0) sky = skyVisibility(point, face.normal,
+                if (sky < 0) sky = skyVisibility(point, normal,
                     mix(mix(mix(options_.seed) ^ faceIndex) ^ luxel) ^ mix(count + i + 1));
                 sum += value * sky;
             } else if (light.kind == LightKind::Sun) {
@@ -130,17 +149,15 @@ DVec3 Baker::sampleBounce(unsigned level, std::size_t faceIndex, std::size_t lux
     const auto& face = scene_.faces[faceIndex];
     const auto count = buffers(level)[faceIndex].samples[luxel];
     const auto& source = passes_[level].source;
-    const DVec2 coordinate{static_cast<double>(luxel % static_cast<std::size_t>(face.chart.dimensions[0])),
-                           static_cast<double>(luxel / static_cast<std::size_t>(face.chart.dimensions[0]))};
-    const auto tangent = glm::normalize(glm::cross(
-        std::abs(face.normal.z) < 0.9 ? DVec3{0, 0, 1} : DVec3{0, 1, 0}, face.normal));
-    const auto bitangent = glm::cross(face.normal, tangent);
-    constexpr std::array<DVec2, 4> offsets{DVec2{-0.5, -0.5}, DVec2{0.5, -0.5},
-                                         DVec2{-0.5, 0.5}, DVec2{0.5, 0.5}};
     DVec3 sum{0};
-    for (std::size_t i = 0; i < offsets.size(); ++i) {
+    for (std::size_t i = 0; i < kCornerOffsets.size(); ++i) {
+        const auto corner = cornerSample(face, luxel, i);
+        const auto& normal = corner.normal;
+        const auto tangent = glm::normalize(glm::cross(
+            std::abs(normal.z) < 0.9 ? DVec3{0, 0, 1} : DVec3{0, 1, 0}, normal));
+        const auto bitangent = glm::cross(normal, tangent);
         // Use the same float ray origin/direction to reconstruct the actual acceleration hit.
-        const Vec3 point(clampToFace(face, face.chart.worldAt(coordinate + offsets[i])) + face.normal);
+        const Vec3 point(corner.point);
         const auto key = mix(mix(mix(mix(options_.seed) ^ faceIndex) ^ luxel) ^ level) ^ mix(count + i + 1);
         const double rotation = unit(key);
         for (unsigned ray = 0; ray < options_.bounceRays; ++ray) {
@@ -148,7 +165,7 @@ DVec3 Baker::sampleBounce(unsigned level, std::size_t faceIndex, std::size_t lux
             const double radius = std::sqrt(u);
             const double phi = 2 * std::numbers::pi * (rotation + ray * 0.6180339887498949);
             const Vec3 direction(tangent * (radius * std::cos(phi)) +
-                                 bitangent * (radius * std::sin(phi)) + face.normal * std::sqrt(1 - u));
+                                 bitangent * (radius * std::sin(phi)) + normal * std::sqrt(1 - u));
             const auto hit = occlusion.accel->closest(point, direction, std::numeric_limits<float>::max());
             if (!hit || (occlusion.isSky && occlusion.isSky(*hit))) continue;
             const auto index = occlusion.faceOf(*hit);

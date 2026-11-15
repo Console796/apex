@@ -9,6 +9,7 @@
 #include "document/document.hpp"
 #include "document/instance_contents.hpp"
 #include "geometry/convex_polyhedron.hpp"
+#include "geometry/displacement.hpp"
 #include "render/renderer.hpp"
 
 #include <cstdint>
@@ -34,7 +35,8 @@ struct FaceRange {
     DVec3 centre{0.0};
     DVec3 normal{0.0}; // Unit outward plane normal.
     document::SideId side = 0;
-    bool displacement = false; // document::isDisplaced; Baked keeps the Lit path for these (no disp lightmaps yet).
+    bool displacement = false; // document::isDisplaced; Baked keeps the Lit path for these unless:
+    bool displacementLightmap = false; // the displaced vertices carry their displaced fragment's UVs (plan 0.8.5).
     std::uint32_t firstIndex = 0, indexCount = 0;
     std::uint32_t firstEdgeIndex = 0, edgeIndexCount = 0;
 };
@@ -81,10 +83,15 @@ Result<SolidMesh> meshSolid(const kv1::Node& solidBlock,
 // parse, or whose base face is not a quad, draws as its flat face. Bounds include displaced vertices.
 // Same mesher for preview values and parsed committed solids. Face material and UV data are used
 // verbatim; invalid polyhedra fail before any vertices are emitted. Preview values carry no
-// displacements, so they mesh flat.
+// dispinfo, so they mesh flat unless the preview supplies their displacements (the overload below).
 Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                             const std::function<TextureSize(std::string_view)>& sizeOf,
                             const LightmapAtlas* lightmaps = nullptr, std::uint64_t solidId = 0,
                             const document::InstanceSolidOrigin* origin = nullptr);
+// A preview value with displaced sides (plan 0.8 D6's sculpt stroke): the sides keyed in
+// `displacements` mesh as displaced and hide their solid's other sides, as a parsed block's would.
+Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
+                            const std::function<TextureSize(std::string_view)>& sizeOf,
+                            const std::map<document::SideId, geometry::Displacement>& displacements);
 
 } // namespace apex::render

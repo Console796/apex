@@ -72,7 +72,7 @@ TEST_CASE("fragments without light or a side stay unmapped") {
     fragments.push_back(outside);                             // not inside any side
     auto displacement = topFragment();
     displacement.displacement = true;
-    fragments.push_back(displacement);
+    fragments.push_back(displacement);                        // no displaced side to own it (0.8.5)
     auto dark = topFragment();
     dark.luxels.clear();
     fragments.push_back(dark);                                // lightOffset < 0
@@ -82,7 +82,7 @@ TEST_CASE("fragments without light or a side stay unmapped") {
     const auto rest = lighting::mapBspFragments(fragments, owners);
     CHECK(rest.faces.empty());
     CHECK(rest.stats.fragments == 5);
-    CHECK(rest.stats.unowned == 3);
+    CHECK(rest.stats.unowned == 4);
     CHECK(rest.stats.displacement == 1);
     CHECK(rest.stats.noData == 1);
 }

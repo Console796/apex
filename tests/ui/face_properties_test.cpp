@@ -8,6 +8,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QTabWidget>
 #include <QLineEdit>
 #include <QListWidget>
 #include <sstream>
@@ -577,14 +578,26 @@ TEST_CASE("Face Properties shows a read-only Displacement section for displaced 
     panel.setEditorSession(&session);
     panel.show();
     app().processEvents();
+    auto* tabs = panel.findChild<QTabWidget*>("facePropertiesTabs");
     auto* section = panel.findChild<QLabel*>("faceDisplacement");
+    auto* none = panel.findChild<QLabel*>("faceDisplacementNone");
+    REQUIRE(tabs);
     REQUIRE(section);
+    REQUIRE(none);
+    // The settings are on their own tab, as in Hammer's Face Edit dialog; its label counts them.
+    CHECK(tabs->currentIndex() == 0);
+    CHECK(tabs->tabText(1) == "Displacement");
+    tabs->setCurrentIndex(1);
+    app().processEvents();
     CHECK_FALSE(section->isVisible());
+    CHECK(none->isVisible());
 
     session.selection().select(document::SideId{355});
     app().processEvents();
     panel.refresh();
+    CHECK(tabs->tabText(1) == "Displacement (1)");
     CHECK(section->isVisible());
+    CHECK_FALSE(none->isVisible());
     CHECK(section->text().contains("Power: 3 (9×9 grid)"));
     CHECK(section->text().contains("Flags: none (0)"));
     CHECK(section->text().contains("Elevation: 0"));
@@ -620,6 +633,8 @@ TEST_CASE("Face Properties edits displacement flags and power") {
     REQUIRE(power);
     REQUIRE(noPhys);
     REQUIRE(noRay);
+    panel.findChild<QTabWidget*>("facePropertiesTabs")->setCurrentIndex(1);
+    app().processEvents();
     CHECK(edit->isVisible());
     CHECK(power->currentData().toInt() == 3);
     CHECK(noPhys->checkState() == Qt::Unchecked);
@@ -638,12 +653,29 @@ TEST_CASE("Face Properties edits displacement flags and power") {
     CHECK(flags() == geometry::Displacement::kFlagNoRay);
     CHECK(noPhys->checkState() == Qt::Unchecked);
 
-    // test1's displacement is painted: a power change is refused, and says why.
+    // test1's displacement is painted: lowering its power asks first, and a No changes nothing.
+    QStringList asked;
+    bool answer = false;
+    panel.setConfirm([&](const QString&, const QString& text) {
+        asked << text;
+        return answer;
+    });
     const auto undo = doc.undoCount();
     emit power->activated(power->findData(2));
+    CHECK(asked.size() == 1);
     CHECK(doc.undoCount() == undo);
+    CHECK(power->currentData().toInt() == 3);
+    // Raising loses nothing, so it does not ask; a Yes then lowers it again.
+    emit power->activated(power->findData(4));
+    CHECK(asked.size() == 1);
+    CHECK(document::displacement(doc, 355).value()->power == 4);
+    answer = true;
+    emit power->activated(power->findData(3));
+    CHECK(asked.size() == 2);
+    CHECK(document::displacement(doc, 355).value()->power == 3);
+    CHECK(doc.undoCount() == undo + 2);
     REQUIRE_FALSE(messages.isEmpty());
-    CHECK(messages.back().contains("sculpted or painted"));
+    CHECK(messages.back().contains("finer detail dropped"));
     panel.refresh();
     CHECK(power->currentData().toInt() == 3);
 

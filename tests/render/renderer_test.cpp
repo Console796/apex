@@ -95,7 +95,8 @@ struct Cube {
 
 // Axis-aligned cube of half-extent h around the origin; uv (0,0) is the top-left of each face as
 // seen from outside for the -X face (the one the test camera sees).
-Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transform = DMat4(1.0), bool interior = false) {
+Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transform = DMat4(1.0), bool interior = false,
+              float alpha = 0.0f) {
     struct Face {
         float n[3];
         float c[4][3];
@@ -127,6 +128,7 @@ Cube makeCube(Fixture& f, float h, std::uint32_t material, const DMat4& transfor
             if (interior) for (float& n : v.normal) n = -n;
             std::memcpy(v.uv, uvs[i], sizeof v.uv);
             v.material = material;
+            v.alpha = alpha;
             vertices.push_back(v);
             edges.push_back(base + static_cast<std::uint32_t>(i));
             edges.push_back(base + static_cast<std::uint32_t>((i + 1) % 4));
@@ -1567,6 +1569,57 @@ TEST_CASE("renderer: Lit float material preserves HDR energy without colour deco
     CHECK(nearColour(at(image, 32, 32), expected, 1));
     gpu->heap->release(*slot);
     CHECK(gpu->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("renderer: WorldVertexTransition blends $basetexture2 by vertex alpha, shaped by $blendmodulatetexture") {
+    REQUIRE_GPU();
+    const auto texel = [](std::uint8_t r, std::uint8_t g, std::uint8_t b) {
+        return std::array<std::byte, 4>{std::byte{r}, std::byte{g}, std::byte{b}, std::byte{255}};
+    };
+    const auto red = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel(255, 0, 0));
+    const auto green = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel(0, 255, 0));
+    // Blend modulate: r = 0, g = 0.5 is a hard step at alpha 0.5; r = 0.25 widens it to 0.25..0.75.
+    const auto step = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel(0, 128, 0));
+    const auto wide = gpu->heap->upload({1, 1, VK_FORMAT_R8G8B8A8_UNORM}, texel(64, 128, 0));
+    REQUIRE(red);
+    REQUIRE(green);
+    REQUIRE(step);
+    REQUIRE(wide);
+    REQUIRE(gpu->heap->flush());
+    GpuMaterial material{*red, kNoTexture, kMaterialBlend, kNoTexture};
+    material.base2Slot = *green;
+    gpu->heap->setMaterial(*red, material);
+    // Realtime (Lit) only: Textured draws have no material table. Fullbright shows the albedo.
+    SceneTarget scene(*gpu->context, *gpu->heap);
+    const auto centre = [&](float alpha) {
+        const Cube cube = makeCube(*gpu, 32.0f, 0, DMat4(1.0), false, alpha);
+        auto list = cubeList(cube, DisplayMode::Lit, *red);
+        list.meshes[0].colour = Vec4(1);
+        list.fullbright = true;
+        return at(drawLitFrame(*gpu, list, scene), 32, 32);
+    };
+    // Alpha 0 shows $basetexture, 1 shows $basetexture2, between them a linear mix.
+    const Px base = centre(0.0f), second = centre(1.0f), half = centre(0.5f);
+    CHECK(base.r > 120);
+    CHECK(base.g < 10);
+    CHECK(second.g > 120);
+    CHECK(second.r < 10);
+    CHECK(half.r > 40);
+    CHECK(half.g > 40);
+    CHECK(std::abs(half.r - half.g) <= 3);
+    // A material without the flag ignores alpha.
+    gpu->heap->setMaterial(*red, GpuMaterial{*red, kNoTexture, 0, kNoTexture});
+    CHECK(nearColour(centre(1.0f), base, 1));
+    material.flags |= kMaterialBlendModulate;
+    material.blendModulateSlot = *step;
+    gpu->heap->setMaterial(*red, material);
+    CHECK(nearColour(centre(0.45f), base, 1));
+    CHECK(nearColour(centre(0.55f), second, 1));
+    material.blendModulateSlot = *wide;
+    gpu->heap->setMaterial(*red, material);
+    CHECK(nearColour(centre(0.2f), base, 1));
+    CHECK(nearColour(centre(0.5f), half, 3));
+    CHECK(nearColour(centre(0.8f), second, 1));
 }
 
 TEST_CASE("renderer: Lit PBR spotlight mirror highlight follows camera and roughness widens it") {

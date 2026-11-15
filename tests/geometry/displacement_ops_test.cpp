@@ -1,4 +1,4 @@
-// Plan 0.8 D6: Create, Sew and Subdivide as pure operations, and the seam measure behind the
+// Plan 0.8 D6: Create, Sew and power resampling as pure operations, and the seam measure behind the
 // "unsewn displacement edge" problem. Hammer's own output for a sewn patch (D3 fixture 4) does not
 // exist yet; these are Apex-side property tests.
 #include "geometry/displacement_ops.hpp"
@@ -214,31 +214,86 @@ TEST_CASE("seams ignore patches that do not touch and measure sewn ones as close
     CHECK(seams->front().gap == 0.0);
 }
 
-TEST_CASE("subdivide sets subdiv, keeps a flat grid flat and its boundary in place, and smooths a bump") {
-    const auto corners = floorQuad(0, 0, 256);
-    auto flat = createDisplacement(corners, 3, 0).value();
-    auto subdivided = flat;
-    REQUIRE(subdivideDisplacement(corners, subdivided));
-    CHECK(subdivided.subdiv == 1);
-    const auto a = displacementMesh(corners, flat).value(), b = displacementMesh(corners, subdivided).value();
-    for (std::size_t i = 0; i < a.positions.size(); ++i) CHECK(glm::distance(a.positions[i], b.positions[i]) < 1e-9);
-
-    auto bumpy = flat;
-    const int n = bumpy.size();
-    const auto centre = static_cast<std::size_t>((n / 2) * n + n / 2);
-    bumpy.distances[centre] = 32.0;
-    for (int k = 0; k < n; ++k) bumpy.distances[static_cast<std::size_t>(k)] = 8.0; // An edge row.
-    auto smooth = bumpy;
-    REQUIRE(subdivideDisplacement(corners, smooth));
-    const auto before = displacementMesh(corners, bumpy).value(), after = displacementMesh(corners, smooth).value();
-    CHECK(after.positions[centre].z < before.positions[centre].z);
-    for (int k = 0; k < n; ++k) CHECK(after.positions[static_cast<std::size_t>(k)] == before.positions[static_cast<std::size_t>(k)]);
-    CHECK(smooth.distances == bumpy.distances); // The smoothing lives in the offsets.
-}
-
 TEST_CASE("only a displacement with no distances, offsets or alphas counts as flat") {
     auto disp = createDisplacement(floorQuad(0, 0, 64), 2, 0).value();
     CHECK(displacementIsFlat(disp));
     disp.alphas[3] = 1.0;
     CHECK_FALSE(displacementIsFlat(disp));
+}
+
+TEST_CASE("resampling up keeps the mesh exactly, and back down restores the rows") {
+    const auto corners = floorQuad(64, -128, 128, 32);
+    auto disp = createDisplacement(corners, 3, 0).value();
+    std::mt19937 rng(41);
+    std::uniform_real_distribution<double> unit(-1.0, 1.0), height(0.0, 24.0), alpha(0.0, 255.0);
+    for (std::size_t i = 0; i < disp.vertexCount(); ++i) {
+        disp.normals[i] = glm::normalize(DVec3{unit(rng), unit(rng), 1.0});
+        disp.distances[i] = height(rng);
+        disp.offsets[i] = {unit(rng) * 3.0, unit(rng) * 3.0, unit(rng)};
+        disp.alphas[i] = alpha(rng);
+    }
+    disp.triangleTags[0] |= Displacement::kTagForceWalkable; // Forced off: survives the resample.
+    REQUIRE(retagDisplacement(corners, disp));
+    const auto old = displacementMesh(corners, disp).value();
+
+    const auto up = resampleDisplacement(corners, disp, 4);
+    REQUIRE(up);
+    CHECK(up->power == 4);
+    CHECK_FALSE(up->problem());
+    const auto mesh = displacementMesh(corners, *up).value();
+    const auto at = [](const DisplacementMesh& m, int i, int j) { return static_cast<std::size_t>(i * m.size + j); };
+    for (int i = 0; i < 9; ++i)
+        for (int j = 0; j < 9; ++j) {
+            CAPTURE(i);
+            CAPTURE(j);
+            // On the old grid: the same point. Between: the old surface's bilinear blend.
+            CHECK(glm::distance(mesh.positions[at(mesh, 2 * i, 2 * j)], old.positions[at(old, i, j)]) < 1e-9);
+            if (i + 1 < 9) {
+                const auto mid = (old.positions[at(old, i, j)] + old.positions[at(old, i + 1, j)]) * 0.5;
+                CHECK(glm::distance(mesh.positions[at(mesh, 2 * i + 1, 2 * j)], mid) < 1e-9);
+                CHECK(mesh.alphas[at(mesh, 2 * i + 1, 2 * j)] ==
+                      doctest::Approx((old.alphas[at(old, i, j)] + old.alphas[at(old, i + 1, j)]) * 0.5));
+            }
+            if (i + 1 < 9 && j + 1 < 9) {
+                const auto centre = (old.positions[at(old, i, j)] + old.positions[at(old, i + 1, j)] +
+                                     old.positions[at(old, i, j + 1)] + old.positions[at(old, i + 1, j + 1)]) * 0.25;
+                CHECK(glm::distance(mesh.positions[at(mesh, 2 * i + 1, 2 * j + 1)], centre) < 1e-9);
+            }
+        }
+    // The old quad (0, 0) becomes four new quads, each keeping its triangles' force bits.
+    for (const std::size_t quad : {0u, 1u, 16u, 17u}) CHECK((up->triangleTags[2 * quad] & Displacement::kTagForceWalkable) != 0);
+    CHECK((up->triangleTags[2 * 2] & Displacement::kTagForceWalkable) == 0);
+
+    const auto down = resampleDisplacement(corners, *up, 3);
+    REQUIRE(down);
+    CHECK(down->normals == disp.normals);
+    CHECK(down->distances == disp.distances);
+    CHECK(down->offsets == disp.offsets);
+    CHECK(down->offsetNormals == disp.offsetNormals);
+    CHECK(down->alphas == disp.alphas);
+
+    // Lowering keeps every other vertex where it was.
+    const auto low = resampleDisplacement(corners, disp, 2);
+    REQUIRE(low);
+    const auto lowMesh = displacementMesh(corners, *low).value();
+    for (int i = 0; i < 5; ++i)
+        for (int j = 0; j < 5; ++j)
+            CHECK(glm::distance(lowMesh.positions[at(lowMesh, i, j)], old.positions[at(old, 2 * i, 2 * j)]) < 1e-9);
+    CHECK_FALSE(resampleDisplacement(corners, disp, 5));
+}
+
+TEST_CASE("raising one of two sewn patches keeps the seam closed") {
+    std::vector<DisplacementPatch> patches;
+    std::mt19937 rng(17);
+    std::uniform_real_distribution<double> height(0.0, 24.0);
+    for (const double x : {0.0, 128.0}) {
+        const auto corners = floorQuad(x, 0, 128);
+        auto disp = createDisplacement(corners, 3, 0).value();
+        for (auto& distance : disp.distances) distance = height(rng);
+        patches.push_back({corners, std::move(disp)});
+    }
+    REQUIRE(sewDisplacements(patches));
+    REQUIRE(worstSeam(patches) < 1e-6);
+    patches[1].disp = resampleDisplacement(patches[1].corners, patches[1].disp, 4).value();
+    CHECK(worstSeam(patches) < 1e-6);
 }

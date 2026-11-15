@@ -115,7 +115,7 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
                            src/geometry/displacement.cpp src/geometry/displacement_rebase.cpp
-                           src/geometry/overlay.cpp src/geometry/displacement_ops.cpp
+                           src/geometry/overlay.cpp src/geometry/displacement_ops.cpp src/geometry/displacement_sculpt.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.cpp
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp

@@ -115,9 +115,20 @@ Result<SolidMesh> meshPolyhedron(const geometry::ConvexPolyhedron& poly,
             key = side == origin->sides.end() ? std::pair<std::uint64_t, std::uint32_t>{0, 0} :
                 std::pair<std::uint64_t, std::uint32_t>{origin->solid, side->second};
         }
-        // No displacement lightmaps until 0.8.5: a displaced face never takes a flat chart.
-        if (lightmaps && !displaced) if (const auto found = lightmaps->fragments.find(key);
-                          found != lightmaps->fragments.end()) fragments = found->second;
+        // A displaced face never takes a flat chart, only its one displaced fragment (plan 0.8.5), and only
+        // while that was baked or compiled from this grid (or the live editor retains stale radiance).
+        std::optional<std::size_t> displacementFragment;
+        if (lightmaps) if (const auto found = lightmaps->fragments.find(key); found != lightmaps->fragments.end()) {
+            if (!displaced) fragments = found->second;
+            else if (found->second.size() == 1 && lightmaps->faces[found->second.front()].displaced()) {
+                const auto& surface = lightmaps->faces[found->second.front()].surface;
+                const DMat4 transform = origin ? origin->transform : DMat4(1.0);
+                bool matches = surface.size() == displaced->positions.size();
+                for (std::size_t i = 0; matches && !lightmaps->retainStale && i < surface.size(); ++i)
+                    matches = glm::distance(DVec3(transform * DVec4(displaced->positions[i], 1.0)), surface[i]) <= 1e-3;
+                if (matches) displacementFragment = found->second.front();
+            }
+        }
         std::optional<std::size_t> retained;
         if (!fragments.empty() && (origin || lightmaps->compiled)) {
             // A compiled lattice is the compiler's own, so it is checked against the face only by position.
@@ -185,6 +196,7 @@ Result<SolidMesh> meshPolyhedron(const geometry::ConvexPolyhedron& poly,
         range.normal = face.plane.normal;
         range.side = sideId;
         range.displacement = displacements.sides.contains(sideId);
+        range.displacementLightmap = displacementFragment.has_value();
         const Segment segment = displaced ? kDisplaced : kFlat;
         range.firstIndex = static_cast<std::uint32_t>(indices[segment].size());
         range.firstEdgeIndex = static_cast<std::uint32_t>(batch.edges.size());
@@ -206,6 +218,12 @@ Result<SolidMesh> meshPolyhedron(const geometry::ConvexPolyhedron& poly,
                 const double length = glm::length(normals[i]);
                 BrushVertex v = vertexAt(positions[i], flat, length > 0.0 ? normals[i] / length : face.plane.normal);
                 v.alpha = static_cast<float>(std::clamp(displaced->alphas[i], 0.0, 255.0) / 255.0);
+                if (displacementFragment) {
+                    const auto n = static_cast<std::size_t>(displaced->size);
+                    const auto lm = lightmaps->displacementUv(*displacementFragment, int(i / n), int(i % n), int(n));
+                    v.lightmapUv[0] = static_cast<float>(lm.x);
+                    v.lightmapUv[1] = static_cast<float>(lm.y);
+                }
                 batch.vertices.push_back(v);
                 mesh.bounds.expand(positions[i]);
             }
@@ -305,6 +323,15 @@ Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
                             const LightmapAtlas* lightmaps, std::uint64_t solidId,
                             const document::InstanceSolidOrigin* origin) {
     return meshPolyhedron(poly, sizeOf, lightmaps, solidId, origin, {});
+}
+
+Result<SolidMesh> meshSolid(const geometry::ConvexPolyhedron& poly,
+                            const std::function<TextureSize(std::string_view)>& sizeOf,
+                            const std::map<document::SideId, geometry::Displacement>& displacements) {
+    Displacements sides;
+    for (const auto& [side, disp] : displacements) sides.sides.insert(side);
+    sides.parsed = displacements;
+    return meshPolyhedron(poly, sizeOf, nullptr, 0, nullptr, sides);
 }
 
 } // namespace apex::render

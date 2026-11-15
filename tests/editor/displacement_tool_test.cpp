@@ -1,4 +1,4 @@
-// Plan 0.8 D5/D6 (0.8.3): the Displacement tool's Create, Subdivide and Sew modes, Destroy
+// Plan 0.8 D5/D6 (0.8.3): the Displacement tool's Create and Sew modes, Destroy
 // displacement, the unsewn-edge problem and the Face Properties edits behind power and flags.
 #include "fixtures.hpp"
 #include "document/displacement.hpp"
@@ -199,7 +199,7 @@ TEST_CASE("the Displacement tool's readout, parameters, clicks and Enter") {
     const auto top = sideFacing(s.doc, box, {0, 0, 1});
     auto readout = s.tool().readout();
     REQUIRE(readout.parameters.size() == 3);
-    CHECK(readout.parameters[0].choices == std::vector<std::string>{"Create", "Subdivide", "Sew"});
+    CHECK(readout.parameters[0].choices == std::vector<std::string>{"Create", "Sew", "Sculpt", "Paint alpha"});
     CHECK(readout.parameters[1].id == "power");
     CHECK(readout.parameters[2].id == "elevation");
     CHECK(s.tool().setParameter("power", 9));
@@ -225,14 +225,11 @@ TEST_CASE("the Displacement tool's readout, parameters, clicks and Enter") {
     REQUIRE(disp);
     CHECK(disp->power == 4);
     CHECK(disp->elevation == 16);
-    // Subdivide and Sew show only the mode.
-    s.tool().setMode(DisplacementTool::Mode::Subdivide);
+    // Sew shows only the mode.
+    s.tool().setMode(DisplacementTool::Mode::Sew);
     readout = s.tool().readout();
     CHECK(readout.parameters.size() == 1);
-    CHECK(readout.detail == "Subdivide");
-    REQUIRE(s.session.perform("displacement.apply"));
-    CHECK(document::displacement(s.doc, top).value()->subdiv == 1);
-    CHECK(s.doc.undoLabels().back() == "Subdivide displacements");
+    CHECK(readout.detail == "Sew");
 }
 
 TEST_CASE("the unsewn check finds an open edge and not a closed one, and Sew closes it") {
@@ -280,7 +277,7 @@ TEST_CASE("the unsewn check finds an open edge and not a closed one, and Sew clo
     CHECK(s.tool().notice().starts_with("Select two or more displacements"));
 }
 
-TEST_CASE("power and flag edits: flags toggle per bit, power rebuilds only a flat displacement") {
+TEST_CASE("power and flag edits: flags toggle per bit, power rebuilds a flat displacement and resamples a sculpted one") {
     Session s(kEmpty);
     const auto box = addBox(s.doc, {0, 0, 0}, {128, 128, 64}, world(s.doc));
     const auto top = sideFacing(s.doc, box, {0, 0, 1});
@@ -307,8 +304,25 @@ TEST_CASE("power and flag edits: flags toggle per bit, power rebuilds only a fla
 
     disp.distances[7] = 4.0;
     s.session.edit("sculpt", [&](document::Transaction& tx) { tx.setDisplacement(top, disp); });
-    const auto refused = setDisplacementPower(s.session, sides, 4);
-    REQUIRE_FALSE(refused);
-    CHECK(std::string(refused.error().what()).find("sculpted or painted") != std::string::npos);
-    CHECK(document::displacement(s.doc, top).value()->power == 2);
+    // A sculpted one is resampled: raising keeps the sculpted vertex (power 2's vertex 7 is row 1,
+    // column 2, which is power 4's row 4, column 8) and loses nothing.
+    CHECK_FALSE(displacementPowerLosesDetail(s.doc, sides, 4));
+    const auto sculpted = s.doc.undoCount();
+    const auto raised = setDisplacementPower(s.session, sides, 4);
+    REQUIRE(raised);
+    CHECK(raised->message == "Set 1 displacement to power 4");
+    auto up = *document::displacement(s.doc, top).value();
+    CHECK(up.power == 4);
+    CHECK(up.distances[4 * 17 + 8] == 4.0);
+    CHECK(up.flags == 8);
+    CHECK(s.doc.undoCount() == sculpted + 1);
+    // Lowering it again would drop what lies between; it still happens when asked, and says so.
+    CHECK(displacementPowerLosesDetail(s.doc, sides, 2));
+    const auto lowered = setDisplacementPower(s.session, sides, 2);
+    REQUIRE(lowered);
+    CHECK(lowered->message.find("finer detail dropped") != std::string::npos);
+    CHECK(*document::displacement(s.doc, top).value() == disp);
+    REQUIRE(s.doc.undo());
+    REQUIRE(s.doc.undo());
+    CHECK(*document::displacement(s.doc, top).value() == disp);
 }

@@ -189,23 +189,6 @@ Result<DisplacementEditReport> sewDisplacements(EditorSession& session, std::spa
                                                      unreadableNote(found.unreadable)};
 }
 
-Result<DisplacementEditReport> subdivideDisplacements(EditorSession& session, std::span<const SideId> sides) {
-    const auto* doc = session.document();
-    if (!doc) return std::unexpected(invalid("no map is open"));
-    const auto found = displaced(*doc, sides);
-    if (found.sides.empty()) return std::unexpected(invalid("Select displacements to subdivide" + unreadableNote(found.unreadable)));
-    Writes writes;
-    for (const auto& side : found.sides) {
-        auto disp = *side.disp;
-        if (auto done = geometry::subdivideDisplacement(side.corners, disp); !done) return std::unexpected(done.error());
-        if (disp != *side.disp) writes.emplace_back(side.side, std::move(disp));
-    }
-    if (writes.empty()) return DisplacementEditReport{0, "Nothing to subdivide" + unreadableNote(found.unreadable)};
-    commit(session, "Subdivide displacements", writes);
-    return DisplacementEditReport{writes.size(), "Subdivided " + plural(writes.size(), "displacement", "displacements") +
-                                                     unreadableNote(found.unreadable)};
-}
-
 Result<DisplacementEditReport> setDisplacementFlags(EditorSession& session, std::span<const SideId> sides, int mask,
                                                     bool on) {
     const auto* doc = session.document();
@@ -239,13 +222,16 @@ Result<DisplacementEditReport> setDisplacementPower(EditorSession& session, std:
         return std::unexpected(invalid("displacement power must be 2, 3 or 4"));
     const auto found = displaced(*doc, sides);
     if (found.sides.empty()) return std::unexpected(invalid("No displaced face is selected" + unreadableNote(found.unreadable)));
-    std::vector<SideId> sculpted;
+    std::size_t lowered = 0;
     Writes writes;
     for (const auto& side : found.sides) {
         const auto& old = *side.disp;
         if (old.power == power) continue;
         if (!geometry::displacementIsFlat(old)) {
-            sculpted.push_back(side.side);
+            auto resampled = geometry::resampleDisplacement(side.corners, old, power);
+            if (!resampled) return std::unexpected(resampled.error());
+            if (power < old.power) ++lowered;
+            writes.emplace_back(side.side, std::move(*resampled));
             continue;
         }
         auto rebuilt = geometry::createDisplacement(side.corners, power, old.elevation);
@@ -255,15 +241,20 @@ Result<DisplacementEditReport> setDisplacementPower(EditorSession& session, std:
         if (auto tagged = geometry::retagDisplacement(side.corners, *rebuilt); !tagged) return std::unexpected(tagged.error());
         writes.emplace_back(side.side, std::move(*rebuilt));
     }
-    if (!sculpted.empty())
-        return std::unexpected(invalid("Power can change only on a flat, unpainted displacement; " +
-                                       plural(sculpted.size(), "face is", "faces are") + " sculpted or painted (" +
-                                       idList(sculpted) + "). Destroy and recreate it to start over."));
     if (writes.empty()) return DisplacementEditReport{0, "Power unchanged" + unreadableNote(found.unreadable)};
     commit(session, "Set displacement power", writes);
-    return DisplacementEditReport{writes.size(), "Rebuilt " + plural(writes.size(), "displacement", "displacements") +
-                                                     " at power " + std::to_string(power) +
+    const std::string lost = lowered ? "; finer detail dropped on " + plural(lowered, "sculpted or painted displacement",
+                                                                             "sculpted or painted displacements") : "";
+    return DisplacementEditReport{writes.size(), "Set " + plural(writes.size(), "displacement", "displacements") +
+                                                     " to power " + std::to_string(power) + lost +
                                                      unreadableNote(found.unreadable)};
+}
+
+bool displacementPowerLosesDetail(const document::Document& doc, std::span<const SideId> sides, int power) {
+    const auto found = displaced(doc, sides);
+    return std::ranges::any_of(found.sides, [&](const SideDisplacement& side) {
+        return side.disp->power > power && !geometry::displacementIsFlat(*side.disp);
+    });
 }
 
 } // namespace apex::editor

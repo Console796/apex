@@ -169,6 +169,11 @@ struct MaterialState {
     TextureSlot envmapMaskSlot = kNoTexture;
     TextureSlot selfIllumMaskSlot = kNoTexture;
     TextureSlot skyHdrSlot = kNoTexture;
+    // WorldVertexTransition's second layer (0.8.4).
+    TextureSlot base2Slot = kNoTexture;
+    TextureSlot bump2Slot = kNoTexture;
+    TextureSlot blendModulateSlot = kNoTexture;
+    TextureSlot mrao2Slot = kNoTexture;
     bool skyHdrLinear = false;
     TextureSize size;
     bool loading = false;
@@ -178,6 +183,20 @@ struct MaterialState {
     bool nodraw = false;                 // %compilenodraw once loaded; see isNodraw().
     std::set<NodeId> users;
 };
+
+// Preview polyhedra compare by everything the mesher reads.
+bool samePolyhedron(const geometry::ConvexPolyhedron& a, const geometry::ConvexPolyhedron& b) {
+    if (a.vertices != b.vertices || a.faces.size() != b.faces.size()) return false;
+    for (std::size_t i = 0; i < a.faces.size(); ++i) {
+        const auto& x = a.faces[i];
+        const auto& y = b.faces[i];
+        if (x.vertices != y.vertices || x.plane.normal != y.plane.normal || x.plane.dist != y.plane.dist ||
+            x.sideId != y.sideId || x.material != y.material || x.lightmapScale != y.lightmapScale ||
+            x.uv.uaxis != y.uv.uaxis || x.uv.vaxis != y.uv.vaxis || x.uv.shiftU != y.uv.shiftU ||
+            x.uv.shiftV != y.uv.shiftV || x.uv.scaleU != y.uv.scaleU || x.uv.scaleV != y.uv.scaleV) return false;
+    }
+    return true;
+}
 
 // toolsnodraw is recognised by name so it hides before its VMT has loaded.
 bool isNodraw(std::string_view name, const MaterialState* state) {
@@ -304,6 +323,7 @@ struct RenderMirror::Impl {
     struct PreviewState {
         NodeId node = 0; // Zero is a ghost, never an indexed document node.
         PreviewGhost shape;
+        std::map<document::SideId, geometry::Displacement> displacements; // A replacement's displaced sides.
         SolidState mesh;
     };
     std::vector<PreviewState> previewGeometry;
@@ -334,7 +354,8 @@ struct RenderMirror::Impl {
                 if (!state.shape.material.empty()) face.material = state.shape.material;
                 resolveMaterial(lower(face.material));
             }
-            auto mesh = meshSolid(poly, [&](std::string_view name) { return materials.find(name)->second.size; });
+            const auto sizeOf = [&](std::string_view name) { return materials.find(name)->second.size; };
+            auto mesh = state.displacements.empty() ? meshSolid(poly, sizeOf) : meshSolid(poly, sizeOf, state.displacements);
             uploadMesh(state.mesh, std::move(mesh), false);
             ++meshed;
             if (Clock::now() - start + previewFlushPerSolid * meshed >= previewBudget) break;
@@ -391,7 +412,8 @@ struct RenderMirror::Impl {
     void releaseTextures(MaterialState& state) {
         if (state.slot != kCheckerboardSlot) heap.release(state.slot);
         for (TextureSlot* slot : {&state.bumpSlot, &state.mraoSlot, &state.phongExponentSlot,
-                                  &state.envmapMaskSlot, &state.selfIllumMaskSlot, &state.skyHdrSlot}) {
+                                  &state.envmapMaskSlot, &state.selfIllumMaskSlot, &state.skyHdrSlot,
+                                  &state.base2Slot, &state.bump2Slot, &state.blendModulateSlot, &state.mrao2Slot}) {
             if (*slot != kNoTexture) heap.release(*slot);
             *slot = kNoTexture;
         }
@@ -589,8 +611,37 @@ struct RenderMirror::Impl {
                 }
             }
         }
+        // WorldVertexTransition (LightmappedGeneric and PBR read $basetexture2 the same way): the
+        // second layer blends by displacement paint alpha. Only over the real base texture, not a
+        // %tooltexture preview standing in for it.
+        std::size_t layerBytes = 0;
+        if (material.texture2 && (lit && shader != "vertexlitgeneric") && vmt.previewTexture() == vmt.baseTexture) {
+            const auto upload = [&](const std::optional<assets::Texture>& source, TextureSlot& target) {
+                if (!source || !vulkanFormat(source->format) || source->mips.empty()) return false;
+                auto layer = heap.upload(*source);
+                if (!layer) {
+                    log::warn("render mirror: second layer of '{}' failed: {}", std::string_view(name),
+                              std::string_view(layer.error().message));
+                    return false;
+                }
+                target = *layer;
+                layerBytes += source->byteSize();
+                return true;
+            };
+            if (upload(material.texture2, state.base2Slot)) {
+                record.flags |= kMaterialBlend;
+                record.base2Slot = state.base2Slot;
+                if ((record.flags & kMaterialHasBump) != 0u && upload(material.bump2Texture, state.bump2Slot))
+                    record.bump2Slot = state.bump2Slot;
+                if (upload(material.blendModulateTexture, state.blendModulateSlot)) {
+                    record.flags |= kMaterialBlendModulate;
+                    record.blendModulateSlot = state.blendModulateSlot;
+                }
+                if (shader == "pbr" && upload(material.mrao2Texture, state.mrao2Slot)) record.mrao2Slot = state.mrao2Slot;
+            }
+        }
         heap.setMaterial(state.slot, record);
-        state.textureBytes = texture.byteSize() + (material.bumpTexture ? material.bumpTexture->byteSize() : 0) +
+        state.textureBytes = layerBytes + texture.byteSize() + (material.bumpTexture ? material.bumpTexture->byteSize() : 0) +
             (material.mraoTexture ? material.mraoTexture->byteSize() : 0) +
             (material.phongExponentTexture ? material.phongExponentTexture->byteSize() : 0) +
             (material.skyHdrTexture ? material.skyHdrTexture->byteSize() : 0) + envmapBytes;
@@ -1793,6 +1844,20 @@ void RenderMirror::setPreview(const PreviewTransforms& preview) {
 void RenderMirror::setPreview(const PreviewTransforms& transforms, const PreviewGeometry& geometry, std::uint64_t revision) {
     if (impl_->previewRevision == revision) return;
     if (impl_->preview != transforms || impl_->helperPreview != geometry.entityKeys) impl_->lightsDirty = true;
+    // Meshed replacements that did not change keep their meshes (a sculpt stroke changes a few
+    // solids per dab); they go first, before the cursor, and everything else is re-meshed.
+    std::vector<Impl::PreviewState> kept;
+    for (std::size_t i = 0; i < impl_->previewCursor && i < impl_->previewGeometry.size(); ++i) {
+        auto& state = impl_->previewGeometry[i];
+        if (!state.node) continue;
+        const auto poly = geometry.replacements.find(state.node);
+        if (poly == geometry.replacements.end() || !samePolyhedron(poly->second, state.shape.poly)) continue;
+        const auto disps = geometry.displacements.find(state.node);
+        if (disps == geometry.displacements.end() ? !state.displacements.empty() : disps->second != state.displacements)
+            continue;
+        kept.push_back(std::move(state));
+        state.mesh.batches.clear(); // Moved from: clearGeometry must retire nothing of it.
+    }
     impl_->clearGeometry();
     impl_->previewRevision = revision;
     for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
@@ -1802,11 +1867,20 @@ void RenderMirror::setPreview(const PreviewTransforms& transforms, const Preview
     impl_->preview = transforms;
     impl_->previewDirty = true;
     impl_->redraw = true;
+    std::set<NodeId> reused;
+    for (auto& state : kept) {
+        reused.insert(state.node);
+        impl_->previewGeometry.push_back(std::move(state));
+    }
+    impl_->previewCursor = impl_->previewGeometry.size();
     for (const auto& [id, poly] : geometry.replacements) {
+        if (reused.contains(id)) continue;
         Impl::PreviewState state;
         state.node = id;
         state.shape.poly = poly;
         state.shape.opacity = 1.0f;
+        if (const auto disps = geometry.displacements.find(id); disps != geometry.displacements.end())
+            state.displacements = disps->second;
         impl_->previewGeometry.push_back(std::move(state));
     }
     for (const auto& ghost : geometry.ghosts) {
@@ -2008,12 +2082,12 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             const bool probeMaterial = state && state->slot < records.size() &&
                 (records[state->slot].flags & kMaterialEnvmapProbe) != 0u;
             const bool displacementMode = options.mode == DisplayMode::Baked &&
-                std::ranges::any_of(batch.faces, [](const auto& face) { return face.displacement; });
+                std::ranges::any_of(batch.faces, [](const auto& face) { return face.displacement && !face.displacementLightmap; });
             if (faceMode || displacementMode || (sceneMode(options.mode) && probeMaterial)) {
                 // Split existing ranges so a face tint does not bleed into its material siblings.
                 for (const FaceRange& face : batch.faces) {
                     MeshDraw part = draw;
-                    part.bakedBrush = !face.displacement;
+                    part.bakedBrush = !face.displacement || face.displacementLightmap; // 0.8.5: baked displacements
                     part.reflectionPoint = m.effectivePreview.contains(id) ?
                         DVec3(m.effectivePreview.at(id) * DVec4(face.centre, 1)) : face.centre;
                     if (probeMaterial) for (const auto& [probeId, entity] : m.entities) {

@@ -44,15 +44,16 @@ Result<DisplacementEditReport> createDisplacements(EditorSession& session, std::
 Result<DisplacementEditReport> destroyDisplacements(EditorSession& session, std::span<const document::SideId> sides);
 // Sew the displaced sides among `sides` as one surface.
 Result<DisplacementEditReport> sewDisplacements(EditorSession& session, std::span<const document::SideId> sides);
-// Subdivide each displaced side among `sides` (see geometry::subdivideDisplacement).
-Result<DisplacementEditReport> subdivideDisplacements(EditorSession& session, std::span<const document::SideId> sides);
 // Face Properties: set or clear flag bits (Displacement::kFlag*) on every displaced side.
 Result<DisplacementEditReport> setDisplacementFlags(EditorSession& session, std::span<const document::SideId> sides,
                                                     int mask, bool on);
-// Face Properties: a new power. Only a flat, unpainted displacement is rebuilt (as a new flat grid
-// keeping its flags, elevation and start corner); a sculpted or painted one is refused, since
-// resampling it would lose detail.
+// Face Properties: a new power, as Hammer's attribute change. A flat, unpainted displacement is
+// rebuilt as a new flat grid keeping its flags, elevation and start corner; a sculpted or painted
+// one is resampled (geometry::resampleDisplacement), losslessly up and dropping detail down.
 Result<DisplacementEditReport> setDisplacementPower(EditorSession& session, std::span<const document::SideId> sides,
                                                     int power);
+// Whether setDisplacementPower would drop sculpted or painted detail (a lower power on a
+// displacement that is not flat), so the caller can ask first.
+bool displacementPowerLosesDetail(const document::Document& doc, std::span<const document::SideId> sides, int power);
 
 } // namespace apex::editor

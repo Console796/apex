@@ -24,6 +24,13 @@ struct BakeFace {
     Vec3 albedo{0.5f};
     std::uint64_t solidId = 0;
     std::uint32_t sideId = 0; // Fragments share the source identity.
+    // Plan 0.8.5: a displaced side (chartDisplacement). Its luxel-corner sample points are `lattice`
+    // (displacementLattice, (dimensions[0] + 1) x (dimensions[1] + 1)), each lifted along its own normal,
+    // instead of chart.worldAt and clampToFace; `vertices` and `normal` stay the flat base face's.
+    // `surface` holds the displaced vertices, for bounds and change detection. Both empty when flat.
+    std::vector<SurfacePoint> lattice;
+    std::vector<DVec3> surface;
+    bool displaced() const { return !lattice.empty(); }
 };
 
 struct BakeCasterPrimitive {
@@ -61,10 +68,18 @@ struct BakeScene {
 std::vector<BakeFace> bakeFaces(const geometry::Face& face, std::span<const DVec3> vertices,
                                 std::uint32_t material = 0, Vec3 albedo = Vec3{0.5f});
 
+// The one BakeFace of a displaced side (plan 0.8.5): chartDisplacement and its lattice on the D2 mesh.
+// `vertices` holds the face's polyhedron vertices. Throws invalid_argument for a base face that is not a
+// quad, a dispinfo with problems, or an unchartable face.
+BakeFace bakeDisplacementFace(const geometry::Face& face, std::span<const DVec3> vertices,
+                              const geometry::Displacement& disp, std::uint32_t material = 0,
+                              Vec3 albedo = Vec3{0.5f});
+
 // Unexpanded document snapshot, using the same solidGeometry as the render mirror. Sky/nodraw name
 // fallbacks always apply; the optional lookup supplies compiled VMT flags (including NOLIGHT) and
 // albedo without an assets-layer dependency; the caller fills albedo from Texture::reflectivity
-// (linear). Displacement sides are omitted. Invalid solids fail.
+// (linear). A displaced side is one bakeDisplacementFace; its solid's other sides are omitted (no face in
+// game), as is a displaced side whose dispinfo does not parse. Invalid solids fail.
 // The caller supplies the caster snapshot (world/func_detail, nodraw included, clip/trigger excluded)
 // and its sky classifier. For bounce, also supply faceOf matching the returned faces (solidId/sideId
 // identify source sides; subdivided sides need primitive-to-fragment mapping). This adapter does

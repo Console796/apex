@@ -16,7 +16,29 @@ layout(location = 1) in vec2 vUv;
 layout(location = 2) flat in uint vMaterial;
 layout(location = 3) in vec3 vPosition;
 layout(location = 4) in vec2 vLightmapUv;
+layout(location = 5) in float vAlpha;
 layout(location = 0) out vec4 outColor;
+
+// WorldVertexTransition's blend weight: vertex alpha (0 shows $basetexture), reshaped by
+// $blendmodulatetexture as Source's LightmappedGeneric does: smoothstep(g - r, g + r, alpha).
+// Only scene modes upload the material table, so Textured reads the default record (no blend).
+float layerBlend(Material material, vec2 uv, vec2 duvdx, vec2 duvdy) {
+    if ((material.flags & MATERIAL_BLEND) == 0u) return 0.0;
+    float blend = clamp(vAlpha, 0.0, 1.0);
+    if ((material.flags & MATERIAL_BLEND_MODULATE) != 0u) {
+        vec2 modulate = textureGrad(sampler2D(textures[nonuniformEXT(material.blendModulateSlot)], samplers[0]),
+                                    uv, duvdx, duvdy).rg;
+        float low = clamp(modulate.g - modulate.r, 0.0, 1.0), high = clamp(modulate.g + modulate.r, 0.0, 1.0);
+        blend = high > low ? smoothstep(low, high, blend) : step(low, blend);
+    }
+    return blend;
+}
+
+// The base texel with $basetexture2 (or another second-layer slot) blended over it.
+vec4 blendLayer(vec4 base, uint slot, float blend, vec2 uv, vec2 duvdx, vec2 duvdy) {
+    if (blend <= 0.0 || slot == NO_TEXTURE) return base;
+    return mix(base, textureGrad(sampler2D(textures[nonuniformEXT(slot)], samplers[0]), uv, duvdx, duvdy), blend);
+}
 
 void main() {
     // The draw's texture slot, or the per-vertex material index when the draw passes 0xFFFFFFFF.
@@ -26,6 +48,9 @@ void main() {
     vec2 duvdx = dFdx(vUv), duvdy = dFdy(vUv);
     float shade = 0.65 + 0.35 * abs(dot(normalize(vNormal), normalize(vec3(0.3, 0.5, 0.8))));
     vec4 texel = sampleSlot(slot, vUv);
+    Material layer = materialRecord(frameBlock(), slot);
+    float blend = layerBlend(layer, vUv, duvdx, duvdy);
+    texel = blendLayer(texel, layer.base2Slot, blend, vUv, duvdx, duvdy);
     // p1.w (unused by the brush vertex shader): 0 opaque, 1 alpha test, 2 blend, 3 add (AlphaMode);
     // bit 2 outputs only the highlight tint, covering what the mesh covers.
     uint alphaMode = floatBitsToUint(push.p1.w) & 3u;
@@ -79,11 +104,13 @@ void main() {
                                      material.parallaxParams.x, material.parallaxParams.y,
                                      material.parallaxParams.z, material.bumpSlot, duvdx, duvdy);
             texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), uv, duvdx, duvdy);
+            texel = blendLayer(texel, material.base2Slot, blend, uv, duvdx, duvdy);
         }
         // The light-cover offset is part of the surface's look, so it is kept in fullbright.
         if ((!fullbright || localRefract) && (material.flags & MATERIAL_HAS_BUMP) != 0u) {
             vec4 bump = textureGrad(sampler2D(textures[nonuniformEXT(material.bumpSlot)], samplers[0]),
                                     uv, duvdx, duvdy);
+            bump = blendLayer(bump, material.bump2Slot, blend, uv, duvdx, duvdy);
             bumpAlpha = bump.a;
             mapped = decodeNormal(bump.rgb, (material.flags & MATERIAL_SSBUMP) != 0u,
                                   (material.flags & MATERIAL_TWO_CHANNEL_NORMAL) != 0u);
@@ -97,6 +124,7 @@ void main() {
                                             material.refractParams.y, material.refractParams.z,
                                             uvPerUnit(geometricNormal, dpdx, dpdy, duvdx, duvdy));
             texel = textureGrad(sampler2D(textures[nonuniformEXT(material.baseSlot)], samplers[0]), refractUv, duvdx, duvdy);
+            texel = blendLayer(texel, material.base2Slot, blend, refractUv, duvdx, duvdy);
         }
         vec3 albedo = max(texel.rgb * push.colour.rgb, vec3(0.0));
         if ((material.flags & MATERIAL_LINEAR_BASE) == 0u) albedo = srgbToLinear(albedo);
@@ -108,6 +136,7 @@ void main() {
             if (material.mraoSlot != NO_TEXTURE)
                 mrao = textureGrad(sampler2D(textures[nonuniformEXT(material.mraoSlot)], samplers[0]),
                                    uv, duvdx, duvdy).rgb;
+            mrao = blendLayer(vec4(mrao, 1.0), material.mrao2Slot, blend, uv, duvdx, duvdy).rgb;
             mrao = clamp(mrao * material.mraoScale.xyz, vec3(0.0), vec3(1.0));
             // MRAO alpha is a blend-tint mask, reserved for step (f), never opacity/AO.
         }

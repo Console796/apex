@@ -127,6 +127,12 @@ Gpu* gpu() {
             g->tree.put(std::string("materials/test/bumped_") + name + ".vmt",
                 std::string(shader) + " { $basetexture test/floor $bumpmap test/normal $ssbump 1 }");
         writeVtf(g->tree.root / "materials/test/normal.vtf", false, {128, 230, 200});
+        // WorldVertexTransition's second layer (0.8.4), with and without its bump and modulate maps.
+        g->tree.put("materials/test/blend_wvt.vmt", R"(WorldVertexTransition {
+            $basetexture test/floor $basetexture2 test/green $bumpmap test/normal $bumpmap2 test/normal
+            $blendmodulatetexture test/red
+        })");
+        g->tree.put("materials/test/blend_plain.vmt", "WorldVertexTransition { $basetexture test/floor $basetexture2 test/green }");
         g->tree.put("materials/test/specular_model.vmt", R"(PBR {
             $model 1 $mraoscale "[0.9 1 1]" $envmaptint 0.5 $envmap env_cubemap
         })");
@@ -2085,6 +2091,51 @@ TEST_CASE("mirror: material normal records share base slots and retire with thei
         const auto revision = g->heap->materialRevision();
         scene.mirror.buildDrawList(options);
         CHECK(g->heap->materialRevision() == revision);
+    }
+    for (const auto slot : slots) CHECK(g->heap->materials()[slot].flags == 0);
+    CHECK(g->heap->liveTextures() == live);
+    CHECK(g->context->validation().errorCount() == 0);
+}
+
+TEST_CASE("mirror: WorldVertexTransition records carry the second layer and retire its slots") {
+    REQUIRE_GPU();
+    bool full = true;
+    SUBCASE("bump and blend modulate") {}
+    SUBCASE("second base texture only") { full = false; }
+    auto text = readFixture("render_map.vmf");
+    const std::string name = full ? "test/blend_wvt" : "test/blend_plain";
+    for (std::size_t at = 0; (at = text.find("test/red", at)) != std::string::npos; at += name.size())
+        text.replace(at, 8, name);
+    auto parsed = vmf::parse(text);
+    REQUIRE(parsed);
+    const auto live = g->heap->liveTextures();
+    std::vector<TextureSlot> slots;
+    {
+        Scene scene(*g, std::make_unique<document::Document>(*parsed));
+        MirrorViewOptions options;
+        options.mode = DisplayMode::Textured;
+        bool found = false;
+        for (const auto& mesh : scene.mirror.buildDrawList(options).meshes) {
+            REQUIRE(mesh.texture < g->heap->materials().size());
+            const auto record = g->heap->materials()[mesh.texture];
+            if ((record.flags & kMaterialBlend) == 0u) continue;
+            found = true;
+            slots.push_back(mesh.texture);
+            CHECK(record.base2Slot != kNoTexture);
+            CHECK(record.base2Slot != mesh.texture);
+            CHECK(record.mrao2Slot == kNoTexture);
+            if (full) {
+                CHECK((record.flags & kMaterialBlendModulate) != 0u);
+                CHECK(record.blendModulateSlot != kNoTexture);
+                CHECK(record.bump2Slot != kNoTexture);
+                CHECK(record.bump2Slot != record.bumpSlot);
+            } else {
+                CHECK((record.flags & kMaterialBlendModulate) == 0u);
+                CHECK(record.blendModulateSlot == kNoTexture);
+                CHECK(record.bump2Slot == kNoTexture);
+            }
+        }
+        CHECK(found);
     }
     for (const auto slot : slots) CHECK(g->heap->materials()[slot].flags == 0);
     CHECK(g->heap->liveTextures() == live);
