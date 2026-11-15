@@ -26,6 +26,8 @@
 #include <QTimer>
 #include <QToolButton>
 #include <array>
+#include <algorithm>
+#include <set>
 #include <QVBoxLayout>
 #include <atomic>
 
@@ -135,6 +137,9 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     auto* fit = new QPushButton(tr("Fit"), content_);
     fit->setObjectName(QStringLiteral("faceJustify.fit"));
     commandRow->addWidget(fit);
+    hotspot_ = new QPushButton(tr("Hotspot"), content_);
+    hotspot_->setObjectName(QStringLiteral("faceHotspot"));
+    commandRow->addWidget(hotspot_);
     treatAsOne_ = new QCheckBox(tr("Treat as one"), content_);
     treatAsOne_->setObjectName(QStringLiteral("faceTreatAsOne"));
     commandRow->addWidget(treatAsOne_);
@@ -143,6 +148,16 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     connect(fit, &QPushButton::clicked, this, [this] {
         if (session_) if (auto result = session_->justifyFaces(geometry::Justify::Fit, treatAsOne_->isChecked()); !result)
             emit statusMessage(fromStd(result.error().what()));
+    });
+
+    // Plan 0.8 D13. Alt picks the alternate group, as Strata recommends (left Alt).
+    connect(hotspot_, &QPushButton::clicked, this, [this] {
+        if (!session_) return;
+        const bool alternate = QApplication::keyboardModifiers().testFlag(Qt::AltModifier);
+        const auto result = session_->hotspotFaces(alternate);
+        emit statusMessage(result ? tr("Fitted %n face(s) to hotspot rects", nullptr, int(*result)) +
+                                        (alternate ? tr(" (alternate group)") : QString{})
+                                  : fromStd(result.error().what()));
     });
 
     auto* fields = new QGridLayout;
@@ -466,6 +481,16 @@ void FacePropertiesPanel::refresh() {
     set(shiftU_, properties.shiftU); set(shiftV_, properties.shiftV);
     set(scaleU_, properties.scaleU); set(scaleV_, properties.scaleV);
     set(rotation_, properties.rotation); set(lightmap_, properties.lightmapScale);
+    {
+        std::set<std::string> materials;
+        for (auto side : sides) if (const auto face = editor::faceSnapshot(*document_, side)) materials.insert(face->face.material);
+        const bool any = session_ && std::ranges::any_of(materials, [&](const std::string& m) { return !session_->faceHotspots(m).empty(); });
+        hotspot_->setEnabled(any);
+        hotspot_->setToolTip(any ? tr("Fit the selected faces to hotspot rects of their material. Click again for "
+                                      "another random choice; Alt+click uses the alternate group.")
+                                 : tr("The selected faces' materials have no hotspot rects (a VTF hotspot resource "
+                                      "or a %rectanglemap .rect file)."));
+    }
     // Bits set on every face, and bits set on some: one snapshot per face, not per bit.
     std::uint32_t all = sides.empty() ? 0 : ~std::uint32_t{0}, any = 0;
     for (auto side : sides) if (const auto face = editor::faceSnapshot(*document_, side)) {

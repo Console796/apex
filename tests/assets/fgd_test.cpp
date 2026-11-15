@@ -36,6 +36,28 @@ TEST_CASE("FGD resolves inherited drawing properties and copies string storage")
     CHECK_FALSE(table->find("missing"));
 }
 
+TEST_CASE("FGD point kinds: Hammer's point class types all place as point entities") {
+    GameTree tree;
+    // P2CE's FGD spells these as written here (move_rope and keyframe_rope are @MoveClass).
+    tree.put("kinds.fgd", R"(@BaseClass = Base []
+        @PointClass = point []
+        @NpcClass = npc []
+        @KeyframeClass = keyframe []
+        @MoveClass = move_rope []
+        @FilterClass = filter []
+        @SolidClass = brush []
+    )");
+    auto table = loadEntityClasses(tree.root / "kinds.fgd");
+    REQUIRE(table);
+    for (const auto* name : {"point", "npc", "keyframe", "move_rope", "filter"}) {
+        INFO(name);
+        REQUIRE(table->find(name));
+        CHECK(isPointClass(*table->find(name)));
+    }
+    CHECK_FALSE(isPointClass(*table->find("base")));
+    CHECK_FALSE(isPointClass(*table->find("brush")));
+}
+
 TEST_CASE("FGD diagnoses unresolved bases missing files and inheritance cycles") {
     GameTree tree;
     tree.put("missing.fgd", "@PointClass base(Absent) = entity []\n");
@@ -57,6 +79,11 @@ TEST_CASE("FGD real P2CE entity table has no unresolved bases") {
     CHECK(table->find("npc_headcrab_black")); // Last definition: guard against a partial parse.
     for (const auto& base : table->unresolvedBases) { INFO(base); CHECK(false); }
     REQUIRE(table->find("info_player_start"));
+    for (const auto* name : {"move_rope", "keyframe_rope", "npc_headcrab_black", "filter_multi"}) {
+        INFO(name);
+        REQUIRE(table->find(name));
+        CHECK(isPointClass(*table->find(name)));
+    }
 }
 
 TEST_CASE("FGD property order spans kinds includes bases and overrides") {

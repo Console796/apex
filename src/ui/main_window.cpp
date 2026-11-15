@@ -176,6 +176,14 @@ MainWindow::MainWindow(QWidget* parent)
     session_.faceTextureSize = [content](std::string_view name) {
         return content ? content->faceTextureSize(name) : std::pair{256, 256};
     };
+    session_.faceHotspots = [content](std::string_view name) {
+        std::vector<geometry::HotspotRect> rects;
+        if (const auto& set = content ? content->hotspots(name) : std::nullopt; set)
+            for (const auto& r : set->rects)
+                rects.push_back({r.x1, r.y1, r.x2, r.y2, (r.flags & assets::HotspotRegion::kRotate) != 0,
+                                 (r.flags & assets::HotspotRegion::kReflect) != 0, (r.flags & assets::HotspotRegion::kAlt) != 0});
+        return rects;
+    };
     session_.setNewSolidMaterial(material.toStdString());
     lastActiveMaterial_ = material.toStdString();
     session_.setNewSolidUvAlignment(worldUv ? geometry::UvAlignment::World : geometry::UvAlignment::Face);
@@ -1406,7 +1414,7 @@ void MainWindow::refreshEntityUi() {
         shownClassesRevision_ = session_.entityClassesRevision();
         QStringList names;
         for (const auto& [key, cls] : session_.entityClasses().classes)
-            if (ciEquals(cls.type, "PointClass")) names.push_back(fromStd(cls.name));
+            if (assets::isPointClass(cls)) names.push_back(fromStd(cls.name));
         auto name = fromStd(session_.currentEntityClass());
         if (!names.contains(name)) name = QSettings().value(QStringLiteral("editor/entityClass")).toString();
         if (!names.contains(name)) name = names.value(0);

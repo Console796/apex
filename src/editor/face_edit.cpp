@@ -217,6 +217,48 @@ Result<std::size_t> EditorSession::justifyFaces(geometry::HorizontalAlignment ho
         return commit(*this, writes, "Align faces");
     } catch (const std::exception& e) { return std::unexpected(invalid(e)); }
 }
+namespace {
+// One face's seed from the click's: a hotspot click over several faces makes independent choices.
+std::uint64_t faceSeed(std::uint64_t click, document::SideId side) {
+    return click * 0x9e3779b97f4a7c15ull ^ (std::uint64_t(side) + 0x632be59bd9b4e019ull);
+}
+}
+Result<std::size_t> EditorSession::hotspotFaces(bool alternate) {
+    const auto faces = selected(*this);
+    if (faces.empty()) return std::unexpected(Error{ErrorCode::InvalidArgument, "Select the faces to hotspot (face selection mode)"});
+    const auto click = ++hotspotSeed_;
+    Writes writes;
+    std::size_t fitted = 0;
+    std::string lastError;
+    for (const auto& f : faces) {
+        const auto rects = faceHotspots(f.face.material);
+        if (rects.empty()) { lastError = f.face.material + " has no hotspot rects"; continue; }
+        const auto fit = geometry::fitHotspot(f.face.uv, f.face.plane.normal, f.points, rects,
+                                              {newSolidStyle_.textureScale, alternate, faceSeed(click, f.face.sideId)});
+        if (!fit) { lastError = fit.error().what(); continue; }
+        axes(writes, f, fit->uv);
+        ++fitted;
+    }
+    if (fitted == 0) return std::unexpected(Error{ErrorCode::InvalidArgument, lastError});
+    commit(*this, writes, "Hotspot faces");
+    return fitted;
+}
+Result<bool> EditorSession::applyHotspotAt(Ray ray, const std::string& material, bool alternate) {
+    if (!document_ || material.empty()) return false;
+    const auto hit = picks().first(ray);
+    const auto f = hit && hit->side ? faceSnapshot(*document_, *hit->side) : std::nullopt;
+    if (!f) return false;
+    const auto rects = faceHotspots(material);
+    if (rects.empty()) return std::unexpected(Error{ErrorCode::InvalidArgument, material + " has no hotspot rects"});
+    const auto fit = geometry::fitHotspot(f->face.uv, f->face.plane.normal, f->points, rects,
+                                          {newSolidStyle_.textureScale, alternate, faceSeed(++hotspotSeed_, f->face.sideId)});
+    if (!fit) return std::unexpected(fit.error());
+    Writes writes;
+    if (!ciEquals(material, f->face.material)) write(writes, *f, "material", material);
+    axes(writes, *f, fit->uv);
+    commit(*this, writes, "Apply hotspot");
+    return true;
+}
 Result<std::size_t> EditorSession::alignFaces(FaceAlignment alignment) {
     try {
         Writes writes;

@@ -3,8 +3,11 @@
 #include "core/strings.hpp"
 #include "editor/visibility.hpp"
 #include "editor/selection_expand.hpp"
+#include "geometry/solid_geometry.hpp"
 
 #include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 namespace apex::editor {
 namespace {
@@ -319,6 +322,26 @@ Result<EditedObjects> stageTieToEntity(const document::Document& doc, const Grou
         for (const auto& [key, value] : params.keyValues) {
             if (ciEquals(key, "classname") || ciEquals(key, "id")) continue;
             if (!block.append(kv1::Node::value(key, value))) continue;
+        }
+        // As Hammer: a new brush entity's origin is the centre of its solids' bounds.
+        if (!block.find("origin")) {
+            AABB bounds;
+            for (const auto solid : solids) {
+                const auto* node = doc.get(*doc.handle(solid));
+                if (!node || !node->block) continue;
+                const auto geometry = geometry::solidGeometry(*node->block);
+                if (!geometry) continue;
+                for (const auto& p : geometry->poly.vertices) {
+                    bounds.min = glm::min(bounds.min, p);
+                    bounds.max = glm::max(bounds.max, p);
+                }
+            }
+            if (!bounds.empty()) {
+                const DVec3 centre = (bounds.min + bounds.max) * 0.5;
+                std::ostringstream text;
+                text << std::setprecision(17) << centre.x << ' ' << centre.y << ' ' << centre.z;
+                block.append(kv1::Node::value("origin", text.str())).value();
+            }
         }
         target = tx.create(std::move(block));
     }

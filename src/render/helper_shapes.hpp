@@ -3,6 +3,7 @@
 #include "core/entity_class.hpp"
 #include "document/document.hpp"
 #include "document/entity_transform.hpp"
+#include "geometry/rope.hpp"
 
 #include <functional>
 #include <optional>
@@ -30,10 +31,20 @@ struct HelperSegment {
     std::optional<document::NodeId> peer;
     std::optional<document::NodeId> anchor;
 };
+// A rope keyframe's rope to its NextKey (D14): `curve` is its resting shape from a to b. A move
+// preview that carries the ends somewhere else settles it again from the moved ends.
+struct HelperRope {
+    DVec3 a, b;
+    geometry::RopeSettings settings;
+    std::vector<DVec3> curve;
+    Vec4 colour;
+    std::optional<document::NodeId> peer; // The entity whose move carries b; empty when it dangles.
+};
 struct HelperLabel { DVec3 position; std::string text; Vec4 colour; HelperVisibility visibility = HelperVisibility::Always; };
 struct HelperShapes {
     std::vector<HelperSegment> segments;
     std::vector<HelperLabel> labels;
+    std::vector<HelperRope> ropes;
     std::vector<int> sideIds;
     std::vector<std::string> unsupported;
 };

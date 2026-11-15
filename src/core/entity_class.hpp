@@ -39,6 +39,22 @@ struct EntityClass {
     std::vector<EntityProperty> properties;
     std::vector<EntityIO> inputs, outputs;
 };
+// Placed as a point: Hammer's point kinds, not only @PointClass. P2CE's FGD declares move_rope and
+// keyframe_rope as @MoveClass, NPCs as @NPCClass and filters as @FilterClass. The type keeps the
+// file's spelling ("NpcClass"), so the match ignores case.
+inline bool isPointClass(const EntityClass& cls) {
+    for (const auto kind : {"PointClass", "NPCClass", "KeyFrameClass", "MoveClass", "FilterClass"})
+        if (ciEquals(cls.type, kind)) return true;
+    return false;
+}
+// The key a keyframe or animator chain links by: NextKey (ropes) or target (path tracks), when the
+// FGD types it target_destination. Empty when the class has neither.
+inline std::string chainKey(const EntityClass& cls) {
+    for (const auto name : {"nextkey", "target"})
+        for (const auto& p : cls.properties)
+            if (ciEquals(p.name, name) && ciEquals(p.type, "target_destination")) return p.name;
+    return {};
+}
 struct EntityClassTable {
     std::map<std::string, EntityClass> classes; // lower-case lookup keys
     std::vector<std::string> unresolvedBases; // "class: base", sorted and unique

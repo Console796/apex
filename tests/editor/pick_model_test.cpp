@@ -242,6 +242,17 @@ TEST_CASE("placement onto picked prop triangles uses top face point and normal")
     const auto pose = document::entityPose(*doc.get(*doc.handle(placed))->block);
     checkPoint(pose.origin, top + normal * 3.0);
     checkPoint(pose.basis[2], normal);
+
+    // P2CE declares move_rope as @MoveClass: still a point entity.
+    cls.name = "move_rope";
+    cls.type = "MoveClass";
+    auto ropes = session.entityClasses();
+    ropes.classes[cls.name] = cls;
+    session.setEntityClasses(std::move(ropes));
+    REQUIRE(session.placeEntity("move_rope", hit->point, hit->normal, true));
+    const auto rope = std::get<NodeId>(*session.selection().active());
+    CHECK(rope != placed);
+    CHECK(doc.get(*doc.handle(rope))->block->find("classname")->decodedValue() == "move_rope");
 }
 
 TEST_CASE("Pick model rejects invalid indices and body ranges") {

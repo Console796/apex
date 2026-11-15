@@ -347,6 +347,42 @@ TEST_CASE("helper shapes chains sidelist worldtext and unsupported helpers") {
     CHECK(shapes.unsupported == std::vector<std::string>{"light", "clusteredlight", "decal", "overlay", "overlay_transition", "mystery"});
 }
 
+TEST_CASE("helper shapes hang rope keyframes once by the engine's rope rule") {
+    Fixture f;
+    f.set("origin", "10 20 30");
+    f.property("NextKey", "target_destination"); f.property("Slack", "integer");
+    f.set("nextkey", "destination");
+    // keyframe_rope and move_rope carry both helpers.
+    f.cls.helpers = {{"animator", ""}, {"keyframe", ""}};
+    auto shapes = f.build();
+    CHECK(shapes.segments.empty());
+    REQUIRE(shapes.ropes.size() == 2);
+    const auto& rope = shapes.ropes[0];
+    point(rope.a, {10, 20, 30}); point(rope.b, {10, 30, 30});
+    CHECK(rope.peer == 11);
+    CHECK(rope.settings == geometry::RopeSettings{});
+    CHECK(rope.curve == geometry::ropeShape(rope.a, rope.b, rope.settings));
+
+    f.set("slack", "150.9"); f.set("type", "1"); f.set("subdiv", "4"); f.set("dangling", "1");
+    shapes = f.build();
+    REQUIRE(shapes.ropes.size() == 2);
+    CHECK(shapes.ropes[0].settings == geometry::RopeSettings{150, 4, 4, true});
+    CHECK(shapes.ropes[0].curve.size() == 4 + 3 * 4);
+    f.set("type", "2");
+    CHECK(f.build().ropes[0].settings.nodes == 2);
+    f.set("type", "0");
+    CHECK(f.build().ropes[0].settings.nodes == 10);
+
+    // No next key: nothing, unless it dangles from here.
+    f.set("nextkey", "nobody");
+    shapes = f.build();
+    REQUIRE(shapes.ropes.size() == 1);
+    CHECK_FALSE(shapes.ropes[0].peer);
+    CHECK(shapes.ropes[0].curve.back().z < 30.0);
+    f.set("dangling", "0");
+    CHECK(f.build().ropes.empty());
+}
+
 TEST_CASE("helper shapes malformed keys and nonfinite inputs never emit geometry") {
     Fixture f;
     f.cls.helpers = {{"sphere", "radius"}, {"wirebox", "mins,maxs"}, {"frustum", "fov,near,far"},

@@ -2293,6 +2293,19 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 list.worldSegments.push_back({moved(segment.anchor.value_or(id), segment.a), moved(segment.peer.value_or(id), segment.b),
                                               segment.colour, 1.0f});
             }
+            for (const HelperRope& rope : entity.helpers.ropes) {
+                // A move that carries both ends alike carries the shape; any other settles it again.
+                const DVec3 a = moved(id, rope.a), b = moved(rope.peer.value_or(id), rope.b);
+                DVec3 shift{0.0};
+                std::vector<DVec3> settled;
+                const std::vector<DVec3>* curve = &rope.curve;
+                if (a != rope.a || b != rope.b) {
+                    if (glm::length((a - rope.a) - (b - rope.b)) < 1e-9) shift = a - rope.a;
+                    else curve = &(settled = geometry::ropeShape(a, b, rope.settings));
+                }
+                for (std::size_t i = 0; i + 1 < curve->size(); ++i)
+                    list.worldSegments.push_back({(*curve)[i] + shift, (*curve)[i + 1] + shift, rope.colour, 1.0f});
+            }
             for (const HelperLabel& label : entity.helpers.labels)
                 if (self || label.visibility == HelperVisibility::Always) list.labels.push_back({moved(id, label.position), label.text, Vec2(0.0f), label.colour});
             if (options.showEntityNames && !entity.targetname.empty())

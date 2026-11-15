@@ -274,6 +274,53 @@ TEST_CASE("Face Properties buttons align sloped faces and report session errors"
     CHECK(glm::length(editor::faceSnapshot(scene.doc, *sloped)->face.uv.uaxis - before) < 1e-5);
 }
 
+TEST_CASE("Face Properties Hotspot button needs rects and fits the selected faces") {
+    app();
+    Scene scene;
+    const auto top = scene.side({0, 0, 1});
+    scene.session.selection().select(top);
+    ui::FacePropertiesPanel panel;
+    panel.setDocument(&scene.doc); panel.setEditorSession(&scene.session); panel.show(); app().processEvents();
+    auto* hotspot = panel.findChild<QPushButton*>("faceHotspot");
+    REQUIRE(hotspot);
+    CHECK_FALSE(hotspot->isEnabled());
+
+    // The box's 128-unit top is 512 texels at the default scale: the rect exactly.
+    scene.session.faceHotspots = [](std::string_view material) {
+        return material == "apex/panel" ? std::vector<geometry::HotspotRect>{{0, 0, 512, 512}} : std::vector<geometry::HotspotRect>{};
+    };
+    panel.setEditorSession(&scene.session); // Refresh against the new hook.
+    app().processEvents();
+    REQUIRE(hotspot->isEnabled());
+    const auto undo = scene.doc.undoCount();
+    hotspot->click();
+    CHECK(scene.doc.undoCount() == undo + 1);
+    CHECK(scene.doc.undoLabels().back() == "Hotspot faces");
+    const auto face = editor::faceSnapshot(scene.doc, top)->face;
+    CHECK(face.uv.scaleU == doctest::Approx(0.25));
+    CHECK(face.uv.scaleV == doctest::Approx(0.25));
+}
+
+TEST_CASE("GameContent reads a material's hotspots from a .rect file beside it") {
+    app();
+    GameTree tree;
+    const auto game = profile(tree);
+    tree.put("Game/materials/trim.vmt", "LightmappedGeneric { $basetexture white %rectanglemap trimrects }");
+    tree.put("Game/materials/trimrects.rect", "Rectangles { rectangle { min \"0 0\" max \"8 4\" rotate 1 } }");
+    ui::MainWindow window;
+    window.setProfiles({game});
+    waitForIndex(window.gameContent());
+    const auto& set = window.gameContent().hotspots("Trim");
+    REQUIRE(set);
+    CHECK(set->source == assets::HotspotSource::RectFile);
+    REQUIRE(set->rects.size() == 1);
+    CHECK(set->rects[0] == assets::HotspotRegion{0, 0, 8, 4, assets::HotspotRegion::kRotate});
+    CHECK_FALSE(window.gameContent().hotspots("brick"));
+    const auto rects = window.editorSession().faceHotspots("trim");
+    REQUIRE(rects.size() == 1);
+    CHECK(rects[0].rotate);
+}
+
 TEST_CASE("GameContent face texture dimensions read VTF headers and clear cache on reload") {
     app();
     GameTree tree;

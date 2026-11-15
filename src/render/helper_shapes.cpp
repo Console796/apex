@@ -75,13 +75,6 @@ const assets::EntityProperty* property(const assets::EntityClass& cls, std::stri
     const auto it = std::ranges::find_if(cls.properties, [&](const auto& p) { return ciEquals(p.name, name); });
     return it == cls.properties.end() ? nullptr : &*it;
 }
-std::string chainKey(const assets::EntityClass& cls) {
-    for (const auto name : {"nextkey", "target"}) {
-        if (const auto* p = property(cls, name); p && ciEquals(p->type, "target_destination"))
-            return p->name;
-    }
-    return {};
-}
 
 struct Builder {
     const HelperContext& c;
@@ -261,7 +254,7 @@ struct Builder {
         // func_useableladder declares point0/point1, no target_destination. The requested
         // player hull stays upright in world axes, including for angled entities.
         box({-16, -16, 0}, {16, 16, 72}, c.pose.origin, DMat3{1}, selected);
-        const auto key = chainKey(c.cls);
+        const auto key = assets::chainKey(c.cls);
         for (const auto& peer : named(key)) box({-16, -16, 0}, {16, 16, 72}, peer.position, DMat3{1}, selected);
     }
     void parabola(DVec3 velocity, double duration, std::optional<document::NodeId> peer) {
@@ -298,8 +291,34 @@ struct Builder {
             parabola(velocity, std::min(5.0, untilFloor), {});
         }
     }
+    bool chained = false; // keyframe() and animator() both name the chain; draw it once.
     void chain() {
-        for (const auto& peer : named(chainKey(c.cls))) segment(c.pose.origin, peer.position, c.defaultColour, always, peer.id);
+        if (std::exchange(chained, true)) return;
+        const auto key = assets::chainKey(c.cls);
+        if (ciEquals(key, "nextkey") && property(c.cls, "slack")) return rope(key);
+        for (const auto& peer : named(key)) segment(c.pose.origin, peer.position, c.defaultColour, always, peer.id);
+    }
+    // D14: keyframe_rope and move_rope hang by the engine's rule (geometry/rope.hpp).
+    void rope(const std::string& key) {
+        geometry::RopeSettings settings;
+        const auto integer = [&](std::string_view name) -> std::optional<int> {
+            const auto v = number(c.block, name);
+            if (!v || std::abs(*v) > 1e6) return {};
+            return static_cast<int>(*v); // atoi truncates.
+        };
+        settings.slack = integer("slack").value_or(0);
+        if (const auto type = integer("type")) settings.nodes = *type == 0 ? 10 : *type == 1 ? 4 : 2;
+        settings.subdiv = integer("subdiv").value_or(2);
+        settings.dangling = integer("dangling").value_or(0) == 1;
+        const auto add = [&](DVec3 end, std::optional<document::NodeId> peer) {
+            auto curve = geometry::ropeShape(c.pose.origin, end, settings);
+            if (!std::ranges::all_of(curve, [](DVec3 p) { return finite(p); })) { invalid = true; return; }
+            shapes.ropes.push_back({c.pose.origin, end, settings, std::move(curve), c.defaultColour, peer});
+        };
+        const auto peers = named(key);
+        for (const auto& peer : peers) add(peer.position, peer.id);
+        // Without a next key the engine draws nothing, unless it dangles: then it hangs from here.
+        if (peers.empty() && settings.dangling) add(c.pose.origin, {});
     }
     void draw(const assets::KeyframeHelper&) { chain(); }
     void draw(const assets::AnimatorHelper&) { chain(); }

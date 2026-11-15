@@ -10,6 +10,7 @@
 #include <optional>
 
 class QCheckBox;
+class QPushButton;
 class QComboBox;
 class QLineEdit;
 class QLabel;
@@ -68,6 +69,7 @@ private:
     QLineEdit* rotation_ = nullptr;
     QLineEdit* lightmap_ = nullptr;
     QCheckBox* treatAsOne_ = nullptr;
+    QPushButton* hotspot_ = nullptr; // Plan 0.8 D13: fit the faces to hotspot rects.
     std::vector<QToolButton*> smoothing_;
     std::vector<QToolButton*> alignment_;
     QToolButton* smoothingSummary_ = nullptr;

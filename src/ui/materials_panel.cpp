@@ -91,6 +91,7 @@ public:
                 tip += QStringLiteral("\n") + (addon.isEmpty() ? QObject::tr("Addon %1").arg(*entry.mount) : addon);
             }
             if (!entry.error.empty()) tip += QStringLiteral("\n") + q(entry.error);
+            if (badged(entry)) tip += QStringLiteral("\n") + QObject::tr("Hotspot rects (Face Properties: Hotspot)");
             if (!entry.previewTexture.empty()) {
                 const auto missing = panel_.content_->missingAssetTooltip(assets::texturePath(entry.previewTexture));
                 if (!missing.isEmpty()) tip += '\n' + missing;
@@ -107,7 +108,8 @@ public:
             ++requests_;
             if (!thumb) return framed({});
             return framed(QImage(reinterpret_cast<const uchar*>(thumb->rgba.data()), thumb->width, thumb->height,
-                                 thumb->width * 4, QImage::Format_RGBA8888));
+                                 thumb->width * 4, QImage::Format_RGBA8888),
+                          thumb->hotspots || panel_.content_->hasRectMap(entry));
         }
         return {};
     }
@@ -125,7 +127,13 @@ public:
     // Every decoration is exactly the icon size: the view uses uniform item sizes measured from one
     // item, so a placeholder of another size set every cell's height and cut the names off. A null
     // image draws the placeholder. Drawn at the screen's pixel ratio so scaled displays stay sharp.
-    QPixmap framed(const QImage& image) const {
+    // Plan 0.8 D13: a hotspot material (VTF resource, from the thumbnail job, or a .rect file).
+    bool badged(const assets::MaterialIndexEntry& entry) const {
+        auto* cache = panel_.content_->thumbnails();
+        const auto thumb = cache ? cache->request(entry.name, panel_.size_->value()) : nullptr;
+        return (thumb && thumb->hotspots) || panel_.content_->hasRectMap(entry);
+    }
+    QPixmap framed(const QImage& image, bool hotspots = false) const {
         const int size = panel_.size_->value();
         const qreal ratio = panel_.grid_->devicePixelRatioF();
         QPixmap pixmap(QSize(size, size) * ratio);
@@ -141,6 +149,21 @@ public:
         painter.setRenderHint(QPainter::SmoothPixmapTransform);
         const QSizeF fit = QSizeF(image.size()).scaled(size, size, Qt::KeepAspectRatio);
         painter.drawImage(QRectF(QPointF((size - fit.width()) / 2, (size - fit.height()) / 2), fit), image);
+        if (hotspots) {
+            // A corner tag, sized to stay legible from the smallest thumbnails up.
+            const int tag = std::max(12, size / 5);
+            const QRect corner(size - tag - 1, 1, tag, tag);
+            painter.setRenderHint(QPainter::Antialiasing);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(255, 176, 32));
+            painter.drawRoundedRect(corner, 3, 3);
+            QFont font = painter.font();
+            font.setBold(true);
+            font.setPixelSize(tag - 3);
+            painter.setFont(font);
+            painter.setPen(QColor(32, 32, 32));
+            painter.drawText(corner, Qt::AlignCenter, QStringLiteral("H"));
+        }
         return pixmap;
     }
 private:

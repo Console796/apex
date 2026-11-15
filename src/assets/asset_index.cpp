@@ -64,6 +64,7 @@ std::vector<MaterialIndexEntry> parseIndexEntry(MaterialKind, const MaterialRead
     else {
         entry.shader = toLowerAscii(material->shader);
         entry.previewTexture = material->previewTexture();
+        entry.rectangleMap = material->rectangleMap;
         entry.baseTextureTransform = material->baseTextureTransform;
         auto words = toLowerAscii(material->keywords);
         std::replace(words.begin(), words.end(), ',', ' ');

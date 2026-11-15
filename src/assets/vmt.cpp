@@ -149,6 +149,7 @@ DMat3 textureTransform(std::string text) {
 
 std::string materialPath(std::string_view name) { return assetPath(name, ".vmt"); }
 std::string texturePath(std::string_view name) { return assetPath(name, ".vtf"); }
+std::string rectMapPath(std::string_view name) { return assetPath(name, ".rect"); }
 std::string_view Material::previewTexture() const {
     if (!toolViewportTexture.empty()) {
         return toolViewportTexture;
@@ -241,6 +242,7 @@ Result<Material> parseMaterial(const MaterialReader& read, std::string_view name
     result.baseTextureTransform = textureTransform(std::string(result.parameter("$basetexturetransform")));
     result.toolTexture = value(*root, "%tooltexture");
     result.toolViewportTexture = value(*root, "%ToolViewportTexture");
+    result.rectangleMap = value(*root, "%rectanglemap");
     result.keywords = value(*root, "%keywords") + " " + std::string(result.parameter("$keywords"));
     result.hasToolTexture = root->find("%tooltexture") != nullptr;
     result.surfaceProp = result.parameter("$surfaceprop");

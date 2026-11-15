@@ -1,4 +1,5 @@
 #include "editor/editor_session.hpp"
+#include "editor/keyframe_chain.hpp"
 #include "editor/connection_validation.hpp"
 #include "editor/instance_templates.hpp"
 #include "editor/instance_collapse_command.hpp"
@@ -851,7 +852,7 @@ Result<void> EditorSession::placePointEntity(std::string classname, std::optiona
                                            DVec3 hit, std::optional<DVec3> normal, bool align) {
     return runEdit(model ? "Place model" : "Place entity", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
         const auto* cls = entityClasses_.find(classname);
-        if (!cls || !ciEquals(cls->type, "PointClass"))
+        if (!cls || !assets::isPointClass(*cls))
             return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
         const AABB bounds = pointBounds(*cls, model);
         auto block = kv1::Node::block("entity");
@@ -911,7 +912,7 @@ Result<PlacementPlan> EditorSession::planPlacement(const PlacementItem& item, DV
     AABB bounds{{-4, -4, -4}, {4, 4, 4}};
     if (const auto* model = std::get_if<ModelItem>(&item)) {
         const auto* cls = entityClasses_.find(modelPlacementClass_);
-        if (!cls || !ciEquals(cls->type, "PointClass"))
+        if (!cls || !assets::isPointClass(*cls))
             return std::unexpected(Error{ErrorCode::InvalidArgument, "choose a point entity class"});
         bounds = pointBounds(*cls, model->model);
     } else if (const auto* prefab = std::get_if<PrefabItem>(&item)) {
@@ -971,8 +972,17 @@ Result<void> EditorSession::duplicateSelection() {
     options.inPlace = true;
     options.textureLock = textureLock_;
     options.classes = &entityClasses_;
-    return runEdit("Duplicate", AfterEdit::Computed, [&](document::Transaction& tx) {
-        return stagePaste(*document_, tx, *text, options);
+    std::vector<NodeId> originals;
+    for (const auto& target : selection_.ordered())
+        if (const auto* id = std::get_if<NodeId>(&target)) originals.push_back(*id);
+    const auto names = names_->names();
+    return runEdit("Duplicate", AfterEdit::Computed, [&](document::Transaction& tx) -> Result<EditedObjects> {
+        auto pasted = stagePaste(*document_, tx, *text, options);
+        if (!pasted) return pasted;
+        // D14: a duplicated rope keyframe or path track joins its chain.
+        if (auto chained = stageKeyframeChain(*document_, tx, entityClasses_, originals, *pasted, names); !chained)
+            return std::unexpected(chained.error());
+        return pasted;
     });
 }
 Result<InstanceCollapseReport> EditorSession::collapseInstances(std::span<const NodeId> selected) {

@@ -22,6 +22,7 @@
 #include "editor/visgroups.hpp"
 #include "editor/work_plane.hpp"
 #include "editor/snapper.hpp"
+#include "geometry/hotspot.hpp"
 #include "geometry/solid_block.hpp"
 
 #include <memory>
@@ -326,6 +327,17 @@ public:
     // Host supplies actual dimensions; unknown materials use the editor's 256x256 fallback.
     std::function<std::pair<int, int>(std::string_view)> faceTextureSize =
         [](std::string_view) { return std::pair{256, 256}; };
+    // Plan 0.8 D13: the host supplies a material's hotspot rects; empty means it has none.
+    std::function<std::vector<geometry::HotspotRect>(std::string_view)> faceHotspots =
+        [](std::string_view) { return std::vector<geometry::HotspotRect>{}; };
+    // Fits each selected face to a hotspot rect of its material (geometry::fitHotspot at the new-solid
+    // texture scale), as one "Hotspot faces" edit. Each call draws a new seed, so clicking again
+    // re-rolls the random choices and undo/redo replays the one drawn. `alternate` uses only the
+    // alt-group rects. Faces whose material has no rects are skipped; none fitting is an error.
+    Result<std::size_t> hotspotFaces(bool alternate = false);
+    // Applies `material` to the face `ray` hits and fits it, as one "Apply hotspot" edit (the
+    // apply tool's Hotspot mode). False when no face is hit.
+    Result<bool> applyHotspotAt(Ray ray, const std::string& material, bool alternate = false);
     // Document edits go through this seam to capture before/after selection metadata.
     // Direct Document edits still update indices and prune dead selection targets. A nonempty
     // coalesceKey merges with the previous edit of the same key (typing); empty is its own undo step.
@@ -381,6 +393,7 @@ private:
     std::optional<PrefabItem> placementPrefab_;
     bool alignToSurface_ = false;
     geometry::NewSolidStyle newSolidStyle_{"dev/dev_measuregeneric01"};
+    std::uint64_t hotspotSeed_ = 0; // Advanced per hotspot click (D13).
     FaceExtrapolation faceExtrapolation_ = FaceExtrapolation::Wrap;
     assets::EntityClassTable entityClasses_;
     std::uint64_t entityClassesRevision_ = 0;

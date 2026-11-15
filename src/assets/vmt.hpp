@@ -54,6 +54,7 @@ struct Material {
     DMat3 baseTextureTransform{1.0};
     std::string toolTexture;
     std::string toolViewportTexture;
+    std::string rectangleMap; // %rectanglemap: a Hammer++ hotspot .rect file (plan 0.8 D13).
     std::string surfaceProp;
     std::string keywords;
     bool hasToolTexture = false;
@@ -75,5 +76,6 @@ using MaterialReader = std::function<Result<std::string>(std::string_view)>;
 Result<Material> parseMaterial(const MaterialReader& read, std::string_view name);
 std::string materialPath(std::string_view name);
 std::string texturePath(std::string_view name);
+std::string rectMapPath(std::string_view name); // materials/<name>.rect
 
 } // namespace apex::assets

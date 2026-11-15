@@ -26,6 +26,7 @@ struct Texture {
 struct Thumbnail {
     int width = 0, height = 0;
     std::vector<std::uint8_t> rgba;
+    bool hotspots = false; // Set by ThumbnailCache: the VTF has hotspot rects (plan 0.8 D13).
 };
 // Smallest mip at or above size, frame/face/slice zero, box-filtered until its larger side is
 // under 2 x size. HDR is clamped to [0, 1].

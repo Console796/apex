@@ -62,6 +62,7 @@ void GameContent::clear() {
     watchedFile_.clear(); watchedBytes_.clear();
     error_.clear();
     textureSizes_.clear();
+    hotspots_.clear();
     emit contentChanged();
 }
 std::filesystem::path GameContent::prefabFolder() const {
@@ -98,6 +99,7 @@ void GameContent::reload(const assets::GameProfile* profile) {
     profile_ = next;
     error_.clear();
     textureSizes_.clear();
+    hotspots_.clear();
     lastDone_ = lastTotal_ = static_cast<std::size_t>(-1);
     if (!profile_) { clear(); return; }
     loading_ = true;
@@ -254,6 +256,20 @@ std::pair<int, int> GameContent::faceTextureSize(std::string_view material) cons
     };
     const int width = u16(16), height = u16(18);
     return remember(width > 0 && height > 0 ? std::pair{width, height} : fallback);
+}
+
+const std::optional<assets::HotspotSet>& GameContent::hotspots(std::string_view material) const {
+    const auto key = toLowerAscii(material);
+    if (const auto cached = hotspots_.find(key); cached != hotspots_.end()) return cached->second;
+    std::optional<assets::HotspotSet> set;
+    if (vfs_) if (auto loaded = assets::loadHotspots(*vfs_, material)) set = std::move(*loaded);
+    return hotspots_.emplace(key, std::move(set)).first->second;
+}
+
+bool GameContent::hasRectMap(const assets::MaterialIndexEntry& entry) const {
+    if (!vfs_) return false;
+    return (!entry.rectangleMap.empty() && vfs_->exists(assets::rectMapPath(entry.rectangleMap))) ||
+           vfs_->exists(assets::rectMapPath(entry.name));
 }
 
 QString GameContent::addonName(std::size_t index) const {

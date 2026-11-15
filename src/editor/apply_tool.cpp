@@ -21,7 +21,13 @@ Handled ApplyTool::input(const InputEvent& e, const ToolView& view) {
     const bool apply = rightClickApplies(session_.preset()) ? e.button == PointerButton::Right :
         e.button == PointerButton::Left && actionModifier(session_.preset(), e, "apply.click");
     if (apply) {
-        if (e.alt) {
+        if (hotspot_) {
+            const auto& material = session_.newSolidStyle().material;
+            const auto result = session_.applyHotspotAt(view.cursorRay, material, e.alt);
+            if (!result) notice_ = result.error().what();
+            else if (!*result) notice_ = "No face under cursor";
+            else notice_ = e.alt ? "Applied hotspot (alternate group)" : "Applied hotspot";
+        } else if (e.alt) {
             const auto result = session_.applyMaterialWrapped(view.cursorRay);
             if (!result) notice_ = result.error().what();
             else if (!*result) notice_ = "No face under cursor";
@@ -51,15 +57,28 @@ Handled ApplyTool::input(const InputEvent& e, const ToolView& view) {
     session_.publishToolStatus();
     return true;
 }
+bool ApplyTool::setParameter(std::string_view id, double value) {
+    if (id != "mode") return false;
+    hotspot_ = value >= 0.5;
+    notice_.clear();
+    session_.publishToolStatus();
+    return true;
+}
 ToolReadout ApplyTool::readout() const {
     const auto material = session_.newSolidStyle().material;
     const auto mode = session_.faceExtrapolation() == FaceExtrapolation::Wrap ? "Wrap"
                     : session_.faceExtrapolation() == FaceExtrapolation::Projected ? "Projected" : "Match";
-    const auto bindings = rightClickApplies(session_.preset())
-        ? "RMB apply · Alt+RMB apply aligned · Alt+LMB lift · Shift+Alt+LMB lift aligned"
-        : "Ctrl+click apply · Ctrl+Alt+click apply aligned · Alt+LMB lift · Ctrl+Shift+Alt+click lift aligned";
-    return {{"Face edit"}, material, notice_.empty()
-        ? std::string("Extrapolation: ") + mode + " · " + bindings
-        : notice_ + " · Extrapolation: " + mode + " · " + bindings};
+    const bool right = rightClickApplies(session_.preset());
+    const auto bindings = hotspot_
+        ? (right ? "RMB apply and fit · Alt+RMB fit to the alternate group · Alt+LMB lift"
+                 : "Ctrl+click apply and fit · Ctrl+Alt+click fit to the alternate group · Alt+LMB lift")
+        : right ? "RMB apply · Alt+RMB apply aligned · Alt+LMB lift · Shift+Alt+LMB lift aligned"
+                : "Ctrl+click apply · Ctrl+Alt+click apply aligned · Alt+LMB lift · Ctrl+Shift+Alt+click lift aligned";
+    const auto setting = hotspot_ ? std::string("Hotspot") : std::string("Extrapolation: ") + mode;
+    ToolReadout readout{{"Face edit"}, material, notice_.empty() ? setting + " · " + bindings
+                                                                 : notice_ + " · " + setting + " · " + bindings};
+    readout.parameters.push_back({"mode", "Apply", ToolParameter::Kind::Choice, hotspot_ ? 1.0 : 0.0, 0.0, 1.0,
+                                  {"Material", "Hotspot"}});
+    return readout;
 }
 } // namespace apex::editor

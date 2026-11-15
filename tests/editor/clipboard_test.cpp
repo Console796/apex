@@ -649,6 +649,87 @@ TEST_CASE("Group and ungroup are one level, one transaction, with GroupIndex in 
     checkGroupRefs(m.doc);
 }
 
+namespace {
+assets::EntityClassTable ropeClasses() {
+    assets::EntityClassTable table;
+    for (const auto* name : {"move_rope", "keyframe_rope"}) {
+        assets::EntityClass cls;
+        cls.name = name;
+        cls.type = "MoveClass";
+        cls.helpers = {{"animator", ""}, {"keyframe", ""}};
+        assets::EntityProperty next;
+        next.name = "NextKey";
+        next.type = "target_destination";
+        cls.properties.push_back(next);
+        table.classes[name] = cls;
+    }
+    assets::EntityClass light;
+    light.name = "info_target";
+    light.type = "PointClass";
+    table.classes["info_target"] = light;
+    return table;
+}
+std::string nextOf(const Document& doc, NodeId n) { return valueOf(doc.get(*doc.handle(n))->block.get(), "NextKey"); }
+} // namespace
+
+TEST_CASE("Duplicate strings one rope keyframe after its original, naming an unnamed one first") {
+    Map m;
+    m.session.setEntityClasses(ropeClasses());
+    const auto start = m.point("move_rope", "", {0, 0, 128});
+    m.select({start});
+    const auto undo = m.doc.undoCount();
+    REQUIRE(m.session.duplicateSelection());
+    CHECK(m.doc.undoCount() == undo + 1);
+    const auto copy = m.selected().at(0);
+    CHECK(targetname(m.doc, id(m.doc, start)) == "move_rope_1");
+    CHECK(targetname(m.doc, copy) == "move_rope_2");
+    CHECK(nextOf(m.doc, id(m.doc, start)) == "move_rope_2");
+    CHECK(nextOf(m.doc, copy).empty());
+
+    // Duplicating the copy extends the chain from its end; duplicating the start inserts after it.
+    REQUIRE(m.session.duplicateSelection());
+    const auto third = m.selected().at(0);
+    CHECK(targetname(m.doc, third) == "move_rope_3");
+    CHECK(nextOf(m.doc, copy) == "move_rope_3");
+    m.select({start});
+    REQUIRE(m.session.duplicateSelection());
+    const auto inserted = m.selected().at(0);
+    CHECK(targetname(m.doc, inserted) == "move_rope_4");
+    CHECK(nextOf(m.doc, id(m.doc, start)) == "move_rope_4");
+    CHECK(nextOf(m.doc, inserted) == "move_rope_2");
+
+    // One undo step each: the last undo restores the start's link.
+    REQUIRE(m.doc.undo());
+    CHECK(nextOf(m.doc, id(m.doc, start)) == "move_rope_2");
+
+    // A named keyframe counts up its number, keeping the padding; other classes are untouched.
+    const auto named = m.point("keyframe_rope", "wire09", {0, 0, 0});
+    m.select({named});
+    REQUIRE(m.session.duplicateSelection());
+    CHECK(targetname(m.doc, m.selected().at(0)) == "wire10");
+    const auto target = m.point("info_target", "spot", {0, 0, 0});
+    m.select({target});
+    REQUIRE(m.session.duplicateSelection());
+    CHECK(targetname(m.doc, m.selected().at(0)) == "spot");
+}
+
+TEST_CASE("Duplicate copies a selected rope chain as a chain of its own") {
+    Map m;
+    m.session.setEntityClasses(ropeClasses());
+    const auto a = m.point("move_rope", "rope_1", {0, 0, 0}, "\"NextKey\" \"rope_2\"\n");
+    const auto b = m.point("keyframe_rope", "rope_2", {128, 0, 0}, "\"NextKey\" \"elsewhere\"\n");
+    m.select({a, b});
+    REQUIRE(m.session.duplicateSelection());
+    const auto copies = m.selected();
+    REQUIRE(copies.size() == 2);
+    std::map<std::string, std::string> links;
+    for (const auto c : copies) links[targetname(m.doc, c)] = nextOf(m.doc, c);
+    CHECK(links == std::map<std::string, std::string>{{"rope_3", "rope_4"}, {"rope_4", "elsewhere"}});
+    // The originals are as they were.
+    CHECK(nextOf(m.doc, id(m.doc, a)) == "rope_2");
+    CHECK(nextOf(m.doc, id(m.doc, b)) == "elsewhere");
+}
+
 TEST_CASE("Tie to entity and move to world round-trip the solids") {
     Source s;
     auto& m = s.m;
@@ -668,6 +749,16 @@ TEST_CASE("Tie to entity and move to world round-trip the solids") {
     const auto* entity = m.doc.get(*m.doc.handle(created));
     CHECK(valueOf(entity->block.get(), "classname") == "func_detail");
     CHECK(m.solidsIn(created).size() == 2);
+    // As Hammer: the new entity's origin is the centre of its solids' bounds.
+    {
+        AABB both = bounds[s.n(s.loose)];
+        both.expand(bounds[s.n(extra)].min);
+        both.expand(bounds[s.n(extra)].max);
+        const auto origin = entity->block->find("origin")->asVec3();
+        REQUIRE(origin);
+        const DVec3 centre = (both.min + both.max) * 0.5;
+        CHECK(DVec3{(*origin)[0], (*origin)[1], (*origin)[2]} == centre);
+    }
     CHECK(m.selected().size() == 2); // Solids mode: the tied solids stay selected.
 
     // Back to the world: same solids, same geometry, no entity left.
@@ -689,9 +780,10 @@ TEST_CASE("Tie to entity and move to world round-trip the solids") {
     m.select({s.loose});
     TieParams trigger;
     trigger.className = "trigger_multiple";
-    trigger.keyValues = {{"wait", "1"}};
+    trigger.keyValues = {{"wait", "1"}, {"origin", "1 2 3"}};
     REQUIRE(m.session.tieToEntity(trigger));
     CHECK(count(bytes(m.doc), "trigger_multiple") == 1);
+    CHECK(count(bytes(m.doc), "\"origin\" \"1 2 3\"") == 1); // A given origin stays.
     m.select({extra});
     TieParams into;
     into.entity = s.n(s.door);

@@ -1,5 +1,6 @@
 #include "assets/thumbnail_cache.hpp"
 
+#include "assets/hotspot.hpp"
 #include "assets/model_cache.hpp"
 
 #include <algorithm>
@@ -78,7 +79,11 @@ std::shared_ptr<const Thumbnail> ThumbnailCache::request(std::string_view materi
     entry.job = s.jobs.submit(Priority::Low,
         [bytes = std::move(*bytes), size = std::get<2>(key)](CancelToken token) -> Result<Thumbnail> {
             if (token.cancelled()) return std::unexpected(Error{ErrorCode::Internal, "Thumbnail cancelled"});
-            return decodeThumbnail(bytes, size);
+            auto thumbnail = decodeThumbnail(bytes, size);
+            // The browser's hotspot badge: the bytes are here already, so the check costs nothing extra.
+            if (const auto hot = readVtfHotspots(bytes); thumbnail && hot && *hot && !(*hot)->empty())
+                thumbnail->hotspots = true;
+            return thumbnail;
         }, [weak = std::weak_ptr<Impl>(impl_), key](Result<Thumbnail> result) {
             auto impl = weak.lock();
             if (!impl) return;

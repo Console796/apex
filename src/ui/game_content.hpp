@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "assets/hotspot.hpp"
 #include "assets/game_profile.hpp"
 #include <QByteArray>
 #include "assets/material_index.hpp"
@@ -62,6 +63,12 @@ public:
     bool loading() const { return loading_; }
     QString error() const { return error_; }
     std::pair<int, int> faceTextureSize(std::string_view material) const;
+    // Plan 0.8 D13: the material's hotspot rects (assets::loadHotspots), cached per material until
+    // the content changes. nullopt when it has none or they cannot be read.
+    const std::optional<assets::HotspotSet>& hotspots(std::string_view material) const;
+    // The browser's cheap check for a .rect source: the entry's %rectanglemap, or one beside it, exists.
+    // (The VTF resource is found by the thumbnail job, Thumbnail::hotspots.)
+    bool hasRectMap(const assets::MaterialIndexEntry& entry) const;
 
 signals:
     void contentAboutToChange(); // Release consumers borrowing the thumbnail store before reset.
@@ -108,6 +115,7 @@ private:
     QTimer* timer_ = nullptr;
     QString error_;
     mutable std::unordered_map<std::string, std::pair<int, int>> textureSizes_;
+    mutable std::unordered_map<std::string, std::optional<assets::HotspotSet>> hotspots_;
     std::size_t lastDone_ = static_cast<std::size_t>(-1), lastTotal_ = static_cast<std::size_t>(-1);
 };
 
