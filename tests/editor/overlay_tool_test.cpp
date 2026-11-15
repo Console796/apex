@@ -5,6 +5,7 @@
 #include "editor/overlay_tool.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 using namespace face_test;
 
@@ -173,16 +174,111 @@ TEST_CASE("[overlay] Overlay tool handles move, scale, rotate and drag a corner,
         CHECK(f.quad().points[0] == start.points[0]);
     }
     SUBCASE("Escape mid-drag puts the quad back") {
+        const auto undo = f.doc.undoCount();
         REQUIRE(f.session.input(at(InputKind::Press, start.origin), above(start.origin)));
         auto v = above(start.origin);
         v.cursorRay = {DVec3{-40, 0, 256}, {0, 0, -1}};
         f.session.input(at(InputKind::Move, start.origin), v);
-        CHECK(f.quad().origin != start.origin);
+        CHECK_FALSE(f.session.preview().overlays().empty());
         InputEvent escape;
         escape.kind = InputKind::KeyDown;
         escape.key = "Escape";
         REQUIRE(f.session.input(escape, v));
+        CHECK_FALSE(f.tool().dragging());
         CHECK(f.quad() == start);
+        CHECK(f.doc.undoCount() == undo);
+        CHECK(f.session.preview().empty());
+    }
+}
+
+TEST_CASE("[overlay] a handle drag previews without writing and commits once, as the document would draw it") {
+    Floor f;
+    REQUIRE(f.session.input(at(InputKind::Press, {-8, 0, 0}), above({-8, 0, 0})));
+    const auto start = f.quad();
+    const auto startSides = f.sides();
+    const auto node = std::get<NodeId>(*f.session.selection().active());
+    const auto undo = f.doc.undoCount();
+    const auto history = f.doc.historyState();
+    std::size_t changes = 0;
+    const auto token = f.doc.observe([&](const document::ChangeSet&) { ++changes; });
+
+    REQUIRE(f.session.input(at(InputKind::Press, start.origin), above(start.origin)));
+    CHECK(f.tool().dragging());
+    auto v = above(start.origin);
+    // The viewport cancels the pointer on every press a tool takes; that must not end the drag.
+    auto cancelPointer = at(InputKind::Move, start.origin);
+    cancelPointer.kind = InputKind::CancelPointer;
+    f.session.input(cancelPointer, v);
+    CHECK(f.tool().dragging());
+    for (const double x : {-16.0, -40.0, -70.0}) {
+        v.cursorRay = {DVec3{start.origin.x + x, 0, 256}, {0, 0, -1}};
+        f.session.input(at(InputKind::Move, start.origin), v);
+    }
+    // Nothing reached the document during the drag: the preview carries it.
+    CHECK(changes == 0);
+    CHECK(f.doc.historyState() == history);
+    CHECK(f.quad() == start);
+    CHECK(f.sides() == startSides);
+    const auto& preview = f.session.preview();
+    REQUIRE(preview.overlays().contains(node));
+    REQUIRE(preview.entityKeys().contains(node));
+    const auto previewed = preview.overlays().at(node);
+    const auto keys = preview.entityKeys().at(node);
+    CHECK(previewed.quads.at(0).origin.x == doctest::Approx(start.origin.x - 70.0));
+
+    f.session.input(at(InputKind::Release, start.origin), v);
+    CHECK_FALSE(f.tool().dragging());
+    CHECK(f.session.preview().empty());
+    CHECK(changes == 1);
+    CHECK(f.doc.undoCount() == undo + 1);
+    CHECK(f.doc.undoLabels().back() == "Edit overlay");
+    // The commit writes the keys the preview showed, and draws what the preview drew.
+    for (const auto& [key, value] : keys) CHECK(f.key(key) == value);
+    CHECK(f.sides() == std::vector<int>{static_cast<int>(f.top(f.left))});
+    const auto committed = document::overlayGeometry(f.doc, f.selected());
+    CHECK(committed.listed == previewed.listed);
+    CHECK(committed.missing == previewed.missing);
+    REQUIRE(committed.pieces.size() == previewed.pieces.size());
+    for (std::size_t i = 0; i < committed.pieces.size(); ++i) {
+        CHECK(committed.pieces[i].solid == previewed.pieces[i].solid);
+        CHECK(geometry::fragmentArea(committed.pieces[i].fragment) ==
+              doctest::Approx(geometry::fragmentArea(previewed.pieces[i].fragment)));
+    }
+    REQUIRE(f.doc.undo());
+    CHECK(f.quad() == start);
+    CHECK(f.sides() == startSides);
+    f.doc.unobserve(token);
+}
+
+TEST_CASE("[overlay] the footprint's bounds cull keeps every face a full clip finds") {
+    Document doc(parsed(kEmpty));
+    const auto w = world(doc);
+    for (int y = 0; y < 6; ++y)
+        for (int x = 0; x < 6; ++x)
+            addBox(doc, {x * 32.0, y * 32.0, -32.0 - 4.0 * ((x + y) % 3)}, {x * 32.0 + 32.0, y * 32.0 + 32.0, 0.0 - 4.0 * ((x + y) % 3)}, w);
+    document::SurfaceLookup lookup(doc);
+    const auto surfaces = lookup.all();
+    const auto everyFace = [&](const geometry::OverlayQuad& quad) {
+        const double minCosine = std::cos(glm::radians(editor::kOverlayFootprintDegrees)) - 1e-9;
+        std::vector<int> sides;
+        for (const auto& surface : surfaces) {
+            if (glm::dot(surface.normal, quad.normal) < minCosine) continue;
+            const auto fragment = document::clipToSurface(quad, surface);
+            if (fragment && geometry::fragmentArea(*fragment) > editor::kOverlayFootprintMinArea)
+                sides.push_back(static_cast<int>(surface.side));
+        }
+        return sides;
+    };
+    // Square, rotated, tilted and skewed (one corner dragged) quads at a spread of places.
+    for (int i = 0; i < 24; ++i) {
+        const double r = glm::radians(15.0 * i);
+        const DVec3 normal = glm::normalize(DVec3{0.3 * std::sin(r), 0.2 * std::cos(r), 1.0});
+        auto quad = geometry::faceAlignedQuad({20.0 + 7.0 * i, 30.0 + 5.0 * (i % 7), 0.0}, normal,
+                                              {std::cos(r), std::sin(r), 0.0}, {40.0 + 3.0 * i, 24.0});
+        if (i % 3 == 0) quad.points[2] += DVec2{18.0, 9.0};
+        const auto sides = editor::footprintSides(surfaces, quad);
+        CHECK(sides == everyFace(quad));
+        CHECK_FALSE(sides.empty());
     }
 }
 

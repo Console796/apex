@@ -7,6 +7,7 @@
 #include "document/overlay_fragments.hpp"
 #include "geometry/overlay.hpp"
 
+#include <functional>
 #include <span>
 #include <string>
 #include <utility>
@@ -27,8 +28,16 @@ inline constexpr double kOverlayDefaultScale = 0.25;
 geometry::OverlayQuad placementQuad(const document::OverlaySurface& face, DVec3 hit, std::pair<int, int> textureSize);
 
 // Every face the quad lands on (area above kOverlayFootprintMinArea) whose normal is within
-// kOverlayFootprintDegrees of the basis normal, in the order of `surfaces`.
+// kOverlayFootprintDegrees of the basis normal, in the order of `surfaces`. Faces whose projection
+// along the basis normal misses the quad's bounds are rejected before clipping.
 std::vector<int> footprintSides(std::span<const document::OverlaySurface> surfaces, const geometry::OverlayQuad& quad);
+
+// What document::overlayGeometry builds for an info_overlay with this quad, material and side list,
+// resolving each side through `surface` (nullptr: missing) instead of the document. The tool's
+// drag preview, so a drag re-clips only the overlay it edits against faces it read once.
+document::OverlayGeometry quadGeometry(const geometry::OverlayQuad& quad, const std::string& material,
+                                       std::span<const int> sides,
+                                       const std::function<const document::OverlaySurface*(int side)>& surface);
 
 // `sides` with `side` added, or removed if it was there; the order of the rest is kept.
 std::vector<int> toggleSide(std::vector<int> sides, int side);

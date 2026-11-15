@@ -45,7 +45,7 @@ doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
-add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/displacement_sculpt_measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp)
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/displacement_sculpt_measure_test.cpp editor/overlay_drag_measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp)
 target_link_libraries(apex_measure_tests PRIVATE apex_render apex_editor apex_assets sourcepp::vpkpp sourcepp::steampp apex_warnings doctest::doctest)
 doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")

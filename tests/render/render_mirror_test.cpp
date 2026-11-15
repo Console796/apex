@@ -3067,9 +3067,11 @@ TEST_CASE("mirror: an info_overlay draws on its face and follows the face's soli
         return std::ranges::count_if(list.meshes, [](const MeshDraw& d) { return !d.edgeOverlay && d.alpha == AlphaMode::Test; });
     };
     CHECK(overlayDraws(DisplayMode::Textured) == 0);
+    document::NodeId overlay = 0;
     {
         auto tx = scene.doc->begin("overlay");
-        tx.create(parsed->root().children()[0]);
+        const auto created = tx.create(parsed->root().children()[0]);
+        overlay = scene.doc->get(created)->id;
         tx.commit();
     }
     REQUIRE(mirror.settle());
@@ -3078,6 +3080,28 @@ TEST_CASE("mirror: an info_overlay draws on its face and follows the face's soli
     const auto blue = count(drawn, bluish);
     CHECK(blue > count(before, bluish) + 50);
     CHECK(count(drawn, reddish) + 50 < count(before, reddish));
+    // Plan 0.8 D12: an Overlay tool drag previews re-clipped fragments in place of the overlay's
+    // own, without a document edit; clearing the preview brings the overlay's own back.
+    {
+        const auto own = document::overlayGeometry(*scene.doc, *scene.doc->get(*scene.doc->handle(overlay))->block);
+        REQUIRE(own.pieces.size() == 1);
+        const auto previewed = [&](const document::OverlayGeometry& fragments, std::uint64_t revision) {
+            PreviewGeometry geometry;
+            geometry.overlays[overlay] = fragments;
+            mirror.setPreview({}, geometry, revision);
+            REQUIRE(mirror.settle());
+            return count(drawFrame(*g, mirror, DisplayMode::Textured, false, above), bluish);
+        };
+        auto moved = own;
+        moved.pieces.clear(); // Dragged off every face it listed.
+        CHECK(previewed(moved, 1) == count(before, bluish));
+        CHECK(overlayDraws(DisplayMode::Textured) == 0);
+        CHECK(previewed(own, 2) == blue);
+        mirror.clearPreview();
+        REQUIRE(mirror.settle());
+        CHECK(overlayDraws(DisplayMode::Textured) == 1);
+        CHECK(count(drawFrame(*g, mirror, DisplayMode::Textured, false, above), bluish) == blue);
+    }
     // Lit shades it like the face under it: still visible, still blue.
     CHECK(overlayDraws(DisplayMode::Lit) == 1);
     CHECK(count(drawFrame(*g, mirror, DisplayMode::Lit, false, above, true), bluish) > count(before, bluish) + 50);

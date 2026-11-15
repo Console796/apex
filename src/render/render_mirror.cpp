@@ -1830,12 +1830,15 @@ void RenderMirror::setHighlight(const Highlight& highlight) {
 }
 
 void RenderMirror::setPreview(const PreviewTransforms& preview) {
-    if (impl_->preview == preview && impl_->previewGeometry.empty() && impl_->helperPreview.empty()) return;
+    if (impl_->preview == preview && impl_->previewGeometry.empty() && impl_->helperPreview.empty() &&
+        !impl_->overlays.previewing())
+        return;
     if (impl_->preview != preview || !impl_->helperPreview.empty()) impl_->lightsDirty = true;
     impl_->clearGeometry();
     for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
     impl_->helperPreview.clear();
     impl_->refreshHelpers();
+    impl_->overlays.setPreview({}, impl_->overlayUpload(), impl_->garbage);
     impl_->preview = preview;
     impl_->previewDirty = true;
     impl_->redraw = true;
@@ -1864,6 +1867,7 @@ void RenderMirror::setPreview(const PreviewTransforms& transforms, const Preview
     impl_->helperPreview = geometry.entityKeys;
     for (const auto& [id, keys] : impl_->helperPreview) impl_->helperDirty.insert(id);
     impl_->refreshHelpers();
+    impl_->overlays.setPreview(geometry.overlays, impl_->overlayUpload(), impl_->garbage);
     impl_->preview = transforms;
     impl_->previewDirty = true;
     impl_->redraw = true;

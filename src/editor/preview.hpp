@@ -1,5 +1,6 @@
 #pragma once
 
+#include "document/overlay_fragments.hpp"
 #include "editor/transform.hpp"
 #include "geometry/convex_polyhedron.hpp"
 #include "geometry/displacement.hpp"
@@ -28,6 +29,9 @@ public:
     // Plan 0.8 D6: a replacement's displaced sides, live during a sculpt or paint stroke. A
     // replacement without an entry meshes flat.
     using Displacements = std::map<NodeId, std::map<document::SideId, geometry::Displacement>>;
+    // Plan 0.8 D12: an overlay's fragments, re-clipped by the Overlay tool during a handle drag.
+    // The mirror draws them in place of the overlay's own until the preview clears.
+    using Overlays = std::map<NodeId, document::OverlayGeometry>;
 
     Preview() = default;
     Preview(const Preview&) = default;
@@ -40,10 +44,11 @@ public:
     const Replacements& replacements() const { return replacements_; }
     const std::vector<GhostSolid>& ghosts() const { return ghosts_; }
     const Displacements& displacements() const { return displacements_; }
+    const Overlays& overlays() const { return overlays_; }
     std::uint64_t revision() const { return revision_; }
     bool empty() const {
         return entityKeys_.empty() && transforms_.empty() && replacements_.empty() && ghosts_.empty() &&
-               displacements_.empty();
+               displacements_.empty() && overlays_.empty();
     }
     void set(NodeId node, const Transform& transform);
     void set(const Transforms& transforms);
@@ -52,6 +57,7 @@ public:
     void setGhosts(const std::vector<GhostSolid>& ghosts);
     // Replacements and their displacements together, one revision.
     void setReplacements(const Replacements& replacements, const Displacements& displacements);
+    void setOverlays(const Overlays& overlays);
     void clear(NodeId node);
     void clear();
 
@@ -61,6 +67,7 @@ private:
     Replacements replacements_;
     std::vector<GhostSolid> ghosts_;
     Displacements displacements_;
+    Overlays overlays_;
     std::uint64_t revision_ = 0;
 };
 
