@@ -193,6 +193,25 @@ bool OverlayMirror::apply(const document::Document& doc, const document::ChangeS
     return changed;
 }
 
+bool OverlayMirror::setPreview(const std::map<NodeId, document::OverlayGeometry>& previews, const Upload& upload,
+                               std::vector<Buffer>& garbage) {
+    bool changed = false;
+    for (auto it = previews_.begin(); it != previews_.end();) {
+        if (previews.contains(it->first)) { ++it; continue; }
+        retire(it->second.state, garbage);
+        it = previews_.erase(it);
+        changed = true;
+    }
+    for (const auto& [id, geometry] : previews) {
+        auto [it, inserted] = previews_.try_emplace(id);
+        if (!inserted && it->second.geometry == geometry) continue;
+        it->second.geometry = geometry;
+        build(id, it->second.state, geometry, upload, garbage);
+        changed = true;
+    }
+    return changed;
+}
+
 bool OverlayMirror::refreshDecals(const Upload& upload, const DecalSize& decalSize, std::vector<Buffer>& garbage) {
     if (!decalSize) return false;
     bool changed = false;
@@ -211,8 +230,10 @@ bool OverlayMirror::refreshDecals(const Upload& upload, const DecalSize& decalSi
 }
 
 void OverlayMirror::draw(std::vector<MeshDraw>& meshes, const DrawHooks& hooks) const {
-    for (const auto& [id, state] : overlays_) {
-        if (state.hidden || state.ranges.empty()) continue;
+    for (const auto& [id, own] : overlays_) {
+        const auto previewed = previews_.find(id);
+        const State& state = previewed == previews_.end() ? own : previewed->second.state;
+        if (own.hidden || state.ranges.empty()) continue;
         const auto material = hooks.material ? hooks.material(state.material) : Material{};
         const Vec4 tint = hooks.highlight ? hooks.highlight(id) : Vec4(0.0f);
         for (const auto& range : state.ranges) {
@@ -239,7 +260,9 @@ void OverlayMirror::draw(std::vector<MeshDraw>& meshes, const DrawHooks& hooks) 
 
 void OverlayMirror::clear(std::vector<Buffer>& garbage) {
     for (auto& [id, state] : overlays_) retire(state, garbage);
+    for (auto& [id, previewed] : previews_) retire(previewed.state, garbage);
     overlays_.clear();
+    previews_.clear();
     ids_.clear();
 }
 

@@ -45,12 +45,16 @@ bool OverlayTool::setParameter(std::string_view id, double value) {
 }
 
 void OverlayTool::cancel() {
-    if (drag_) dragTo({}, true);
+    endDrag(false);
     hovered_.reset();
 }
 
 void OverlayTool::documentChanged() {
-    if (drag_ && !session_.document()) drag_.reset();
+    // An undo or a reload under a drag takes its overlay or its faces away: drop the drag.
+    if (drag_ && (!session_.document() || !session_.document()->handle(drag_->node))) {
+        drag_.reset();
+        preview_.clear();
+    }
 }
 
 void OverlayTool::setNotice(std::string notice) {
@@ -69,8 +73,11 @@ std::optional<OverlayTool::Target> OverlayTool::target() const {
     if (!node || !node->block || document::overlayKind(*node->block) != document::OverlayKind::Overlay) return std::nullopt;
     auto quad = geometry::parseOverlay(*node->block);
     if (!quad) return std::nullopt;
-    const auto* sides = node->block->find("sides");
-    return Target{*id, *quad, geometry::parseSideList(sides ? sides->decodedValue().value_or("") : "")};
+    const auto text = [&](std::string_view key) {
+        const auto* value = node->block->find(key);
+        return value ? value->decodedValue().value_or("") : std::string{};
+    };
+    return Target{*id, *quad, geometry::parseSideList(text("sides")), text("material")};
 }
 
 std::optional<OverlayHandle> OverlayTool::handleAt(const Target& target, const ToolView& view, DVec2 cursor) const {
@@ -120,50 +127,65 @@ void OverlayTool::place(const document::OverlaySurface& face, DVec3 point) {
 }
 
 void OverlayTool::writeQuad(NodeId node, const geometry::OverlayQuad& quad, const std::vector<int>& sides,
-                            const std::string& label, const std::string& coalesceKey) {
+                            const std::string& label) {
     const auto done = session_.runEdit(label, EditorSession::AfterEdit::Keep, [&](document::Transaction& tx) -> Result<EditedObjects> {
         const auto handle = session_.document()->handle(node);
         if (!handle) return std::unexpected(Error{ErrorCode::InvalidArgument, "the overlay is gone"});
         for (const auto& [key, value] : quadKeys(quad)) tx.setKeyValue(*handle, key, value);
         tx.setKeyValue(*handle, "sides", geometry::sideListText(sides));
         return EditedObjects{};
-    }, coalesceKey);
+    });
     if (!done) setNotice(done.error().what());
 }
 
 void OverlayTool::toggleFace(const Target& target, SideId side) {
     const auto sides = toggleSide(target.sides, static_cast<int>(side));
     const bool added = sides.size() > target.sides.size();
-    writeQuad(target.node, target.quad, sides, added ? "Add overlay face" : "Remove overlay face", {});
+    writeQuad(target.node, target.quad, sides, added ? "Add overlay face" : "Remove overlay face");
     setNotice(added ? "Added face " + std::to_string(side) : "Removed face " + std::to_string(side));
 }
 
-void OverlayTool::dragTo(DVec3 point, bool finish) {
+void OverlayTool::dragTo(DVec3 point) {
     if (!drag_) return;
     auto& drag = *drag_;
-    if (finish) {
-        // Escape: put the quad back (merging into the drag's own undo step, which then changes nothing).
-        writeQuad(drag.node, drag.start, drag.startSides, "Edit overlay", drag.coalesceKey);
-        drag_.reset();
-        session_.publishToolStatus();
-        return;
-    }
     const auto quad = dragOverlayHandle(drag.start, drag.handle, drag.from, point);
-    if (quad.problem()) return;
+    if (quad.problem() || quad == drag.quad) return;
+    const auto surface = [&](int side) -> const document::OverlaySurface* {
+        const auto found = drag.bySide.find(side);
+        return found == drag.bySide.end() ? nullptr : &drag.surfaces[found->second];
+    };
     // Listed faces stay while the quad still lands on them (a Shift-added face too); faces the new
     // footprint covers join.
-    std::map<int, const document::OverlaySurface*> bySide;
-    for (const auto& surface : drag.surfaces) bySide.emplace(static_cast<int>(surface.side), &surface);
     std::vector<int> sides;
     for (const int side : drag.startSides) {
-        const auto found = bySide.find(side);
-        if (found == bySide.end()) { sides.push_back(side); continue; } // Unresolved: not ours to drop.
-        const auto fragment = document::clipToSurface(quad, *found->second);
+        const auto* face = surface(side);
+        if (!face) { sides.push_back(side); continue; } // Unresolved: not ours to drop.
+        const auto fragment = document::clipToSurface(quad, *face);
         if (fragment && geometry::fragmentArea(*fragment) > kOverlayFootprintMinArea) sides.push_back(side);
     }
     for (const int side : footprintSides(drag.surfaces, quad))
         if (std::ranges::find(sides, side) == sides.end()) sides.push_back(side);
-    writeQuad(drag.node, quad, sides, "Edit overlay", drag.coalesceKey);
+    drag.quad = quad;
+    drag.sides = std::move(sides);
+    // The preview carries the keys the release writes (the entity's helpers and its listed-face
+    // highlight follow them) and the overlay clipped as the mirror would clip it from those keys.
+    std::map<std::string, std::string> keys;
+    for (auto& [key, value] : quadKeys(drag.quad)) keys[key] = std::move(value);
+    keys["sides"] = geometry::sideListText(drag.sides);
+    preview_.setEntityKeys({{drag.node, std::move(keys)}});
+    preview_.setOverlays({{drag.node, quadGeometry(drag.quad, drag.material, drag.sides, surface)}});
+    session_.publishToolStatus(); // Viewports sync the preview when the session notifies.
+}
+
+void OverlayTool::endDrag(bool commit) {
+    if (!drag_) return;
+    const auto drag = std::move(*drag_);
+    drag_.reset();
+    // Cleared before the write, so the edit's own notify syncs the viewports to the document.
+    preview_.clear();
+    if (commit && (drag.quad != drag.start || drag.sides != drag.startSides))
+        writeQuad(drag.node, drag.quad, drag.sides, "Edit overlay");
+    session_.publishToolStatus();
 }
 
 Handled OverlayTool::input(const InputEvent& event, const ToolView& view) {
@@ -179,7 +201,7 @@ Handled OverlayTool::input(const InputEvent& event, const ToolView& view) {
     }
     if (event.kind == InputKind::Move) {
         if (drag_) {
-            if (const auto point = onPlane(view.cursorRay, drag_->start.origin, drag_->start.normal)) dragTo(*point, false);
+            if (const auto point = onPlane(view.cursorRay, drag_->start.origin, drag_->start.normal)) dragTo(*point);
             return true;
         }
         const auto current = target();
@@ -192,8 +214,7 @@ Handled OverlayTool::input(const InputEvent& event, const ToolView& view) {
     }
     if (event.kind == InputKind::Release && event.button == PointerButton::Left) {
         if (!drag_) return false;
-        drag_.reset();
-        session_.publishToolStatus();
+        endDrag(true);
         return true;
     }
     if (event.kind != InputKind::Press || event.button != PointerButton::Left) return false;
@@ -204,8 +225,11 @@ Handled OverlayTool::input(const InputEvent& event, const ToolView& view) {
             const auto from = onPlane(view.cursorRay, current->quad.origin, current->quad.normal);
             if (from) {
                 document::SurfaceLookup lookup(*session_.document());
-                drag_ = Drag{current->node, *handle, current->quad, current->sides, *from, lookup.all(),
-                             "overlay-drag-" + std::to_string(++drags_)};
+                Drag drag{current->node, *handle, current->quad, current->sides, current->material, *from,
+                          lookup.all(), {}, current->quad, current->sides};
+                for (std::size_t i = 0; i < drag.surfaces.size(); ++i)
+                    drag.bySide.emplace(static_cast<int>(drag.surfaces[i].side), i);
+                drag_ = std::move(drag);
                 hovered_ = handle;
                 session_.notify();
                 return true;
@@ -250,7 +274,7 @@ ToolOverlay OverlayTool::overlay(const ToolView&, InputSource) const {
     const auto current = target();
     if (!current) return result;
     const auto& palette = session_.overlayPalette();
-    const auto& quad = current->quad;
+    const auto& quad = drag_ ? drag_->quad : current->quad; // A drag shows where it has taken the quad.
     for (std::size_t i = 0; i < 4; ++i)
         result.worldSegments.push_back({quad.corner(i), quad.corner((i + 1) % 4), palette.vertexEdge, 2.0f});
     const auto active = drag_ ? std::optional<OverlayHandle>(drag_->handle) : hovered_;

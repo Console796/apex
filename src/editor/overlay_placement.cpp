@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace apex::editor {
 namespace {
@@ -12,6 +13,22 @@ constexpr double kMinHalfExtent = 0.5;
 DVec2 inPlane(const geometry::OverlayQuad& quad, DVec3 point) {
     const DVec3 d = point - quad.origin;
     return {glm::dot(d, quad.basisU), glm::dot(d, quad.basisV)};
+}
+
+// Whether `surface` projected along the quad's normal (as the clip projects it) lies outside the
+// quad's bounds in its plane; `toLocal` maps world offsets from the origin to (u, v, along normal).
+bool outsideQuad(const document::OverlaySurface& surface, const geometry::OverlayQuad& quad, const DMat3& toLocal,
+                 DVec2 low, DVec2 high) {
+    DVec2 min{std::numeric_limits<double>::infinity()}, max{-std::numeric_limits<double>::infinity()};
+    const auto add = [&](DVec3 p) {
+        const DVec3 local = toLocal * (p - quad.origin);
+        min = glm::min(min, DVec2(local));
+        max = glm::max(max, DVec2(local));
+    };
+    if (surface.displacement) for (const auto& p : surface.displacement->positions) add(p);
+    else for (const auto& p : surface.polygon) add(p);
+    constexpr double kSlack = 1e-6;
+    return max.x < low.x - kSlack || min.x > high.x + kSlack || max.y < low.y - kSlack || min.y > high.y + kSlack;
 }
 
 double extent(const geometry::OverlayQuad& quad, int axis) {
@@ -31,15 +48,44 @@ geometry::OverlayQuad placementQuad(const document::OverlaySurface& face, DVec3 
 
 std::vector<int> footprintSides(std::span<const document::OverlaySurface> surfaces, const geometry::OverlayQuad& quad) {
     const double minCosine = std::cos(glm::radians(kOverlayFootprintDegrees)) - 1e-9;
+    // OverlayQuad::local's basis; a degenerate one clips nothing, so it is left to the clip.
+    const DMat3 basis(quad.basisU, quad.basisV, quad.normal);
+    const bool cull = std::abs(glm::determinant(basis)) > 1e-12;
+    const DMat3 toLocal = cull ? glm::inverse(basis) : DMat3(1.0);
+    DVec2 low{std::numeric_limits<double>::infinity()}, high{-std::numeric_limits<double>::infinity()};
+    for (const auto& p : quad.points) {
+        low = glm::min(low, p);
+        high = glm::max(high, p);
+    }
     std::vector<int> sides;
     for (const auto& surface : surfaces) {
         if (glm::dot(surface.normal, quad.normal) < minCosine) continue;
+        if (cull && outsideQuad(surface, quad, toLocal, low, high)) continue;
         const auto fragment = document::clipToSurface(quad, surface);
         if (!fragment || geometry::fragmentArea(*fragment) <= kOverlayFootprintMinArea) continue;
         const int side = static_cast<int>(surface.side);
         if (std::ranges::find(sides, side) == sides.end()) sides.push_back(side);
     }
     return sides;
+}
+
+document::OverlayGeometry quadGeometry(const geometry::OverlayQuad& quad, const std::string& material,
+                                       std::span<const int> sides,
+                                       const std::function<const document::OverlaySurface*(int side)>& surface) {
+    document::OverlayGeometry result;
+    result.kind = document::OverlayKind::Overlay;
+    result.material = material;
+    result.quads.push_back(quad);
+    for (const int side : sides) {
+        result.listed.push_back(static_cast<document::SideId>(side));
+        const auto* face = surface(side);
+        if (!face) {
+            result.missing.push_back(static_cast<document::SideId>(side));
+            continue;
+        }
+        if (auto fragment = document::clipToSurface(quad, *face)) result.pieces.push_back({std::move(*fragment), face->solid});
+    }
+    return result;
 }
 
 std::vector<int> toggleSide(std::vector<int> sides, int side) {

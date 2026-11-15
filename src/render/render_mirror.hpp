@@ -21,6 +21,7 @@
 #include "core/job_pool.hpp"
 #include "document/document.hpp"
 #include "document/instance_contents.hpp"
+#include "document/overlay_fragments.hpp"
 #include "render/renderer.hpp"
 #include "geometry/convex_polyhedron.hpp"
 #include "geometry/displacement.hpp"
@@ -55,6 +56,9 @@ struct PreviewGeometry {
     // the solids its last dab changed.
     std::map<document::NodeId, std::map<document::SideId, geometry::Displacement>> displacements;
     std::vector<PreviewGhost> ghosts;
+    // Plan 0.8 D12: overlays re-clipped during an Overlay tool drag, drawn in place of their own
+    // fragments (the document is untouched until the drag commits).
+    std::map<document::NodeId, document::OverlayGeometry> overlays;
 };
 
 struct MirrorStats {

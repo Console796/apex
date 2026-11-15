@@ -46,6 +46,11 @@ public:
     // when anything drawn changed.
     bool apply(const document::Document& doc, const document::ChangeSet& changes, const Upload& upload,
                const DecalSize& decalSize, std::vector<Buffer>& garbage);
+    // Plan 0.8 D12: fragments drawn in place of an overlay's own while a tool drags it (built from
+    // the preview, not the document). Unchanged geometry keeps its buffers; an empty map clears.
+    // Returns true when anything drawn changed.
+    bool setPreview(const std::map<document::NodeId, document::OverlayGeometry>& previews, const Upload& upload,
+                    std::vector<Buffer>& garbage);
     // Re-places decals whose material size has become known (or changed) since they were built.
     bool refreshDecals(const Upload& upload, const DecalSize& decalSize, std::vector<Buffer>& garbage);
     // Appends one MeshDraw per (overlay, solid) piece to `meshes`.
@@ -53,6 +58,7 @@ public:
     void clear(std::vector<Buffer>& garbage);
 
     std::size_t overlayCount() const { return overlays_.size(); }
+    bool previewing() const { return !previews_.empty(); }
     std::size_t pieceCount() const;
     // Every material an overlay draws with (lower case), so the mirror can keep it loaded.
     std::set<std::string> materials() const;
@@ -82,6 +88,11 @@ private:
     static void retire(State& state, std::vector<Buffer>& garbage);
     std::map<document::NodeId, State> overlays_;
     std::map<Handle<document::Entity>, document::NodeId> ids_;
+    struct Previewed {
+        document::OverlayGeometry geometry;
+        State state;
+    };
+    std::map<document::NodeId, Previewed> previews_;
 };
 
 } // namespace apex::render

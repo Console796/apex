@@ -55,6 +55,7 @@ std::string sideListText(std::span<const int> sides);
 struct OverlayVertex {
     DVec3 position{0.0};
     DVec2 uv{0.0};
+    bool operator==(const OverlayVertex&) const = default;
 };
 // One clipped piece on one face: a convex polygon on a flat face, or triangles on a displacement.
 struct OverlayFragment {
@@ -62,6 +63,7 @@ struct OverlayFragment {
     DVec3 normal{0.0, 0.0, 1.0}; // The surface's outward normal (for shading).
     std::vector<OverlayVertex> vertices;
     std::vector<std::array<std::uint32_t, 3>> triangles;
+    bool operator==(const OverlayFragment&) const = default;
 };
 
 // Faces whose normal is within this cosine of perpendicular to the projection direction receive

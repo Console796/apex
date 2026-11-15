@@ -39,13 +39,14 @@ bool equal(const std::vector<GhostSolid>& a, const std::vector<GhostSolid>& b) {
 
 Preview& Preview::operator=(const Preview& other) {
     if (entityKeys_ == other.entityKeys_ && transforms_ == other.transforms_ && equal(replacements_, other.replacements_) &&
-        equal(ghosts_, other.ghosts_) && displacements_ == other.displacements_)
+        equal(ghosts_, other.ghosts_) && displacements_ == other.displacements_ && overlays_ == other.overlays_)
         return *this;
     entityKeys_ = other.entityKeys_;
     transforms_ = other.transforms_;
     replacements_ = other.replacements_;
     ghosts_ = other.ghosts_;
     displacements_ = other.displacements_;
+    overlays_ = other.overlays_;
     ++revision_;
     return *this;
 }
@@ -90,6 +91,12 @@ void Preview::setReplacements(const Replacements& replacements, const Displaceme
     ++revision_;
 }
 
+void Preview::setOverlays(const Overlays& overlays) {
+    if (overlays_ == overlays) return;
+    overlays_ = overlays;
+    ++revision_;
+}
+
 void Preview::setGhosts(const std::vector<GhostSolid>& ghosts) {
     if (equal(ghosts_, ghosts)) return;
     ghosts_ = ghosts;
@@ -98,7 +105,7 @@ void Preview::setGhosts(const std::vector<GhostSolid>& ghosts) {
 
 void Preview::clear(NodeId node) {
     const auto count = entityKeys_.erase(node) + transforms_.erase(node) + replacements_.erase(node) +
-                       displacements_.erase(node);
+                       displacements_.erase(node) + overlays_.erase(node);
     if (count) ++revision_;
 }
 
@@ -109,6 +116,7 @@ void Preview::clear() {
     replacements_.clear();
     ghosts_.clear();
     displacements_.clear();
+    overlays_.clear();
     ++revision_;
 }
 

@@ -52,6 +52,7 @@ std::optional<geometry::OverlayFragment> clipToSurface(const geometry::OverlayQu
 struct OverlayPiece {
     geometry::OverlayFragment fragment;
     NodeId solid = 0;
+    bool operator==(const OverlayPiece&) const = default;
 };
 struct OverlayGeometry {
     OverlayKind kind = OverlayKind::Overlay;
@@ -62,6 +63,7 @@ struct OverlayGeometry {
     std::vector<SideId> missing;              // Listed sides the document does not have.
     bool approximate = false;                 // infodecal: placed by the engine at load, not by VBSP.
     std::optional<std::string> problem;       // Why the entity could not be parsed.
+    bool operator==(const OverlayGeometry&) const = default;
 };
 
 // A decal's size in world units for its material (texture pixels times $decalscale).

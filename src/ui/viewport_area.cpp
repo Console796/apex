@@ -401,6 +401,7 @@ void ViewportArea::syncPreview(render::RenderMirror& mirror) {
         geometry.entityKeys = preview.entityKeys();
         geometry.replacements = preview.replacements();
         geometry.displacements = preview.displacements();
+        geometry.overlays = preview.overlays();
         for (const auto& ghost : preview.ghosts())
             geometry.ghosts.push_back({ghost.poly, ghost.material, ghost.opacity, ghost.outline});
         mirror.setPreview(preview.transforms(), geometry, preview.revision());
