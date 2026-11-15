@@ -167,6 +167,37 @@ TEST_CASE("[overlay] Overlay tool handles move, scale, rotate and drag a corner,
         CHECK(glm::length(f.quad().basisV + start.basisU) < 1e-6);
         CHECK(f.quad().points == start.points);
     }
+    SUBCASE("rotation snaps to the 15 degree angle step, like the gizmo") {
+        const auto from = spot(OverlayHandleKind::Rotate);
+        const double arm = glm::length(from - start.origin);
+        const auto towards = [&](double degrees) {
+            const double r = glm::radians(degrees);
+            return start.origin + (start.basisU * std::cos(r) + start.basisV * std::sin(r)) * arm;
+        };
+        drag(f, from, towards(20.0));
+        const auto turned = [&](const geometry::OverlayQuad& quad) {
+            return glm::degrees(std::atan2(glm::dot(quad.basisU, start.basisV), glm::dot(quad.basisU, start.basisU)));
+        };
+        CHECK(turned(f.quad()) == doctest::Approx(15.0));
+        // Fine is one degree, Suspend is free, as for the gizmo; no snap is free too.
+        const auto quad = f.quad();
+        const auto from2 = spot(OverlayHandleKind::Rotate);
+        editor::SnapSettings snap;
+        snap.fine = true;
+        CHECK(turned(editor::dragOverlayHandle(start, {OverlayHandleKind::Rotate}, from2, towards(20.4), &snap)) ==
+              doctest::Approx(20.0));
+        snap.fine = false;
+        snap.suspended = true;
+        CHECK(turned(editor::dragOverlayHandle(start, {OverlayHandleKind::Rotate}, from2, towards(20.4), &snap)) ==
+              doctest::Approx(20.4));
+        CHECK(turned(editor::dragOverlayHandle(start, {OverlayHandleKind::Rotate}, from2, towards(20.4))) ==
+              doctest::Approx(20.4));
+        // Past a half turn it takes the short way round: 350 degrees is -10, which snaps to -15.
+        snap.suspended = false;
+        CHECK(turned(editor::dragOverlayHandle(start, {OverlayHandleKind::Rotate}, from2, towards(350.0), &snap)) ==
+              doctest::Approx(-15.0));
+        CHECK(quad.points == start.points);
+    }
     SUBCASE("a corner moves alone") {
         const auto from = spot(OverlayHandleKind::Corner, 2);
         drag(f, from, from + start.basisU * 8.0 + start.basisV * 4.0);

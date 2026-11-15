@@ -145,10 +145,14 @@ void OverlayTool::toggleFace(const Target& target, SideId side) {
     setNotice(added ? "Added face " + std::to_string(side) : "Removed face " + std::to_string(side));
 }
 
-void OverlayTool::dragTo(DVec3 point) {
+void OverlayTool::dragTo(DVec3 point, TransformModifiers modifiers) {
     if (!drag_) return;
     auto& drag = *drag_;
-    const auto quad = dragOverlayHandle(drag.start, drag.handle, drag.from, point);
+    // Rotation snaps like the gizmo's: the angle step, one degree with Fine, free with Suspend.
+    auto snap = session_.snapSettings();
+    snap.fine = modifiers.fine;
+    snap.suspended = modifiers.suspend;
+    const auto quad = dragOverlayHandle(drag.start, drag.handle, drag.from, point, &snap);
     if (quad.problem() || quad == drag.quad) return;
     const auto surface = [&](int side) -> const document::OverlaySurface* {
         const auto found = drag.bySide.find(side);
@@ -201,7 +205,8 @@ Handled OverlayTool::input(const InputEvent& event, const ToolView& view) {
     }
     if (event.kind == InputKind::Move) {
         if (drag_) {
-            if (const auto point = onPlane(view.cursorRay, drag_->start.origin, drag_->start.normal)) dragTo(*point);
+            if (const auto point = onPlane(view.cursorRay, drag_->start.origin, drag_->start.normal))
+                dragTo(*point, transformModifiers(session_.preset(), event));
             return true;
         }
         const auto current = target();

@@ -5,6 +5,7 @@
 // tool (overlay_tool.hpp) only turns pointer input into these calls and writes the result.
 
 #include "document/overlay_fragments.hpp"
+#include "editor/transform.hpp"
 #include "geometry/overlay.hpp"
 
 #include <functional>
@@ -64,8 +65,10 @@ std::vector<OverlayHandleSpot> overlayHandles(const geometry::OverlayQuad& quad)
 
 // The quad after dragging `handle` of `start` from `from` to `to`, both points on the quad's plane.
 // Move translates in the plane; Rotate turns U and V about the normal by the angle the cursor
-// swept around the centre; ScaleU and ScaleV scale the uv points along one axis about the centre
-// (never through zero); Corner moves that one uv point.
-geometry::OverlayQuad dragOverlayHandle(const geometry::OverlayQuad& start, OverlayHandle handle, DVec3 from, DVec3 to);
+// swept around the centre, in `snap`'s angle steps from the start like the gizmo (none without it);
+// ScaleU and ScaleV scale the uv points along one axis about the centre (never through zero); Corner
+// moves that one uv point.
+geometry::OverlayQuad dragOverlayHandle(const geometry::OverlayQuad& start, OverlayHandle handle, DVec3 from, DVec3 to,
+                                        const SnapSettings* snap = nullptr);
 
 } // namespace apex::editor

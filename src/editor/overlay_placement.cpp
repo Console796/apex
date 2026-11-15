@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 namespace apex::editor {
 namespace {
@@ -134,7 +135,8 @@ std::vector<OverlayHandleSpot> overlayHandles(const geometry::OverlayQuad& quad)
     return spots;
 }
 
-geometry::OverlayQuad dragOverlayHandle(const geometry::OverlayQuad& start, OverlayHandle handle, DVec3 from, DVec3 to) {
+geometry::OverlayQuad dragOverlayHandle(const geometry::OverlayQuad& start, OverlayHandle handle, DVec3 from, DVec3 to,
+                                        const SnapSettings* snap) {
     auto quad = start;
     const DVec2 a = inPlane(start, from), b = inPlane(start, to);
     switch (handle.kind) {
@@ -143,7 +145,8 @@ geometry::OverlayQuad dragOverlayHandle(const geometry::OverlayQuad& start, Over
         break;
     case OverlayHandleKind::Rotate: {
         if (glm::length(a) < 1e-9 || glm::length(b) < 1e-9) break;
-        const double angle = std::atan2(b.y, b.x) - std::atan2(a.y, a.x);
+        double angle = std::remainder(std::atan2(b.y, b.x) - std::atan2(a.y, a.x), 2.0 * std::numbers::pi);
+        if (snap) angle = glm::radians(snapRotate(glm::degrees(angle), 0.0, *snap));
         const double c = std::cos(angle), s = std::sin(angle);
         quad.basisU = glm::normalize(start.basisU * c + start.basisV * s);
         quad.basisV = glm::normalize(start.basisV * c - start.basisU * s);

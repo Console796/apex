@@ -885,10 +885,13 @@ void MainWindow::openPreferences() {
 
 void MainWindow::updateEditorActions() {
     for (const auto& [id, action] : editorActions_) {
-        action->setEnabled(session_.document() != nullptr);
-        if (id == "instance.create") action->setEnabled(session_.document() && !editor::selectedNodes(session_.selection()).empty());
+        // Rules below override this default, and the action is set once at the end: an action turned
+        // off and back on makes Qt update every menu, toolbar button and shortcut that shows it, on
+        // every pointer move of a drag.
+        bool enabled = session_.document() != nullptr;
+        if (id == "instance.create") enabled = session_.document() && !editor::selectedNodes(session_.selection()).empty();
         if (id == "instance.collapse_all")
-            action->setEnabled(session_.document() && (!session_.instances().contents().empty() || !session_.instances().problems().empty()));
+            enabled = session_.document() && (!session_.instances().contents().empty() || !session_.instances().problems().empty());
         if (id == "instance.open" || id == "instance.collapse") {
             bool selectedInstance = false;
             for (const auto node : editor::selectedNodes(session_.selection())) {
@@ -896,20 +899,20 @@ void MainWindow::updateEditorActions() {
                 const auto* classname = found ? found->block->find("classname") : nullptr;
                 if (classname && classname->decodedValue().value_or("") == "func_instance") selectedInstance = true;
             }
-            if (id == "instance.collapse") action->setEnabled(selectedInstance);
+            if (id == "instance.collapse") enabled = selectedInstance;
             else {
                 const auto selected = editor::selectedNodes(session_.selection());
                 const bool resolved = selected.size() == 1 && std::ranges::any_of(session_.instances().contents(), [&](const auto& item) {
                     return item.instance == selected.front() && item.depth == 1;
                 });
-                action->setEnabled(resolved);
+                enabled = resolved;
                 action->setToolTip(resolved ? tr("Open this instance in another Apex window.")
                     : tr("The selected instance file could not be resolved."));
             }
         }
-        if (id == "assets.reload" || id.starts_with("compile.") || id == "view.properties" || id.starts_with("workspace.")) action->setEnabled(true);  // Window actions.
+        if (id == "assets.reload" || id.starts_with("compile.") || id == "view.properties" || id.starts_with("workspace.")) enabled = true;  // Window actions.
         if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
-            action->setEnabled(session_.isToolEnabled(id));
+            enabled = session_.isToolEnabled(id);
             action->setChecked(session_.activeTool() == id);
             if (toolButton_ && action->isChecked()) toolButton_->setText(action->text());
         }
@@ -919,20 +922,20 @@ void MainWindow::updateEditorActions() {
             if (id == "edit.copy" || id == "edit.cut" || id == "edit.delete" || id == "edit.duplicate" ||
                 id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world" ||
                 id == "edit.carve" || id == "edit.hollow" || id == "edit.merge" || id == "edit.create_prefab")
-                action->setEnabled(objects);
+                enabled = objects;
             // Faces mode selects sides, not nodes.
-            if (id == "edit.destroy_displacement") action->setEnabled(have && !session_.selection().ordered().empty());
+            if (id == "edit.destroy_displacement") enabled = have && !session_.selection().ordered().empty();
             if (id == "edit.paste" || id == "edit.paste_in_place" || id == "edit.paste_special")
-                action->setEnabled(have && clipboardHasFragment_);
+                enabled = have && clipboardHasFragment_;
         }
         if (id == "view.hide" || id == "view.hide_unselected" || id == "view.isolate") {
             const bool objects = session_.document() && !editor::selectedNodes(session_.selection()).empty();
-            action->setEnabled(objects || (id == "view.isolate" && session_.viewState().isolate.has_value()));
+            enabled = objects || (id == "view.isolate" && session_.viewState().isolate.has_value());
         }
         if (id == "view.isolate") action->setChecked(session_.viewState().isolate.has_value());
-        if (id == "view.center_selection") action->setEnabled(session_.document() && !session_.selection().ordered().empty());
-        if (id == "edit.undo") action->setEnabled(document_ && document_->undoCount() != 0);
-        if (id == "edit.redo") action->setEnabled(document_ && document_->redoCount() != 0);
+        if (id == "view.center_selection") enabled = session_.document() && !session_.selection().ordered().empty();
+        if (id == "edit.undo") enabled = document_ && document_->undoCount() != 0;
+        if (id == "edit.redo") enabled = document_ && document_->redoCount() != 0;
         if (id == "selection.ignore_groups") action->setChecked(session_.selection().ignoreGroups());
         if (id == "selection.marquee_toggle") {
             const bool touching = session_.marqueeMode() == editor::MarqueeMode::Touching;
@@ -955,7 +958,7 @@ void MainWindow::updateEditorActions() {
             const auto* vertex = dynamic_cast<const editor::VertexTool*>(&session_.activeToolObject());
             const auto mode = id == "vertex.mode.vertex" ? editor::ElementMode::Vertex
                             : id == "vertex.mode.edge" ? editor::ElementMode::Edge : editor::ElementMode::Face;
-            action->setEnabled(vertex != nullptr);
+            enabled = vertex != nullptr;
             action->setChecked(vertex && vertex->elementMode() == mode);
         }
         if (id == "snap.mode.toggle") {
@@ -974,6 +977,7 @@ void MainWindow::updateEditorActions() {
         for (const auto& [modeId, mode] : modes) {
             if (id == modeId) action->setChecked(session_.selection().mode() == mode);
         }
+        action->setEnabled(enabled);
     }
     for (const auto& [tool, options] : toolOptions_)
         for (auto* option : options) option->setVisible(session_.activeTool() == tool);

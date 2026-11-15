@@ -3767,3 +3767,30 @@ TEST_CASE("live bake completes offscreen and restarts after document edits") {
     if (saved.isValid()) settings.setValue("bake/maxPasses", saved); else settings.remove("bake/maxPasses");
     if (savedBounces.isValid()) settings.setValue("bake/bounces", savedBounces); else settings.remove("bake/bounces");
 }
+
+TEST_CASE("a gizmo drag leaves the editor actions alone") {
+    // Each pointer move notifies the session. An action turned off and back on in one update made
+    // Qt refresh every menu, button and shortcut showing it, enough to stall drags in the app.
+    app();
+    TransformScene scene;
+    auto& session = scene.session();
+    int changed = 0;
+    for (auto* action : scene.window.findChildren<QAction*>())
+        QObject::connect(action, &QAction::changed, [&] { ++changed; });
+    const auto context = session.gizmoContext();
+    REQUIRE(context);
+    const auto camera = cameraLooking(context->pivot + DVec3{-260, -300, 220}, context->pivot);
+    const auto handle = findHandle(session, camera, editor::GizmoHandle::X);
+    REQUIRE(handle);
+    const auto view = ui::gizmoViewFor(camera, kPane, context->pivot);
+    REQUIRE(session.beginGizmoDrag(editor::GizmoHandle::X, view, rayAtPixel(camera, *handle)));
+    QCoreApplication::processEvents();
+    changed = 0;
+    for (int i = 1; i <= 20; ++i) {
+        REQUIRE(session.updateGizmoDrag(rayAtPixel(camera, *handle + QPointF(i * 3, 0)),
+                                        ui::transformModifiers(session.preset(), Qt::NoModifier)));
+        QCoreApplication::processEvents();
+    }
+    CHECK(changed == 0);
+    session.cancelTransform();
+}

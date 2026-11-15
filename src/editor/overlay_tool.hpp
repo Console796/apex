@@ -57,7 +57,7 @@ private:
     std::optional<OverlayHandle> handleAt(const Target& target, const ToolView& view, DVec2 cursor) const;
     void place(const document::OverlaySurface& face, DVec3 point);
     void toggleFace(const Target& target, SideId side);
-    void dragTo(DVec3 point);
+    void dragTo(DVec3 point, TransformModifiers modifiers);
     void endDrag(bool commit);
     void writeQuad(NodeId node, const geometry::OverlayQuad& quad, const std::vector<int>& sides, const std::string& label);
     void setNotice(std::string notice);

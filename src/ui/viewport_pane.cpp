@@ -1024,6 +1024,8 @@ void PaneFrame::setBakeStatus(const QString& text, const QString& detail) {
 void PaneFrame::setTool(editor::Tool& tool) { parameters_->update(tool); }
 
 void PaneFrame::setModeText(const QString& text, bool entityTool) {
+    // Called on every session notify (each pointer move of a drag); a re-polish is a style pass.
+    if (mode_->text() == text && mode_->property("entity").toBool() == entityTool) return;
     mode_->setText(text);
     mode_->setProperty("entity", entityTool);
     mode_->style()->unpolish(mode_);
