@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QHBoxLayout>
 #include <QMenu>
+#include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSettings>
@@ -46,6 +47,7 @@ QString roleTitle(AreaRole role) {
     case AreaRole::Find: return tr("Find");
     case AreaRole::Addons: return tr("Addons");
     case AreaRole::Compile: return tr("Compilation");
+    case AreaRole::Plugin: return tr("Plugin panel");
     case AreaRole::FaceProperties: return tr("Face Properties");
     }
     return {};
@@ -88,10 +90,20 @@ void bindPanel(QWidget* panel, document::Document* document, editor::EditorSessi
     if (document) setPanelDocument(panel, document);
 }
 
-QWidget* createPanel(AreaRole role, document::Document* document, editor::EditorSession* session, GameContent* content) {
+QWidget* createPanel(AreaRole role, document::Document* document, editor::EditorSession* session, GameContent* content,
+                     std::string_view panelId) {
     QWidget* panel = nullptr;
     switch (role) {
     case AreaRole::Viewport: return nullptr;
+    case AreaRole::Plugin: {
+        auto* missing = new QLabel(QCoreApplication::translate("apex::ui::areas", "Plugin panel %1 is not loaded")
+                                      .arg(QString::fromUtf8(panelId.data(), static_cast<qsizetype>(panelId.size()))));
+        missing->setObjectName(QStringLiteral("MissingPluginPanel"));
+        missing->setAlignment(Qt::AlignCenter);
+        missing->setWordWrap(true);
+        panel = missing;
+        break;
+    }
     case AreaRole::Outliner: panel = new OutlinerPanel; break;
     case AreaRole::Inspector: panel = new InspectorPanel; break;
     case AreaRole::Visgroups: panel = new VisgroupPanel; break;

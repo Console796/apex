@@ -161,7 +161,7 @@ private:
     QWidget* makeArea(const viewport::LayoutNode& node, bool maximized, bool canClose, bool verticalStrip);
     PaneFrame* makeFrame(viewport::NodeId pane, bool maximized, bool canClose);
     QWidget* panelFor(viewport::NodeId pane, viewport::AreaRole role);
-    QWidget* makePanel(viewport::AreaRole role);
+    QWidget* makePanel(viewport::AreaRole role, std::string_view panelId = {});
     void configurePanel(QWidget* panel);
     template <typename Frame> void connectArea(Frame* frame);  // Defined in the .cpp; used there only.
     void tick();

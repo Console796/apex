@@ -15,6 +15,18 @@ if(APEX_BUILD_TESTS)
   list(APPEND CMAKE_MODULE_PATH ${doctest_SOURCE_DIR}/scripts/cmake)
 endif()
 
+# AngelScript v2.38.0: script host groundwork (0.9.1a); no host or add-ons yet.
+option(APEX_WITH_ANGELSCRIPT "Build the optional AngelScript runtime" OFF)
+if(APEX_WITH_ANGELSCRIPT)
+  CPMAddPackage(
+    NAME angelscript
+    GITHUB_REPOSITORY anjo76/angelscript
+    GIT_TAG v2.38.0
+    SOURCE_SUBDIR sdk/angelscript/projects/cmake
+    OPTIONS "BUILD_SHARED_LIBS OFF" "AS_DISABLE_INSTALL ON" "MSVC_COMPILE_FLAGS /MP1"
+  )
+endif()
+
 # glm 1.0.1
 CPMAddPackage(
   NAME glm

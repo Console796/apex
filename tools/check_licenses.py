@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check THIRD_PARTY.md against the build's dependencies (plan 0.1, D4).
 
+Includes optional dependencies such as AngelScript even when their build option is OFF.
 Fails if a CPMAddPackage NAME or find_package() name in the CMake files is missing from the table,
 or if a listed licence is not allowed. Also checks that text fixtures carry the Apex-authored marker
 (bite 10).

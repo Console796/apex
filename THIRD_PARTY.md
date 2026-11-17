@@ -13,6 +13,7 @@ The row's first column is the exact name used in `deps.cmake` (CPM) or `find_pac
 | Qt6 | LGPL-3.0 | system package, dynamically linked | ui, app |
 | Qt6 Multimedia | LGPL-3.0 | system Qt module, dynamically linked; Windows deployment via windeployqt | ui (sound preview) |
 | FFmpeg | LGPL-2.1-or-later | Qt's Windows build, 7.1.2, deployed by windeployqt | Qt Multimedia Windows backend |
+| angelscript | Zlib | CPM, pinned release `v2.38.0` from `anjo76/angelscript`; opt-in `APEX_WITH_ANGELSCRIPT` | future script host |
 | glm | MIT | CPM, pinned commit | core |
 | spdlog | MIT | CPM, pinned commit | core |
 | sourcepp | MIT | CPM, pinned commit (v2026.9.11; vpkpp, steampp, vtfpp, toolpp, mdlpp) | assets |

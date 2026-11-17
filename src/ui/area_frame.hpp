@@ -25,7 +25,7 @@ class GameContent;
 QString roleTitle(viewport::AreaRole role);
 // A new panel for a non-viewport role (null for Viewport), already bound to the document/session.
 QWidget* createPanel(viewport::AreaRole role, document::Document* document, editor::EditorSession* session,
-                      GameContent* content = nullptr);
+                      GameContent* content = nullptr, std::string_view panelId = {});
 void bindPanel(QWidget* panel, document::Document* document, editor::EditorSession* session);
 void setPanelSession(QWidget* panel, editor::EditorSession* session);
 void setPanelDocument(QWidget* panel, document::Document* document);

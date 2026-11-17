@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,7 +23,8 @@ enum class Orientation { Horizontal, Vertical };
 
 // What a leaf area shows, as in Blender's editor types. Every leaf keeps its Viewport settings
 // whatever its role, so switching an area to a panel and back restores its camera.
-enum class AreaRole { Viewport, Outliner, Inspector, Visgroups, History, Log, Materials, FaceProperties, Models, Sounds, Particles, Find, Addons, Compile };
+enum class AreaRole { Viewport, Outliner, Inspector, Visgroups, History, Log, Materials, FaceProperties, Models, Sounds, Particles, Find, Addons, Compile, Plugin };
+// Built-in choices only; plugin choices need a registered panel ID.
 inline constexpr AreaRole kAreaRoles[] = {AreaRole::Viewport, AreaRole::Outliner, AreaRole::Inspector,
                                           AreaRole::Visgroups, AreaRole::History, AreaRole::Log, AreaRole::Materials, AreaRole::FaceProperties,
                                           AreaRole::Models, AreaRole::Sounds, AreaRole::Particles, AreaRole::Find, AreaRole::Addons, AreaRole::Compile};
@@ -54,6 +56,7 @@ struct LayoutNode {
     Orientation orientation = Orientation::Horizontal;
     double ratio = 0.5;
     AreaRole role = AreaRole::Viewport; // Leaf.
+    std::string panelId;                 // Plugin leaf: stable plugin.<id>.<panel> identity.
     bool collapsed = false;              // Leaf.
     std::vector<LayoutNode> children;
 };
@@ -82,6 +85,7 @@ public:
 
     AreaRole role(NodeId pane) const;
     Result<void> setRole(NodeId pane, AreaRole role);
+    std::string_view panelId(NodeId pane) const;
     // A collapsed area shows only a strip; its split ratio is kept for when it expands. At least
     // one area always stays expanded.
     bool collapsed(NodeId pane) const;

@@ -3794,3 +3794,14 @@ TEST_CASE("a gizmo drag leaves the editor actions alone") {
     CHECK(changed == 0);
     session.cancelTransform();
 }
+
+TEST_CASE("missing plugin panel names its saved identity") {
+    (void)apex::ui_test::app();
+    std::unique_ptr<QWidget> panel(apex::ui::createPanel(apex::viewport::AreaRole::Plugin,
+        nullptr, nullptr, nullptr, "plugin.example.face_stats"));
+    auto* label = qobject_cast<QLabel*>(panel.get());
+    REQUIRE(label);
+    CHECK(label->text().contains(QStringLiteral("plugin.example.face_stats")));
+    CHECK(label->text().contains(QStringLiteral("not loaded")));
+    CHECK(label->wordWrap());
+}

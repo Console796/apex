@@ -1078,3 +1078,37 @@ TEST_CASE("Document freezes an oversized newest entry before eviction and can co
     REQUIRE(doc.redo());
     CHECK(doc.write().value() == final);
 }
+
+TEST_CASE("Document ChangeSet IDs survive commit undo and redo") {
+    Document doc(parsed("entity { id 10 classname info_target } entity { id 20 classname info_target }"));
+    const auto modified = *doc.handle(doc.roots()[0]);
+    const auto destroyed = *doc.handle(doc.roots()[1]);
+    const auto destroyedId = doc.get(destroyed)->id; // Capture before the handle expires.
+    ChangeSet event;
+    doc.observe([&](const ChangeSet& changes) { event = changes; });
+    auto tx = doc.begin("mixed changes");
+    const auto created = tx.create(block("entity { classname info_target }"));
+    const auto createdId = doc.get(created)->id;
+    tx.setKeyValue(modified, "targetname", "changed");
+    tx.destroy(destroyed);
+    const auto check = [&](const ChangeSet& changes, NodeId createId, NodeId destroyId) {
+        REQUIRE(changes.createdIds == std::vector<NodeId>{createId});
+        REQUIRE(changes.destroyedIds == std::vector<NodeId>{destroyId});
+        REQUIRE(changes.modifiedIds.size() == 1);
+        CHECK(changes.modifiedIds[0].id == doc.get(modified)->id);
+        CHECK(changes.modifiedIds[0].flags == Dirty::KeyValues);
+        REQUIRE(changes.created.size() == changes.createdIds.size());
+        CHECK(doc.get(changes.created[0])->id == changes.createdIds[0]);
+        REQUIRE(changes.modified.size() == changes.modifiedIds.size());
+        CHECK(doc.get(changes.modified[0].handle)->id == changes.modifiedIds[0].id);
+        CHECK(changes.modified[0].flags == changes.modifiedIds[0].flags);
+        REQUIRE(changes.destroyed.size() == changes.destroyedIds.size());
+        CHECK_FALSE(doc.get(changes.destroyed[0]));
+    };
+    check(tx.commit(false), createdId, destroyedId);
+    check(event, createdId, destroyedId);
+    REQUIRE(doc.undo());
+    check(event, destroyedId, createdId);
+    REQUIRE(doc.redo());
+    check(event, createdId, destroyedId);
+}

@@ -283,12 +283,12 @@ void ViewportArea::configurePanel(QWidget* panel) {
                 &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
     }
 }
-QWidget* ViewportArea::makePanel(viewport::AreaRole role) {
+QWidget* ViewportArea::makePanel(viewport::AreaRole role, std::string_view panelId) {
     QWidget* panel = nullptr;
     if (role == viewport::AreaRole::Compile) {
         panel = new CompilePanelView(compilePanel_, this);
         panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));
-    } else panel = createPanel(role, document_, session_, gameContent_);
+    } else panel = createPanel(role, document_, session_, gameContent_, panelId);
     configurePanel(panel);
     return panel;
 }
@@ -865,7 +865,7 @@ QWidget* ViewportArea::makeArea(const viewport::LayoutNode& node, bool maximized
 
 QWidget* ViewportArea::panelFor(viewport::NodeId pane, viewport::AreaRole role) {
     auto& slot = panels_[pane];
-    if (!slot) slot = makePanel(role);
+    if (!slot) slot = makePanel(role, layout_.panelId(pane));
     return slot;
 }
 

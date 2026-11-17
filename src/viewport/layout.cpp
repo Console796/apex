@@ -10,6 +10,7 @@ struct ViewportLayout::Node {
     bool leaf = true;
     Viewport viewport;                       // Leaf.
     AreaRole role = AreaRole::Viewport;      // Leaf.
+    std::string panelId;                     // Plugin leaf.
     bool collapsed = false;                  // Leaf.
     Orientation orientation = Orientation::Horizontal; // Split.
     double ratio = 0.5;
@@ -21,6 +22,7 @@ struct ViewportLayout::Node {
         copy->leaf = leaf;
         copy->viewport = viewport;
         copy->role = role;
+        copy->panelId = panelId;
         copy->collapsed = collapsed;
         copy->orientation = orientation;
         copy->ratio = ratio;
@@ -84,11 +86,13 @@ const char* nameOf(AreaRole role) {
     case AreaRole::Find: return "find";
     case AreaRole::Addons: return "addons";
     case AreaRole::Compile: return "compile";
+    case AreaRole::Plugin: return "plugin";
     }
     return "viewport";
 }
 
 std::optional<AreaRole> roleFromName(std::string_view name) {
+    if (name == "plugin") return AreaRole::Plugin;
     for (const auto role : kAreaRoles)
         if (name == nameOf(role)) return role;
     return std::nullopt;
@@ -141,6 +145,7 @@ LayoutNode ViewportLayout::tree() const {
         out.orientation = n.orientation;
         out.ratio = n.ratio;
         out.role = n.role;
+        out.panelId = n.panelId;
         out.collapsed = n.collapsed;
         if (!n.leaf) {
             out.children.push_back(self(self, *n.first));
@@ -190,9 +195,17 @@ AreaRole ViewportLayout::role(NodeId pane) const {
 Result<void> ViewportLayout::setRole(NodeId pane, AreaRole role) {
     auto* n = findNode(root_.get(), pane);
     if (!n || !n->leaf) return std::unexpected(bad("setRole: no such pane"));
+    if (role == AreaRole::Plugin && n->panelId.empty())
+        return std::unexpected(bad("setRole: plugin role requires a panel ID"));
     n->role = role;
+    if (role != AreaRole::Plugin) n->panelId.clear();
     fixActive();
     return {};
+}
+
+std::string_view ViewportLayout::panelId(NodeId pane) const {
+    const auto* n = findNode(root_.get(), pane);
+    return n && n->leaf ? n->panelId : std::string_view{};
 }
 
 bool ViewportLayout::collapsed(NodeId pane) const {
@@ -226,10 +239,12 @@ Result<NodeId> ViewportLayout::split(NodeId pane, Orientation orientation, doubl
     first->id = pane; // The original pane keeps its id.
     first->viewport = leaf->viewport;
     first->role = leaf->role;
+    first->panelId = leaf->panelId;
     auto second = std::make_unique<Node>();
     second->id = nextId_++;
     second->viewport = leaf->viewport;
     second->role = leaf->role;
+    second->panelId = leaf->panelId;
     const bool wasCollapsed = leaf->collapsed;
     first->collapsed = wasCollapsed;
     const NodeId newPane = second->id;
@@ -237,6 +252,7 @@ Result<NodeId> ViewportLayout::split(NodeId pane, Orientation orientation, doubl
     leaf->leaf = false;
     leaf->viewport = {};
     leaf->role = AreaRole::Viewport;
+    leaf->panelId.clear();
     leaf->collapsed = false;
     leaf->orientation = orientation;
     leaf->ratio = std::clamp(ratio, kMinRatio, kMaxRatio);
@@ -331,6 +347,7 @@ json::Value ViewportLayout::toJson() const {
         if (n.leaf) {
             o["type"] = str("pane");
             o["role"] = str(nameOf(n.role));
+            if (n.role == AreaRole::Plugin) o["panel"] = str(n.panelId);
             if (n.collapsed) o["collapsed"] = boolean(true);
             o["viewport"] = viewport::toJson(n.viewport);
         } else {
@@ -394,6 +411,16 @@ Result<ViewportLayout> ViewportLayout::fromJson(const json::Value& value) {
                 const auto role = name ? roleFromName(*name) : std::nullopt;
                 if (!role) { error = "unknown area role"; return nullptr; }
                 n->role = *role;
+            }
+            if (n->role == AreaRole::Plugin) {
+                const auto p = o->find("panel");
+                const auto* panel = p == o->end() ? nullptr : p->second.get<std::string>();
+                if (!panel || !panel->starts_with("plugin.") || panel->find('.', 7) == std::string::npos ||
+                    panel->find('.', 7) == 7 || panel->back() == '.') {
+                    error = "plugin pane without a valid panel ID";
+                    return nullptr;
+                }
+                n->panelId = *panel;
             }
             if (const auto c = o->find("collapsed"); c != o->end()) {
                 const auto* flag = c->second.get<bool>();

@@ -61,6 +61,10 @@ struct Modified {
     NodeHandle handle;
     Dirty flags = Dirty::None;
 };
+struct ModifiedId {
+    NodeId id;
+    Dirty flags = Dirty::None;
+};
 struct SideLocation {
     Handle<Solid> solid;
     std::size_t faceIndex = 0;
@@ -75,6 +79,10 @@ struct ChangeSet {
     std::vector<NodeHandle> created;
     std::vector<Modified> modified;
     std::vector<NodeHandle> destroyed;
+    // Stable identities parallel to the handle vectors, including nodes already destroyed.
+    std::vector<NodeId> createdIds;
+    std::vector<ModifiedId> modifiedIds;
+    std::vector<NodeId> destroyedIds;
     std::vector<SideId> vanishedSides;
     bool empty() const {
         return created.empty() && modified.empty() && destroyed.empty() && vanishedSides.empty();
