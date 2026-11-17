@@ -12,6 +12,10 @@ public:
                apex_tool_callbacks callbacks, Guard guard, std::function<void(const char*)> error = {});
     ~PluginTool() override;
     std::weak_ptr<std::function<void()>> retirement() const { return retirement_; }
+    // Script reload (0.9.7): a retired tool can be pointed at the new version's callbacks. It gets a fresh
+    // instance and, when it was the active tool, its activate callback runs again.
+    using Revive = std::function<void(void* registrationUser, const apex_tool_callbacks&)>;
+    std::weak_ptr<Revive> reviver() const { return reviver_; }
     void retire();
     editor::ToolId id() const override { return id_; }
     void activate() override;
@@ -35,6 +39,9 @@ private:
     Guard guard_;
     std::function<void(const char*)> error_;
     std::shared_ptr<std::function<void()>> retirement_;
+    std::shared_ptr<Revive> reviver_;
+    bool active_ = false;
+    void createInstance(void* registrationUser);
     editor::Preview preview_;
     editor::InputSource lastSource_ = 0;
 };

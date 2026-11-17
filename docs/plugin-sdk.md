@@ -46,6 +46,7 @@ plugins/hello/
 | `name`, `version` | Shown in the plugin manager. |
 | `apex_abi` | The ABI you were built against. Major must equal the host's; minor must be ≤ the host's. |
 | `entry` | Library file per platform key. A plugin with no entry for the current platform is skipped. |
+| `script`, `runtime` | A script plugin (section 4.14) names a script file inside its folder and the runtime that runs it, instead of `entry`. A plugin has `entry` or `script`, never both. |
 
 ## 3. Entry point and lifecycle
 
@@ -352,9 +353,41 @@ image of it until the content next reloads. Only a loose file in a folder mount 
 from an archive or from a plugin provider returns `APEX_ERR_UNSUPPORTED`; an unknown one `APEX_ERR_NOT_FOUND`;
 malformed edits `APEX_ERR_INVALID`. `last_error()` carries the reason. Material calls run on the editor thread.
 
-### 4.14 Later interfaces *(pending)*
+### 4.14 Script plugins
 
-Scripts (0.9.7), pies and themes (0.9.8).
+A script plugin has no native library. Its manifest names a file and a runtime:
+
+```
+{ id = "stair" name = "Stair" version = "1.0.0" apex_abi = { major = 1 minor = 0 }
+  script = "stair.as" runtime = "angelscript" }
+```
+
+`script` is a path inside the plugin folder (absolute paths and `..` are refused) and the file must exist.
+The host asks the build's script engine factory for `runtime`; if this build has none the plugin stays listed
+with an error that names the runtime, and the other plugins load normally. **This build has no engine for any
+runtime yet**: the AngelScript host (plugins.md D10) was blocked because AngelScript was not obtainable
+offline, so today only the seam exists (`plugin_host/script_engine.hpp`: `ScriptEngine`, `ScriptEngineFactory`,
+`Host::setScriptEngineFactory`) and the tests drive it with fake engines.
+
+A script registers through the same `apex.*` interfaces a native plugin uses, as the script's own plugin id,
+so the namespace and lifetime rules above apply unchanged. The ABI is unchanged: no new interface and no
+struct changes.
+
+**Reload on save.** The host watches the script file (the `apex.watch/1` mechanism, delivered by
+`pollWatches`, 200 ms debounce). A save runs: retire the old version's live tool instances (their
+`destroy_instance` runs), neutralise every callback it registered, unload the old engine, then load the new
+file into a new engine. Registry entries cannot be removed, so an id that exists before and after keeps its
+entry and is rebound: open sessions keep their tool objects, which get a fresh instance and, if they were the
+active tool, `activate` again. Limits: an id the new version drops stays as an inert entry until restart; an
+id it adds works while the registries are open and is otherwise reported in the log as available after a
+restart; a tool that changes kind is also restart-only.
+
+**Errors.** Every call into a script runs with exceptions caught. A compile error, a failing or throwing load
+sets the plugin's error (shown in the plugin manager and the log, with the engine's message), leaves the
+plugin unloaded and its tools inert, and never takes down the editor. A failed reload keeps watching, so the
+next save that fixes it loads normally.
+
+Pies and themes (0.9.8) are later interfaces *(pending)*.
 
 ## 5. The C++ wrapper
 

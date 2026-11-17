@@ -57,7 +57,16 @@ apex_tool_view makeView(ViewContext& c) {
 PluginTool::PluginTool(editor::EditorSession& session, std::string id, void* user,
                        apex_tool_callbacks callbacks, Guard guard, std::function<void(const char*)> error)
     : session_(session), id_(std::move(id)), user_(user), callbacks_(callbacks), guard_(std::move(guard)), error_(std::move(error)),
-      retirement_(std::make_shared<std::function<void()>>([this] { retire(); })) {
+      retirement_(std::make_shared<std::function<void()>>([this] { retire(); })),
+      reviver_(std::make_shared<Revive>([this](void* registrationUser, const apex_tool_callbacks& next) {
+          retire();
+          user_ = registrationUser; callbacks_ = next;
+          createInstance(registrationUser);
+          if (active_) activate();
+      })) {
+    createInstance(user);
+}
+void PluginTool::createInstance(void* user) {
     if (callbacks_.create_instance && callbacks_.destroy_instance) {
         void* instance = nullptr;
         guard_("tool.create_instance", [&] { instance = callbacks_.create_instance(user); });
@@ -71,8 +80,8 @@ void PluginTool::retire() {
     callbacks_ = {};
     preview_.clear();
 }
-void PluginTool::activate() { if (callbacks_.activate) guard_("tool.activate", [&] { callbacks_.activate(user_); }); refresh(lastSource_); session_.publishToolStatus(); }
-void PluginTool::deactivate() { if (callbacks_.deactivate) guard_("tool.deactivate", [&] { callbacks_.deactivate(user_); }); cancel(); }
+void PluginTool::activate() { active_ = true; if (callbacks_.activate) guard_("tool.activate", [&] { callbacks_.activate(user_); }); refresh(lastSource_); session_.publishToolStatus(); }
+void PluginTool::deactivate() { active_ = false; if (callbacks_.deactivate) guard_("tool.deactivate", [&] { callbacks_.deactivate(user_); }); cancel(); }
 editor::Handled PluginTool::input(const editor::InputEvent& e, const editor::ToolView& v) {
     if (!callbacks_.input) return false;
     ViewContext context{session_, v, error_}; auto view = makeView(context);

@@ -12,10 +12,18 @@
 #include <apex/apex_plugin.h>
 #include "assets/vfs.hpp"
 #include "core/math.hpp"
+#include "plugin_host/script_engine.hpp"
 namespace apex::document { class Document; }
 namespace apex::editor { class EditorSession; class ProblemRegistry; }
 namespace apex::plugin_host {
-struct Plugin { std::string id, name, version, error; std::filesystem::path folder, entry; bool enabled = true, loaded = false; };
+struct Plugin {
+    std::string id, name, version, error;
+    std::filesystem::path folder, entry;
+    bool enabled = true, loaded = false;
+    // 0.9.7: a script plugin names `script` (a file inside its folder) and `runtime` instead of `entry`.
+    std::filesystem::path script;
+    std::string runtime;
+};
 bool inNamespace(std::string_view plugin, std::string_view id);
 class UiBackend {
 public:
@@ -129,6 +137,17 @@ public:
     void setAssetsBackend(AssetsBackend* backend);
     void setDocument(const document::Document* document);
     void setSession(editor::EditorSession* session);
+    // ---- script plugins (plugins.md D10) ----
+    // Supplies engines for `runtime` names. Call before activate; without a factory (or when it returns null)
+    // a script plugin stays listed with an error naming the missing runtime.
+    void setScriptEngineFactory(ScriptEngineFactory factory);
+    // Loads the script again with a new engine, on the editor thread. Done automatically (through an
+    // apex.watch/1-style watch on the script file, delivered by pollWatches) when the file is saved.
+    // Tool instances of the old version are retired, its callbacks go dead, and registrations of the same id
+    // keep their registry entry and are rebound to the new version. An id the new version drops stays as an
+    // inert entry; an id it adds is not available until restart once the registries have frozen (logged).
+    // When the new version fails to load the script plugin stays unloaded with its error until the next save.
+    bool reloadScript(std::string_view id, std::string* message = nullptr);
     void setEnabled(std::string_view id, bool enabled);
     const std::vector<Plugin>& plugins() const;
     std::string staleBreadcrumb() const;

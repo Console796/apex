@@ -499,3 +499,41 @@ Findings:
 5. **Positions.** `First`, `Last`, and `Before`/`After` a profile mount identified by a path substring.
    Providers are inserted after the profile and addon mounts are ordered; an anchor that matches nothing
    mounts the provider last and is recorded in `Vfs::notes()`.
+
+### P2: Strata scriptable-primitive storage (0.9.7, NOT RUN: no encoding observed)
+
+This probe needs Strata Hammer to make a scriptable primitive, save it, and a read of the resulting VMF. Strata
+Hammer is not available in the build environment. A search of `tests/fixtures` and `~/maps/apex/*.vmf` for
+"scriptable" or "primitive" finds no VMF carrying one, so **no encoding was observed and none is assumed**
+(`docs/research.md` mentions the idea, with no stored format). The probe's open questions (is the script name
+and its parameters stored, where, does Strata Hammer keep or regenerate the solids on load, does an unchanged
+Apex save round-trip it) are therefore unanswered.
+
+Consequence taken for D11: with no lossless encoding found, primitives stay "adjust last operation" (0.3 D6,
+edit coalescing); nothing is persisted and no P2 round-trip fixtures exist. Re-running the probe needs a
+scriptable primitive made in Strata Hammer, saved, and diffed against the same map saved by Apex.
+
+### P5: script host size and speed (0.9.7, BLOCKED: AngelScript not obtainable offline)
+
+AngelScript is not in the repository, in `FETCHCONTENT` caches, or installed on the machine, and
+`FETCHCONTENT_FULLY_DISCONNECTED=ON` forbids fetching it, so **neither binary size nor the 64-step stair
+against the 2 ms budget was measured, and no number here is an AngelScript number.** No substitute engine was
+written. What was built instead is the language-agnostic seam (`plugin_host/script_engine.hpp`) that the
+AngelScript host will implement.
+
+What was measured is the host's own floor for the same workload: `tests/plugin_host/script_host_test.cpp`,
+case `P5 host-side floor for a 64-step stair` (opt-in: `APEX_MEASURE_SCRIPT=1`). A native tool registered
+through a script manifest returns 64 convex ghosts of six planes each, and the test times one input plus one
+overlay query per iteration (200 iterations): the callback into the tool, `ConvexPolyhedron::fromPlanes` for
+all 64 ghosts, and the segment copy. This excludes script execution entirely.
+
+| Build | Per input + refresh, 64 ghosts |
+|---|---|
+| `linux-gcc-debug` | 5.9 ms (pessimistic) |
+| `linux-gcc-release` | 0.52-0.56 ms (three runs) |
+
+Reading: in a release build the host alone spends about 0.53 ms of the 2 ms budget per refresh at 64 ghosts
+(about a quarter), leaving roughly 1.4 ms for script execution; the debug figure is not a budget number. When
+the AngelScript host exists, the stair at 64 steps must be measured with the same test (swap the native
+`stair` for the script) before the budget is called met.
+

@@ -310,7 +310,14 @@ struct Host::Impl {
     std::vector<Loaded> loaded;
     // All editor callbacks run on the editor thread. Invalidate before unloading code.
     std::shared_ptr<bool> lifetime = std::make_shared<bool>(true);
-    std::vector<std::weak_ptr<std::function<void()>>> toolRetirements;
+    struct ToolRetirement { std::string owner, tool; std::weak_ptr<std::function<void()>> retire; std::weak_ptr<PluginTool::Revive> revive; };
+    std::vector<ToolRetirement> toolRetirements;
+    // Script plugins (0.9.7): one entry per enabled script plugin, kept even when its load failed so a later
+    // save can reload it.
+    struct ScriptEntry { Impl* host; std::size_t index; std::unique_ptr<ScriptEngine> engine; };
+    std::vector<std::unique_ptr<ScriptEntry>> scripts;
+    ScriptEngineFactory scriptFactory;
+    bool reloading = false;
     std::set<std::string> disabled;
     const document::Document* document = nullptr;
     editor::EditorSession* session = nullptr;
@@ -388,8 +395,12 @@ struct Host::Impl {
         apex_ui_callbacks uiCallbacks{};
         apex_problem_check problemCheck = nullptr;
         std::map<std::string, std::string, std::less<>> suggestions, suggestionContexts;
+        bool dead = false;   // a script reload neutralised it; its registry entry stays but does nothing
     };
     std::vector<Registration> pending;
+    // What the registries' entries call through, by id. Reloading a script rebinds a cell instead of
+    // adding a second registry entry (the registries have no remove and freeze after startup).
+    std::map<std::string, std::shared_ptr<Registration>, std::less<>> cells;
     std::map<std::string, Registration, std::less<>> uiPanels;  // panels, sections and open dialogs
     unsigned dialogCounter = 0;
     Impl(std::filesystem::path s, std::filesystem::path b, std::function<void(std::string_view)> log)
@@ -609,6 +620,15 @@ struct Host::Impl {
         apex_change_notice notice{sizeof(notice), observedDocument->historyState(), changes.createdIds.data(),
             changes.createdIds.size(), modified.data(), modified.size(), changes.destroyedIds.data(),
             changes.destroyedIds.size(), sides.data(), sides.size(), changes.undoOrRedo ? 1u : 0u};
+        for (const auto& entry : scripts) {
+            if (!entry->engine) continue;
+            const auto& owner = plugins[entry->index].id;
+            Mark mark(breadcrumb, owner, "script.on_changed");
+            const auto previous = std::exchange(callbackOwner, owner);
+            try { entry->engine->documentChanged(notice); }
+            catch (...) { setError("exception in script on_changed"); }
+            callbackOwner = previous;
+        }
         for (const auto& item : loaded) {
             if (item.plugin->struct_size < offsetof(apex_plugin, on_changed) + sizeof(item.plugin->on_changed) || !item.plugin->on_changed) continue;
             Mark mark(breadcrumb, plugins[item.index].id, "on_changed");
@@ -621,17 +641,18 @@ struct Host::Impl {
     static apex_status registerItem(void* context, Registration::Kind kind, apex_str id, apex_str name,
                                     apex_str description, void* user, apex_callback first, apex_callback second) try {
         auto& s = self(context);
-        if (s.registering.empty() || editor::actionRegistry().frozen() || editor::toolRegistry().frozen())
+        if (s.registering.empty() || (!s.reloading && (editor::actionRegistry().frozen() || editor::toolRegistry().frozen())))
             return APEX_ERR_STATE;
         const auto idText = view(id);
+        const bool rebinding = s.reloading && s.cells.contains(idText) && s.cells.find(idText)->second->owner == s.registering;
         if (!inNamespace(s.registering, idText) || view(name).empty()) {
             s.lastError = "registration outside plugin namespace or missing name";
             return APEX_ERR_INVALID;
         }
         if (std::ranges::any_of(s.pending, [&](const auto& p) { return p.id == idText; }) ||
-            s.uiPanels.contains(idText) ||
-            ((kind == Registration::Kind::Action || kind == Registration::Kind::Tool) && editor::actionRegistry().find(idText)) ||
-            (kind == Registration::Kind::Tool && std::ranges::any_of(editor::toolRegistry().entries(),
+            (!rebinding && s.uiPanels.contains(idText)) ||
+            (!rebinding && (kind == Registration::Kind::Action || kind == Registration::Kind::Tool) && editor::actionRegistry().find(idText)) ||
+            (!rebinding && kind == Registration::Kind::Tool && std::ranges::any_of(editor::toolRegistry().entries(),
                                                      [&](const auto& tool) { return tool.id == idText; }))) {
             s.lastError = "duplicate registration";
             return APEX_ERR_INVALID;
@@ -937,8 +958,9 @@ struct Host::Impl {
     static apex_status registerProblemCheck(void* c, apex_str id, apex_str name, void* user, apex_problem_check check) try {
         auto& s = self(c);
         if (!check) return APEX_ERR_INVALID;
-        if (s.problems->frozen()) return APEX_ERR_STATE;
-        if (std::ranges::find(s.problems->names(), std::string(view(id))) != s.problems->names().end()) {
+        const bool rebinding = s.reloading && s.cells.contains(view(id));
+        if (s.problems->frozen() && !s.reloading) return APEX_ERR_STATE;
+        if (!rebinding && std::ranges::find(s.problems->names(), std::string(view(id))) != s.problems->names().end()) {
             s.setError("duplicate registration");
             return APEX_ERR_INVALID;
         }
@@ -1327,49 +1349,176 @@ struct Host::Impl {
         };
         for (const auto root : document->roots()) visit(visit, root);
     }
+    void note(const std::string& text) {
+        if (logger) logger(text); else log::info("plugin: {}", text);
+    }
     void commitRegistrations() {
-        for (const auto& r : pending) {
-            if (r.kind == Registration::Kind::Section) { uiPanels.emplace(r.id, r); continue; }
-            if (r.kind == Registration::Kind::Problem) {
-                problems->add(r.id, [this, life = std::weak_ptr(lifetime), r](const editor::ProblemContext& context, std::vector<editor::Problem>& out) {
-                    if (!life.expired()) runProblemCheck(r, context, out);
-                });
-                continue;
-            }
-            if (r.kind == Registration::Kind::Panel) {
-                if (panelRegistrar(r.id, r.name) && r.uiCallbacks.describe) uiPanels.emplace(r.id, r);
-                continue;
-            }
-            const auto callbackFn = [this, life = std::weak_ptr(lifetime), owner = r.owner, user = r.user, fn = r.first] { if (!life.expired()) callback(owner, "action", fn, user); };
-            editor::Action action{r.id, r.name, "Plugin", r.description};
-            action.suggestedBindings = r.suggestions;
-            action.suggestedContexts = r.suggestionContexts;
-            editor::mutableActionRegistry().add(std::move(action),
-                                                  r.kind == Registration::Kind::Action ? callbackFn : std::function<void()>{});
-            if (r.kind == Registration::Kind::Tool) {
-                auto* selfPtr = this;
-                editor::mutableToolRegistry().add(r.id, [selfPtr, life = std::weak_ptr(lifetime), r](editor::EditorSession& session) -> std::unique_ptr<editor::Tool> {
-                    if (life.expired()) return std::make_unique<RegisteredTool>(r.id, nullptr, nullptr);
-                    if (r.extended) {
-                        auto guard = [selfPtr, life, owner = r.owner](const char* name, const std::function<void()>& fn) {
-                            if (life.expired()) return;
-                            Mark mark(selfPtr->breadcrumb, owner, name);
-                            const auto previous = std::exchange(selfPtr->callbackOwner, owner);
-                            try { fn(); } catch (...) { selfPtr->lastError = "exception in plugin tool callback"; }
-                            selfPtr->callbackOwner = previous;
-                        };
-                        auto tool = std::make_unique<PluginTool>(session, r.id, r.user, r.callbacks, std::move(guard),
-                            [selfPtr, life](const char* message) { if (!life.expired()) selfPtr->setError(message); });
-                        selfPtr->toolRetirements.push_back(tool->retirement());
-                        return tool;
-                    }
-                    auto on = [selfPtr, life, r] { if (!life.expired()) selfPtr->callback(r.owner, "tool.activate", r.first, r.user); };
-                    auto off = [selfPtr, life, r] { if (!life.expired()) selfPtr->callback(r.owner, "tool.deactivate", r.second, r.user); };
-                    return std::make_unique<RegisteredTool>(r.id, std::move(on), std::move(off));
-                });
-            }
-        }
+        const auto batch = std::move(pending);
         pending.clear();
+        for (const auto& r : batch) commitOne(r);
+    }
+    void commitOne(const Registration& r) {
+        if (r.kind == Registration::Kind::Section) { uiPanels.insert_or_assign(r.id, r); return; }
+        if (const auto found = cells.find(r.id); found != cells.end() && reloading) {
+            // Same id as before the reload: keep the registry entry, point it at the new callbacks.
+            auto& cell = *found->second;
+            if (cell.kind != r.kind || cell.owner != r.owner) {
+                note("script " + r.owner + ": " + r.id + " changed kind; restart Apex to use it");
+                return;
+            }
+            cell = r;
+            if (r.kind == Registration::Kind::Panel && r.uiCallbacks.describe) uiPanels.insert_or_assign(r.id, r);
+            return;
+        }
+        if (reloading) {
+            const bool open = r.kind == Registration::Kind::Problem ? !problems->frozen()
+                              : r.kind == Registration::Kind::Panel ? true
+                              : !editor::actionRegistry().frozen() && (r.kind != Registration::Kind::Tool || !editor::toolRegistry().frozen());
+            if (!open) { note("script " + r.owner + ": new " + r.id + " is available after a restart"); return; }
+        }
+        const auto cell = std::make_shared<Registration>(r);
+        cells.emplace(r.id, cell);
+        if (r.kind == Registration::Kind::Problem) {
+            problems->add(r.id, [this, life = std::weak_ptr(lifetime), cell](const editor::ProblemContext& context, std::vector<editor::Problem>& out) {
+                if (!life.expired() && !cell->dead) runProblemCheck(*cell, context, out);
+            });
+            return;
+        }
+        if (r.kind == Registration::Kind::Panel) {
+            if (panelRegistrar(r.id, r.name) && r.uiCallbacks.describe) uiPanels.emplace(r.id, r);
+            return;
+        }
+        const auto callbackFn = [this, life = std::weak_ptr(lifetime), cell] {
+            if (!life.expired() && !cell->dead) callback(cell->owner, "action", cell->first, cell->user);
+        };
+        editor::Action action{r.id, r.name, "Plugin", r.description};
+        action.suggestedBindings = r.suggestions;
+        action.suggestedContexts = r.suggestionContexts;
+        editor::mutableActionRegistry().add(std::move(action),
+                                              r.kind == Registration::Kind::Action ? callbackFn : std::function<void()>{});
+        if (r.kind != Registration::Kind::Tool) return;
+        auto* selfPtr = this;
+        editor::mutableToolRegistry().add(r.id, [selfPtr, life = std::weak_ptr(lifetime), cell](editor::EditorSession& session) -> std::unique_ptr<editor::Tool> {
+            if (life.expired() || cell->dead) return std::make_unique<RegisteredTool>(cell->id, nullptr, nullptr);
+            const Registration reg = *cell;
+            if (reg.extended) {
+                auto guard = [selfPtr, life, owner = reg.owner](const char* name, const std::function<void()>& fn) {
+                    if (life.expired()) return;
+                    Mark mark(selfPtr->breadcrumb, owner, name);
+                    const auto previous = std::exchange(selfPtr->callbackOwner, owner);
+                    try { fn(); } catch (...) { selfPtr->lastError = "exception in plugin tool callback"; }
+                    selfPtr->callbackOwner = previous;
+                };
+                auto tool = std::make_unique<PluginTool>(session, reg.id, reg.user, reg.callbacks, std::move(guard),
+                    [selfPtr, life](const char* message) { if (!life.expired()) selfPtr->setError(message); });
+                std::erase_if(selfPtr->toolRetirements, [](const auto& item) { return item.retire.expired(); });
+                selfPtr->toolRetirements.push_back({reg.owner, reg.id, tool->retirement(), tool->reviver()});
+                return tool;
+            }
+            auto on = [selfPtr, life, cell] { if (!life.expired() && !cell->dead) selfPtr->callback(cell->owner, "tool.activate", cell->first, cell->user); };
+            auto off = [selfPtr, life, cell] { if (!life.expired() && !cell->dead) selfPtr->callback(cell->owner, "tool.deactivate", cell->second, cell->user); };
+            return std::make_unique<RegisteredTool>(reg.id, std::move(on), std::move(off));
+        });
+    }
+    // ---- script plugins (0.9.7) ----
+    // Takes a script plugin's registrations out of service before its module is unloaded: live tool
+    // instances are retired (destroy_instance runs while the old code is still mapped), every callback the
+    // script registered goes dead, and what the host keeps per owner outside the registries is dropped.
+    void retireScript(const std::string& owner) {
+        for (auto& item : toolRetirements)
+            if (item.owner == owner) if (auto retire = item.retire.lock()) (*retire)();
+        std::erase_if(toolRetirements, [&](const auto& item) { return item.retire.expired(); });
+        for (auto& [id, cell] : cells) {
+            if (cell->owner != owner) continue;
+            cell->dead = true;
+            cell->user = nullptr; cell->first = cell->second = nullptr;
+            cell->callbacks = {}; cell->uiCallbacks = {}; cell->problemCheck = nullptr;
+        }
+        std::erase_if(uiPanels, [&](const auto& item) { return item.second.owner == owner; });
+        pending.clear();
+        forgetOwner(owner);
+    }
+    static void scriptSaved(void* user, apex_str) noexcept {
+        auto* entry = static_cast<ScriptEntry*>(user);
+        try { entry->host->reloadEntry(*entry); } catch (...) { entry->host->setError("exception while reloading a script"); }
+    }
+    void watchScript(ScriptEntry& entry, std::uint64_t signature) {
+        const auto& item = plugins[entry.index];
+        Watch watch{++lastWatch, item.id, canonical(item.script), &entry, scriptSaved};
+        watch.signature = signature;
+        watches.push_back(std::move(watch));
+    }
+    bool loadScript(ScriptEntry& entry, bool reload) {
+        auto& item = plugins[entry.index];
+        const auto fail = [&](const std::string& why) {
+            pending.clear();
+            retireScript(item.id);
+            if (entry.engine) { try { Mark mark(breadcrumb, item.id, "script.unload"); entry.engine->unload(); } catch (...) { } entry.engine.reset(); }
+            item.error = why; item.loaded = false;
+            setError(why.c_str());
+            note("script " + item.id + ": " + why);
+            return false;
+        };
+        try { entry.engine = scriptFactory ? scriptFactory(item.runtime) : nullptr; }
+        catch (...) { return fail("script engine factory threw for runtime \"" + item.runtime + "\""); }
+        if (!entry.engine) return fail("no script engine for runtime \"" + item.runtime + "\" in this build");
+        pending.clear();
+        registering = item.id;
+        reloading = reload;
+        std::string error;
+        bool ok = false;
+        try {
+            Mark mark(breadcrumb, item.id, reload ? "script.reload" : "script.load");
+            const auto previous = std::exchange(callbackOwner, item.id);
+            try { ok = entry.engine->load({item.id, item.folder, item.script, item.runtime}, &host, error); }
+            catch (const std::exception& e) { ok = false; error = std::string("exception in script engine: ") + e.what(); }
+            catch (...) { ok = false; error = "exception in script engine"; }
+            callbackOwner = previous;
+        } catch (...) { ok = false; error = "script load failed"; }
+        registering.clear();
+        if (ok) {
+            try { commitRegistrations(); }
+            catch (const std::exception& e) { ok = false; error = std::string("registration failed: ") + e.what(); }
+            catch (...) { ok = false; error = "registration failed"; }
+        }
+        reloading = false;
+        if (!ok) return fail(error.empty() ? "the script failed to load" : error);
+        item.error.clear(); item.loaded = true;
+        if (reload) reviveTools(item.id);
+        return true;
+    }
+    // Sessions keep their tool objects, so after a reload the retired ones are pointed at the new version:
+    // same id, fresh instance. A tool whose id the new version dropped stays retired (inert).
+    void reviveTools(const std::string& owner) {
+        const auto items = toolRetirements;   // a revive can run plugin code that creates tools
+        for (const auto& item : items) {
+            if (item.owner != owner) continue;
+            const auto found = cells.find(item.tool);
+            if (found == cells.end() || found->second->dead || !found->second->extended) continue;
+            const auto revive = item.revive.lock();
+            if (!revive) continue;
+            const Registration reg = *found->second;
+            auto guarded = [&] { (*revive)(reg.user, reg.callbacks); };
+            Mark mark(breadcrumb, owner, "tool.revive");
+            const auto previous = std::exchange(callbackOwner, owner);
+            try { guarded(); } catch (...) { lastError = "exception while reviving a script tool"; }
+            callbackOwner = previous;
+        }
+    }
+    bool reloadEntry(ScriptEntry& entry) {
+        auto& item = plugins[entry.index];
+        if (!item.enabled) return false;
+        const auto signature = signatureOf(item.script);   // taken before reading, so a save during the load triggers again
+        retireScript(item.id);
+        if (entry.engine) {
+            try { Mark mark(breadcrumb, item.id, "script.unload"); entry.engine->unload(); } catch (...) { }
+            entry.engine.reset();
+        }
+        const bool ok = loadScript(entry, true);
+        std::erase_if(watches, [&](const Watch& w) { return w.user == &entry; });
+        watchScript(entry, signature);
+        if (ok) note("script " + item.id + ": reloaded");
+        return ok;
     }
     static void writeLog(void* context, int, apex_str message) try {
         auto& s = self(context);
@@ -1453,8 +1602,14 @@ struct Host::Impl {
             }
         }
         // Destroy plugin-owned instances while their code and host APIs are live.
-        for (const auto& weak : toolRetirements) if (auto retire = weak.lock()) (*retire)();
+        for (const auto& item : toolRetirements) if (auto retire = item.retire.lock()) (*retire)();
         lifetime.reset();
+        // Script modules go before the native libraries their engine may be built on.
+        for (auto it = scripts.rbegin(); it != scripts.rend(); ++it) {
+            if (!(*it)->engine) continue;
+            try { Mark mark(breadcrumb, plugins[(*it)->index].id, "script.unload"); (*it)->engine->unload(); } catch (...) { }
+            (*it)->engine.reset();
+        }
         for (auto it = loaded.rbegin(); it != loaded.rend(); ++it) {
             if (it->plugin->struct_size >= offsetof(apex_plugin, deactivate) + sizeof(it->plugin->deactivate) && it->plugin->deactivate) {
                 Mark mark(breadcrumb, plugins[it->index].id, "deactivate");
@@ -1499,9 +1654,24 @@ void Host::discover(const std::vector<std::filesystem::path>& paths) {
                     if (*minor > APEX_PLUGIN_ABI_MINOR) throw std::runtime_error("manifest requires newer ABI minor");
                 }
                 const auto* entry = parsed->root.find("entry");
-                const auto filename = entry ? field(*entry, platform()) : std::string{};
-                if (filename.empty()) throw std::runtime_error("missing entry for " + platform());
-                plugin.entry = dir / filename;
+                const auto scriptName = field(parsed->root, "script");
+                if (parsed->root.find("script") && scriptName.empty()) throw std::runtime_error("script must be a file name");
+                if (!scriptName.empty()) {
+                    // A script plugin: `script` (a file inside the folder) and `runtime`, no native `entry`.
+                    if (entry) throw std::runtime_error("a plugin has either entry or script, not both");
+                    plugin.runtime = field(parsed->root, "runtime");
+                    if (plugin.runtime.empty()) throw std::runtime_error("script needs a runtime");
+                    const std::filesystem::path relative{scriptName};
+                    if (relative.is_absolute() || relative.has_root_name() || relative.has_root_directory() ||
+                        std::ranges::any_of(relative, [](const auto& part) { return part == ".."; }))
+                        throw std::runtime_error("script must be inside the plugin folder");
+                    plugin.script = dir / relative;
+                    if (!std::filesystem::is_regular_file(plugin.script)) throw std::runtime_error("script file not found: " + scriptName);
+                } else {
+                    const auto filename = entry ? field(*entry, platform()) : std::string{};
+                    if (filename.empty()) throw std::runtime_error("missing entry for " + platform());
+                    plugin.entry = dir / filename;
+                }
                 plugin.enabled = !impl_->disabled.contains(plugin.id);
             } catch (const std::exception& e) {
                 if (plugin.id.empty()) plugin.id = dir.filename().string();
@@ -1512,11 +1682,34 @@ void Host::discover(const std::vector<std::filesystem::path>& paths) {
         }
     }
 }
+void Host::setScriptEngineFactory(ScriptEngineFactory factory) { impl_->scriptFactory = std::move(factory); }
+bool Host::reloadScript(std::string_view id, std::string* message) {
+    auto& s = *impl_;
+    if (std::this_thread::get_id() != s.mainThread) { if (message) *message = "reload from the editor thread"; return false; }
+    for (const auto& entry : s.scripts) {
+        if (s.plugins[entry->index].id != id) continue;
+        bool ok = false;
+        try { ok = s.reloadEntry(*entry); } catch (...) { s.setError("exception while reloading a script"); }
+        if (message) *message = s.plugins[entry->index].error;
+        return ok;
+    }
+    if (message) *message = "not a loaded script plugin";
+    return false;
+}
 void Host::activate(bool safeMode) {
     if (safeMode) return;
     for (std::size_t i = 0; i < impl_->plugins.size(); ++i) {
         auto& item = impl_->plugins[i];
         if (!item.enabled || !item.error.empty() || item.loaded) continue;
+        if (!item.script.empty()) {
+            auto entry = std::make_unique<Impl::ScriptEntry>(Impl::ScriptEntry{impl_.get(), i, nullptr});
+            const auto signature = Impl::signatureOf(item.script);
+            auto& ref = *entry;
+            impl_->scripts.push_back(std::move(entry));
+            impl_->loadScript(ref, false);
+            impl_->watchScript(ref, signature);   // even after a failure, so fixing the file reloads it
+            continue;
+        }
         Library lib = openLibrary(item.entry);
         if (!lib) { item.error = "cannot load library: " + item.entry.string(); continue; }
         const auto entry = entryPoint(lib);
