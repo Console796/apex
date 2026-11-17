@@ -1,3 +1,5 @@
+#include "ui/plugin_manager.hpp"
+#include "plugin_host/plugin_host.hpp"
 #include "ui/main_window.hpp"
 #include "ui/compile_panel.hpp"
 #include "ui/asset_report_builder.hpp"
@@ -522,6 +524,10 @@ void MainWindow::buildMenus() {
     connect(reloadAction, &QAction::triggered, this, &MainWindow::reloadGameContent);
     connect(addonsMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildAddonsMenu);
     rebuildAddonsMenu();
+
+    settings->addAction(tr("Plugins..."), this, [this] {
+        if (pluginHost_) PluginManager(*pluginHost_, this).exec();
+    });
 
     auto* help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About Apex"), this, [this] {
@@ -1793,7 +1799,9 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     viewport_->setDocument(nullptr);
     session_.detach();
     compilePanel_->setDocument(nullptr);
+    if (pluginHost_) pluginHost_->setDocument(nullptr);
     document_ = std::move(doc);
+    if (pluginHost_) pluginHost_->setDocument(document_.get());
     document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
     session_.attach(*document_);
     path_ = path;

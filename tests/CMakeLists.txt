@@ -54,3 +54,38 @@ target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_
                                               APEX_COMPILE_LOG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/compile/logs"
                                               APEX_PRIMITIVE_VMF_OUT="${CMAKE_BINARY_DIR}/primitives.vmf"
                                               APEX_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/golden")
+
+add_executable(apex_plugin_host_tests main.cpp plugin_host/plugin_host_test.cpp)
+add_library(apex_crash_plugin MODULE plugin_host/crash_plugin.c)
+target_include_directories(apex_crash_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_executable(apex_plugin_crash_child plugin_host/crash_child.cpp)
+target_link_libraries(apex_plugin_crash_child PRIVATE apex_plugin_host)
+add_library(apex_read_plugin MODULE plugin_host/read_plugin.c)
+target_include_directories(apex_read_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex_bad_plugin MODULE plugin_host/bad_plugin.c)
+target_include_directories(apex_bad_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_link_libraries(apex_plugin_host_tests PRIVATE apex_plugin_host apex_warnings doctest::doctest)
+add_dependencies(apex_plugin_host_tests apex_bad_plugin hello_tool apex_crash_plugin apex_plugin_crash_child apex_read_plugin)
+target_compile_definitions(apex_plugin_host_tests PRIVATE BAD_PLUGIN_PATH="$<TARGET_FILE:apex_bad_plugin>" HELLO_PLUGIN_PATH="$<TARGET_FILE:hello_tool>" CRASH_PLUGIN_PATH="$<TARGET_FILE:apex_crash_plugin>" CRASH_CHILD_PATH="$<TARGET_FILE:apex_plugin_crash_child>" READ_PLUGIN_PATH="$<TARGET_FILE:apex_read_plugin>")
+doctest_discover_tests(apex_plugin_host_tests TEST_PREFIX "plugin_host::")
+
+# P1: compile each side independently with the other compiler, then load and call both functions.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_program(APEX_PROBE_GCC gcc)
+  find_program(APEX_PROBE_GXX g++)
+  find_program(APEX_PROBE_CLANG clang)
+  find_program(APEX_PROBE_CLANGXX clang++)
+  if(APEX_PROBE_GCC AND APEX_PROBE_GXX AND APEX_PROBE_CLANG AND APEX_PROBE_CLANGXX)
+    set(_probe_dir ${CMAKE_CURRENT_BINARY_DIR}/plugin-abi-probe)
+    file(MAKE_DIRECTORY ${_probe_dir})
+    add_custom_command(OUTPUT ${_probe_dir}/gcc-plugin.so ${_probe_dir}/clang-plugin.so ${_probe_dir}/gcc-host ${_probe_dir}/clang-host
+      COMMAND ${APEX_PROBE_GCC} -shared -fPIC ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/stub.c -o ${_probe_dir}/gcc-plugin.so
+      COMMAND ${APEX_PROBE_CLANG} -shared -fPIC ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/stub.c -o ${_probe_dir}/clang-plugin.so
+      COMMAND ${APEX_PROBE_GXX} ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/host.cpp -ldl -o ${_probe_dir}/gcc-host
+      COMMAND ${APEX_PROBE_CLANGXX} ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/host.cpp -ldl -o ${_probe_dir}/clang-host
+      DEPENDS plugin_host/probe/stub.c plugin_host/probe/host.cpp VERBATIM)
+    add_custom_target(apex_plugin_abi_probe DEPENDS ${_probe_dir}/gcc-plugin.so ${_probe_dir}/clang-plugin.so ${_probe_dir}/gcc-host ${_probe_dir}/clang-host)
+    add_test(NAME plugin_abi_gcc_host_clang_plugin COMMAND ${_probe_dir}/gcc-host ${_probe_dir}/clang-plugin.so)
+    add_test(NAME plugin_abi_clang_host_gcc_plugin COMMAND ${_probe_dir}/clang-host ${_probe_dir}/gcc-plugin.so)
+  endif()
+endif()

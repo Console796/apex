@@ -33,6 +33,8 @@ namespace apex::document {
 class Document;
 }
 
+namespace apex::plugin_host { class Host; }
+
 namespace apex::ui {
 
 class CompilePanel;
@@ -74,6 +76,7 @@ public:
     bool saveFile(const QString& path);
     editor::EditorSession& editorSession() { return session_; }
     document::Document* document() const { return document_.get(); }
+    void setPluginHost(plugin_host::Host* host) { pluginHost_ = host; }
     const QString& documentPath() const { return path_; }
 
     void setTheme(Theme theme);
@@ -179,6 +182,7 @@ private:
     void restoreLayout();
     void closeEvent(QCloseEvent* event) override;
 
+    plugin_host::Host* pluginHost_ = nullptr;
     std::unique_ptr<document::Document> document_;
     std::unique_ptr<GameContent> gameContent_;
     CompilePanel* compilePanel_ = nullptr;
