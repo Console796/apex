@@ -29,6 +29,7 @@ public:
     std::optional<std::size_t> highlighted() const;
     DVec2 centre() const { return centre_; }
     const PieMenu& menu() const { return menu_; }
+    PieSlot slot(std::size_t index) const { return slots_.at(index); }
     bool triggerHeld() const { return triggerHeld_; }
     const KeyChord& trigger() const { return trigger_; }
     bool clickStyle() const { return clickStyle_; }

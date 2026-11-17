@@ -50,7 +50,7 @@ PieMenuPopup::PieMenuPopup(editor::EditorSession& session, QWidget* parent)
 }
 QString PieMenuPopup::label(std::size_t index) const {
     const auto& item = session_.pie()->menu().items[index];
-    const auto slot = *item.slot;
+    const auto slot = session_.pie()->slot(index);
     constexpr std::array digits{8, 9, 6, 3, 2, 1, 4, 7};
     const auto shortcut = shortcutText(session_.preset(), item.action);
     return QStringLiteral("%1%2\n%3  [%4]")
@@ -182,7 +182,7 @@ void PieMenuPopup::paintEvent(QPaintEvent*) {
     const auto highlighted = session_.pie()->highlighted();
     for (std::size_t i = 0; i < session_.pie()->menu().items.size(); ++i) {
         const auto& item = session_.pie()->menu().items[i];
-        const auto direction = editor::slotDirection(*item.slot);
+        const auto direction = editor::slotDirection(session_.pie()->slot(i));
         const QPointF position(direction.x * settings.radius, direction.y * settings.radius);
         const QRectF box(position.x() - (direction.x < 0 ? labelSize_.width() : direction.x == 0 ? labelSize_.width() / 2 : 0),
                          position.y() - (direction.y < 0 ? labelSize_.height() : direction.y == 0 ? labelSize_.height() / 2 : 0),

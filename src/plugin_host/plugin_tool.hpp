@@ -9,8 +9,10 @@ class PluginTool final : public editor::Tool {
 public:
     using Guard = std::function<void(const char*, const std::function<void()>&)>;
     PluginTool(editor::EditorSession& session, std::string id, void* user,
-               apex_tool_callbacks callbacks, Guard guard);
+               apex_tool_callbacks callbacks, Guard guard, std::function<void(const char*)> error = {});
     ~PluginTool() override;
+    std::weak_ptr<std::function<void()>> retirement() const { return retirement_; }
+    void retire();
     editor::ToolId id() const override { return id_; }
     void activate() override;
     void deactivate() override;
@@ -31,6 +33,8 @@ private:
     bool ownsUser_ = false;
     apex_tool_callbacks callbacks_;
     Guard guard_;
+    std::function<void(const char*)> error_;
+    std::shared_ptr<std::function<void()>> retirement_;
     editor::Preview preview_;
     editor::InputSource lastSource_ = 0;
 };

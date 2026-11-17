@@ -160,3 +160,19 @@ TEST_CASE("preset pie layouts survive serialization") {
     CHECK(loaded->pies.at("pie.tools").items[0].action == "tool.rope");
     CHECK(loaded->pies.at("pie.tools").items[0].slot == PieSlot::N);
 }
+
+TEST_CASE("P1 preset pies reject incomplete and conflicting layouts") {
+    for (int defect = 0; defect < 3; ++defect) {
+        CAPTURE(defect);
+        auto preset = hammerPreset();
+        PieMenu menu{"Invalid", {{"tool.rope", PieSlot::N, "Rope"}}};
+        if (defect == 0) menu.items[0].slot.reset();
+        if (defect == 1) menu.items.push_back(menu.items[0]);
+        if (defect == 2) for (int i = 1; i < 9; ++i)
+            menu.items.push_back({"tool.rope", static_cast<PieSlot>(i % 8), "Rope"});
+        preset.pies["pie.tools"] = menu;
+        const auto parsed = parsePreset(serializePreset(preset));
+        CHECK_FALSE(parsed);
+        if (!parsed) CHECK(parsed.error().what() != std::string{});
+    }
+}

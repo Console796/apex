@@ -10,8 +10,15 @@ apex_vec3 cv(DVec3 v) { return {v.x, v.y, v.z}; }
 DVec3 cv(apex_vec3 v) { return {v.x, v.y, v.z}; }
 apex_str str(std::string_view s) { return {s.data(), s.size()}; }
 std::string text(apex_str s) { return s.data ? std::string(s.data, s.size) : std::string{}; }
-struct ViewContext { editor::EditorSession& session; const editor::ToolView& view; };
-apex_status pick(void* ptr, apex_ray ray, apex_pick* out) {
+struct ViewContext { editor::EditorSession& session; const editor::ToolView& view; const std::function<void(const char*)>& error; };
+apex_status viewError(void* ptr) noexcept {
+    const auto& sink = static_cast<ViewContext*>(ptr)->error;
+    try { throw; }
+    catch (const std::exception& e) { try { if (sink) sink(e.what()); } catch (...) {} }
+    catch (...) { try { if (sink) sink("exception in view API"); } catch (...) {} }
+    return APEX_ERR_INTERNAL;
+}
+apex_status pick(void* ptr, apex_ray ray, apex_pick* out) try {
     auto& c = *static_cast<ViewContext*>(ptr);
     if (!out) return APEX_ERR_INVALID;
     if (!c.session.document()) return APEX_ERR_STATE;
@@ -19,27 +26,27 @@ apex_status pick(void* ptr, apex_ray ray, apex_pick* out) {
     if (!hit) return APEX_ERR_NOT_FOUND;
     *out = {hit->node, hit->side.value_or(0), cv(hit->point), cv(hit->normal)};
     return APEX_OK;
-}
-apex_status frustum(void* ptr, double x1, double y1, double x2, double y2, apex_plane out[4]) {
+} catch (...) { return viewError(ptr); }
+apex_status frustum(void* ptr, double x1, double y1, double x2, double y2, apex_plane out[4]) try {
     auto& c = *static_cast<ViewContext*>(ptr);
     if (!out || !c.view.rectFrustum) return APEX_ERR_INVALID;
     const auto planes = c.view.rectFrustum({x1, y1}, {x2, y2});
     for (std::size_t i = 0; i < 4; ++i) out[i] = {cv(planes[i].normal), planes[i].dist};
     return APEX_OK;
-}
-apex_status pixel(void* ptr, apex_vec3 point, double* x, double* y) {
+} catch (...) { return viewError(ptr); }
+apex_status pixel(void* ptr, apex_vec3 point, double* x, double* y) try {
     if (!x || !y) return APEX_ERR_INVALID;
     const auto& view = static_cast<ViewContext*>(ptr)->view;
     const auto result = editor::worldToPixel(view, cv(point));
     if (!result) return APEX_ERR_NOT_FOUND;
     *x = result->x; *y = result->y; return APEX_OK;
-}
-apex_status snap(void* ptr, apex_ray ray, apex_vec3* out) {
+} catch (...) { return viewError(ptr); }
+apex_status snap(void* ptr, apex_ray ray, apex_vec3* out) try {
     auto& c = *static_cast<ViewContext*>(ptr);
     if (!out) return APEX_ERR_INVALID;
     if (!c.session.document()) return APEX_ERR_STATE;
     *out = cv(c.session.snap({cv(ray.origin), cv(ray.direction)}, c.view).point); return APEX_OK;
-}
+} catch (...) { return viewError(ptr); }
 apex_tool_view makeView(ViewContext& c) {
     const auto& v = c.view;
     return {sizeof(apex_tool_view), {cv(v.cursorRay.origin), cv(v.cursorRay.dir)}, v.size.x, v.size.y,
@@ -48,29 +55,34 @@ apex_tool_view makeView(ViewContext& c) {
 }
 }
 PluginTool::PluginTool(editor::EditorSession& session, std::string id, void* user,
-                       apex_tool_callbacks callbacks, Guard guard)
-    : session_(session), id_(std::move(id)), user_(user), callbacks_(callbacks), guard_(std::move(guard)) {
+                       apex_tool_callbacks callbacks, Guard guard, std::function<void(const char*)> error)
+    : session_(session), id_(std::move(id)), user_(user), callbacks_(callbacks), guard_(std::move(guard)), error_(std::move(error)),
+      retirement_(std::make_shared<std::function<void()>>([this] { retire(); })) {
     if (callbacks_.create_instance && callbacks_.destroy_instance) {
         void* instance = nullptr;
         guard_("tool.create_instance", [&] { instance = callbacks_.create_instance(user); });
         if (instance) { user_ = instance; ownsUser_ = true; }
     }
 }
-PluginTool::~PluginTool() {
+PluginTool::~PluginTool() { retire(); }
+void PluginTool::retire() {
     if (ownsUser_) guard_("tool.destroy_instance", [&] { callbacks_.destroy_instance(user_); });
+    ownsUser_ = false;
+    callbacks_ = {};
+    preview_.clear();
 }
-void PluginTool::activate() { if (callbacks_.activate) guard_("tool.activate", [&] { callbacks_.activate(user_); }); }
+void PluginTool::activate() { if (callbacks_.activate) guard_("tool.activate", [&] { callbacks_.activate(user_); }); refresh(lastSource_); session_.publishToolStatus(); }
 void PluginTool::deactivate() { if (callbacks_.deactivate) guard_("tool.deactivate", [&] { callbacks_.deactivate(user_); }); cancel(); }
 editor::Handled PluginTool::input(const editor::InputEvent& e, const editor::ToolView& v) {
     if (!callbacks_.input) return false;
-    ViewContext context{session_, v}; auto view = makeView(context);
+    ViewContext context{session_, v, error_}; auto view = makeView(context);
     apex_tool_event event{sizeof(event), static_cast<uint32_t>(e.kind), static_cast<uint32_t>(e.button),
         (e.ctrl ? 1u : 0u) | (e.shift ? 2u : 0u) | (e.alt ? 4u : 0u), e.source, e.cursor.x, e.cursor.y,
         str(e.key), (e.left ? 1u : 0u) | (e.right ? 2u : 0u) | (e.middle ? 4u : 0u) |
                     (e.autoRepeat ? 8u : 0u) | (e.navigating ? 16u : 0u)};
     int handled = 0; lastSource_ = e.source;
     guard_("tool.input", [&] { handled = callbacks_.input(user_, &event, &view); });
-    refresh(e.source); return handled != 0;
+    refresh(e.source); session_.publishToolStatus(); return handled != 0;
 }
 void PluginTool::refresh(editor::InputSource source) {
     if (!callbacks_.visual) { preview_.clear(); return; }
@@ -123,9 +135,9 @@ editor::ToolReadout PluginTool::readout() const {
     });
     return result;
 }
-void PluginTool::cancel() { if (callbacks_.cancel) guard_("tool.cancel", [&] { callbacks_.cancel(user_); }); preview_.clear(); }
+void PluginTool::cancel() { if (callbacks_.cancel) guard_("tool.cancel", [&] { callbacks_.cancel(user_); }); preview_.clear(); session_.publishToolStatus(); }
 void PluginTool::forget(editor::InputSource source) { if (callbacks_.forget) guard_("tool.forget", [&] { callbacks_.forget(user_, source); }); if (source == lastSource_) refresh(source); }
-void PluginTool::documentChanged() { if (callbacks_.document_changed) guard_("tool.document_changed", [&] { callbacks_.document_changed(user_); }); refresh(lastSource_); }
-bool PluginTool::setParameter(std::string_view id, double value) { int result = 0; if (callbacks_.set_parameter) guard_("tool.set_parameter", [&] { result = callbacks_.set_parameter(user_, str(id), value); }); refresh(lastSource_); return result != 0; }
-bool PluginTool::perform(const editor::ActionId& action) { int result = 0; if (callbacks_.perform) guard_("tool.perform", [&] { result = callbacks_.perform(user_, str(action)); }); refresh(lastSource_); return result != 0; }
+void PluginTool::documentChanged() { if (callbacks_.document_changed) guard_("tool.document_changed", [&] { callbacks_.document_changed(user_); }); refresh(lastSource_); session_.publishToolStatus(); }
+bool PluginTool::setParameter(std::string_view id, double value) { int result = 0; if (callbacks_.set_parameter) guard_("tool.set_parameter", [&] { result = callbacks_.set_parameter(user_, str(id), value); }); refresh(lastSource_); session_.publishToolStatus(); return result != 0; }
+bool PluginTool::perform(const editor::ActionId& action) { int result = 0; if (callbacks_.perform) guard_("tool.perform", [&] { result = callbacks_.perform(user_, str(action)); }); refresh(lastSource_); session_.publishToolStatus(); return result != 0; }
 }

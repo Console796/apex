@@ -144,6 +144,9 @@ struct Host::Impl {
     std::function<void(std::string_view)> logger;
     std::vector<Plugin> plugins;
     std::vector<Loaded> loaded;
+    // All editor callbacks run on the editor thread. Invalidate before unloading code.
+    std::shared_ptr<bool> lifetime = std::make_shared<bool>(true);
+    std::vector<std::weak_ptr<std::function<void()>>> toolRetirements;
     std::set<std::string> disabled;
     const document::Document* document = nullptr;
     editor::EditorSession* session = nullptr;
@@ -172,6 +175,7 @@ struct Host::Impl {
     std::vector<Registration> pending;
     Impl(std::filesystem::path s, std::filesystem::path b, std::function<void(std::string_view)> log)
         : state(std::move(s)), breadcrumb(b), logger(std::move(log)) {
+        lastError.reserve(512);
         std::ifstream file(state);
         for (std::string line; std::getline(file, line);) if (!line.empty()) disabled.insert(line);
         host = {sizeof(host), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, this, interface, writeLog, error};
@@ -182,8 +186,17 @@ struct Host::Impl {
         editApi = {sizeof(editApi), applyEdit, deferEdit};
         selectionApi = {sizeof(selectionApi), selectionInfo, selectionAt, selectionSet};
     }
+    void setError(const char* message) noexcept {
+        try { lastError.assign(message, std::min(std::strlen(message), lastError.capacity())); } catch (...) { }
+    }
+    static apex_status internal(void* c) noexcept {
+        try { throw; }
+        catch (const std::exception& e) { self(c).setError(e.what()); }
+        catch (...) { self(c).setError("exception in host API"); }
+        return APEX_ERR_INTERNAL;
+    }
     static Impl& self(void* context) { return *static_cast<Impl*>(context); }
-    static const void* interface(void* context, apex_str name) {
+    static const void* interface(void* context, apex_str name) noexcept {
         if (view(name) == "apex.document/1") return &self(context).documentApi;
         if (view(name) == "apex.registration/1") return &self(context).registrationApi;
         if (view(name) == "apex.tools/1") return &self(context).toolsApi;
@@ -192,15 +205,15 @@ struct Host::Impl {
         if (view(name) == "apex.selection/1") return &self(context).selectionApi;
         return nullptr;
     }
-    static apex_status selectionInfo(void* c, uint32_t* mode, size_t* count) {
+    static apex_status selectionInfo(void* c, uint32_t* mode, size_t* count) try {
         const auto* session = self(c).session;
         if (!session || !session->document()) return APEX_ERR_STATE;
         if (!mode || !count) return APEX_ERR_INVALID;
         *mode = static_cast<uint32_t>(session->selection().mode());
         *count = session->selection().ordered().size();
         return APEX_OK;
-    }
-    static apex_status selectionAt(void* c, size_t index, uint64_t* id) {
+    } catch (...) { return internal(c); }
+    static apex_status selectionAt(void* c, size_t index, uint64_t* id) try {
         const auto* session = self(c).session;
         if (!session || !session->document()) return APEX_ERR_STATE;
         if (!id) return APEX_ERR_INVALID;
@@ -208,35 +221,41 @@ struct Host::Impl {
         if (index >= targets.size()) return APEX_ERR_NOT_FOUND;
         *id = std::visit([](auto value) { return static_cast<uint64_t>(value); }, targets[index]);
         return APEX_OK;
-    }
-    static apex_status selectionSet(void* c, uint32_t mode, const uint64_t* ids, size_t count) {
+    } catch (...) { return internal(c); }
+    static apex_status selectionSet(void* c, uint32_t mode, const uint64_t* ids, size_t count) try {
         auto* session = self(c).session;
         if (!session || !session->document()) return APEX_ERR_STATE;
         if (mode > static_cast<uint32_t>(editor::SelectionMode::Faces) || (count && !ids)) return APEX_ERR_INVALID;
-        try {
-            editor::Selection next(static_cast<editor::SelectionMode>(mode));
-            for (size_t i = 0; i < count; ++i) {
-                if (mode == static_cast<uint32_t>(editor::SelectionMode::Faces)) {
-                    const auto side = static_cast<document::SideId>(ids[i]);
-                    if (!session->document()->side(side)) return APEX_ERR_NOT_FOUND;
-                    next.add(editor::Target{side});
-                } else {
-                    const auto node = static_cast<document::NodeId>(ids[i]);
-                    if (!session->document()->handle(node)) return APEX_ERR_NOT_FOUND;
-                    next.add(editor::Target{node});
-                }
+        editor::Selection next(static_cast<editor::SelectionMode>(mode));
+        for (size_t i = 0; i < count; ++i) {
+            if (mode == static_cast<uint32_t>(editor::SelectionMode::Faces)) {
+                const auto side = static_cast<document::SideId>(ids[i]);
+                if (!session->document()->side(side)) return APEX_ERR_NOT_FOUND;
+                next.add(editor::Target{side});
+            } else {
+                const auto node = static_cast<document::NodeId>(ids[i]);
+                if (!session->document()->handle(node)) return APEX_ERR_NOT_FOUND;
+                next.add(editor::Target{node});
             }
-            session->selection() = next;
-            return APEX_OK;
-        } catch (...) { return APEX_ERR_INVALID; }
-    }
-    struct EditContext { document::Transaction& tx; document::Document& doc; std::string error; };
+        }
+        session->selection() = next;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    struct EditContext {
+        document::Transaction& tx;
+        document::Document& doc;
+        Impl& host;
+        apex_status failure = APEX_OK;
+    };
     template<class F> static apex_status editOperation(EditContext& context, F&& operation) noexcept {
-        if (!context.error.empty()) return APEX_ERR_INVALID;
+        if (context.failure != APEX_OK) return context.failure;
         try { operation(); return APEX_OK; }
-        catch (const std::exception& e) { context.error = e.what(); }
-        catch (...) { context.error = "exception in edit operation"; }
-        return APEX_ERR_INVALID;
+        catch (const std::invalid_argument& e) {
+            context.host.setError(e.what());
+            context.failure = APEX_ERR_INVALID;
+        }
+        catch (...) { context.failure = internal(&context.host); }
+        return context.failure;
     }
     static apex_status setKey(void* c, apex_node_id id, apex_str key, apex_str value) {
         auto& e = *static_cast<EditContext*>(c);
@@ -307,35 +326,38 @@ struct Host::Impl {
             e.tx.rebuildSolid(std::get<Handle<document::Solid>>(*h), *poly);
         });
     }
-    static apex_status applyEdit(void* c, apex_str label, apex_str coalesce, void* user, apex_edit_callback callback) {
+    static apex_status applyEdit(void* c, apex_str label, apex_str coalesce, void* user, apex_edit_callback callback) try {
         auto& s = self(c);
         if (!s.session || !s.session->document() || !callback) return APEX_ERR_STATE;
         static const apex_edit_ops_v1 ops{sizeof(ops), setKey, destroyNode, createSolid,
                                            reparentNode, setSideKey, removeDisplacement, rebuildSolid};
+        apex_status failure = APEX_OK;
         try {
             s.session->edit(std::string(view(label)), [&](document::Transaction& tx) {
-                EditContext context{tx, *s.session->document()};
+                EditContext context{tx, *s.session->document(), s};
                 const auto status = callback(user, &ops, &context);
-                if (!context.error.empty()) throw std::invalid_argument(context.error);
+                failure = context.failure;
+                if (failure != APEX_OK) throw std::runtime_error("plugin edit operation failed");
                 if (status != APEX_OK) throw std::invalid_argument("plugin edit failed");
             }, std::string(view(coalesce)));
             return APEX_OK;
-        } catch (const std::exception& e) { s.lastError = e.what(); return APEX_ERR_INVALID; }
-        catch (...) { s.lastError = "exception in plugin edit"; return APEX_ERR_INVALID; }
-    }
-    static apex_status deferEdit(void* c, void* user, void (*callback)(void*)) {
+        } catch (const std::invalid_argument& e) { s.setError(e.what()); return APEX_ERR_INVALID; }
+        catch (...) { return failure != APEX_OK ? failure : internal(c); }
+    } catch (...) { return internal(c); }
+    static apex_status deferEdit(void* c, void* user, void (*callback)(void*)) try {
         auto& s = self(c);
         if (!s.session || !s.session->document()) return APEX_ERR_STATE;
         if (!callback) return APEX_ERR_INVALID;
         const auto owner = s.callbackOwner;
-        s.session->document()->defer([&s, user, callback, owner] {
+        s.session->document()->defer([&s, life = std::weak_ptr(s.lifetime), user, callback, owner] {
+            if (life.expired()) return;
             Mark mark(s.breadcrumb, owner, "deferred");
             const auto previous = std::exchange(s.callbackOwner, owner);
             try { callback(user); } catch (...) { s.lastError = "exception in deferred callback"; }
             s.callbackOwner = previous;
         });
         return APEX_OK;
-    }
+    } catch (...) { return internal(c); }
     void changed(const document::ChangeSet& changes) {
         std::vector<apex_modified_node> modified;
         modified.reserve(changes.modifiedIds.size());
@@ -355,7 +377,7 @@ struct Host::Impl {
         }
     }
     static apex_status registerItem(void* context, Registration::Kind kind, apex_str id, apex_str name,
-                                    apex_str description, void* user, apex_callback first, apex_callback second) {
+                                    apex_str description, void* user, apex_callback first, apex_callback second) try {
         auto& s = self(context);
         if (s.registering.empty() || editor::actionRegistry().frozen() || editor::toolRegistry().frozen())
             return APEX_ERR_STATE;
@@ -376,31 +398,34 @@ struct Host::Impl {
         s.pending.push_back({kind, std::string(idText), std::string(view(name)), std::string(view(description)),
                              s.registering, user, first, second});
         return APEX_OK;
-    }
-    static apex_status registerAction(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback fn) {
+    } catch (...) { return internal(context); }
+    static apex_status registerAction(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback fn) try {
         return registerItem(c, Registration::Kind::Action, id, name, desc, user, fn, nullptr);
-    }
-    static apex_status registerTool(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback on, apex_callback off) {
+    } catch (...) { return internal(c); }
+    static apex_status registerTool(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback on, apex_callback off) try {
         return registerItem(c, Registration::Kind::Tool, id, name, desc, user, on, off);
-    }
+    } catch (...) { return internal(c); }
     static apex_status registerActionV1(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback fn,
                                         const apex_action_suggestion* suggestions, size_t count) {
-        if (count > 64 || (count && !suggestions)) return APEX_ERR_INVALID;
-        const auto result = registerItem(c, Registration::Kind::Action, id, name, desc, user, fn, nullptr);
-        if (result != APEX_OK) return result;
-        auto& item = self(c).pending.back();
-        for (size_t i = 0; i < count; ++i) {
-            if (view(suggestions[i].preset).empty() || !editor::KeyChord::parse(view(suggestions[i].chord))) {
-                self(c).pending.pop_back(); return APEX_ERR_INVALID;
+        const auto before = self(c).pending.size();
+        try {
+            if (count > 64 || (count && !suggestions)) return APEX_ERR_INVALID;
+            const auto result = registerItem(c, Registration::Kind::Action, id, name, desc, user, fn, nullptr);
+            if (result != APEX_OK) return result;
+            auto& item = self(c).pending.back();
+            for (size_t i = 0; i < count; ++i) {
+                if (view(suggestions[i].preset).empty() || !editor::KeyChord::parse(view(suggestions[i].chord))) {
+                    self(c).pending.pop_back(); return APEX_ERR_INVALID;
+                }
+                item.suggestions.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].chord)));
+                if (!view(suggestions[i].tool_id).empty())
+                    item.suggestionContexts.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].tool_id)));
             }
-            item.suggestions.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].chord)));
-            if (!view(suggestions[i].tool_id).empty())
-                item.suggestionContexts.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].tool_id)));
-        }
-        return APEX_OK;
+            return APEX_OK;
+        } catch (...) { self(c).pending.resize(before); return internal(c); }
     }
     static apex_status registerToolV1(void* c, apex_str id, apex_str name, apex_str desc, void* user,
-                                      const apex_tool_callbacks* callbacks) {
+                                      const apex_tool_callbacks* callbacks) try {
         if (!callbacks || callbacks->struct_size < offsetof(apex_tool_callbacks, input) + sizeof(callbacks->input)) return APEX_ERR_INVALID;
         const auto result = registerItem(c, Registration::Kind::Tool, id, name, desc, user, nullptr, nullptr);
         if (result != APEX_OK) return result;
@@ -416,10 +441,10 @@ struct Host::Impl {
         APEX_COPY_TOOL_CALLBACK(create_instance); APEX_COPY_TOOL_CALLBACK(destroy_instance);
 #undef APEX_COPY_TOOL_CALLBACK
         return APEX_OK;
-    }
-    static apex_status registerPanel(void* c, apex_str id, apex_str title) {
+    } catch (...) { return internal(c); }
+    static apex_status registerPanel(void* c, apex_str id, apex_str title) try {
         return registerItem(c, Registration::Kind::Panel, id, title, {}, nullptr, nullptr, nullptr);
-    }
+    } catch (...) { return internal(c); }
     void callback(const std::string& owner, const char* name, apex_callback fn, void* user) {
         if (!fn) return;
         Mark mark(breadcrumb, owner, name);
@@ -430,7 +455,7 @@ struct Host::Impl {
     void commitRegistrations() {
         for (const auto& r : pending) {
             if (r.kind == Registration::Kind::Panel) { panelRegistrar(r.id, r.name); continue; }
-            const auto callbackFn = [this, owner = r.owner, user = r.user, fn = r.first] { callback(owner, "action", fn, user); };
+            const auto callbackFn = [this, life = std::weak_ptr(lifetime), owner = r.owner, user = r.user, fn = r.first] { if (!life.expired()) callback(owner, "action", fn, user); };
             editor::Action action{r.id, r.name, "Plugin", r.description};
             action.suggestedBindings = r.suggestions;
             action.suggestedContexts = r.suggestionContexts;
@@ -438,50 +463,55 @@ struct Host::Impl {
                                                   r.kind == Registration::Kind::Action ? callbackFn : std::function<void()>{});
             if (r.kind == Registration::Kind::Tool) {
                 auto* selfPtr = this;
-                editor::mutableToolRegistry().add(r.id, [selfPtr, r](editor::EditorSession& session) -> std::unique_ptr<editor::Tool> {
+                editor::mutableToolRegistry().add(r.id, [selfPtr, life = std::weak_ptr(lifetime), r](editor::EditorSession& session) -> std::unique_ptr<editor::Tool> {
+                    if (life.expired()) return std::make_unique<RegisteredTool>(r.id, nullptr, nullptr);
                     if (r.extended) {
-                        auto guard = [selfPtr, owner = r.owner](const char* name, const std::function<void()>& fn) {
+                        auto guard = [selfPtr, life, owner = r.owner](const char* name, const std::function<void()>& fn) {
+                            if (life.expired()) return;
                             Mark mark(selfPtr->breadcrumb, owner, name);
                             const auto previous = std::exchange(selfPtr->callbackOwner, owner);
                             try { fn(); } catch (...) { selfPtr->lastError = "exception in plugin tool callback"; }
                             selfPtr->callbackOwner = previous;
                         };
-                        return std::make_unique<PluginTool>(session, r.id, r.user, r.callbacks, std::move(guard));
+                        auto tool = std::make_unique<PluginTool>(session, r.id, r.user, r.callbacks, std::move(guard),
+                            [selfPtr, life](const char* message) { if (!life.expired()) selfPtr->setError(message); });
+                        selfPtr->toolRetirements.push_back(tool->retirement());
+                        return tool;
                     }
-                    auto on = [selfPtr, r] { selfPtr->callback(r.owner, "tool.activate", r.first, r.user); };
-                    auto off = [selfPtr, r] { selfPtr->callback(r.owner, "tool.deactivate", r.second, r.user); };
+                    auto on = [selfPtr, life, r] { if (!life.expired()) selfPtr->callback(r.owner, "tool.activate", r.first, r.user); };
+                    auto off = [selfPtr, life, r] { if (!life.expired()) selfPtr->callback(r.owner, "tool.deactivate", r.second, r.user); };
                     return std::make_unique<RegisteredTool>(r.id, std::move(on), std::move(off));
                 });
             }
         }
         pending.clear();
     }
-    static void writeLog(void* context, int, apex_str message) {
+    static void writeLog(void* context, int, apex_str message) try {
         auto& s = self(context);
         if (s.logger) s.logger(view(message)); else log::info("plugin: {}", view(message));
-    }
-    static apex_str error(void* context) { return string(self(context).lastError); }
+    } catch (...) { internal(context); }
+    static apex_str error(void* context) noexcept { return string(self(context).lastError); }
     static const document::Node* find(Impl& s, apex_node_id id) {
         if (!s.document) return nullptr;
         auto handle = s.document->handle(id);
         return handle ? s.document->get(*handle) : nullptr;
     }
-    static apex_status info(void* context, apex_document_info* out) {
+    static apex_status info(void* context, apex_document_info* out) try {
         if (!out || out->struct_size < sizeof(*out)) return APEX_ERR_INVALID;
         const auto* doc = self(context).document;
         out->is_open = doc != nullptr;
         out->revision = doc ? doc->historyState() : 0;
         out->root_count = doc ? doc->roots().size() : 0;
         return APEX_OK;
-    }
-    static apex_status rootAt(void* context, size_t index, apex_node_id* out) {
+    } catch (...) { return internal(context); }
+    static apex_status rootAt(void* context, size_t index, apex_node_id* out) try {
         const auto* doc = self(context).document;
         if (!out) return APEX_ERR_INVALID;
         if (!doc) return APEX_ERR_STATE;
         if (index >= doc->roots().size()) return APEX_ERR_NOT_FOUND;
         *out = doc->roots()[index]; return APEX_OK;
-    }
-    static apex_status node(void* context, apex_node_id id, apex_node_info* out) {
+    } catch (...) { return internal(context); }
+    static apex_status node(void* context, apex_node_id id, apex_node_info* out) try {
         if (!out || out->struct_size < sizeof(*out)) return APEX_ERR_INVALID;
         auto& s = self(context); const auto* n = find(s, id);
         if (!n) return s.document ? APEX_ERR_NOT_FOUND : APEX_ERR_STATE;
@@ -489,15 +519,15 @@ struct Host::Impl {
         out->child_count = n->children.size(); out->key_count = 0;
         for (const auto& child : n->block->children()) if (child.kind() == kv1::NodeKind::Value) ++out->key_count;
         return APEX_OK;
-    }
-    static apex_status childAt(void* context, apex_node_id id, size_t index, apex_node_id* out) {
+    } catch (...) { return internal(context); }
+    static apex_status childAt(void* context, apex_node_id id, size_t index, apex_node_id* out) try {
         if (!out) return APEX_ERR_INVALID;
         auto& s = self(context); const auto* n = find(s, id);
         if (!n) return s.document ? APEX_ERR_NOT_FOUND : APEX_ERR_STATE;
         if (index >= n->children.size()) return APEX_ERR_NOT_FOUND;
         *out = n->children[index]; return APEX_OK;
-    }
-    static apex_status keyAt(void* context, apex_node_id id, size_t index, apex_str* key, apex_str* value) {
+    } catch (...) { return internal(context); }
+    static apex_status keyAt(void* context, apex_node_id id, size_t index, apex_str* key, apex_str* value) try {
         if (!key || !value) return APEX_ERR_INVALID;
         auto& s = self(context); const auto* n = find(s, id);
         if (!n) return s.document ? APEX_ERR_NOT_FOUND : APEX_ERR_STATE;
@@ -509,7 +539,7 @@ struct Host::Impl {
             s.scratch = std::move(*decoded); *key = string(child.key()); *value = string(s.scratch); return APEX_OK;
         }
         return APEX_ERR_NOT_FOUND;
-    }
+    } catch (...) { return internal(context); }
     void save() {
         if (!state.parent_path().empty()) std::filesystem::create_directories(state.parent_path());
         std::ofstream file(state, std::ios::trunc);
@@ -517,6 +547,9 @@ struct Host::Impl {
         if (!file) throw std::runtime_error("cannot save plugin enabled state");
     }
     ~Impl() {
+        // Destroy plugin-owned instances while their code and host APIs are live.
+        for (const auto& weak : toolRetirements) if (auto retire = weak.lock()) (*retire)();
+        lifetime.reset();
         for (auto it = loaded.rbegin(); it != loaded.rend(); ++it) {
             if (it->plugin->struct_size >= offsetof(apex_plugin, deactivate) + sizeof(it->plugin->deactivate) && it->plugin->deactivate) {
                 Mark mark(breadcrumb, plugins[it->index].id, "deactivate");
@@ -613,7 +646,7 @@ void Host::setSession(editor::EditorSession* session) {
     impl_->session = session;
     impl_->observedDocument = session ? session->document() : nullptr;
     if (impl_->observedDocument)
-        impl_->observerToken = impl_->observedDocument->observe([impl = impl_.get()](const document::ChangeSet& changes) { impl->changed(changes); });
+        impl_->observerToken = impl_->observedDocument->observe([impl = impl_.get(), life = std::weak_ptr(impl_->lifetime)](const document::ChangeSet& changes) { if (!life.expired()) impl->changed(changes); });
 }
 void Host::setDocument(const document::Document* document) {
     for (const auto& loaded : impl_->loaded) {

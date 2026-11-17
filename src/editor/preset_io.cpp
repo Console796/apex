@@ -2,6 +2,7 @@
 
 #include "core/json.hpp"
 
+#include <array>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -130,6 +131,9 @@ Result<Preset> parsePreset(std::string_view text, const Actions& actions) {
             const auto* items = objectMenu ? field(*objectMenu, "items") : nullptr;
             if (!title || !title->get<std::string>() || !items || !items->get<Value::Array>())
                 return std::unexpected(bad("Invalid pie: " + id));
+            if (items->get<Value::Array>()->size() > 8)
+                return std::unexpected(bad("Pie has more than eight items: " + id));
+            std::array<bool, 8> used{};
             PieMenu menu{*title->get<std::string>(), {}};
             for (const auto& item : *items->get<Value::Array>()) {
                 const auto* entry = item.get<Value::Object>();
@@ -138,12 +142,14 @@ Result<Preset> parsePreset(std::string_view text, const Actions& actions) {
                 const auto* slot = entry ? field(*entry, "slot") : nullptr;
                 if (!action || !action->get<std::string>() || !label || !label->get<std::string>())
                     return std::unexpected(bad("Invalid pie item: " + id));
-                std::optional<PieSlot> parsedSlot;
-                if (slot) {
-                    const auto* n = slot->get<double>();
-                    if (!n || *n < 0 || *n > 7 || *n != std::floor(*n)) return std::unexpected(bad("Invalid pie slot: " + id));
-                    parsedSlot = static_cast<PieSlot>(static_cast<int>(*n));
-                }
+                if (!slot) return std::unexpected(bad("Missing pie slot: " + id));
+                const auto* n = slot->get<double>();
+                if (!n || !std::isfinite(*n) || *n < 0 || *n > 7 || *n != std::floor(*n))
+                    return std::unexpected(bad("Invalid pie slot: " + id));
+                const auto index = static_cast<std::size_t>(*n);
+                if (used[index]) return std::unexpected(bad("Duplicate pie slot: " + id));
+                used[index] = true;
+                const auto parsedSlot = static_cast<PieSlot>(index);
                 menu.items.push_back({*action->get<std::string>(), parsedSlot, *label->get<std::string>()});
             }
             preset.pies.emplace(id, std::move(menu));

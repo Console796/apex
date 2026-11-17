@@ -1,4 +1,5 @@
 #include "plugin_host/plugin_host.hpp"
+#include "plugin_host/plugin_tool.hpp"
 #include "document/vmf.hpp"
 #include "document/document.hpp"
 #include "editor/editor_session.hpp"
@@ -379,4 +380,122 @@ TEST_CASE("plugin solid rebuild retains overlay face reference") {
     REQUIRE(document.side(top));
     CHECK(document.get(overlay)->block->find("sides")->decodedValue() == std::to_string(top));
     host.setSession(nullptr); host.setDocument(nullptr);
+}
+
+TEST_CASE("P1 registrations and existing adapters survive host destruction safely") {
+    Temp temp;
+    temp.manifest("example", entryFor(REGISTRATION_PLUGIN_PATH));
+    std::vector<std::string> logs;
+    editor::EditorSession session;
+    std::unique_ptr<editor::Tool> adapter;
+    editor::ToolRegistry::Factory factory;
+    {
+        Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view s) { logs.emplace_back(s); });
+        host.setPanelRegistrar([](std::string, std::string) { return true; });
+        host.discover({temp.path}); host.activate();
+        REQUIRE(host.plugins()[0].loaded);
+        for (const auto& entry : editor::toolRegistry().entries()) if (entry.id == "plugin.example.tool") factory = entry.factory;
+        REQUIRE(factory);
+        adapter = factory(session);
+        REQUIRE(adapter);
+    }
+    const auto count = logs.size();
+    adapter->activate(); adapter->deactivate(); adapter.reset();
+    CHECK(session.perform("plugin.example.action"));
+    auto inert = factory(session);
+    REQUIRE(inert);
+    inert->activate(); inert->deactivate();
+    CHECK(logs.size() == count);
+}
+
+TEST_CASE("P1 plugin state callbacks publish status except pane forget and destruction") {
+    editor::EditorSession session;
+    apex_tool_callbacks callbacks{};
+    callbacks.input = [](void*, const apex_tool_event*, const apex_tool_view*) { return 1; };
+    callbacks.set_parameter = [](void*, apex_str, double) { return 1; };
+    callbacks.perform = [](void*, apex_str) { return 1; };
+    callbacks.cancel = [](void*) {};
+    int notices = 0;
+    session.observe([&] { ++notices; });
+    int beforeDestruction = 0;
+    {
+        PluginTool tool(session, "test", nullptr, callbacks, [](const char*, const std::function<void()>& fn) { fn(); });
+        auto check = [&](auto fn) { const auto before = notices; fn(); CHECK(notices > before); };
+        check([&] { tool.input({}, {}); });
+        check([&] { tool.setParameter("height", 32); });
+        check([&] { tool.perform("commit"); });
+        check([&] { tool.cancel(); });
+        check([&] { tool.documentChanged(); });
+        const auto before = notices;
+        tool.forget(0);
+        CHECK(notices == before);
+        beforeDestruction = notices;
+    }
+    CHECK(notices == beforeDestruction);
+}
+
+TEST_CASE("P1 view exceptions return inside the host ABI boundary") {
+    editor::EditorSession session;
+    apex_tool_callbacks callbacks{};
+    apex_status status = APEX_OK;
+    callbacks.input = [](void* user, const apex_tool_event*, const apex_tool_view* view) {
+        apex_plane planes[4];
+        *static_cast<apex_status*>(user) = view->rect_frustum(view->context, 0, 0, 1, 1, planes);
+        return 1;
+    };
+    std::string error;
+    PluginTool tool(session, "test", &status, callbacks, [](const char*, const std::function<void()>& fn) { fn(); },
+                    [&](const char* message) { error = message; });
+    editor::ToolView view;
+    view.rectFrustum = [](DVec2, DVec2) -> std::array<Plane, 4> { throw std::runtime_error("frustum failure"); };
+    CHECK_NOTHROW(tool.input({}, view));
+    CHECK(status == APEX_ERR_INTERNAL);
+    CHECK(error == "frustum failure");
+}
+
+TEST_CASE("P1 registration exceptions are contained and partial entries rolled back") {
+    Temp temp;
+    temp.manifest("exceptions", entryFor(EXCEPTION_PLUGIN_PATH));
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    Host host(temp.path / "state", temp.path / "breadcrumb", [](std::string_view) { throw std::runtime_error("logger failure"); });
+    host.setSession(&session); host.setDocument(&document);
+    host.discover({temp.path}); host.activate();
+    REQUIRE(host.plugins().size() == 1);
+    CAPTURE(host.plugins()[0].error);
+    CHECK(host.plugins()[0].loaded);
+    CHECK(document.undoCount() == 0);
+    CHECK_FALSE(document.get(*document.handle(1))->block->find("before_failure"));
+    CHECK(editor::actionRegistry().find("plugin.exceptions.basic"));
+    CHECK(editor::actionRegistry().find("plugin.exceptions.suggest"));
+}
+
+TEST_CASE("P1 extended adapters and document observers retire before library unload") {
+    Temp temp;
+    temp.manifest("polygon", entryFor(POLYGON_PLUGIN_PATH));
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    {
+        Host host(temp.path / "state", temp.path / "breadcrumb");
+        host.discover({temp.path}); host.setDocument(&document); host.setSession(&session); host.activate();
+        REQUIRE(host.plugins()[0].loaded);
+        // Construct after registration so this adapter owns a plugin instance.
+        for (const auto& entry : editor::toolRegistry().entries()) if (entry.id == "plugin.polygon.tool")
+            REQUIRE(session.addTool(entry.factory(session)));
+        REQUIRE(session.perform("plugin.polygon.tool"));
+    }
+    auto& tool = session.activeToolObject();
+    CHECK_FALSE(tool.input({}, {}));
+    CHECK(tool.preview().empty());
+    CHECK(tool.overlay({}, 0).worldSegments.empty());
+    tool.cancel(); tool.documentChanged(); tool.forget(0); tool.deactivate();
+    // The old document observer must not call the destroyed host.
+    session.edit("After host destruction", [&](document::Transaction& tx) {
+        tx.setKeyValue(*document.handle(document.roots().front()), "message", "safe");
+    });
+    editor::EditorSession later;
+    REQUIRE(later.perform("plugin.polygon.tool"));
+    CHECK_FALSE(later.input({}, {}));
 }
