@@ -9,9 +9,19 @@ A read-only view of the open document as a tree of nodes (`apex_document_v1`):
 | `node(id)` | `kind`, `parent`, `child_count`, `key_count` |
 | `child_at(id, i)` | NodeId of a child |
 | `key_at(id, i, &key, &value)` | The *i*-th key/value pair of a node |
+| `side_count(solid, &n)` | Number of sides of a solid (0 for other nodes). ABI 1.1 |
+| `side_at(solid, i, &side)` | The *i*-th side, in source order: `id`, the three `plane` points, `material`, `uaxis`/`vaxis` with shifts and scales. ABI 1.1 |
+| `side_lookup(side_id, &solid, &i)` | The solid and index holding a side ID (the first occurrence when an ID is duplicated). ABI 1.1 |
 
 `apex_node_id` is a stable arena NodeId, not a VMF id. Check `is_open` first; calls with no open document
 return `APEX_ERR_STATE`.
+
+Sides are not nodes: a solid's `side` blocks live inside it, so reach them with the side functions, which ABI 1.1
+appended to the table. On an older host they are missing; check with `apex::plugin::available(document,
+&apex_document_v1::side_at)` (or compare `struct_size`). `apex_side_info` is an out parameter (rule 6): set
+`struct_size`, and a value that is missing or does not parse reads as zero while the call still succeeds.
+`side_at`'s `material`, like `key_at`'s strings, is valid until the next call to this interface. Selection IDs in
+face mode and a `"sides"` section context are side IDs; `side_lookup` turns one into its solid and index.
 
 Reading the root node and its class name, from the C example:
 

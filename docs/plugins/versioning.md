@@ -1,6 +1,6 @@
 # Versioning and ABI evolution
 
-**State: ABI major 1, minor 0, frozen.** This describes the contract; it does not change with the Apex version.
+**State: ABI major 1, minor 1.** 1.0 is frozen; 1.1 only appends. This describes the contract; it does not change with the Apex version.
 
 ABI major changes only for breaking changes and is 1 for the whole 1.x series. New interfaces and new fields
 appended to existing structs bump the minor. Treat a `NULL` from `get_interface` as "not available on this host".
@@ -29,7 +29,7 @@ the reverse:
    An element with `struct_size` zero (the old, stride-less arrays) is a bad array.
 5. A struct embedded by value in another (`apex_ui_value` in `apex_ui_control`) is frozen at its 1.0 layout; new
    data goes in new fields of the parent.
-6. Out parameters (`apex_pick`, `apex_document_info`, `apex_node_info`, `apex_material_info`, and the
+6. Out parameters (`apex_pick`, `apex_document_info`, `apex_node_info`, `apex_side_info`, `apex_material_info`, and the
    `apex_tool_visual` / `apex_tool_readout` the host hands to a tool) carry the caller's `struct_size`; the
    callee writes only the part it covers.
 7. A function table grows by appending function pointers; a null or uncovered pointer is "not provided".
@@ -37,6 +37,11 @@ the reverse:
 0.9.3 added the structs `apex_face_geometry` (104 bytes), `apex_solid_geometry` (40), `apex_displacement` (112),
 `apex_connection` (104) and `apex_face_match` (16), and appended six functions to `apex_edit_ops_v1` (now 112
 bytes). Their sizes are pinned in `abi_layout.inc`; array elements follow rule 4.
+
+1.1 appended `side_count`, `side_at` and `side_lookup` to `apex_document_v1` (now 72 bytes) and added the out
+parameter `apex_side_info` (176 bytes), so a plugin can read a solid's sides (see `document.md`). A plugin that
+uses them but should still load on a 1.0 host keeps `abi_minor` 0 in its `apex_plugin` and manifest and checks
+the table with `available(...)`; one that declares minor 1 is refused by a 1.0 host.
 
 ## Evolution
 

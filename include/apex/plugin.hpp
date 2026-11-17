@@ -5,6 +5,7 @@
 #include <functional>
 #include <vector>
 #include <exception>
+#include <type_traits>
 
 namespace apex::plugin {
 inline apex_str string(std::string_view text) { return {text.data(), text.size()}; }
@@ -185,9 +186,12 @@ inline apex_face_match faceMatch(uint32_t planeIndex, int32_t oldSide) {
     apex_face_match m{}; m.struct_size = sizeof(m); m.plane_index = planeIndex; m.old_side = oldSide;
     return m;
 }
-// The operation table of an edit callback, checked: null when the host's table is too old to have `member`.
-// Use as `if (auto fn = plugin::available(ops, &apex_edit_ops_v1::set_connections)) fn(ctx, ...)`.
-template <class Fn> inline Fn available(const apex_edit_ops_v1* ops, Fn apex_edit_ops_v1::* member) {
+// A host function table (an edit callback's operations, or an interface from get_interface), checked: null when
+// the host's table is too old to have `member`. Use as
+// `if (auto fn = plugin::available(ops, &apex_edit_ops_v1::set_connections)) fn(ctx, ...)` or
+// `if (auto fn = plugin::available(document, &apex_document_v1::side_at)) fn(host.context, ...)`.
+// The table type comes from `member` alone, so `available<Fn>(nullptr, member)` still deduces.
+template <class Fn, class Table> inline Fn available(const std::type_identity_t<Table>* ops, Fn Table::* member) {
     if (!ops) return nullptr;
     const auto end = reinterpret_cast<const char*>(&(ops->*member)) + sizeof(Fn) - reinterpret_cast<const char*>(ops);
     return static_cast<size_t>(end) <= ops->struct_size ? ops->*member : nullptr;

@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 #define APEX_PLUGIN_ABI_MAJOR 1u
-#define APEX_PLUGIN_ABI_MINOR 0u
+#define APEX_PLUGIN_ABI_MINOR 1u
 #if defined(_WIN32)
 #define APEX_PLUGIN_EXPORT __declspec(dllexport)
 #else
@@ -35,7 +35,7 @@ extern "C" {
       plugin-provided array the same way.
    5. A struct embedded by value inside another struct (apex_ui_value in apex_ui_control) is frozen at its
       1.0 layout: new data goes into new fields of the parent.
-   6. Out parameters (apex_pick, apex_document_info, apex_node_info, apex_material_info and the
+   6. Out parameters (apex_pick, apex_document_info, apex_node_info, apex_side_info, apex_material_info and the
       apex_tool_visual and apex_tool_readout the host passes to the plugin) carry the caller's struct_size;
       the callee writes only the fields it covers.
    7. A function table grows by appending function pointers; a null or uncovered pointer is "not provided". */
@@ -123,6 +123,12 @@ typedef struct apex_node_info {
     apex_str kind;
     size_t child_count, key_count;
 } apex_node_info;
+/* One side (face) of a solid, as saved: defined after apex_vec3 below. */
+typedef struct apex_side_info apex_side_info;
+/* Added in ABI 1.1, at the end of the table (check struct_size before use; plugin.hpp's available()):
+     side_count   the number of side blocks of a node (0 for anything but a solid).
+     side_at      the index-th side of a node, in source order (an out parameter, rule 6).
+     side_lookup  the solid and index of a side ID; with duplicate IDs, the first occurrence in the hierarchy. */
 typedef struct apex_document_v1 {
     uint32_t struct_size;
     uint32_t reserved;
@@ -131,6 +137,9 @@ typedef struct apex_document_v1 {
     apex_status (*node)(void* host, apex_node_id id, apex_node_info* out);
     apex_status (*child_at)(void* host, apex_node_id id, size_t index, apex_node_id* out);
     apex_status (*key_at)(void* host, apex_node_id id, size_t index, apex_str* key, apex_str* value);
+    apex_status (*side_count)(void* host, apex_node_id solid, size_t* out);
+    apex_status (*side_at)(void* host, apex_node_id solid, size_t index, apex_side_info* out);
+    apex_status (*side_lookup)(void* host, int32_t side, apex_node_id* solid, size_t* index);
 } apex_document_v1;
 
 /* Registration is available only during activate; IDs must belong to the plugin. This is the 0.9.1 skeleton:
@@ -150,6 +159,17 @@ typedef struct apex_registration_v1 {
    View callbacks are valid only for the duration of the input callback. */
 typedef struct apex_vec3 { double x, y, z; } apex_vec3;
 typedef struct apex_plane { apex_vec3 normal; double distance; } apex_plane;
+/* apex_document_v1.side_at (ABI 1.1). plane is the side's three saved plane points; uaxis/vaxis, shifts and
+   scales its texture axes. A value that is missing or does not parse reads as zero; the call still succeeds, so
+   one bad side never hides another's material. material is borrowed like key_at's strings. */
+struct apex_side_info {
+    uint32_t struct_size;
+    int32_t id;
+    apex_vec3 plane[3];
+    apex_str material;
+    apex_vec3 uaxis, vaxis;
+    double shift_u, shift_v, scale_u, scale_v;
+};
 /* Arguments of the edit operations added in 0.9.3. Every struct starts with struct_size, and an array of
    them has a stride of its elements' struct_size (rule 4). Pointers must stay valid for the call only. */
 /* One face of apex_solid_geometry. `side` is an existing side ID of the solid; `indices` are vertex indices of

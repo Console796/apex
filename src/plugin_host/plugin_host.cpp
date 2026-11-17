@@ -8,6 +8,7 @@
 #include "document/document.hpp"
 #include "document/connection_codec.hpp"
 #include "document/entity_transform.hpp"
+#include "document/vmf.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/map_problems.hpp"
 #include "geometry/displacement.hpp"
@@ -436,7 +437,7 @@ struct Host::Impl {
         std::ifstream file(state);
         for (std::string line; std::getline(file, line);) if (!line.empty()) disabled.insert(line);
         host = {sizeof(host), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, 0, this, interface, writeLog, error};
-        documentApi = {sizeof(documentApi), 0, info, rootAt, node, childAt, keyAt};
+        documentApi = {sizeof(documentApi), 0, info, rootAt, node, childAt, keyAt, sideCount, sideAt, sideLookup};
         registrationApi = {sizeof(registrationApi), 0, registerAction, registerTool, registerPanel};
         toolsApi = {sizeof(toolsApi), 0, registerToolV1};
         actionsApi = {sizeof(actionsApi), 0, registerActionV1};
@@ -1823,6 +1824,67 @@ struct Host::Impl {
         }
         return APEX_ERR_NOT_FOUND;
     } catch (...) { return internal(context); }
+    // Side blocks of a solid, counted as Document::side() counts faceIndex (block children named "side").
+    static const kv1::Node* sideBlock(const document::Node& n, size_t index, size_t* count = nullptr) {
+        size_t face = 0;
+        for (const auto& child : n.block->children()) {
+            if (child.kind() != kv1::NodeKind::Block || !ciEquals(child.key(), "side")) continue;
+            if (!count && face == index) return &child;
+            ++face;
+        }
+        if (count) *count = face;
+        return nullptr;
+    }
+    static apex_status sideCount(void* context, apex_node_id id, size_t* out) try {
+        if (!out) return APEX_ERR_INVALID;
+        auto& s = self(context); const auto* n = find(s, id);
+        if (!n) return s.document ? APEX_ERR_NOT_FOUND : APEX_ERR_STATE;
+        *out = 0;
+        if (ciEquals(n->block->key(), "solid")) sideBlock(*n, 0, out);
+        return APEX_OK;
+    } catch (...) { return internal(context); }
+    static apex_status sideAt(void* context, apex_node_id id, size_t index, apex_side_info* out) try {
+        if (!out || out->struct_size < kAbiBaseSize<apex_side_info>) return APEX_ERR_INVALID;
+        auto& s = self(context); const auto* n = find(s, id);
+        if (!n) return s.document ? APEX_ERR_NOT_FOUND : APEX_ERR_STATE;
+        const auto* side = ciEquals(n->block->key(), "solid") ? sideBlock(*n, index) : nullptr;
+        if (!side) return APEX_ERR_NOT_FOUND;
+        // Each value parses on its own (vmf::Value reads a copy), so one bad value zeroes only itself.
+        const auto value = [&](std::string_view key) -> std::optional<kv1::Node> {
+            const auto* v = side->find(key);
+            if (!v || v->kind() != kv1::NodeKind::Value) return std::nullopt;
+            return *v;
+        };
+        apex_side_info info{};
+        info.struct_size = sizeof(info);
+        if (auto v = value("id")) if (const auto number = vmf::Value(&*v).asInt()) info.id = *number;
+        if (auto v = value("plane")) if (const auto plane = vmf::Value(&*v).asPlane())
+            for (size_t i = 0; i < 3; ++i) info.plane[i] = {plane->points[i][0], plane->points[i][1], plane->points[i][2]};
+        const auto axis = [&](std::string_view key, apex_vec3& direction, double& shift, double& scale) {
+            if (auto v = value(key)) if (const auto parsed = vmf::Value(&*v).asUvAxis()) {
+                direction = {parsed->axis[0], parsed->axis[1], parsed->axis[2]};
+                shift = parsed->shift; scale = parsed->scale;
+            }
+        };
+        axis("uaxis", info.uaxis, info.shift_u, info.scale_u);
+        axis("vaxis", info.vaxis, info.shift_v, info.scale_v);
+        s.scratch.clear();
+        if (auto v = value("material")) if (auto decoded = v->decodedValue()) s.scratch = std::move(*decoded);
+        info.material = string(s.scratch);
+        writeOut(out, info);
+        return APEX_OK;
+    } catch (...) { return internal(context); }
+    static apex_status sideLookup(void* context, int32_t side, apex_node_id* solid, size_t* index) try {
+        if (!solid || !index) return APEX_ERR_INVALID;
+        auto& s = self(context);
+        if (!s.document) return APEX_ERR_STATE;
+        const auto location = s.document->side(side);
+        if (!location) return APEX_ERR_NOT_FOUND;
+        const auto* n = s.document->get(location->solid);
+        if (!n) return APEX_ERR_NOT_FOUND;
+        *solid = n->id; *index = location->faceIndex;
+        return APEX_OK;
+    } catch (...) { return internal(context); }
     void save() {
         if (!state.parent_path().empty()) std::filesystem::create_directories(state.parent_path());
         std::ofstream file(state, std::ios::trunc);
@@ -2117,8 +2179,10 @@ bool Host::describePanel(std::string_view id, const UiContext* context, const st
     const auto it = impl_->uiPanels.find(id);
     if (it == impl_->uiPanels.end() || !consume) return false;
     try {
+        // Borrow the caller's strings. (A range-for over `context ? context->names : {}` would copy them into a
+        // temporary that dies before the plugin reads the names.)
         std::vector<apex_str> names;
-        for (const auto& n : context ? context->names : std::vector<std::string>{}) names.push_back({n.data(), n.size()});
+        if (context) for (const auto& n : context->names) names.push_back({n.data(), n.size()});
         apex_ui_context native{sizeof(native), 0, {}, nullptr, 0, nullptr, 0};
         if (context) {
             native.kind = {context->kind.data(), context->kind.size()};

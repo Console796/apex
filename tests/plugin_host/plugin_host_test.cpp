@@ -80,7 +80,8 @@ TEST_CASE("plugin ui registration describes and refreshes a panel") {
         CHECK(host.sections("nothing").empty());
         CHECK(host.hasPanel("plugin.ui.panel"));
         CHECK_FALSE(host.hasPanel("plugin.ui.section"));
-        UiContext context{"materials", {"dev/a", "dev/b"}, {}};
+        // Names longer than the small-string buffer, so a copy freed before the plugin reads them shows up.
+        UiContext context{"materials", {"dev/a_material_name_past_sso", "dev/b_material_name_past_sso"}, {}};
         std::string summary;
         const auto describeSection = [&](const UiContext& c) {
             return host.describePanel("plugin.ui.section", &c, [&](const apex_ui_form& form) {
@@ -88,7 +89,7 @@ TEST_CASE("plugin ui registration describes and refreshes a panel") {
             });
         };
         REQUIRE(describeSection(context));
-        CHECK(summary == "materials names=2 ids=0 first=dev/a");
+        CHECK(summary == "materials names=2 ids=0 first=dev/a_material_name_past_sso");
         UiContext sides{"sides", {}, {7, 9, 11}};
         REQUIRE(describeSection(sides));
         CHECK(summary == "sides names=0 ids=3 first=");
@@ -238,6 +239,37 @@ TEST_CASE("document interface reads hierarchy and duplicate keyvalues") {
     REQUIRE(host.plugins().size() == 1);
     CAPTURE(host.plugins()[0].error);
     CHECK(host.plugins()[0].loaded);
+}
+
+TEST_CASE("apex.document/1 reads a solid's sides (ABI 1.1)") {
+    Temp temp;
+    temp.manifest("sides", entryFor(SIDE_PLUGIN_PATH));
+    // Side 11's plane does not parse: it reads as zero, and its material and axes still come through.
+    auto file = vmf::parse(R"vmf(world { id 1 classname worldspawn
+        solid { id 2
+            side { id 10 plane "(0 0 0) (0 64 0) (64 64 0)" material "CONCRETE/WALL01" uaxis "[1 0 0 16] 0.25" vaxis "[0 -1 0 -8] 0.5" }
+            side { id 11 plane "not a plane" material "WOOD/FLOOR" uaxis "[0 1 0 0] 1" vaxis "[0 0 -1 4] 2" } } })vmf");
+    REQUIRE(file);
+    document::Document document(*file);
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+    host.discover({temp.path});
+    host.setDocument(&document);
+    host.activate();
+    REQUIRE(host.plugins().size() == 1);
+    CAPTURE(host.plugins()[0].error);
+    REQUIRE(host.plugins()[0].loaded);
+    CHECK(logs == std::vector<std::string>{
+        "world sides 0",
+        "solid sides 2",
+        "side 10 CONCRETE/WALL01 p1=0,64,0 u=1,0,0/16/0.25 v=0,-1,0/-8/0.5",
+        "side 11 WOOD/FLOOR p1=0,0,0 u=0,1,0/0/1 v=0,0,-1/4/2",
+        "past the end: not found",
+        "world side: not found",
+        "short struct: invalid",
+        "lookup 11: index 1, same solid 1, id 11",
+        "lookup 999: not found",
+    });
 }
 
 TEST_CASE("face-stats example summarises the selected sides in a face properties section") {

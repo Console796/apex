@@ -107,7 +107,10 @@ loading, which already works.
 ## 5. Open facts to probe
 
 1. Does Apex accept a Godot project root with a minimal `gameinfo.txt` as a profile's game directory? (§1.1)
+   Yes (probed 2026-11-17 against `libapex_assets`: `SearchPaths { game "|gameinfo_path|." }` mounts the root).
 2. Does Apex's VTF reader open the VTFs GodotVMF writes (`generate_vtf_file`)? (§1.1)
+   Not as GodotVMF wrote them: a 7.4 header with no resource dictionary has no image for vtfpp. Fixed on the
+   GodotVMF side (brush-acoustics' fork writes 7.2); nothing to change in Apex.
 3. Can a VFS provider be added without breaking the "earlier mounts win" order and the worker-side `walkTask`
    contract? (P1)
 
@@ -116,3 +119,36 @@ loading, which already works.
 - Running acoustics in Apex's viewport as audio (playback). Visual readouts only.
 - Any brush-acoustics data in the VMF beyond entities.
 - Editing Valve's `surfaceproperties` files; the acoustic table is separate and keyed by the same names.
+
+## 7. Findings from the brush-acoustics plugin (ABI 1.0, 2026-11-17)
+
+brush-acoustics' plugin (its `apex/` folder; panel, materials section, problems check) runs on ABI 1.0. Three
+things stood in the way:
+
+1. **Sides can't be read (P3).** A `Solid` keeps its `side` blocks by value inside its own block
+   (`src/document/document.hpp`), so `child_at` never reaches them and `key_at` lists only value keys
+   (`src/plugin_host/plugin_host.cpp`, `keyAt`). A probe plugin walking a two-solid map sees `solid children=0
+   keys=id`. No plugin can map a side ID (from selection, a face-properties context or `ray_pick`) to its
+   material or plane, so the surface overlay, per-face readouts and per-map checks are off, and P4's per-face
+   heat map and the grid/ray drawing (which need planes) can't be built. Proposed, additive (rule 7, minor 1.1):
+   append to `apex_document_v1`
+   `side_count(host, solid, size_t*)` and `side_at(host, solid, index, apex_side_info*)`, where
+   `apex_side_info { uint32_t struct_size; int32_t id; apex_vec3 plane[3]; apex_str material; apex_vec3
+   uaxis, vaxis; double shift_u, shift_v, scale_u, scale_v; }` (an out parameter, rule 6), plus
+   `side_lookup(host, int32 side, apex_node_id* solid, size_t* index)` for selection contexts. A generic
+   nested-block reader would also do.
+2. **No game directory.** Nothing reports the profile's game folder, so the plugin keeps the Godot project path
+   as its own setting, and `watch()` refuses `materials.kv` unless the game folder is that project. Proposed: a
+   `game_directory(host, apex_str*)` appended to `apex_assets_v1`.
+3. **Bug: a section's material names dangle.** `Host::describePanel` (`plugin_host.cpp`, the `names` loop)
+   iterates `context ? context->names : std::vector<std::string>{}`. The conditional is a prvalue, so the loop
+   runs over a temporary copy and `names` keeps pointers into strings destroyed when the loop ends: every
+   `"materials"` section gets dangling `names` (the UI's `PluginUi` calls this path). Seen in a harness as
+   `concrete/wall01` arriving as `ui.describe l01`. Fix: `if (context) for (const auto& n : context->names)
+   names.push_back(...)`; a test with a `names` context (face-stats only passes `ids`) would have caught it.
+
+Status (2026-11-17): findings 1 and 3 are done. ABI 1.1 appends `side_count`, `side_at` and `side_lookup` to
+`apex_document_v1` with `apex_side_info` as proposed (176 bytes; a value that doesn't parse reads as zero so one
+bad side hides nothing else; `docs/plugins/document.md`, `versioning.md`), tested by `side_plugin.c`. The
+`describePanel` loop now borrows `context->names`, and the ui test uses names past the small-string buffer
+(it fails on the old line). `plugin::available()` takes any host table. Finding 2 is still open.
