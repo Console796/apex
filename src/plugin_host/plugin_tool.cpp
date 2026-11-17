@@ -49,7 +49,16 @@ apex_tool_view makeView(ViewContext& c) {
 }
 PluginTool::PluginTool(editor::EditorSession& session, std::string id, void* user,
                        apex_tool_callbacks callbacks, Guard guard)
-    : session_(session), id_(std::move(id)), user_(user), callbacks_(callbacks), guard_(std::move(guard)) {}
+    : session_(session), id_(std::move(id)), user_(user), callbacks_(callbacks), guard_(std::move(guard)) {
+    if (callbacks_.create_instance && callbacks_.destroy_instance) {
+        void* instance = nullptr;
+        guard_("tool.create_instance", [&] { instance = callbacks_.create_instance(user); });
+        if (instance) { user_ = instance; ownsUser_ = true; }
+    }
+}
+PluginTool::~PluginTool() {
+    if (ownsUser_) guard_("tool.destroy_instance", [&] { callbacks_.destroy_instance(user_); });
+}
 void PluginTool::activate() { if (callbacks_.activate) guard_("tool.activate", [&] { callbacks_.activate(user_); }); }
 void PluginTool::deactivate() { if (callbacks_.deactivate) guard_("tool.deactivate", [&] { callbacks_.deactivate(user_); }); cancel(); }
 editor::Handled PluginTool::input(const editor::InputEvent& e, const editor::ToolView& v) {

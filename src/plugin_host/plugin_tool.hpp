@@ -10,6 +10,7 @@ public:
     using Guard = std::function<void(const char*, const std::function<void()>&)>;
     PluginTool(editor::EditorSession& session, std::string id, void* user,
                apex_tool_callbacks callbacks, Guard guard);
+    ~PluginTool() override;
     editor::ToolId id() const override { return id_; }
     void activate() override;
     void deactivate() override;
@@ -27,6 +28,7 @@ private:
     editor::EditorSession& session_;
     std::string id_;
     void* user_;
+    bool ownsUser_ = false;
     apex_tool_callbacks callbacks_;
     Guard guard_;
     editor::Preview preview_;

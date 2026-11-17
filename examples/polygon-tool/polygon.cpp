@@ -7,11 +7,13 @@ namespace {
 const apex_host* host;
 class Polygon final : public apex::plugin::Tool {
 public:
+    Tool* createInstance() override { return new Polygon; }
     bool input(const apex_tool_event& event, const apex_tool_view& view) override {
         if (event.kind == APEX_INPUT_KEY_DOWN && apex::plugin::view(event.key) == "Escape") { cancel(); return true; }
         if (event.kind == APEX_INPUT_KEY_DOWN && apex::plugin::view(event.key) == "Enter")
             return perform("plugin.polygon.commit");
         if (event.kind != APEX_INPUT_PRESS || event.button != APEX_BUTTON_LEFT || std::abs(view.ray.direction.z) < 1e-9) return false;
+        source_ = event.source;
         const auto t = -view.ray.origin.z / view.ray.direction.z;
         if (t < 0) return false;
         auto& points = points_[event.source];
@@ -56,13 +58,29 @@ public:
     }
     bool perform(std::string_view action) override {
         if (action != "plugin.polygon.commit") return false;
-        host->log(host->context, 1, apex::plugin::string("Polygon commit is unavailable until apex.edit/1"));
+        apex_tool_visual result{};
+        result.struct_size = sizeof(result);
+        if (visual(source_, result) != APEX_OK || !result.ghost_count) return false;
+        const auto* doc = static_cast<const apex_document_v1*>(host->get_interface(host->context, apex::plugin::string("apex.document/1")));
+        const auto* edit = static_cast<const apex_edit_v1*>(host->get_interface(host->context, apex::plugin::string("apex.edit/1")));
+        apex_node_id root = 0;
+        if (!doc || !edit || doc->root_at(host->context, 0, &root) != APEX_OK) return false;
+        struct Commit { Polygon* polygon; apex_node_id root; } commit{this, root};
+        const auto status = edit->apply(host->context, apex::plugin::string("Create polygon"), {}, &commit,
+            [](void* user, const apex_edit_ops_v1* ops, void* context) -> apex_status {
+                auto& c = *static_cast<Commit*>(user);
+                return ops->create_solid(context, c.root, c.polygon->planes_.data(), c.polygon->planes_.size(),
+                                         apex::plugin::string("DEV/DEV_MEASUREGENERIC01"));
+            });
+        if (status != APEX_OK) return false;
+        cancel();
         return true;
     }
     void cancel() override { points_.clear(); }
     void forget(uint64_t source) override { points_.erase(source); }
 private:
     std::map<uint64_t, std::vector<apex_vec3>> points_;
+    uint64_t source_ = 0;
     std::vector<apex_tool_segment> segments_;
     std::vector<apex_plane> planes_;
     std::vector<apex_tool_ghost> ghosts_;

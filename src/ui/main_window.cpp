@@ -352,6 +352,7 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+    if (pluginHost_) pluginHost_->setSession(nullptr);
     compilePanel_->setDocument(nullptr);
     compilePanel_->setGameContent(nullptr);
     compilePanel_->setEditorSession(nullptr);
@@ -1832,10 +1833,12 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     session_.detach();
     compilePanel_->setDocument(nullptr);
     if (pluginHost_) pluginHost_->setDocument(nullptr);
+    if (pluginHost_) pluginHost_->setSession(nullptr);
     document_ = std::move(doc);
-    if (pluginHost_) pluginHost_->setDocument(document_.get());
     document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
     session_.attach(*document_);
+    if (pluginHost_) pluginHost_->setSession(&session_);
+    if (pluginHost_) pluginHost_->setDocument(document_.get());
     path_ = path;
     compilePanel_->setDocument(document_.get());
     compilePanel_->setSourcePath(std::filesystem::path(path_.toStdU16String()));

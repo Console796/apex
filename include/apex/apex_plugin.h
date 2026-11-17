@@ -58,6 +58,31 @@ typedef struct apex_registration_v1 {
    View callbacks are valid only for the duration of the input callback. */
 typedef struct apex_vec3 { double x, y, z; } apex_vec3;
 typedef struct apex_plane { apex_vec3 normal; double distance; } apex_plane;
+/* Operations run synchronously within one session transaction. Return a non-OK
+   status to roll the entire batch back. Operation context is callback-scoped. */
+typedef struct apex_edit_ops_v1 {
+    uint32_t struct_size;
+    apex_status (*set_key)(void*, apex_node_id, apex_str key, apex_str value);
+    apex_status (*destroy)(void*, apex_node_id);
+    apex_status (*create_solid)(void*, apex_node_id parent, const apex_plane*, size_t, apex_str material);
+    apex_status (*reparent)(void*, apex_node_id, apex_node_id parent, size_t position);
+    apex_status (*set_side_key)(void*, int32_t side, apex_str key, apex_str value);
+    apex_status (*remove_displacement)(void*, int32_t side);
+    apex_status (*rebuild_solid)(void*, apex_node_id, const apex_plane*, size_t);
+} apex_edit_ops_v1;
+typedef apex_status (*apex_edit_callback)(void*, const apex_edit_ops_v1*, void* operation_context);
+typedef struct apex_edit_v1 {
+    uint32_t struct_size;
+    apex_status (*apply)(void* host, apex_str label, apex_str coalesce_key, void* user, apex_edit_callback);
+    apex_status (*defer)(void* host, void* user, void (*callback)(void*));
+} apex_edit_v1;
+/* Selection IDs are node IDs except in face mode, where they are side IDs. */
+typedef struct apex_selection_v1 {
+    uint32_t struct_size;
+    apex_status (*info)(void* host, uint32_t* mode, size_t* count);
+    apex_status (*at)(void* host, size_t index, uint64_t* id);
+    apex_status (*set)(void* host, uint32_t mode, const uint64_t* ids, size_t count);
+} apex_selection_v1;
 typedef struct apex_ray { apex_vec3 origin, direction; } apex_ray;
 enum apex_input_kind { APEX_INPUT_PRESS, APEX_INPUT_RELEASE, APEX_INPUT_MOVE, APEX_INPUT_KEY_DOWN,
                        APEX_INPUT_KEY_UP, APEX_INPUT_LEAVE, APEX_INPUT_CANCEL, APEX_INPUT_CANCEL_POINTER };
@@ -111,6 +136,9 @@ typedef struct apex_tool_callbacks {
     int (*perform)(void*, apex_str action);
     apex_callback cancel, document_changed;
     void (*forget)(void*, uint64_t source);
+    /* Optional factory and destructor for state owned by each editor session. */
+    void* (*create_instance)(void* registration_user);
+    void (*destroy_instance)(void* instance);
 } apex_tool_callbacks;
 typedef struct apex_tools_v1 {
     uint32_t struct_size;
@@ -133,6 +161,16 @@ typedef struct apex_host {
     void (*log)(void* context, int level, apex_str message);
     apex_str (*last_error)(void* context);
 } apex_host;
+typedef struct apex_modified_node { apex_node_id id; uint32_t flags; } apex_modified_node;
+typedef struct apex_change_notice {
+    uint32_t struct_size;
+    uint64_t revision;
+    const apex_node_id* created; size_t created_count;
+    const apex_modified_node* modified; size_t modified_count;
+    const apex_node_id* destroyed; size_t destroyed_count;
+    const int32_t* vanished_sides; size_t vanished_side_count;
+    uint32_t undo_or_redo;
+} apex_change_notice;
 typedef struct apex_plugin {
     uint32_t struct_size, abi_major, abi_minor;
     void* user;
@@ -140,6 +178,7 @@ typedef struct apex_plugin {
     void (*deactivate)(void* user);
     void (*on_document_opened)(void* user);
     void (*on_document_closing)(void* user);
+    void (*on_changed)(void* user, const apex_change_notice* notice);
 } apex_plugin;
 typedef const apex_plugin* (*apex_plugin_entry_fn)(const apex_host* host);
 /* Plugin implementations export this symbol with APEX_PLUGIN_EXPORT. */

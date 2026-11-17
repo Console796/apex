@@ -4,6 +4,7 @@
 #include "core/log.hpp"
 #include "document/document.hpp"
 #include "editor/editor_session.hpp"
+#include "geometry/solid_block.hpp"
 #include <apex/apex_plugin.h>
 
 #include <algorithm>
@@ -13,6 +14,7 @@
 #include <iterator>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -144,13 +146,19 @@ struct Host::Impl {
     std::vector<Loaded> loaded;
     std::set<std::string> disabled;
     const document::Document* document = nullptr;
+    editor::EditorSession* session = nullptr;
+    document::Document* observedDocument = nullptr;
+    std::size_t observerToken = 0;
     std::string scratch, lastError;
     apex_host host{};
     apex_document_v1 documentApi{};
     apex_registration_v1 registrationApi{};
     apex_tools_v1 toolsApi{};
     apex_actions_v1 actionsApi{};
+    apex_edit_v1 editApi{};
+    apex_selection_v1 selectionApi{};
     std::string registering;
+    std::string callbackOwner;
     std::function<bool(std::string, std::string)> panelRegistrar;
     struct Registration {
         enum class Kind { Action, Tool, Panel } kind;
@@ -171,6 +179,8 @@ struct Host::Impl {
         registrationApi = {sizeof(registrationApi), registerAction, registerTool, registerPanel};
         toolsApi = {sizeof(toolsApi), registerToolV1};
         actionsApi = {sizeof(actionsApi), registerActionV1};
+        editApi = {sizeof(editApi), applyEdit, deferEdit};
+        selectionApi = {sizeof(selectionApi), selectionInfo, selectionAt, selectionSet};
     }
     static Impl& self(void* context) { return *static_cast<Impl*>(context); }
     static const void* interface(void* context, apex_str name) {
@@ -178,7 +188,171 @@ struct Host::Impl {
         if (view(name) == "apex.registration/1") return &self(context).registrationApi;
         if (view(name) == "apex.tools/1") return &self(context).toolsApi;
         if (view(name) == "apex.actions/1") return &self(context).actionsApi;
+        if (view(name) == "apex.edit/1") return &self(context).editApi;
+        if (view(name) == "apex.selection/1") return &self(context).selectionApi;
         return nullptr;
+    }
+    static apex_status selectionInfo(void* c, uint32_t* mode, size_t* count) {
+        const auto* session = self(c).session;
+        if (!session || !session->document()) return APEX_ERR_STATE;
+        if (!mode || !count) return APEX_ERR_INVALID;
+        *mode = static_cast<uint32_t>(session->selection().mode());
+        *count = session->selection().ordered().size();
+        return APEX_OK;
+    }
+    static apex_status selectionAt(void* c, size_t index, uint64_t* id) {
+        const auto* session = self(c).session;
+        if (!session || !session->document()) return APEX_ERR_STATE;
+        if (!id) return APEX_ERR_INVALID;
+        const auto& targets = session->selection().ordered();
+        if (index >= targets.size()) return APEX_ERR_NOT_FOUND;
+        *id = std::visit([](auto value) { return static_cast<uint64_t>(value); }, targets[index]);
+        return APEX_OK;
+    }
+    static apex_status selectionSet(void* c, uint32_t mode, const uint64_t* ids, size_t count) {
+        auto* session = self(c).session;
+        if (!session || !session->document()) return APEX_ERR_STATE;
+        if (mode > static_cast<uint32_t>(editor::SelectionMode::Faces) || (count && !ids)) return APEX_ERR_INVALID;
+        try {
+            editor::Selection next(static_cast<editor::SelectionMode>(mode));
+            for (size_t i = 0; i < count; ++i) {
+                if (mode == static_cast<uint32_t>(editor::SelectionMode::Faces)) {
+                    const auto side = static_cast<document::SideId>(ids[i]);
+                    if (!session->document()->side(side)) return APEX_ERR_NOT_FOUND;
+                    next.add(editor::Target{side});
+                } else {
+                    const auto node = static_cast<document::NodeId>(ids[i]);
+                    if (!session->document()->handle(node)) return APEX_ERR_NOT_FOUND;
+                    next.add(editor::Target{node});
+                }
+            }
+            session->selection() = next;
+            return APEX_OK;
+        } catch (...) { return APEX_ERR_INVALID; }
+    }
+    struct EditContext { document::Transaction& tx; document::Document& doc; std::string error; };
+    template<class F> static apex_status editOperation(EditContext& context, F&& operation) noexcept {
+        if (!context.error.empty()) return APEX_ERR_INVALID;
+        try { operation(); return APEX_OK; }
+        catch (const std::exception& e) { context.error = e.what(); }
+        catch (...) { context.error = "exception in edit operation"; }
+        return APEX_ERR_INVALID;
+    }
+    static apex_status setKey(void* c, apex_node_id id, apex_str key, apex_str value) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            const auto h = e.doc.handle(id);
+            if (!h) throw std::invalid_argument("unknown node ID");
+            e.tx.setKeyValue(*h, std::string(view(key)), std::string(view(value)));
+        });
+    }
+    static apex_status destroyNode(void* c, apex_node_id id) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            const auto h = e.doc.handle(id);
+            if (!h) throw std::invalid_argument("unknown node ID");
+            e.tx.destroy(*h);
+        });
+    }
+    static apex_status createSolid(void* c, apex_node_id parent, const apex_plane* values, size_t count, apex_str material) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+        if (!values || count < 4 || count > 256) throw std::invalid_argument("invalid plane count");
+        const auto h = e.doc.handle(parent);
+        if (!h) throw std::invalid_argument("unknown parent ID");
+        std::vector<geometry::PlaneSide> sides;
+        for (size_t i = 0; i < count; ++i) {
+            geometry::PlaneSide side;
+            side.plane = {{values[i].normal.x, values[i].normal.y, values[i].normal.z}, values[i].distance};
+            sides.push_back(side);
+        }
+        auto poly = geometry::ConvexPolyhedron::fromPlanes(sides);
+        if (!poly) throw std::invalid_argument("invalid solid planes");
+        geometry::NewSolidStyle style;
+        style.material = std::string(view(material));
+        e.tx.create(geometry::solidBlock(*poly, style), *h);
+        });
+    }
+    static apex_status reparentNode(void* c, apex_node_id id, apex_node_id parent, size_t position) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            const auto h = e.doc.handle(id);
+            const auto p = parent ? e.doc.handle(parent) : std::optional<document::NodeHandle>{};
+            if (!h || (parent && !p)) throw std::invalid_argument("unknown node ID");
+            e.tx.reparent(*h, p, position);
+        });
+    }
+    static apex_status setSideKey(void* c, int32_t side, apex_str key, apex_str value) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] { e.tx.setSideKeyValue(side, std::string(view(key)), std::string(view(value))); });
+    }
+    static apex_status removeDisplacement(void* c, int32_t side) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] { e.tx.removeDisplacement(side); });
+    }
+    static apex_status rebuildSolid(void* c, apex_node_id id, const apex_plane* values, size_t count) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            if (!values || count < 4 || count > 256) throw std::invalid_argument("invalid plane count");
+            const auto h = e.doc.handle(id);
+            if (!h || !std::holds_alternative<Handle<document::Solid>>(*h)) throw std::invalid_argument("unknown solid ID");
+            std::vector<geometry::PlaneSide> sides;
+            for (size_t i = 0; i < count; ++i) {
+                geometry::PlaneSide side;
+                side.plane = {{values[i].normal.x, values[i].normal.y, values[i].normal.z}, values[i].distance};
+                sides.push_back(side);
+            }
+            auto poly = geometry::ConvexPolyhedron::fromPlanes(sides);
+            if (!poly) throw std::invalid_argument("invalid solid planes");
+            e.tx.rebuildSolid(std::get<Handle<document::Solid>>(*h), *poly);
+        });
+    }
+    static apex_status applyEdit(void* c, apex_str label, apex_str coalesce, void* user, apex_edit_callback callback) {
+        auto& s = self(c);
+        if (!s.session || !s.session->document() || !callback) return APEX_ERR_STATE;
+        static const apex_edit_ops_v1 ops{sizeof(ops), setKey, destroyNode, createSolid,
+                                           reparentNode, setSideKey, removeDisplacement, rebuildSolid};
+        try {
+            s.session->edit(std::string(view(label)), [&](document::Transaction& tx) {
+                EditContext context{tx, *s.session->document()};
+                const auto status = callback(user, &ops, &context);
+                if (!context.error.empty()) throw std::invalid_argument(context.error);
+                if (status != APEX_OK) throw std::invalid_argument("plugin edit failed");
+            }, std::string(view(coalesce)));
+            return APEX_OK;
+        } catch (const std::exception& e) { s.lastError = e.what(); return APEX_ERR_INVALID; }
+        catch (...) { s.lastError = "exception in plugin edit"; return APEX_ERR_INVALID; }
+    }
+    static apex_status deferEdit(void* c, void* user, void (*callback)(void*)) {
+        auto& s = self(c);
+        if (!s.session || !s.session->document()) return APEX_ERR_STATE;
+        if (!callback) return APEX_ERR_INVALID;
+        const auto owner = s.callbackOwner;
+        s.session->document()->defer([&s, user, callback, owner] {
+            Mark mark(s.breadcrumb, owner, "deferred");
+            const auto previous = std::exchange(s.callbackOwner, owner);
+            try { callback(user); } catch (...) { s.lastError = "exception in deferred callback"; }
+            s.callbackOwner = previous;
+        });
+        return APEX_OK;
+    }
+    void changed(const document::ChangeSet& changes) {
+        std::vector<apex_modified_node> modified;
+        modified.reserve(changes.modifiedIds.size());
+        for (const auto& item : changes.modifiedIds)
+            modified.push_back({item.id, static_cast<uint32_t>(item.flags)});
+        std::vector<int32_t> sides(changes.vanishedSides.begin(), changes.vanishedSides.end());
+        apex_change_notice notice{sizeof(notice), observedDocument->historyState(), changes.createdIds.data(),
+            changes.createdIds.size(), modified.data(), modified.size(), changes.destroyedIds.data(),
+            changes.destroyedIds.size(), sides.data(), sides.size(), changes.undoOrRedo ? 1u : 0u};
+        for (const auto& item : loaded) {
+            if (item.plugin->struct_size < offsetof(apex_plugin, on_changed) + sizeof(item.plugin->on_changed) || !item.plugin->on_changed) continue;
+            Mark mark(breadcrumb, plugins[item.index].id, "on_changed");
+            const auto previous = std::exchange(callbackOwner, plugins[item.index].id);
+            try { item.plugin->on_changed(item.plugin->user, &notice); }
+            catch (...) { plugins[item.index].error = "exception in on_changed"; }
+            callbackOwner = previous;
+        }
     }
     static apex_status registerItem(void* context, Registration::Kind kind, apex_str id, apex_str name,
                                     apex_str description, void* user, apex_callback first, apex_callback second) {
@@ -239,6 +413,7 @@ struct Host::Impl {
         APEX_COPY_TOOL_CALLBACK(input); APEX_COPY_TOOL_CALLBACK(visual); APEX_COPY_TOOL_CALLBACK(readout);
         APEX_COPY_TOOL_CALLBACK(set_parameter); APEX_COPY_TOOL_CALLBACK(perform); APEX_COPY_TOOL_CALLBACK(cancel);
         APEX_COPY_TOOL_CALLBACK(document_changed); APEX_COPY_TOOL_CALLBACK(forget);
+        APEX_COPY_TOOL_CALLBACK(create_instance); APEX_COPY_TOOL_CALLBACK(destroy_instance);
 #undef APEX_COPY_TOOL_CALLBACK
         return APEX_OK;
     }
@@ -248,7 +423,9 @@ struct Host::Impl {
     void callback(const std::string& owner, const char* name, apex_callback fn, void* user) {
         if (!fn) return;
         Mark mark(breadcrumb, owner, name);
+        const auto previous = std::exchange(callbackOwner, owner);
         try { fn(user); } catch (...) { lastError = "exception in plugin callback"; }
+        callbackOwner = previous;
     }
     void commitRegistrations() {
         for (const auto& r : pending) {
@@ -265,7 +442,9 @@ struct Host::Impl {
                     if (r.extended) {
                         auto guard = [selfPtr, owner = r.owner](const char* name, const std::function<void()>& fn) {
                             Mark mark(selfPtr->breadcrumb, owner, name);
+                            const auto previous = std::exchange(selfPtr->callbackOwner, owner);
                             try { fn(); } catch (...) { selfPtr->lastError = "exception in plugin tool callback"; }
+                            selfPtr->callbackOwner = previous;
                         };
                         return std::make_unique<PluginTool>(session, r.id, r.user, r.callbacks, std::move(guard));
                     }
@@ -428,6 +607,13 @@ void Host::activate(bool safeMode) {
 }
 void Host::setPanelRegistrar(std::function<bool(std::string, std::string)> registrar) {
     impl_->panelRegistrar = std::move(registrar);
+}
+void Host::setSession(editor::EditorSession* session) {
+    if (impl_->observedDocument) impl_->observedDocument->unobserve(impl_->observerToken);
+    impl_->session = session;
+    impl_->observedDocument = session ? session->document() : nullptr;
+    if (impl_->observedDocument)
+        impl_->observerToken = impl_->observedDocument->observe([impl = impl_.get()](const document::ChangeSet& changes) { impl->changed(changes); });
 }
 void Host::setDocument(const document::Document* document) {
     for (const auto& loaded : impl_->loaded) {

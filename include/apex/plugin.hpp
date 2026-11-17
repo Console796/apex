@@ -10,6 +10,7 @@ inline std::string_view view(apex_str text) { return text.data ? std::string_vie
 class Tool {
 public:
     virtual ~Tool() = default;
+    virtual Tool* createInstance() { return nullptr; }
     virtual void activate() {}
     virtual void deactivate() {}
     virtual bool input(const apex_tool_event&, const apex_tool_view&) { return false; }
@@ -38,7 +39,9 @@ public:
             [](void* p, apex_str id) -> int { try { return static_cast<Tool*>(p)->perform(view(id)); } catch (...) { return 0; } },
             [](void* p) { try { static_cast<Tool*>(p)->cancel(); } catch (...) {} },
             [](void* p) { try { static_cast<Tool*>(p)->documentChanged(); } catch (...) {} },
-            [](void* p, uint64_t s) { try { static_cast<Tool*>(p)->forget(s); } catch (...) {} }
+            [](void* p, uint64_t s) { try { static_cast<Tool*>(p)->forget(s); } catch (...) {} },
+            [](void* p) -> void* { try { return static_cast<Tool*>(p)->createInstance(); } catch (...) { return nullptr; } },
+            [](void* p) { try { delete static_cast<Tool*>(p); } catch (...) {} }
         };
         return &table;
     }
@@ -48,5 +51,11 @@ inline const apex_tools_v1* tools(const apex_host& host) {
 }
 inline const apex_actions_v1* actions(const apex_host& host) {
     return static_cast<const apex_actions_v1*>(host.get_interface(host.context, string("apex.actions/1")));
+}
+inline const apex_edit_v1* edit(const apex_host& host) {
+    return static_cast<const apex_edit_v1*>(host.get_interface(host.context, string("apex.edit/1")));
+}
+inline const apex_selection_v1* selection(const apex_host& host) {
+    return static_cast<const apex_selection_v1*>(host.get_interface(host.context, string("apex.selection/1")));
 }
 }

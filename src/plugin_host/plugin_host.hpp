@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 namespace apex::document { class Document; }
+namespace apex::editor { class EditorSession; }
 namespace apex::plugin_host {
 struct Plugin { std::string id, name, version, error; std::filesystem::path folder, entry; bool enabled = true, loaded = false; };
 bool inNamespace(std::string_view plugin, std::string_view id);
@@ -20,6 +21,7 @@ public:
     void activate(bool safeMode = false);
     void setPanelRegistrar(std::function<bool(std::string, std::string)> registrar);
     void setDocument(const document::Document* document);
+    void setSession(editor::EditorSession* session);
     void setEnabled(std::string_view id, bool enabled);
     const std::vector<Plugin>& plugins() const;
     std::string staleBreadcrumb() const;

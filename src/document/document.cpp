@@ -513,11 +513,27 @@ void Document::notify(const ChangeSet& changes) {
         for (const auto& [token, observer] : observers) {
             if (observers_.contains(token)) observer(changes);
         }
-    } catch (...) { notifying_ = false; throw; }
+    } catch (...) { notifying_ = false; deferred_.clear(); throw; }
     notifying_ = false;
+    if (!drainingDeferred_) {
+        drainingDeferred_ = true;
+        try {
+            while (!deferred_.empty()) {
+                auto pending = std::move(deferred_);
+                deferred_.clear();
+                for (auto& operation : pending) operation();
+            }
+        } catch (...) { drainingDeferred_ = false; throw; }
+        drainingDeferred_ = false;
+    }
+}
+void Document::defer(std::function<void()> operation) {
+    if (notifying_ || drainingDeferred_) deferred_.push_back(std::move(operation));
+    else operation();
 }
 ChangeSet Document::restore(const Entry& entry, bool after) {
     ChangeSet changes;
+    changes.undoOrRedo = true;
     const auto oldSides = sides_;
     for (const auto& delta : entry.deltas) {
         const auto old = handle(delta.id);

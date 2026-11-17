@@ -2,6 +2,8 @@
 #include "document/vmf.hpp"
 #include "document/document.hpp"
 #include "editor/editor_session.hpp"
+#include "../editor/fixtures.hpp"
+#include "geometry/solid_geometry.hpp"
 #include <doctest/doctest.h>
 #include <filesystem>
 #include <fstream>
@@ -247,4 +249,134 @@ TEST_CASE("polygon tool recorded trace and lifecycle are deterministic") {
     REQUIRE(session.perform("plugin.polygon.tool"));
     CHECK(session.activeToolObject().overlay(view, 42).worldSegments.empty());
     host.setDocument(nullptr);
+}
+
+TEST_CASE("polygon plugin commit is one undoable edit preserving selection") {
+    Temp temp;
+    temp.manifest("polygon", entryFor(POLYGON_PLUGIN_PATH));
+    auto file = vmf::parse("world { id 1 classname worldspawn }");
+    REQUIRE(file);
+    document::Document document(*file);
+    Host host(temp.path / "state", temp.path / "breadcrumb");
+    host.discover({temp.path});
+    host.setDocument(&document);
+    host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    editor::EditorSession session;
+    session.attach(document);
+    host.setSession(&session);
+    session.selection().setMode(editor::SelectionMode::Objects);
+    session.selection().select(document.roots().front());
+    const auto before = session.selection().toBlob();
+    REQUIRE(session.perform("plugin.polygon.tool"));
+    editor::ToolView view;
+    view.cursorRay = {{0, 0, 64}, {0, 0, -1}};
+    editor::InputEvent event;
+    event.source = 42;
+    event.kind = editor::InputKind::Press;
+    event.button = editor::PointerButton::Left;
+    for (const auto& xy : {DVec2{0, 0}, DVec2{64, 0}, DVec2{0, 64}}) {
+        view.cursorRay.origin = {xy.x, xy.y, 64};
+        REQUIRE(session.input(event, view));
+    }
+    const auto count = document.undoCount();
+    REQUIRE(session.perform("plugin.polygon.commit"));
+    REQUIRE(document.undoCount() == count + 1);
+    REQUIRE(document.undo());
+    CHECK(session.selection().toBlob() == before);
+    CHECK(document.undoCount() == count);
+    host.setDocument(nullptr);
+    host.setSession(nullptr);
+}
+
+TEST_CASE("plugin tool state is independent between editor sessions") {
+    Temp temp;
+    temp.manifest("polygon", entryFor(POLYGON_PLUGIN_PATH));
+    auto file = vmf::parse("world { id 1 classname worldspawn }");
+    REQUIRE(file);
+    document::Document document(*file);
+    Host host(temp.path / "state", temp.path / "breadcrumb");
+    host.discover({temp.path});
+    host.setDocument(&document);
+    host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    editor::EditorSession first, second;
+    first.attach(document); second.attach(document);
+    REQUIRE(first.perform("plugin.polygon.tool"));
+    REQUIRE(second.perform("plugin.polygon.tool"));
+    editor::ToolView view;
+    view.cursorRay = {{0, 0, 64}, {0, 0, -1}};
+    editor::InputEvent event;
+    event.source = 42; event.kind = editor::InputKind::Press; event.button = editor::PointerButton::Left;
+    for (const auto& xy : {DVec2{0, 0}, DVec2{64, 0}, DVec2{0, 64}}) {
+        view.cursorRay.origin = {xy.x, xy.y, 64};
+        REQUIRE(first.input(event, view));
+    }
+    const auto before = first.activeToolObject().overlay(view, 42);
+    REQUIRE(before.worldSegments.size() == 3);
+    view.cursorRay.origin = {200, 200, 64};
+    REQUIRE(second.input(event, view));
+    CHECK(first.activeToolObject().overlay(view, 42).worldSegments.size() == before.worldSegments.size());
+    CHECK(second.activeToolObject().overlay(view, 42).worldSegments.empty());
+    host.setDocument(nullptr);
+}
+
+TEST_CASE("plugin edit failure rolls back and deferred notification makes a separate step") {
+    Temp temp;
+    temp.manifest("writes", entryFor(WRITE_PLUGIN_PATH));
+    auto file = vmf::parse("world { id 1 classname worldspawn }");
+    REQUIRE(file);
+    document::Document document(*file);
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+    host.discover({temp.path});
+    host.setDocument(&document);
+    host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    editor::EditorSession session;
+    session.attach(document);
+    host.setSession(&session);
+    REQUIRE(session.perform("plugin.writes.fail"));
+    CHECK(document.undoCount() == 0);
+    CHECK(document.get(*document.handle(document.roots().front()))->block->find("before_failure") == nullptr);
+    REQUIRE_FALSE(logs.empty());
+    CHECK(logs.back() == "failed as expected");
+    REQUIRE(session.perform("plugin.writes.selection"));
+    CHECK(logs.back() == "selection ok");
+    std::vector<std::string> observerOrder;
+    const auto token = document.observe([&](const document::ChangeSet&) { observerOrder.push_back("observer"); logs.push_back("observer"); });
+    REQUIRE(session.perform("plugin.writes.edit"));
+    CHECK(document.undoCount() == 2);
+    CHECK(observerOrder == std::vector<std::string>{"observer", "observer"});
+    CHECK(logs == std::vector<std::string>{"failed as expected", "selection ok", "notice", "observer", "deferred", "notice", "observer"});
+    REQUIRE(document.undo());
+    CHECK(logs[logs.size() - 2] == "undo notice");
+    document.unobserve(token);
+    host.setSession(nullptr);
+    host.setDocument(nullptr);
+}
+
+TEST_CASE("plugin solid rebuild retains overlay face reference") {
+    Temp temp;
+    temp.manifest("writes", entryFor(WRITE_PLUGIN_PATH));
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    const auto world = *document.handle(document.roots().front());
+    const auto solid = editor_test::addBox(document, {0, 0, 0}, {64, 64, 64}, world);
+    const auto geometry = geometry::solidGeometry(*document.get(solid)->block);
+    REQUIRE(geometry);
+    int top = 0;
+    for (const auto& face : geometry->poly.faces) if (face.plane.normal.z > 0.999) top = static_cast<int>(face.sideId);
+    REQUIRE(top != 0);
+    const auto overlay = editor_test::addBlock(document, "entity { id 0 classname info_overlay sides \"" + std::to_string(top) + "\" }");
+    Host host(temp.path / "state", temp.path / "breadcrumb");
+    host.discover({temp.path}); host.setDocument(&document); host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    editor::EditorSession session;
+    session.attach(document); host.setSession(&session);
+    const auto count = document.undoCount();
+    REQUIRE(session.perform("plugin.writes.rebuild"));
+    CHECK(document.undoCount() == count + 1);
+    REQUIRE(document.side(top));
+    CHECK(document.get(overlay)->block->find("sides")->decodedValue() == std::to_string(top));
+    host.setSession(nullptr); host.setDocument(nullptr);
 }
