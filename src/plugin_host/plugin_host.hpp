@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <apex/apex_plugin.h>
 #include "core/math.hpp"
@@ -44,6 +45,9 @@ struct HelperDrawing {
     std::vector<OverlaySegment> segments;
     std::vector<OverlayLabel> labels;
 };
+// apex.io/1: one registered importer.
+struct ImporterInfo { std::string id, name, owner; std::vector<std::string> extensions; };
+struct ImportResult { bool ok = false; std::string message; };
 class Host {
 public:
     Host(std::filesystem::path state, std::filesystem::path breadcrumb,
@@ -71,6 +75,29 @@ public:
     // changed. Empty without helper plugins, a document or a session.
     const HelperDrawing& helperDrawing();
     bool hasHelpers() const;
+    // ---- apex.io/1 (importers) ----
+    // Registered importers in registration order. Extensions are lower case, without dots.
+    const std::vector<ImporterInfo>& importers() const;
+    // The first importer that handles `path`'s extension, or null.
+    const ImporterInfo* importerFor(const std::filesystem::path& path) const;
+    // Runs the importer inside ONE edit transaction on the session's document (one undo step; a failure
+    // rolls everything back and `message` says why). Needs a session with a document.
+    ImportResult importFile(std::string_view importerId, const std::filesystem::path& path);
+    // ---- apex.jobs/1 ----
+    // Runs the completions of finished jobs on the calling thread, which must be the editor (main) thread.
+    // The UI calls this from a timer or event; returns how many completions ran.
+    std::size_t drainJobs();
+    // Jobs submitted and not yet delivered (thread-safe).
+    std::size_t pendingJobs() const;
+    // ---- apex.watch/1 ----
+    // Paths a plugin may watch besides its own folder (the game directory). Call from the editor thread.
+    void addWatchRoot(const std::filesystem::path& root);
+    // How long a watched path must be quiet before its change is delivered (default 200 ms).
+    void setWatchDebounce(std::chrono::milliseconds quiet);
+    // Stats the watched paths and delivers the changes that have settled, on the calling (editor) thread.
+    // The UI calls this from a timer a few times a second; tests pass their own clock.
+    std::size_t pollWatches(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    bool hasWatches() const;
     void setDocument(const document::Document* document);
     void setSession(editor::EditorSession* session);
     void setEnabled(std::string_view id, bool enabled);

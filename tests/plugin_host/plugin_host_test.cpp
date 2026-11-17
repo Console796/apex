@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <algorithm>
+#include <thread>
 
 using namespace apex;
 using namespace apex::plugin_host;
@@ -749,4 +750,242 @@ TEST_CASE("a plugin cannot register problem checks after the registry freezes") 
     CHECK_FALSE(host.plugins()[0].loaded);
     CHECK(host.overlays().empty()); // a failed activation leaves no overlays or helpers behind
     CHECK_FALSE(host.hasHelpers());
+}
+
+namespace {
+std::size_t worldChildren(document::Document& document) {
+    for (const auto root : document.roots()) {
+        const auto handle = document.handle(root);
+        const auto* node = handle ? document.get(*handle) : nullptr;
+        if (node && node->block && node->block->key() == "world") return node->children.size();
+    }
+    return 0;
+}
+std::string threadHash() { return std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())); }
+}
+
+TEST_CASE("obj-import imports a small OBJ as one undo step") {
+    Temp temp;
+    temp.manifest("objimport", entryFor(OBJ_IMPORT_PLUGIN_PATH));
+    // A cube (with v/vt/vn references and quad faces) and a triangular wedge, as two groups.
+    std::ofstream(temp.path / "parts.obj") <<
+        "o cube\nusemtl DEV/DEV_MEASUREGENERIC01\n"
+        "v 0 0 0\nv 64 0 0\nv 64 64 0\nv 0 64 0\nv 0 0 64\nv 64 0 64\nv 64 64 64\nv 0 64 64\n"
+        "f 1/1/1 4/1/1 3/1/1 2/1/1\nf 5 6 7 8\nf 1 2 6 5\nf 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n"
+        "o wedge\nv 100 0 0\nv 164 0 0\nv 100 64 0\nv 100 0 64\nv 164 0 64\nv 100 64 64\n"
+        "f -6 -4 -5\nf -3 -2 -1\nf -6 -5 -2 -3\nf -5 -4 -1 -2\nf -4 -6 -3 -1\n";
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+    host.discover({temp.path}); host.setDocument(&document); host.setSession(&session);
+    host.activate();
+    REQUIRE(host.plugins().size() == 1);
+    CAPTURE(host.plugins()[0].error);
+    REQUIRE(host.plugins()[0].loaded);
+    REQUIRE(host.importers().size() == 1);
+    CHECK(host.importers()[0].id == "plugin.objimport.obj");
+    REQUIRE(host.importerFor(temp.path / "SHAPE.OBJ"));
+    CHECK_FALSE(host.importerFor(temp.path / "shape.fbx"));
+
+    const auto before = document.undoCount();
+    const auto solids = worldChildren(document);
+    const auto result = host.importFile("plugin.objimport.obj", temp.path / "parts.obj");
+    CAPTURE(result.message);
+    REQUIRE(result.ok);
+    CHECK(worldChildren(document) == solids + 2);
+    CHECK(document.undoCount() == before + 1);
+    REQUIRE(document.undo());
+    CHECK(worldChildren(document) == solids);
+    CHECK(document.undoCount() == before);
+    host.setDocument(nullptr); host.setSession(nullptr);
+}
+
+TEST_CASE("a failing import rolls every solid back") {
+    Temp temp;
+    temp.manifest("objimport", entryFor(OBJ_IMPORT_PLUGIN_PATH));
+    // The first group is a good cube; the second is open (one face), so the whole import must fail.
+    std::ofstream(temp.path / "bad.obj") <<
+        "o cube\nv 0 0 0\nv 64 0 0\nv 64 64 0\nv 0 64 0\nv 0 0 64\nv 64 0 64\nv 64 64 64\nv 0 64 64\n"
+        "f 1 4 3 2\nf 5 6 7 8\nf 1 2 6 5\nf 2 3 7 6\nf 3 4 8 7\nf 4 1 5 8\n"
+        "o open\nv 200 0 0\nv 264 0 0\nv 264 64 0\nf 9 10 11\n";
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    Host host(temp.path / "state", temp.path / "breadcrumb");
+    host.discover({temp.path}); host.setDocument(&document); host.setSession(&session);
+    host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    const auto before = document.undoCount();
+    const auto solids = worldChildren(document);
+    const auto result = host.importFile("plugin.objimport.obj", temp.path / "bad.obj");
+    CHECK_FALSE(result.ok);
+    CHECK(result.message.find("open") != std::string::npos);
+    CHECK(worldChildren(document) == solids);
+    CHECK(document.undoCount() == before);
+    CHECK_FALSE(host.importFile("plugin.objimport.obj", temp.path / "missing.obj").ok);
+    CHECK_FALSE(host.importFile("plugin.nope.obj", temp.path / "bad.obj").ok);
+    host.setDocument(nullptr); host.setSession(nullptr);
+}
+
+TEST_CASE("a job's completion runs on the main thread") {
+    Temp temp;
+    temp.manifest("async", entryFor(ASYNC_PLUGIN_PATH));
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+    host.discover({temp.path}); host.setDocument(&document); host.setSession(&session);
+    host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    const auto has = [&](std::string_view prefix) {
+        return std::ranges::find_if(logs, [&](const std::string& l) { return l.starts_with(prefix); }) != logs.end();
+    };
+    const auto wait = [&](std::string_view prefix) {
+        for (int i = 0; i < 400 && !has(prefix); ++i) { host.drainJobs(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+        return has(prefix);
+    };
+
+    REQUIRE(session.perform("plugin.async.job"));
+    // Completion is not delivered until the editor thread drains.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    CHECK_FALSE(has("done:plain"));
+    REQUIRE(wait("done:plain"));
+    const auto line = *std::ranges::find_if(logs, [](const std::string& l) { return l.starts_with("done:plain"); });
+    CAPTURE(line);
+    CHECK(line.find(":status=0:") != std::string::npos);
+    CHECK(line.find(":main=" + threadHash()) != std::string::npos);   // delivered on this thread
+    CHECK(line.find(":work=" + threadHash() + ":") == std::string::npos);   // ran on another
+    CHECK(host.pendingJobs() == 0);
+
+    // An exception in work arrives as an internal error; one in the completion is contained.
+    REQUIRE(session.perform("plugin.async.failing"));
+    REQUIRE(wait("done:failing"));
+    CHECK(std::ranges::any_of(logs, [](const std::string& l) { return l.starts_with("done:failing:status=" + std::to_string(APEX_ERR_INTERNAL)); }));
+    REQUIRE(session.perform("plugin.async.throwing"));
+    REQUIRE(wait("done:throwing"));
+
+    // Cancelling before delivery suppresses the completion.
+    REQUIRE(session.perform("plugin.async.cancel"));
+    CHECK(std::ranges::count(logs, "cancel=" + std::to_string(APEX_OK)) == 1);
+    CHECK(std::ranges::count(logs, "cancel_again=" + std::to_string(APEX_ERR_NOT_FOUND)) == 1);
+    for (int i = 0; i < 40; ++i) { host.drainJobs(); std::this_thread::sleep_for(std::chrono::milliseconds(5)); }
+    CHECK_FALSE(has("done:cancelled"));
+    host.setDocument(nullptr); host.setSession(nullptr);
+}
+
+TEST_CASE("jobs still running at host shutdown are joined, not delivered") {
+    Temp temp;
+    temp.manifest("async", entryFor(ASYNC_PLUGIN_PATH));
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    std::vector<std::string> logs;
+    {
+        Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+        host.discover({temp.path}); host.setDocument(&document); host.setSession(&session);
+        host.activate();
+        REQUIRE(host.plugins()[0].loaded);
+        REQUIRE(session.perform("plugin.async.cancel"));
+        REQUIRE(session.perform("plugin.async.job"));
+        host.setDocument(nullptr); host.setSession(nullptr);
+    }
+    CHECK(std::ranges::none_of(logs, [](const std::string& l) { return l.starts_with("done:"); }));
+}
+
+TEST_CASE("a watched file's change is delivered once per save") {
+    Temp temp;
+    temp.manifest("async", entryFor(ASYNC_PLUGIN_PATH));
+    const auto file = temp.path / "async" / "watched.txt";
+    std::ofstream(file) << "one";
+    setenv("APEX_TEST_WATCH", file.string().c_str(), 1);
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+    host.discover({temp.path}); host.setDocument(&document); host.setSession(&session);
+    host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    host.setWatchDebounce(std::chrono::milliseconds(200));
+    REQUIRE(session.perform("plugin.async.watch"));
+    CHECK(std::ranges::count(logs, "watch=" + std::to_string(APEX_OK)) == 1);
+    CHECK(host.hasWatches());
+    const auto changes = [&] {
+        return std::ranges::count_if(logs, [](const std::string& l) { return l.starts_with("changed:"); });
+    };
+    using clock = std::chrono::steady_clock;
+    auto now = clock::now();
+    const auto ms = [](int n) { return std::chrono::milliseconds(n); };
+    const auto write = [&](const std::string& text, int seconds) {
+        std::ofstream(file, std::ios::trunc) << text;
+        std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now() + std::chrono::seconds(seconds));
+    };
+
+    host.pollWatches(now);
+    CHECK(changes() == 0);                          // nothing changed since the watch began
+
+    // One save written in three pieces within the debounce window is one delivery.
+    write("two", 1);   host.pollWatches(now += ms(10));
+    write("three!", 2); host.pollWatches(now += ms(50));
+    write("four!!!", 3); host.pollWatches(now += ms(50));
+    CHECK(changes() == 0);                          // still inside the burst
+    host.pollWatches(now += ms(150));
+    CHECK(changes() == 0);                          // quiet for 150 ms of the 200 ms
+    host.pollWatches(now += ms(100));
+    REQUIRE(changes() == 1);
+    CHECK(logs.back().find(":main=" + threadHash()) != std::string::npos);
+    host.pollWatches(now += ms(500));
+    host.pollWatches(now += ms(500));
+    CHECK(changes() == 1);                          // quiet afterwards: no repeat
+
+    // A second, separate save is a second delivery.
+    write("five", 10);
+    host.pollWatches(now += ms(10));
+    host.pollWatches(now += ms(300));
+    CHECK(changes() == 2);
+
+    // Deleting the file is a change too; unwatch stops deliveries.
+    std::filesystem::remove(file);
+    host.pollWatches(now += ms(10));
+    host.pollWatches(now += ms(300));
+    CHECK(changes() == 3);
+    REQUIRE(session.perform("plugin.async.unwatch"));
+    CHECK(std::ranges::count(logs, "unwatch=" + std::to_string(APEX_OK)) == 1);
+    std::ofstream(file) << "back";
+    host.pollWatches(now += ms(10));
+    host.pollWatches(now += ms(300));
+    CHECK(changes() == 3);
+    CHECK_FALSE(host.hasWatches());
+    unsetenv("APEX_TEST_WATCH");
+    host.setDocument(nullptr); host.setSession(nullptr);
+}
+
+TEST_CASE("watch refuses paths outside the plugin folder and survives a throwing callback") {
+    Temp temp;
+    temp.manifest("async", entryFor(ASYNC_PLUGIN_PATH));
+    const auto boom = temp.path / "async" / "boom.txt";
+    std::ofstream(boom) << "x";
+    setenv("APEX_TEST_WATCH", boom.string().c_str(), 1);
+    document::Document document(editor_test::parsed("world { id 1 classname worldspawn }"));
+    editor::EditorSession session;
+    session.attach(document);
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+    host.discover({temp.path}); host.setDocument(&document); host.setSession(&session);
+    host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    REQUIRE(session.perform("plugin.async.watch_bad"));
+    const auto invalid = std::to_string(APEX_ERR_INVALID);
+    CHECK(std::ranges::count(logs, "watch_relative=" + invalid) == 1);
+    CHECK(std::ranges::count(logs, "watch_outside=" + invalid) == 1);
+    REQUIRE(session.perform("plugin.async.watch"));
+    auto now = std::chrono::steady_clock::now();
+    std::ofstream(boom, std::ios::trunc) << "changed contents";
+    host.pollWatches(now);
+    CHECK(host.pollWatches(now + std::chrono::milliseconds(300)) == 1);   // callback threw; host carried on
+    unsetenv("APEX_TEST_WATCH");
+    host.setDocument(nullptr); host.setSession(nullptr);
 }

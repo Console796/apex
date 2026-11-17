@@ -203,4 +203,85 @@ inline apex_status registerProblemCheck(const apex_host& host, std::string_view 
     const auto* api = problems(host);
     return api ? api->register_check(host.context, string(id), string(name), &check, &ProblemCheck::trampoline) : APEX_ERR_UNSUPPORTED;
 }
+
+inline const apex_io_v1* io(const apex_host& host) {
+    return static_cast<const apex_io_v1*>(host.get_interface(host.context, string("apex.io/1")));
+}
+inline const apex_jobs_v1* jobs(const apex_host& host) {
+    return static_cast<const apex_jobs_v1*>(host.get_interface(host.context, string("apex.jobs/1")));
+}
+inline const apex_watch_v1* watch(const apex_host& host) {
+    return static_cast<const apex_watch_v1*>(host.get_interface(host.context, string("apex.watch/1")));
+}
+
+// apex.io/1. Derive and implement import(); edit through context.ops/context.operation. A non-OK
+// return (or an exception) rolls the whole import back.
+class Importer {
+public:
+    virtual ~Importer() = default;
+    virtual apex_status import(std::string_view path, const apex_import_context& context) = 0;
+    static apex_status report(const apex_import_context& context, std::string_view message) {
+        return context.report ? context.report(context.sink, string(message)) : APEX_ERR_UNSUPPORTED;
+    }
+    static apex_status trampoline(void* user, apex_str path, const apex_import_context* context) {
+        try { return static_cast<Importer*>(user)->import(view(path), *context); }
+        catch (...) { return APEX_ERR_INTERNAL; }
+    }
+};
+// Activate only. `id` is plugin.<plugin>.<name>; `extensions` is comma separated without dots ("obj,mesh").
+inline apex_status registerImporter(const apex_host& host, std::string_view id, std::string_view name,
+                                    std::string_view extensions, Importer& importer) {
+    const auto* api = io(host);
+    return api ? api->register_importer(host.context, string(id), string(name), string(extensions), &importer, &Importer::trampoline)
+               : APEX_ERR_UNSUPPORTED;
+}
+
+// apex.jobs/1. run() executes on a worker thread (no host calls except from the cancellation query);
+// done() executes on the editor thread.
+class Job {
+public:
+    virtual ~Job() = default;
+    virtual apex_status run(const apex_job_context& context) = 0;
+    virtual void done(apex_status status) = 0;
+    static bool cancelled(const apex_job_context& context) { return context.cancelled && context.cancelled(context.job) != 0; }
+    static apex_status workTrampoline(void* user, const apex_job_context* context) {
+        try { return static_cast<Job*>(user)->run(*context); }
+        catch (...) { return APEX_ERR_INTERNAL; }
+    }
+    static void doneTrampoline(void* user, apex_status status) {
+        try { static_cast<Job*>(user)->done(status); }
+        catch (...) {}
+    }
+};
+// The Job must outlive its completion (or be cancelled first).
+inline apex_status submitJob(const apex_host& host, Job& job, uint64_t* id = nullptr) {
+    const auto* api = jobs(host);
+    if (!api) return APEX_ERR_UNSUPPORTED;
+    uint64_t local = 0;
+    const auto status = api->submit(host.context, &job, &Job::workTrampoline, &Job::doneTrampoline, id ? id : &local);
+    return status;
+}
+inline apex_status cancelJob(const apex_host& host, uint64_t id) {
+    const auto* api = jobs(host);
+    return api ? api->cancel(host.context, id) : APEX_ERR_UNSUPPORTED;
+}
+
+// apex.watch/1. changed() runs on the editor thread, once per burst of writes.
+class Watcher {
+public:
+    virtual ~Watcher() = default;
+    virtual void changed(std::string_view path) = 0;
+    static void trampoline(void* user, apex_str path) {
+        try { static_cast<Watcher*>(user)->changed(view(path)); }
+        catch (...) {}
+    }
+};
+inline apex_status watchPath(const apex_host& host, std::string_view absolutePath, Watcher& watcher, uint64_t* id) {
+    const auto* api = watch(host);
+    return api ? api->watch(host.context, string(absolutePath), &watcher, &Watcher::trampoline, id) : APEX_ERR_UNSUPPORTED;
+}
+inline apex_status unwatch(const apex_host& host, uint64_t id) {
+    const auto* api = watch(host);
+    return api ? api->unwatch(host.context, id) : APEX_ERR_UNSUPPORTED;
+}
 }

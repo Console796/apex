@@ -256,10 +256,59 @@ reports under a header per plugin (Apex's own come first), and clicking one sele
 throws or fails reports one warning ("failed") and none of its partial results. Registration closes once the
 first Problems run starts, so register in `activate`.
 
-### 4.9 Later interfaces *(pending)*
+### 4.9 `apex.io/1`: importers
 
-Importers, jobs and file watching (0.9.5b), VFS and assets (0.9.6), scripts (0.9.7), pies and themes
-(0.9.8).
+`register_importer(host, id, name, extensions, user, import)` is available only during `activate`. `id` is
+`plugin.<plugin>.<name>`; `extensions` is a comma separated list without dots (`"obj,mesh"`, case-insensitive).
+The editor offers registered importers under File > Import.
+
+`import(user, path, context)` receives the file path as UTF-8 and an `apex_import_context`: `world` (the world
+node), `ops` and `operation` (the same `apex_edit_ops_v1` table `apex.edit/1` uses) and `report(sink, message)`
+for messages shown to the user. **One import is one undo step.** The host wraps the call in a single edit
+transaction; returning anything but `APEX_OK`, throwing, or a failing operation rolls every change back and
+leaves no undo entry. Importers run on the editor thread. Exporters, and importing into a new document, are not
+part of this interface.
+
+> **Files.** Until the virtual file system arrives (0.9.6) the importer receives a plain host file path and
+> reads it itself (`std::ifstream`). Once the VFS lands, paths that name game content will go through it; the
+> interface will gain a context field for that and keep this one.
+
+### 4.10 `apex.jobs/1`: background work
+
+`submit(host, user, work, done, &job_id)` runs `work(user, job_context)` on a worker thread and then calls
+`done(user, status)` **on the editor thread**, never on the worker. `work` returns an `apex_status`, and must not
+call host interfaces other than checking `job_context->cancelled(job_context->job)` (non-zero once the job was
+cancelled). Do not touch the document or any shared state from `work` without your own locking: read what you need
+before submitting.
+
+- `submit` and `cancel` are thread-safe. `submit` is `APEX_ERR_STATE` once the host is shutting down.
+- `cancel(host, job_id)` returns `APEX_OK` if the completion had not been delivered; `done` is then never called
+  for that job. It returns `APEX_ERR_NOT_FOUND` for a finished (delivered) or unknown job.
+- If `work` throws, `done` receives `APEX_ERR_INTERNAL`. An exception in `done` is caught and logged.
+- At shutdown the host cancels, joins and discards pending jobs before the plugin is unloaded, so `done` is not
+  called then. The `user` pointer must stay valid until `done` runs or the job is cancelled.
+
+The host interface is Qt-free: the application calls `Host::drainJobs()` regularly (the Qt shell does so from a
+50 ms timer, `PluginPump`). A host embedded elsewhere must call it from its own main thread.
+
+### 4.11 `apex.watch/1`: file watching
+
+`watch(host, path, user, on_changed, &watch_id)` watches an absolute path to a file or directory (a directory is
+watched recursively, up to 10,000 entries); `unwatch(host, watch_id)` stops it. Allowed during `activate` or any
+callback into the plugin. The path must lie inside the plugin's own folder or a root the host was given (the game
+directory); otherwise the call returns `APEX_ERR_INVALID`.
+
+`on_changed(user, path)` is delivered on the editor thread **once per save**: the host polls size, modification
+time and, for directories, the entry set, and delivers only after the path has been quiet for the debounce
+period (200 ms by default). A program that writes a file in several pieces, or a burst of saves inside the window,
+is one delivery. A separate save afterwards is another. Creating or deleting the watched path counts as a change.
+Callbacks may call `unwatch`. Polling means a very coarse filesystem mtime (1 to 2 s on some filesystems) can merge
+two saves made within that resolution into one delivery. `Host::pollWatches()` must be called regularly (the Qt
+shell uses the same `PluginPump` timer).
+
+### 4.12 Later interfaces *(pending)*
+
+VFS and assets (0.9.6), scripts (0.9.7), pies and themes (0.9.8).
 
 ## 5. The C++ wrapper
 
@@ -285,6 +334,13 @@ Importers, jobs and file watching (0.9.5b), VFS and assets (0.9.6), scripts (0.9
   `Helper::label(sink, ...)`; `registerHelper(host, name, helper)`. Exceptions are caught at the C boundary.
 - `apex::plugin::ProblemCheck`: derive and override `check(sink)`, report with
   `ProblemCheck::report(sink, severity, text, objects)`; `registerProblemCheck(host, id, name, check)`.
+- `apex::plugin::io(host)`, `jobs(host)`, `watch(host)`: interface lookups.
+- `apex::plugin::Importer`: derive and override `import(path, context)`; `Importer::report(context, text)`;
+  `registerImporter(host, id, name, extensions, importer)` in `activate`.
+- `apex::plugin::Job`: derive and override `run(context)` (worker thread; `Job::cancelled(context)`) and
+  `done(status)` (editor thread); `submitJob(host, job, &id)` and `cancelJob(host, id)`.
+- `apex::plugin::Watcher`: derive and override `changed(path)`; `watchPath(host, absolutePath, watcher, &id)` and
+  `unwatch(host, id)`.
 
 ## 6. Examples
 
@@ -298,6 +354,11 @@ All are built by the main CMake project and placed under `<build>/plugins/<id>/`
 - [`examples/face-stats/face_stats.cpp`](../examples/face-stats/face_stats.cpp): C++ using `plugin.hpp`'s `Form`.
   Registers a section under Face Properties that shows how many faces are selected, their side ID range and
   the number of solids in the map, and refreshes itself from `on_changed`.
+
+- [`examples/obj-import/obj_import.cpp`](../examples/obj-import/obj_import.cpp): C++ using `plugin.hpp`'s
+  `Importer`. Imports a Wavefront OBJ as one solid per `o`/`g` group (each group must be a closed convex part;
+  face planes are oriented outward from the group's centre, so winding does not matter). A bad group fails and
+  undoes the whole import. File > Import, extension `.obj`.
 
 To build your own: compile a `MODULE` library with `include/` on the include path, no prefix, export
 `apex_plugin_entry`, and write a `plugin.kv3` beside it.

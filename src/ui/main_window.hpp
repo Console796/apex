@@ -40,6 +40,7 @@ namespace apex::ui {
 class CompilePanel;
 class PieMenuPopup;
 class PluginUi;
+class PluginPump;
 class CommandPalette;
 class GameContent;
 class LogPanel;
@@ -136,6 +137,7 @@ public:
 
 private slots:
     void openDialog();
+    void importDialog();
     void save();
     void saveAs();
 
@@ -185,6 +187,7 @@ private:
 
     plugin_host::Host* pluginHost_ = nullptr;
     PluginUi* pluginUi_ = nullptr;
+    PluginPump* pluginPump_ = nullptr;
     std::unique_ptr<document::Document> document_;
     std::unique_ptr<GameContent> gameContent_;
     CompilePanel* compilePanel_ = nullptr;

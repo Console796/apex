@@ -2,6 +2,7 @@
 #include "plugin_host/plugin_host.hpp"
 #include "ui/main_window.hpp"
 #include "ui/plugin_ui.hpp"
+#include "ui/plugin_pump.hpp"
 #include "ui/compile_panel.hpp"
 #include "ui/asset_report_builder.hpp"
 #include "ui/game_content.hpp"
@@ -409,6 +410,8 @@ void MainWindow::buildMenus() {
     create->setObjectName(QStringLiteral("actionNew"));
     auto* open = file->addAction(tr("&Open..."), QKeySequence::Open, this, &MainWindow::openDialog);
     open->setObjectName(QStringLiteral("actionOpen"));
+    auto* import = file->addAction(tr("&Import..."), this, &MainWindow::importDialog);
+    import->setObjectName(QStringLiteral("actionImport"));
     recentMenu_ = file->addMenu(tr("Open &Recent"));
     recentMenu_->setObjectName(QStringLiteral("menuRecent"));
     file->addSeparator();
@@ -1719,6 +1722,8 @@ void MainWindow::setPluginHost(plugin_host::Host* host) {
     pluginHost_ = host;
     delete pluginUi_;
     pluginUi_ = host ? new PluginUi(*host, this) : nullptr;
+    delete pluginPump_;
+    pluginPump_ = host ? new PluginPump(*host, this) : nullptr;
     if (viewport_) viewport_->setPluginUi(pluginUi_);
 }
 void MainWindow::setTheme(Theme theme) {
@@ -1986,6 +1991,34 @@ void MainWindow::openDialog() {
     const QString start = path_.isEmpty() ? QString() : QFileInfo(path_).absolutePath();
     const QString path = QFileDialog::getOpenFileName(this, tr("Open VMF"), start, tr("Valve Map (*.vmf);;All files (*)"));
     if (!path.isEmpty()) openFile(path);
+}
+
+void MainWindow::importDialog() {
+    if (!pluginHost_ || pluginHost_->importers().empty()) {
+        statusBar()->showMessage(tr("No importer plugin is enabled"), 4000);
+        return;
+    }
+    QStringList filters;
+    QStringList all;
+    for (const auto& importer : pluginHost_->importers()) {
+        QStringList patterns;
+        for (const auto& ext : importer.extensions) patterns << QStringLiteral("*.") + fromStd(ext);
+        all << patterns;
+        filters << tr("%1 (%2)").arg(fromStd(importer.name), patterns.join(QLatin1Char(' ')));
+    }
+    filters.prepend(tr("All importable (%1)").arg(all.join(QLatin1Char(' '))));
+    const QString start = path_.isEmpty() ? QString() : QFileInfo(path_).absolutePath();
+    const QString path = QFileDialog::getOpenFileName(this, tr("Import"), start, filters.join(QStringLiteral(";;")));
+    if (path.isEmpty()) return;
+    const std::filesystem::path file = path.toStdU16String();
+    const auto* importer = pluginHost_->importerFor(file);
+    if (!importer) {
+        statusBar()->showMessage(tr("No importer handles %1").arg(QFileInfo(path).suffix()), 5000);
+        return;
+    }
+    const auto result = pluginHost_->importFile(importer->id, file);
+    statusBar()->showMessage(result.ok ? tr("Imported %1").arg(QFileInfo(path).fileName())
+                                       : tr("Import failed: %1").arg(fromStd(result.message)), 6000);
 }
 
 void MainWindow::save() {

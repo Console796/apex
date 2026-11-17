@@ -278,6 +278,65 @@ typedef struct apex_problems_v1 {
     apex_status (*register_check)(void* host, apex_str id, apex_str name, void* user, apex_problem_check check);
 } apex_problems_v1;
 
+/* apex.io/1 (0.9.5b): importers. register_importer() is available only during activate. `id` is
+   plugin.<plugin>.<name>; `extensions` is a comma-separated list without dots ("obj,mtl"), matched
+   case-insensitively. import() runs on the editor thread, inside ONE edit transaction on the open
+   document: whatever it creates through ctx->ops is a single undo step, and a non-OK return (or a
+   failed operation) rolls all of it back. `path` is a host file path in UTF-8 (the VFS arrives in
+   0.9.6; until then the importer reads the file itself). ctx->world is the NodeId of the world block.
+   ctx->report(sink, text) records a message the host shows to the user (the failure reason, or a
+   summary). Everything is borrowed until import() returns. */
+typedef struct apex_import_context {
+    uint32_t struct_size;
+    apex_node_id world;
+    const apex_edit_ops_v1* ops;
+    void* operation;
+    void* sink;
+    apex_status (*report)(void* sink, apex_str message);
+} apex_import_context;
+typedef apex_status (*apex_import_callback)(void* user, apex_str path, const apex_import_context* context);
+typedef struct apex_io_v1 {
+    uint32_t struct_size;
+    apex_status (*register_importer)(void* host, apex_str id, apex_str name, apex_str extensions,
+                                     void* user, apex_import_callback import);
+} apex_io_v1;
+
+/* apex.jobs/1 (0.9.5b): background work with the completion delivered on the editor thread.
+   submit() and cancel() are thread-safe (a job may submit jobs). work() runs on a host worker
+   thread: it may not call any host interface except submit/cancel and the host's log(), and must not
+   touch the document. It should poll ctx->cancelled(ctx->job) during long loops. done() runs on the
+   editor thread, exactly once, with work's status (APEX_ERR_INTERNAL if work threw, APEX_ERR_STATE if
+   the job was cancelled before it started because the host is shutting down), unless the job was
+   cancelled with cancel(): once cancel() returns APEX_OK on the editor thread, done() does not run.
+   `user` must stay valid until done() runs or cancel() succeeds. Pending jobs are cancelled and
+   running ones joined when the host is destroyed, so work() must honour `cancelled`. */
+typedef struct apex_job_context {
+    uint32_t struct_size;
+    void* job;
+    int (*cancelled)(void* job);
+} apex_job_context;
+typedef apex_status (*apex_job_work)(void* user, const apex_job_context* context);
+typedef void (*apex_job_done)(void* user, apex_status status);
+typedef struct apex_jobs_v1 {
+    uint32_t struct_size;
+    apex_status (*submit)(void* host, void* user, apex_job_work work, apex_job_done done, uint64_t* job_id);
+    apex_status (*cancel)(void* host, uint64_t job_id); /* APEX_ERR_NOT_FOUND once done() has been delivered */
+} apex_jobs_v1;
+
+/* apex.watch/1 (0.9.5b): file watching. watch() is available during activate and in any callback
+   into the plugin. `path` is an absolute path to a file or a directory (a directory is watched
+   recursively, up to 10000 entries) inside the plugin's own folder or a root the host allows (the game
+   directory). It need not exist yet. on_changed(user, path) runs on the editor thread once per
+   change burst: a save that touches the file several times, or replaces it, is reported once, after
+   the file has been quiet for the host's debounce interval. The host polls, so there is no delivery
+   from a thread other than the editor thread. */
+typedef void (*apex_watch_callback)(void* user, apex_str path);
+typedef struct apex_watch_v1 {
+    uint32_t struct_size;
+    apex_status (*watch)(void* host, apex_str path, void* user, apex_watch_callback on_changed, uint64_t* watch_id);
+    apex_status (*unwatch)(void* host, uint64_t watch_id);
+} apex_watch_v1;
+
 typedef struct apex_host {
     uint32_t struct_size, abi_major, abi_minor;
     void* context;

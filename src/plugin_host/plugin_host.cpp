@@ -1,6 +1,7 @@
 #include "plugin_host/plugin_host.hpp"
 #include "plugin_host/plugin_tool.hpp"
 #include "core/entity_helpers.hpp"
+#include "core/job_pool.hpp"
 #include "core/kv3.hpp"
 #include "core/log.hpp"
 #include "core/strings.hpp"
@@ -12,6 +13,10 @@
 #include <apex/apex_plugin.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <thread>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -171,6 +176,9 @@ struct Host::Impl {
     apex_overlay_v1 overlayApi{};
     apex_helpers_v1 helpersApi{};
     apex_problems_v1 problemsApi{};
+    apex_io_v1 ioApi{};
+    apex_jobs_v1 jobsApi{};
+    apex_watch_v1 watchApi{};
     editor::ProblemRegistry* problems = &editor::mutableProblemRegistry();
     std::vector<OverlayData> overlays;                  // declaration order
     std::map<std::string, std::string, std::less<>> overlayOwner;
@@ -182,6 +190,29 @@ struct Host::Impl {
     std::uint64_t helperState = 0, helperClasses = 0;
     bool helperValid = false;
     UiBackend* uiBackend = nullptr;
+    // apex.io/1
+    struct ImporterEntry { ImporterInfo info; void* user; apex_import_callback import; };
+    std::vector<ImporterEntry> importerEntries;
+    std::vector<ImporterInfo> importerInfos;
+    // apex.jobs/1: thread-safe submission; completions are delivered by drainJobs on the editor thread.
+    std::thread::id mainThread = std::this_thread::get_id();
+    mutable std::mutex jobMutex;
+    std::unique_ptr<JobPool> jobPool;
+    std::map<std::uint64_t, JobHandle> jobHandles;
+    std::uint64_t lastJob = 0;
+    bool jobsClosed = false;
+    static inline thread_local const std::string* jobOwner = nullptr;
+    // apex.watch/1: polled on the editor thread.
+    struct Watch {
+        std::uint64_t id; std::string owner; std::filesystem::path path;
+        void* user; apex_watch_callback fn;
+        std::uint64_t signature = 0; bool pending = false;
+        std::chrono::steady_clock::time_point since{};
+    };
+    std::vector<Watch> watches;
+    std::vector<std::filesystem::path> watchRoots;
+    std::chrono::milliseconds debounce{200};
+    std::uint64_t lastWatch = 0;
     std::string registering;
     std::string callbackOwner;
     std::function<bool(std::string, std::string)> panelRegistrar;
@@ -215,8 +246,12 @@ struct Host::Impl {
         overlayApi = {sizeof(overlayApi), declareOverlay, setOverlay, clearOverlay};
         helpersApi = {sizeof(helpersApi), registerHelper};
         problemsApi = {sizeof(problemsApi), registerProblemCheck};
+        ioApi = {sizeof(ioApi), registerImporter};
+        jobsApi = {sizeof(jobsApi), submitJob, cancelJob};
+        watchApi = {sizeof(watchApi), watchPath, unwatchPath};
     }
     void setError(const char* message) noexcept {
+        if (std::this_thread::get_id() != mainThread) return;  // lastError is editor-thread state
         try { lastError.assign(message, std::min(std::strlen(message), lastError.capacity())); } catch (...) { }
     }
     static apex_status internal(void* c) noexcept {
@@ -237,6 +272,9 @@ struct Host::Impl {
         if (view(name) == "apex.overlay/1") return &self(context).overlayApi;
         if (view(name) == "apex.helpers/1") return &self(context).helpersApi;
         if (view(name) == "apex.problems/1") return &self(context).problemsApi;
+        if (view(name) == "apex.io/1") return &self(context).ioApi;
+        if (view(name) == "apex.jobs/1") return &self(context).jobsApi;
+        if (view(name) == "apex.watch/1") return &self(context).watchApi;
         return nullptr;
     }
     static apex_status selectionInfo(void* c, uint32_t* mode, size_t* count) try {
@@ -360,11 +398,15 @@ struct Host::Impl {
             e.tx.rebuildSolid(std::get<Handle<document::Solid>>(*h), *poly);
         });
     }
+    static const apex_edit_ops_v1& editOps() {
+        static const apex_edit_ops_v1 ops{sizeof(ops), setKey, destroyNode, createSolid,
+                                           reparentNode, setSideKey, removeDisplacement, rebuildSolid};
+        return ops;
+    }
     static apex_status applyEdit(void* c, apex_str label, apex_str coalesce, void* user, apex_edit_callback callback) try {
         auto& s = self(c);
         if (!s.session || !s.session->document() || !callback) return APEX_ERR_STATE;
-        static const apex_edit_ops_v1 ops{sizeof(ops), setKey, destroyNode, createSolid,
-                                           reparentNode, setSideKey, removeDisplacement, rebuildSolid};
+        const auto& ops = editOps();
         apex_status failure = APEX_OK;
         try {
             s.session->edit(std::string(view(label)), [&](document::Transaction& tx) {
@@ -739,11 +781,172 @@ struct Host::Impl {
         s.pending.back().problemCheck = check;
         return APEX_OK;
     } catch (...) { return internal(c); }
+
+    // ---- apex.io/1, apex.jobs/1, apex.watch/1 (0.9.5b) ----
+    static apex_status registerImporter(void* c, apex_str id, apex_str name, apex_str extensions, void* user,
+                                        apex_import_callback fn) try {
+        auto& s = self(c);
+        if (s.registering.empty()) return APEX_ERR_STATE;
+        if (!fn || !inNamespace(s.registering, view(id)) || view(name).empty()) {
+            s.setError("importer id outside plugin namespace, missing name or callback");
+            return APEX_ERR_INVALID;
+        }
+        if (std::ranges::any_of(s.importerEntries, [&](const auto& e) { return e.info.id == view(id); })) {
+            s.setError("duplicate importer");
+            return APEX_ERR_INVALID;
+        }
+        ImporterInfo info;
+        info.id = std::string(view(id));
+        info.name = std::string(view(name));
+        info.owner = s.registering;
+        const auto list = view(extensions);
+        for (std::size_t begin = 0; begin <= list.size();) {
+            auto end = list.find(',', begin);
+            if (end == std::string_view::npos) end = list.size();
+            auto ext = trim(list.substr(begin, end - begin));
+            if (ext.starts_with('.')) ext.remove_prefix(1);
+            if (!ext.empty()) {
+                if (!std::ranges::all_of(ext, [](unsigned char ch) { return std::isalnum(ch) || ch == '_' || ch == '-'; })) {
+                    s.setError("invalid importer extension");
+                    return APEX_ERR_INVALID;
+                }
+                info.extensions.push_back(toLowerAscii(ext));
+            }
+            begin = end + 1;
+        }
+        if (info.extensions.empty()) { s.setError("importer needs at least one extension"); return APEX_ERR_INVALID; }
+        s.importerEntries.push_back({info, user, fn});
+        s.importerInfos.push_back(std::move(info));
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    struct ImportSink { std::vector<std::string> messages; };
+    static apex_status reportImport(void* sink, apex_str message) noexcept {
+        try {
+            auto& out = static_cast<ImportSink*>(sink)->messages;
+            if (out.size() >= 100) return APEX_ERR_STATE;
+            out.emplace_back(view(message).substr(0, 1024));
+            return APEX_OK;
+        } catch (...) { return APEX_ERR_INTERNAL; }
+    }
+    static void finishJob(Impl& s, const std::weak_ptr<bool>& life, std::uint64_t id, void* user, apex_job_done done,
+                          const std::string& owner, apex_status status) {
+        if (life.expired()) return;
+        { std::lock_guard lock(s.jobMutex); s.jobHandles.erase(id); }
+        Mark mark(s.breadcrumb, owner, "job.done");
+        const auto previous = std::exchange(s.callbackOwner, owner);
+        try { done(user, status); } catch (...) { s.lastError = "exception in job completion"; }
+        s.callbackOwner = previous;
+    }
+    static apex_status submitJob(void* c, void* user, apex_job_work work, apex_job_done done, uint64_t* out) try {
+        auto& s = self(c);
+        if (!work || !done || !out) return APEX_ERR_INVALID;
+        // The owner names the plugin in the crash breadcrumb. A worker thread inherits its job's owner.
+        std::string owner = std::this_thread::get_id() == s.mainThread ? s.actingOwner() : (jobOwner ? *jobOwner : std::string{});
+        if (owner.empty()) owner = "jobs";
+        std::lock_guard lock(s.jobMutex);
+        if (s.jobsClosed) return APEX_ERR_STATE;
+        if (!s.jobPool) s.jobPool = std::make_unique<JobPool>(std::clamp(std::thread::hardware_concurrency() / 2u, 1u, 4u));
+        const auto id = ++s.lastJob;
+        std::weak_ptr<bool> life = s.lifetime;
+        auto handle = s.jobPool->submit(Priority::Normal,
+            [life, user, work, owner](CancelToken token) -> apex_status {
+                if (life.expired() || token.cancelled()) return APEX_ERR_STATE;
+                const auto* previous = std::exchange(jobOwner, &owner);
+                apex_status status = APEX_ERR_INTERNAL;
+                try {
+                    const apex_job_context context{sizeof(context), &token,
+                        [](void* job) -> int { return static_cast<CancelToken*>(job)->cancelled() ? 1 : 0; }};
+                    status = work(user, &context);
+                } catch (...) { status = APEX_ERR_INTERNAL; }
+                jobOwner = previous;
+                return status;
+            },
+            [&s, life, id, user, done, owner](apex_status status) { finishJob(s, life, id, user, done, owner, status); });
+        s.jobHandles.emplace(id, std::move(handle));
+        *out = id;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status cancelJob(void* c, uint64_t id) try {
+        auto& s = self(c);
+        std::lock_guard lock(s.jobMutex);
+        const auto found = s.jobHandles.find(id);
+        if (found == s.jobHandles.end()) return APEX_ERR_NOT_FOUND;
+        found->second.cancel();
+        s.jobHandles.erase(found);
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static bool within(const std::filesystem::path& root, const std::filesystem::path& path) {
+        const auto relative = path.lexically_relative(root);
+        return !relative.empty() && *relative.begin() != "..";
+    }
+    static std::filesystem::path canonical(const std::filesystem::path& path) {
+        std::error_code ec;
+        auto result = std::filesystem::weakly_canonical(path, ec);
+        return ec ? path.lexically_normal() : result;
+    }
+    // A cheap fingerprint of a file or a directory tree: it changes when a size, a modification time, a
+    // name or existence changes. Order-independent, so directory iteration order does not matter.
+    static std::uint64_t signatureOf(const std::filesystem::path& path) {
+        constexpr std::uint64_t kMissing = 0x9e3779b97f4a7c15ull;
+        const auto mix = [](std::uint64_t h, std::uint64_t v) { return (h ^ v) * 1099511628211ull + 0x9e3779b97f4a7c15ull; };
+        const auto entry = [&](const std::filesystem::path& p, const std::filesystem::path& rel, bool directory) {
+            std::error_code ec;
+            std::uint64_t h = std::hash<std::string>{}(rel.generic_string());
+            if (!directory) {
+                h = mix(h, std::filesystem::file_size(p, ec));
+                ec.clear();
+            }
+            h = mix(h, static_cast<std::uint64_t>(std::filesystem::last_write_time(p, ec).time_since_epoch().count()));
+            return h;
+        };
+        std::error_code ec;
+        const auto status = std::filesystem::status(path, ec);
+        if (ec || !std::filesystem::exists(status)) return kMissing;
+        if (!std::filesystem::is_directory(status)) return entry(path, {}, false);
+        std::uint64_t total = 1, seen = 0;
+        for (std::filesystem::recursive_directory_iterator it(path, std::filesystem::directory_options::skip_permission_denied, ec), end;
+             !ec && it != end && seen < 10000; it.increment(ec), ++seen) {
+            std::error_code inner;
+            total += entry(it->path(), it->path().lexically_relative(path), it->is_directory(inner));
+        }
+        return total;
+    }
+    static apex_status watchPath(void* c, apex_str path, void* user, apex_watch_callback fn, uint64_t* out) try {
+        auto& s = self(c);
+        const auto owner = s.actingOwner();
+        if (owner.empty() || std::this_thread::get_id() != s.mainThread) return APEX_ERR_STATE;
+        if (!fn || !out || view(path).empty()) return APEX_ERR_INVALID;
+        const std::filesystem::path requested{std::string(view(path))};
+        if (!requested.is_absolute()) { s.setError("watch path must be absolute"); return APEX_ERR_INVALID; }
+        const auto target = canonical(requested);
+        bool allowed = std::ranges::any_of(s.watchRoots, [&](const auto& root) { return within(root, target); });
+        for (const auto& plugin : s.plugins)
+            if (plugin.id == owner && within(canonical(plugin.folder), target)) allowed = true;
+        if (!allowed) { s.setError("watch path is outside the plugin folder and the game directory"); return APEX_ERR_INVALID; }
+        if (s.watches.size() >= 256) { s.setError("too many watches"); return APEX_ERR_STATE; }
+        Watch watch{++s.lastWatch, owner, target, user, fn};
+        watch.signature = signatureOf(target);
+        *out = watch.id;
+        s.watches.push_back(std::move(watch));
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status unwatchPath(void* c, uint64_t id) try {
+        auto& s = self(c);
+        const auto found = std::ranges::find(s.watches, id, &Watch::id);
+        if (found == s.watches.end()) return APEX_ERR_NOT_FOUND;
+        if (found->owner != s.actingOwner()) { s.setError("watch belongs to another plugin"); return APEX_ERR_INVALID; }
+        s.watches.erase(found);
+        return APEX_OK;
+    } catch (...) { return internal(c); }
     // Drops what a plugin registered directly when its activation failed.
     void forgetOwner(const std::string& owner) {
         std::erase_if(overlays, [&](const OverlayData& o) { const auto f = overlayOwner.find(o.id); return f != overlayOwner.end() && f->second == owner; });
         std::erase_if(overlayOwner, [&](const auto& item) { return item.second == owner; });
         std::erase_if(helperRegistrations, [&](const auto& item) { return item.second.owner == owner; });
+        std::erase_if(importerEntries, [&](const auto& item) { return item.info.owner == owner; });
+        importerInfos.clear();
+        for (const auto& item : importerEntries) importerInfos.push_back(item.info);
+        std::erase_if(watches, [&](const Watch& w) { return w.owner == owner; });
         helperValid = false;
         ++overlayRevision;
     }
@@ -961,6 +1164,12 @@ struct Host::Impl {
         if (!file) throw std::runtime_error("cannot save plugin enabled state");
     }
     ~Impl() {
+        // Jobs first: join workers (and discard completions) while the plugins' code is still mapped.
+        {
+            std::lock_guard lock(jobMutex);
+            jobsClosed = true;
+        }
+        jobPool.reset();
         // Destroy plugin-owned instances while their code and host APIs are live.
         for (const auto& weak : toolRetirements) if (auto retire = weak.lock()) (*retire)();
         lifetime.reset();
@@ -1051,6 +1260,94 @@ void Host::activate(bool safeMode) {
         impl_->commitRegistrations();
         impl_->loaded.push_back({i, lib, plugin}); item.loaded = true;
     }
+}
+const std::vector<ImporterInfo>& Host::importers() const { return impl_->importerInfos; }
+const ImporterInfo* Host::importerFor(const std::filesystem::path& path) const {
+    auto ext = path.extension().string();
+    if (ext.starts_with('.')) ext.erase(0, 1);
+    ext = toLowerAscii(ext);
+    for (const auto& info : impl_->importerInfos)
+        if (std::ranges::find(info.extensions, ext) != info.extensions.end()) return &info;
+    return nullptr;
+}
+ImportResult Host::importFile(std::string_view importerId, const std::filesystem::path& path) {
+    auto& s = *impl_;
+    ImportResult result;
+    Impl::ImportSink sink;
+    try {
+        const auto found = std::ranges::find_if(s.importerEntries, [&](const auto& e) { return e.info.id == importerId; });
+        if (found == s.importerEntries.end()) { result.message = "unknown importer"; return result; }
+        if (!s.session || !s.session->document()) { result.message = "no map is open"; return result; }
+        auto& doc = *s.session->document();
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(path, ec)) { result.message = "file not found: " + path.string(); return result; }
+        document::NodeId world = 0;
+        for (const auto root : doc.roots()) {
+            const auto handle = doc.handle(root);
+            const auto* node = handle ? doc.get(*handle) : nullptr;
+            if (node && node->block && node->block->key() == "world") { world = root; break; }
+        }
+        if (!world) { result.message = "the map has no world block"; return result; }
+        const auto utf8 = path.generic_u8string();
+        const std::string text(reinterpret_cast<const char*>(utf8.data()), utf8.size());
+        const auto entry = *found;
+        s.session->edit("Import " + entry.info.name, [&](document::Transaction& tx) {
+            Impl::EditContext context{tx, doc, s};
+            const apex_import_context native{sizeof(native), world, &Impl::editOps(), &context, &sink, &Impl::reportImport};
+            apex_status status = APEX_ERR_INTERNAL;
+            const bool ran = s.guardedUi(entry.info.owner, "import", [&] { status = entry.import(entry.user, string(text), &native); });
+            if (!ran) throw std::runtime_error("the importer threw an exception");
+            if (context.failure != APEX_OK) throw std::runtime_error("an import operation failed: " + s.lastError);
+            if (status != APEX_OK) throw std::runtime_error("the importer failed");
+        });
+        result.ok = true;
+    } catch (const std::exception& e) {
+        result.message = e.what();
+    } catch (...) { result.message = "import failed"; }
+    for (const auto& line : sink.messages) result.message += (result.message.empty() ? "" : "; ") + line;
+    return result;
+}
+std::size_t Host::drainJobs() {
+    auto& s = *impl_;
+    if (std::this_thread::get_id() != s.mainThread) return 0;
+    JobPool* pool = nullptr;
+    { std::lock_guard lock(s.jobMutex); pool = s.jobPool.get(); }
+    return pool ? pool->drainCompletions() : 0;
+}
+std::size_t Host::pendingJobs() const {
+    std::lock_guard lock(impl_->jobMutex);
+    return impl_->jobHandles.size();
+}
+void Host::addWatchRoot(const std::filesystem::path& root) { impl_->watchRoots.push_back(Impl::canonical(root)); }
+void Host::setWatchDebounce(std::chrono::milliseconds quiet) { impl_->debounce = quiet; }
+bool Host::hasWatches() const { return !impl_->watches.empty(); }
+std::size_t Host::pollWatches(std::chrono::steady_clock::time_point now) {
+    auto& s = *impl_;
+    if (std::this_thread::get_id() != s.mainThread) return 0;
+    std::vector<std::uint64_t> ready;
+    for (auto& watch : s.watches) {
+        std::uint64_t signature = 0;
+        try { signature = Impl::signatureOf(watch.path); } catch (...) { continue; }
+        if (signature != watch.signature) {
+            watch.signature = signature;
+            watch.pending = true;
+            watch.since = now;   // a burst of writes keeps pushing delivery back
+        } else if (watch.pending && now - watch.since >= s.debounce) {
+            watch.pending = false;
+            ready.push_back(watch.id);
+        }
+    }
+    std::size_t delivered = 0;
+    for (const auto id : ready) {
+        const auto found = std::ranges::find(s.watches, id, &Impl::Watch::id);
+        if (found == s.watches.end()) continue;   // unwatched by an earlier callback
+        const auto watch = *found;
+        const auto text = watch.path.generic_u8string();
+        const std::string path(reinterpret_cast<const char*>(text.data()), text.size());
+        s.guardedUi(watch.owner, "watch.changed", [&] { watch.fn(watch.user, string(path)); });
+        ++delivered;
+    }
+    return delivered;
 }
 void Host::useProblemRegistry(editor::ProblemRegistry& registry) { impl_->problems = &registry; }
 const std::vector<OverlayData>& Host::overlays() const { return impl_->overlays; }
