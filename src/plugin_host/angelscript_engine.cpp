@@ -71,7 +71,7 @@ struct State {
     std::set<Instance*> instances;
     std::weak_ptr<State> weak;   // set by the engine that owns this state; tool instances keep it alive
 
-    ~State() { shutdown(); }
+    ~State();   // defined after ToolType: Clang instantiates the member destructors here otherwise
     // Drops every reference the engine holds and destroys it. Idempotent; tool instances that outlive this
     // (they hold the State alive) are left inert: their script objects are released here.
     void shutdown();
@@ -330,6 +330,8 @@ struct Instance {
     }
     bool call(asIScriptFunction* f) { return call(f, kCallBudget, noBind, noTake); }
 };
+State::~State() { shutdown(); }
+
 void State::shutdown() {
     if (!engine) return;
     for (auto* instance : instances) { if (instance->object) { instance->object->Release(); instance->object = nullptr; } }
