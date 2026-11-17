@@ -255,9 +255,9 @@ def main():
             print("\n".join(dump_lines(sprites, objects)))
         if args.fixture:
             FIXTURE.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(work / "detail_probe_0.vmf", FIXTURE / "detail_probe.vmf")
+            (FIXTURE / "detail_probe.vmf").write_text("// Apex-authored test fixture (MIT). Detail-prop probe map.\n" + (work / "detail_probe_0.vmf").read_text())
             (FIXTURE / "detail.vbsp").write_text(DETAIL_VBSP)
-            (FIXTURE / "dprp.txt").write_text("\n".join(dump_lines(sprites, objects)) + "\n")
+            (FIXTURE / "dprp.txt").write_text("# Apex-authored test fixture (MIT): Windows vbsp detail-prop dump.\n" + "\n".join(dump_lines(sprites, objects)) + "\n")
             print(f"wrote {FIXTURE}")
     finally:
         if args.keep:
