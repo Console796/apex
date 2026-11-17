@@ -489,6 +489,18 @@ Keymap::Keymap(const Preset& preset, const Actions& actions) {
             for (const auto& chord : *keys) entries_.emplace(std::pair{binding.context, chord}, id);
         }
     }
+    for (const auto& action : actions.entries()) {
+        if (!action.id.starts_with("plugin.") || preset.bindings.contains(action.id)) continue;
+        const auto suggestion = action.suggestedBindings.find(preset.name);
+        if (suggestion == action.suggestedBindings.end()) continue;
+        const auto chord = KeyChord::parse(suggestion->second);
+        if (!chord) { suggestionConflicts_[action.id] = "invalid suggested chord"; continue; }
+        const auto contextIt = action.suggestedContexts.find(preset.name);
+        const auto context = contextIt == action.suggestedContexts.end() ? BindingContext::Always : BindingContext::forTool(contextIt->second);
+        const auto [it, inserted] = entries_.emplace(std::pair{context, *chord}, action.id);
+        if (!inserted) suggestionConflicts_[action.id] = "conflicts with " + it->second;
+        else if (context.toolId.empty()) suggestedChords_.emplace(action.id, *chord);
+    }
 }
 
 std::optional<ActionId> Keymap::lookup(const KeyChord& chord, BindingContext context) const {

@@ -54,6 +54,78 @@ typedef struct apex_registration_v1 {
     apex_status (*panel)(void* host, apex_str id, apex_str title);
 } apex_registration_v1;
 
+/* All pointers in tool results are borrowed until the next callback into that tool.
+   View callbacks are valid only for the duration of the input callback. */
+typedef struct apex_vec3 { double x, y, z; } apex_vec3;
+typedef struct apex_plane { apex_vec3 normal; double distance; } apex_plane;
+typedef struct apex_ray { apex_vec3 origin, direction; } apex_ray;
+enum apex_input_kind { APEX_INPUT_PRESS, APEX_INPUT_RELEASE, APEX_INPUT_MOVE, APEX_INPUT_KEY_DOWN,
+                       APEX_INPUT_KEY_UP, APEX_INPUT_LEAVE, APEX_INPUT_CANCEL, APEX_INPUT_CANCEL_POINTER };
+enum apex_pointer_button { APEX_BUTTON_NONE, APEX_BUTTON_LEFT, APEX_BUTTON_RIGHT, APEX_BUTTON_MIDDLE };
+typedef struct apex_tool_event {
+    uint32_t struct_size, kind, button, modifiers;
+    uint64_t source;
+    double x, y;
+    apex_str key;
+    uint32_t flags;
+} apex_tool_event;
+typedef struct apex_pick { apex_node_id node; int32_t side; apex_vec3 point, normal; } apex_pick;
+typedef struct apex_tool_view {
+    uint32_t struct_size;
+    apex_ray ray;
+    double width, height;
+    apex_vec3 camera_position, camera_angles, camera_forward, camera_up;
+    double fov_y_degrees, ortho_height;
+    uint32_t orthographic;
+    void* context;
+    apex_status (*ray_pick)(void*, apex_ray, apex_pick*);
+    apex_status (*rect_frustum)(void*, double, double, double, double, apex_plane out[4]);
+    apex_status (*world_to_pixel)(void*, apex_vec3, double* x, double* y);
+    apex_status (*snap)(void*, apex_ray, apex_vec3*);
+} apex_tool_view;
+typedef struct apex_tool_segment { apex_vec3 a, b; float rgba[4], width; } apex_tool_segment;
+typedef struct apex_tool_ghost { const apex_plane* planes; size_t plane_count; apex_str material; float opacity; } apex_tool_ghost;
+typedef struct apex_tool_visual {
+    uint32_t struct_size;
+    const apex_tool_segment* segments; size_t segment_count;
+    const apex_tool_ghost* ghosts; size_t ghost_count;
+} apex_tool_visual;
+typedef struct apex_tool_parameter {
+    apex_str id, label; uint32_t kind;
+    double value, minimum, maximum;
+    const apex_str* choices; size_t choice_count;
+} apex_tool_parameter;
+typedef struct apex_tool_readout {
+    uint32_t struct_size;
+    apex_str detail, status;
+    uint32_t warn;
+    const apex_tool_parameter* parameters; size_t parameter_count;
+} apex_tool_readout;
+typedef struct apex_tool_callbacks {
+    uint32_t struct_size;
+    apex_callback activate, deactivate;
+    int (*input)(void*, const apex_tool_event*, const apex_tool_view*);
+    apex_status (*visual)(void*, uint64_t source, apex_tool_visual*);
+    apex_status (*readout)(void*, apex_tool_readout*);
+    int (*set_parameter)(void*, apex_str id, double value);
+    int (*perform)(void*, apex_str action);
+    apex_callback cancel, document_changed;
+    void (*forget)(void*, uint64_t source);
+} apex_tool_callbacks;
+typedef struct apex_tools_v1 {
+    uint32_t struct_size;
+    apex_status (*register_tool)(void*, apex_str id, apex_str name, apex_str description,
+                                 void* user, const apex_tool_callbacks* callbacks);
+} apex_tools_v1;
+/* Empty tool_id means the global context. */
+typedef struct apex_action_suggestion { apex_str preset, chord, tool_id; } apex_action_suggestion;
+typedef struct apex_actions_v1 {
+    uint32_t struct_size;
+    apex_status (*register_action)(void*, apex_str id, apex_str name, apex_str description,
+                                   void* user, apex_callback invoke,
+                                   const apex_action_suggestion* suggestions, size_t suggestion_count);
+} apex_actions_v1;
+
 typedef struct apex_host {
     uint32_t struct_size, abi_major, abi_minor;
     void* context;

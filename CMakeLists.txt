@@ -159,7 +159,7 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
                          src/viewport/layout.cpp src/viewport/map_views.cpp src/viewport/workspace.cpp src/viewport/pick_math.cpp
            DEPS apex_render apex_document)
 
-apex_layer(plugin_host SOURCES src/plugin_host/plugin_host.cpp
+apex_layer(plugin_host SOURCES src/plugin_host/plugin_host.cpp src/plugin_host/plugin_tool.cpp
            DEPS apex_editor apex_assets apex_render)
 target_include_directories(apex_plugin_host PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(apex_plugin_host PRIVATE ${CMAKE_DL_LIBS})
@@ -177,6 +177,20 @@ set_target_properties(hello_tool PROPERTIES PREFIX ""
 file(GENERATE OUTPUT "${_hello_dir}/plugin.kv3" CONTENT
 "<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
 { id = \"hello\" name = \"Hello tool\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } entry = { \"linux-x86_64\" = \"$<TARGET_FILE_NAME:hello_tool>\" \"windows-x86_64\" = \"$<TARGET_FILE_NAME:hello_tool>\" } }
+")
+
+add_library(polygon_tool MODULE examples/polygon-tool/polygon.cpp)
+target_include_directories(polygon_tool PRIVATE ${PROJECT_SOURCE_DIR}/include)
+if(CMAKE_CONFIGURATION_TYPES)
+  set(_polygon_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/polygon")
+else()
+  set(_polygon_dir "${CMAKE_BINARY_DIR}/plugins/polygon")
+endif()
+set_target_properties(polygon_tool PROPERTIES PREFIX ""
+  LIBRARY_OUTPUT_DIRECTORY "${_polygon_dir}" RUNTIME_OUTPUT_DIRECTORY "${_polygon_dir}")
+file(GENERATE OUTPUT "${_polygon_dir}/plugin.kv3" CONTENT
+"<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
+{ id = \"polygon\" name = \"Polygon tool\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } entry = { \"linux-x86_64\" = \"$<TARGET_FILE_NAME:polygon_tool>\" \"windows-x86_64\" = \"$<TARGET_FILE_NAME:polygon_tool>\" } }
 ")
 
 if(APEX_BUILD_APP)
@@ -235,7 +249,7 @@ if(APEX_BUILD_APP)
   endif()
   add_executable(apex src/app/main.cpp)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
-  add_dependencies(apex hello_tool)
+  add_dependencies(apex hello_tool polygon_tool)
   if(WIN32 AND TARGET Qt6::windeployqt)
     # Put the Qt DLLs and plugins next to apex.exe so the build folder runs on its own, the same
     # set tools/package.py ships in the zip.

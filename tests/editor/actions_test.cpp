@@ -263,3 +263,30 @@ TEST_CASE("action registry keeps built-ins first and freezes registration") {
     registry.freeze();
     CHECK_FALSE(registry.add({"plugin.example.other", "Other", "Plugin", "Other"}));
 }
+
+TEST_CASE("suggested plugin bindings report conflicts and never override the user") {
+    ActionRegistry actions;
+    Action conflict{"plugin.example.conflict", "Conflict", "Plugin", "Test action"};
+    conflict.suggestedBindings.emplace("Hammer", "Ctrl+Z");
+    REQUIRE(actions.add(std::move(conflict)));
+    Action available{"plugin.example.available", "Available", "Plugin", "Test action"};
+    available.suggestedBindings.emplace("Hammer", "F24");
+    REQUIRE(actions.add(std::move(available)));
+    Action scoped{"plugin.example.scoped", "Scoped", "Plugin", "Test action"};
+    scoped.suggestedBindings.emplace("Hammer", "F23");
+    scoped.suggestedContexts.emplace("Hammer", "plugin.example.tool");
+    REQUIRE(actions.add(std::move(scoped)));
+    auto preset = hammerPreset();
+    Keymap suggested(preset, actions);
+    CHECK(suggested.lookup(chord("Ctrl+Z")) == "edit.undo");
+    CHECK(suggested.lookup(chord("F24")) == "plugin.example.available");
+    CHECK_FALSE(suggested.lookup(chord("F23")));
+    CHECK(suggested.lookup(chord("F23"), BindingContext::forTool("plugin.example.tool")) == "plugin.example.scoped");
+    REQUIRE(suggested.suggestionConflicts().contains("plugin.example.conflict"));
+    CHECK(suggested.suggestionConflicts().at("plugin.example.conflict").find("edit.undo") != std::string::npos);
+    preset.bindings["plugin.example.available"] = Binding{std::vector<KeyChord>{chord("F23")}};
+    Keymap user(preset, actions);
+    CHECK(user.lookup(chord("F23")) == "plugin.example.available");
+    CHECK_FALSE(user.lookup(chord("F24")));
+    CHECK_FALSE(preset.bindings.contains("plugin.example.conflict"));
+}

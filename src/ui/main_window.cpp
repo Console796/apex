@@ -672,8 +672,25 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
     // Native pane key delivery uses this same session keymap.
     for (const auto& [id, action] : editorActions_) {
         QList<QKeySequence> sequences;
+        if (id.starts_with("plugin.")) {
+            if (const auto* entry = editor::actionRegistry().find(id)) action->setToolTip(fromStd(entry->description));
+        }
         const auto bindingIt = session_.preset().bindings.find(id);
-        if (bindingIt == session_.preset().bindings.end()) { action->setShortcuts({}); continue; }
+        if (bindingIt == session_.preset().bindings.end()) {
+            const auto suggestion = session_.keymap().suggestedChords().find(id);
+            if (suggestion == session_.keymap().suggestedChords().end()) {
+                action->setShortcuts({});
+                if (const auto conflict = session_.keymap().suggestionConflicts().find(id);
+                    conflict != session_.keymap().suggestionConflicts().end())
+                    action->setToolTip(fromStd(conflict->second));
+            }
+            else {
+                action->setShortcut(keySequence(suggestion->second));
+                action->setShortcutContext(!suggestion->second.ctrl && !suggestion->second.alt
+                                               ? Qt::WidgetShortcut : Qt::WindowShortcut);
+            }
+            continue;
+        }
         const auto& binding = bindingIt->second;
         const bool transformAction = isPaneKeyAction(id);
         const bool toolScoped = !binding.context.toolId.empty();

@@ -191,6 +191,8 @@ void registerEditorActionCommands(CommandRegistry& registry, const std::map<edit
             command.category = QString::fromStdString(entry->category);
             command.description = QString::fromStdString(entry->description);
             command.shortcut = shortcutText(session.preset(), id);
+            if (const auto it = session.keymap().suggestedChords().find(id); it != session.keymap().suggestedChords().end())
+                command.shortcut = keySequence(it->second).toString(QKeySequence::NativeText);
             command.enabled = [action] { return action->isEnabled(); };
             if (action->isCheckable()) command.checked = [action] { return std::optional<bool>(action->isChecked()); };
             command.run = [action] { action->trigger(); };

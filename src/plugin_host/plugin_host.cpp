@@ -1,4 +1,5 @@
 #include "plugin_host/plugin_host.hpp"
+#include "plugin_host/plugin_tool.hpp"
 #include "core/kv3.hpp"
 #include "core/log.hpp"
 #include "document/document.hpp"
@@ -147,6 +148,8 @@ struct Host::Impl {
     apex_host host{};
     apex_document_v1 documentApi{};
     apex_registration_v1 registrationApi{};
+    apex_tools_v1 toolsApi{};
+    apex_actions_v1 actionsApi{};
     std::string registering;
     std::function<bool(std::string, std::string)> panelRegistrar;
     struct Registration {
@@ -154,6 +157,9 @@ struct Host::Impl {
         std::string id, name, description, owner;
         void* user;
         apex_callback first, second;
+        bool extended = false;
+        apex_tool_callbacks callbacks{};
+        std::map<std::string, std::string, std::less<>> suggestions, suggestionContexts;
     };
     std::vector<Registration> pending;
     Impl(std::filesystem::path s, std::filesystem::path b, std::function<void(std::string_view)> log)
@@ -163,11 +169,15 @@ struct Host::Impl {
         host = {sizeof(host), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, this, interface, writeLog, error};
         documentApi = {sizeof(documentApi), info, rootAt, node, childAt, keyAt};
         registrationApi = {sizeof(registrationApi), registerAction, registerTool, registerPanel};
+        toolsApi = {sizeof(toolsApi), registerToolV1};
+        actionsApi = {sizeof(actionsApi), registerActionV1};
     }
     static Impl& self(void* context) { return *static_cast<Impl*>(context); }
     static const void* interface(void* context, apex_str name) {
         if (view(name) == "apex.document/1") return &self(context).documentApi;
         if (view(name) == "apex.registration/1") return &self(context).registrationApi;
+        if (view(name) == "apex.tools/1") return &self(context).toolsApi;
+        if (view(name) == "apex.actions/1") return &self(context).actionsApi;
         return nullptr;
     }
     static apex_status registerItem(void* context, Registration::Kind kind, apex_str id, apex_str name,
@@ -199,6 +209,39 @@ struct Host::Impl {
     static apex_status registerTool(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback on, apex_callback off) {
         return registerItem(c, Registration::Kind::Tool, id, name, desc, user, on, off);
     }
+    static apex_status registerActionV1(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback fn,
+                                        const apex_action_suggestion* suggestions, size_t count) {
+        if (count > 64 || (count && !suggestions)) return APEX_ERR_INVALID;
+        const auto result = registerItem(c, Registration::Kind::Action, id, name, desc, user, fn, nullptr);
+        if (result != APEX_OK) return result;
+        auto& item = self(c).pending.back();
+        for (size_t i = 0; i < count; ++i) {
+            if (view(suggestions[i].preset).empty() || !editor::KeyChord::parse(view(suggestions[i].chord))) {
+                self(c).pending.pop_back(); return APEX_ERR_INVALID;
+            }
+            item.suggestions.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].chord)));
+            if (!view(suggestions[i].tool_id).empty())
+                item.suggestionContexts.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].tool_id)));
+        }
+        return APEX_OK;
+    }
+    static apex_status registerToolV1(void* c, apex_str id, apex_str name, apex_str desc, void* user,
+                                      const apex_tool_callbacks* callbacks) {
+        if (!callbacks || callbacks->struct_size < offsetof(apex_tool_callbacks, input) + sizeof(callbacks->input)) return APEX_ERR_INVALID;
+        const auto result = registerItem(c, Registration::Kind::Tool, id, name, desc, user, nullptr, nullptr);
+        if (result != APEX_OK) return result;
+        auto& item = self(c).pending.back(); item.extended = true;
+        item.callbacks.struct_size = sizeof(item.callbacks);
+#define APEX_COPY_TOOL_CALLBACK(field) \
+        if (callbacks->struct_size >= offsetof(apex_tool_callbacks, field) + sizeof(callbacks->field)) \
+            item.callbacks.field = callbacks->field
+        APEX_COPY_TOOL_CALLBACK(activate); APEX_COPY_TOOL_CALLBACK(deactivate);
+        APEX_COPY_TOOL_CALLBACK(input); APEX_COPY_TOOL_CALLBACK(visual); APEX_COPY_TOOL_CALLBACK(readout);
+        APEX_COPY_TOOL_CALLBACK(set_parameter); APEX_COPY_TOOL_CALLBACK(perform); APEX_COPY_TOOL_CALLBACK(cancel);
+        APEX_COPY_TOOL_CALLBACK(document_changed); APEX_COPY_TOOL_CALLBACK(forget);
+#undef APEX_COPY_TOOL_CALLBACK
+        return APEX_OK;
+    }
     static apex_status registerPanel(void* c, apex_str id, apex_str title) {
         return registerItem(c, Registration::Kind::Panel, id, title, {}, nullptr, nullptr, nullptr);
     }
@@ -211,11 +254,21 @@ struct Host::Impl {
         for (const auto& r : pending) {
             if (r.kind == Registration::Kind::Panel) { panelRegistrar(r.id, r.name); continue; }
             const auto callbackFn = [this, owner = r.owner, user = r.user, fn = r.first] { callback(owner, "action", fn, user); };
-            editor::mutableActionRegistry().add({r.id, r.name, "Plugin", r.description},
+            editor::Action action{r.id, r.name, "Plugin", r.description};
+            action.suggestedBindings = r.suggestions;
+            action.suggestedContexts = r.suggestionContexts;
+            editor::mutableActionRegistry().add(std::move(action),
                                                   r.kind == Registration::Kind::Action ? callbackFn : std::function<void()>{});
             if (r.kind == Registration::Kind::Tool) {
                 auto* selfPtr = this;
-                editor::mutableToolRegistry().add(r.id, [selfPtr, r](editor::EditorSession&) {
+                editor::mutableToolRegistry().add(r.id, [selfPtr, r](editor::EditorSession& session) -> std::unique_ptr<editor::Tool> {
+                    if (r.extended) {
+                        auto guard = [selfPtr, owner = r.owner](const char* name, const std::function<void()>& fn) {
+                            Mark mark(selfPtr->breadcrumb, owner, name);
+                            try { fn(); } catch (...) { selfPtr->lastError = "exception in plugin tool callback"; }
+                        };
+                        return std::make_unique<PluginTool>(session, r.id, r.user, r.callbacks, std::move(guard));
+                    }
                     auto on = [selfPtr, r] { selfPtr->callback(r.owner, "tool.activate", r.first, r.user); };
                     auto off = [selfPtr, r] { selfPtr->callback(r.owner, "tool.deactivate", r.second, r.user); };
                     return std::make_unique<RegisteredTool>(r.id, std::move(on), std::move(off));

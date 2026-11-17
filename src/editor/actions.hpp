@@ -20,6 +20,8 @@ struct Action {
     std::string name;
     std::string category;
     std::string description;
+    std::map<std::string, std::string, std::less<>> suggestedBindings{}; // preset name -> chord
+    std::map<std::string, std::string, std::less<>> suggestedContexts{}; // preset name -> tool ID
 };
 
 // Entries retain declaration order, independently of a preset's map order.
@@ -104,11 +106,15 @@ class Keymap {
 public:
     // Throws invalid_argument with validation problems; never resolves conflicts silently.
     explicit Keymap(const Preset& preset, const Actions& actions = actionRegistry());
+    const std::map<ActionId, std::string, std::less<>>& suggestionConflicts() const { return suggestionConflicts_; }
+    const std::map<ActionId, KeyChord, std::less<>>& suggestedChords() const { return suggestedChords_; }
     std::optional<ActionId> lookup(const KeyChord& chord,
                                   BindingContext activeTool = BindingContext::Always) const;
 
 private:
     std::map<std::pair<BindingContext, KeyChord>, ActionId> entries_;
+    std::map<ActionId, std::string, std::less<>> suggestionConflicts_;
+    std::map<ActionId, KeyChord, std::less<>> suggestedChords_;
 };
 
 } // namespace apex::editor
