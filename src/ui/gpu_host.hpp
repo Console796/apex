@@ -3,6 +3,7 @@
 #include <memory>
 #include <map>
 #include <string>
+#include <vector>
 #include <set>
 
 #include <QObject>
@@ -142,6 +143,7 @@ private:
     std::shared_ptr<render::BakedLightmaps> vradMaps_;
     std::vector<std::vector<Vec3>> vradRadiance_;
     assets::GameProfile profile_;
+    std::vector<std::string> loggedOmitted_; // provider mounts already reported as left out of the VRAD gameinfo
     LightmapSource source_ = LightmapSource::Apex;
     bool density_ = false;
     std::vector<std::pair<std::shared_ptr<const document::Document>, DMat4>> bakeInstances_;

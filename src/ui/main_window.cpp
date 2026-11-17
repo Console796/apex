@@ -1,5 +1,6 @@
 #include "ui/plugin_manager.hpp"
 #include "plugin_host/plugin_host.hpp"
+#include "assets/vmt_write.hpp"
 #include "ui/main_window.hpp"
 #include "ui/plugin_ui.hpp"
 #include "ui/plugin_pump.hpp"
@@ -114,6 +115,51 @@ QIcon appIcon() {
 }
 
 namespace {
+// apex.assets/1 over the game content: reads the material index snapshot, writes through Apex's VMT writer
+// (assets::writeVmt, which only writes loose files) and refreshes that one index entry.
+class ContentAssets final : public plugin_host::AssetsBackend {
+public:
+    explicit ContentAssets(GameContent& content) : content_(content) {}
+    void materials(const std::function<bool(const plugin_host::MaterialRecord&)>& visit) override {
+        const auto snapshot = content_.snapshot();
+        if (!snapshot) return;
+        for (const auto& entry : snapshot->entries)
+            if (!visit(record(entry))) return;
+    }
+    std::optional<plugin_host::MaterialRecord> material(std::string_view name) override {
+        const auto snapshot = content_.snapshot();
+        const auto* entry = snapshot ? snapshot->find(name) : nullptr;
+        if (!entry) return std::nullopt;
+        return record(*entry);
+    }
+    plugin_host::AssetsWriteResult writeVmt(std::string_view material, const std::vector<plugin_host::VmtEditRequest>& edits) override {
+        plugin_host::AssetsWriteResult result;
+        const auto vfs = content_.vfs();
+        if (!vfs || !content_.snapshot()) { result.message = "game content is not loaded"; return result; }
+        std::vector<assets::VmtEdit> list;
+        for (const auto& edit : edits)
+            list.push_back({edit.key, edit.remove ? std::nullopt : std::optional<std::string>(edit.value)});
+        auto written = assets::writeVmt(*vfs, material, list);
+        if (!written) {
+            result.message = written.error().what();
+            result.notFound = written.error().code == ErrorCode::NotFound;
+            result.unsupported = written.error().code == ErrorCode::Unsupported;
+            return result;
+        }
+        content_.refreshMaterial(material);
+        result.ok = true;
+        return result;
+    }
+private:
+    plugin_host::MaterialRecord record(const assets::MaterialIndexEntry& entry) const {
+        std::string source = "game";
+        if (entry.mount) source = content_.addonName(*entry.mount).toStdString();
+        else if (const auto vfs = content_.vfs())
+            if (auto label = vfs->mountLabel("materials/" + entry.name + ".vmt"); label.starts_with("provider:")) source = std::move(label);
+        return {entry.name, entry.shader, entry.previewTexture, entry.surfaceProp, std::move(source)};
+    }
+    GameContent& content_;
+};
 int undoCapMiB() {
     bool valid = false;
     const auto value = QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toLongLong(&valid);
@@ -354,7 +400,11 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
-    if (pluginHost_) pluginHost_->setSession(nullptr);
+    if (pluginHost_) {
+        pluginHost_->setSession(nullptr);
+        pluginHost_->setAssetsBackend(nullptr);
+        pluginHost_->setVfsRefreshHandler({});
+    }
     compilePanel_->setDocument(nullptr);
     compilePanel_->setGameContent(nullptr);
     compilePanel_->setEditorSession(nullptr);
@@ -1719,7 +1769,18 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 }
 
 void MainWindow::setPluginHost(plugin_host::Host* host) {
+    if (pluginHost_) { pluginHost_->setAssetsBackend(nullptr); pluginHost_->setVfsRefreshHandler({}); }
     pluginHost_ = host;
+    pluginAssets_.reset();
+    gameContent_->setVfsProviderSource(host ? GameContent::VfsProviderSource([host] { return host->vfsProviders(); })
+                                            : GameContent::VfsProviderSource{});
+    if (host) {
+        pluginAssets_ = std::make_unique<ContentAssets>(*gameContent_);
+        host->setAssetsBackend(pluginAssets_.get());
+        // A provider asked for its files to be listed again: reload the content (providers are re-read by Vfs::load).
+        host->setVfsRefreshHandler([this](std::string_view) { reloadGameContent(); });
+        if (gameContent_->hasProfile() && !host->vfsProviders().empty()) reloadGameContent();
+    }
     delete pluginUi_;
     pluginUi_ = host ? new PluginUi(*host, this) : nullptr;
     delete pluginPump_;

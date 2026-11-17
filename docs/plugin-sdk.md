@@ -1,6 +1,6 @@
 # Apex plugin SDK (DRAFT)
 
-> **Status: draft for 0.9.9.** Written against the ABI through 0.9.5a. 0.9.5b–0.9.8 add more interfaces. Sections
+> **Status: draft for 0.9.9.** Written against the ABI through 0.9.6. 0.9.7 and 0.9.8 add more interfaces. Sections
 > marked *(pending)* will be filled in as those land. The ABI is frozen at the 0.9 release; until then
 > anything here may change. See `docs/plans/plugins.md` for the design rationale.
 
@@ -269,9 +269,9 @@ transaction; returning anything but `APEX_OK`, throwing, or a failing operation 
 leaves no undo entry. Importers run on the editor thread. Exporters, and importing into a new document, are not
 part of this interface.
 
-> **Files.** Until the virtual file system arrives (0.9.6) the importer receives a plain host file path and
-> reads it itself (`std::ifstream`). Once the VFS lands, paths that name game content will go through it; the
-> interface will gain a context field for that and keep this one.
+> **Files.** The importer receives a plain host file path (anything the user picked, not necessarily game
+> content) and reads it itself (`std::ifstream`). Importers do not go through `apex.vfs/1`; that interface is
+> for serving files *into* the game's virtual file system, not for reading arbitrary paths.
 
 ### 4.10 `apex.jobs/1`: background work
 
@@ -306,9 +306,55 @@ Callbacks may call `unwatch`. Polling means a very coarse filesystem mtime (1 to
 two saves made within that resolution into one delivery. `Host::pollWatches()` must be called regularly (the Qt
 shell uses the same `PluginPump` timer).
 
-### 4.12 Later interfaces *(pending)*
+### 4.12 `apex.vfs/1`: serve files into the game's file system
 
-VFS and assets (0.9.6), scripts (0.9.7), pies and themes (0.9.8).
+`register_provider(host, id, name, provider, position)` is available only during `activate`. `id` is
+`plugin.<plugin>.<name>`; at most 16 providers exist in a session; a duplicate id returns `APEX_ERR_INVALID`; a
+call after `activate` returns `APEX_ERR_STATE`. The provider becomes a mount of the editor's virtual file system
+(Vfs), next to the game, its addons and its archives, so what it serves reaches the material browser, thumbnails,
+model and texture loading and the 3D view like any other file.
+
+- **Order.** Earlier mounts win. `position` is `first`, `last` (the default), `before` or `after` an anchor, a
+  case-insensitive substring of another mount's folder or archive path. An anchor that matches nothing places the
+  provider last and is logged. Providers at the same position keep registration order.
+- **Calls.** `list(user, file_sink)` adds every file the provider has (relative paths, `/` separators, any case; at
+  most 200,000 paths of 1,024 bytes each). `refresh(user)` is optional and runs before each listing. `open(user,
+  path, data_sink)` writes the file's bytes with `data_sink->write`; stop at `data_sink->max_bytes`. Apex lists
+  once per load or refresh and then answers `exists`, `list` and directory walks from that index, so only `open`
+  reaches your code afterwards.
+- **Threads.** The host calls providers from worker threads, concurrently (`open` may run on several threads at
+  once; `list` and `refresh` never overlap an `open` of the same provider). Make `open` thread-safe, do not call
+  host interfaces from a provider call, and do not rely on the crash breadcrumb: it is not set for provider calls,
+  so a plugin that crashes inside one is not named at the next start.
+- **Failures.** Return a non-`APEX_OK` status or throw to say "no such file" or "no files"; neither crashes or
+  hangs Apex. Each call is bounded (5 s by default). A call that exceeds it fails, and the provider is taken out of
+  service until it has returned and the content is next reloaded. The stuck call keeps running on its own thread;
+  Apex does not kill it. If it is still running at shutdown, the plugin library is left loaded instead of unloaded.
+- **Changes.** `request_refresh(host, id)` (editor thread, your own provider only) reloads the game content so the
+  provider is listed again. It is `APEX_ERR_STATE` when the host has no content to reload.
+- **Compiling.** The compile tools (vbsp, vvis, vrad) read the real file system and cannot see a provider. Provider
+  mounts are left out of the compile gameinfo; the compile panel and the log name each omitted provider.
+
+### 4.13 `apex.assets/1`: materials
+
+`list_materials(host, user, visit)` calls `visit` with an `apex_material_info` (`name`, `shader`, `base_texture`,
+`surface_prop`, `source`) for each indexed material, until it returns non-zero. The strings are borrowed for the
+call. The index may still be loading and then reports what is indexed so far. `find_material(host, name, &out)`
+fills one record (`APEX_ERR_NOT_FOUND` for an unknown name; strings valid until the next host call). `source` is
+`game`, the addon's name, or `provider:<name>` for a plugin provider.
+
+`write_vmt(host, material, edits, count)` sets or removes top-level parameters of the material's VMT (1 to 256
+edits; keys without whitespace or quotes; values up to 4,096 bytes without control characters; a key is matched
+case-insensitively and a new one goes at the end of the shader block). Everything else in the file keeps its
+bytes: comments, spacing, order, line endings. The write is atomic and the host then re-indexes that material, so
+the next `find_material` and the browser list show the new values. Thumbnails and the 3D view keep their old
+image of it until the content next reloads. Only a loose file in a folder mount can be written: a material served
+from an archive or from a plugin provider returns `APEX_ERR_UNSUPPORTED`; an unknown one `APEX_ERR_NOT_FOUND`;
+malformed edits `APEX_ERR_INVALID`. `last_error()` carries the reason. Material calls run on the editor thread.
+
+### 4.14 Later interfaces *(pending)*
+
+Scripts (0.9.7), pies and themes (0.9.8).
 
 ## 5. The C++ wrapper
 
@@ -341,6 +387,14 @@ VFS and assets (0.9.6), scripts (0.9.7), pies and themes (0.9.8).
   `done(status)` (editor thread); `submitJob(host, job, &id)` and `cancelJob(host, id)`.
 - `apex::plugin::Watcher`: derive and override `changed(path)`; `watchPath(host, absolutePath, watcher, &id)` and
   `unwatch(host, id)`.
+- `apex::plugin::vfs(host)`, `assets(host)`: interface lookups.
+- `apex::plugin::FileProvider`: derive and override `list(add)` (call `add(path)` for each file), `open(path,
+  bytes)` (fill the vector; return false for "not found"), and optionally `refresh()`. Register with
+  `registerVfsProvider(host, id, name, provider, kind, anchor)` in `activate` (`kind` 0 first, 1 last, 2 before,
+  3 after an anchor) and `requestVfsRefresh(host, id)`. Exceptions are caught at the C boundary; `open` runs on
+  worker threads.
+- `apex::plugin::findMaterial(host, name, info)`, `listMaterials(host, visit)` and `writeVmt(host, material,
+  edits)` (a `std::vector<VmtEdit>{key, value, remove}`).
 
 ## 6. Examples
 

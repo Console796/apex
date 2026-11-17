@@ -78,6 +78,7 @@ struct Vfs::Impl {
         std::optional<std::size_t> addon;
         std::unique_ptr<vpkpp::PackFile> archive;
         std::map<std::string, std::string> entries;
+        std::shared_ptr<VfsProvider> provider;
     };
     struct LooseFile {
         std::size_t mount;
@@ -88,6 +89,19 @@ struct Vfs::Impl {
     kv1::Document gameInfo;
     std::vector<Mount> mounts;
     std::map<std::string, LooseFile> loose;
+    std::vector<std::string> placementNotes;
+    std::vector<std::string> listingNotes;
+    std::vector<std::string> notes;
+
+    void rebuildNotes() {
+        notes = placementNotes;
+        notes.insert(notes.end(), listingNotes.begin(), listingNotes.end());
+    }
+    static std::string label(const Mount& mount) {
+        if (mount.provider) return "provider:" + mount.provider->name();
+        return fs::absolute(mount.archive ? fs::path(mount.archive->getFilepath()) : mount.directory)
+            .lexically_normal().generic_string();
+    }
 
     Result<void> add(const fs::path& requested, bool required = false,
                      std::optional<std::size_t> addon = {}) {
@@ -101,7 +115,7 @@ struct Vfs::Impl {
         for (const auto& path : paths) {
             std::error_code ec;
             if (fs::is_directory(path, ec)) {
-                mounts.push_back({path, addon, {}, {}});
+                mounts.push_back({path, addon, {}, {}, {}});
                 mounted = true;
             } else if (ciEquals(path.extension().string(), ".vpk")) {
                 auto archive = vpkpp::VPK::open(path.string());
@@ -127,7 +141,7 @@ struct Vfs::Impl {
                 if (!archives.insert(std::string(archive->getFilepath())).second) {
                     continue;
                 }
-                Mount mount{{}, addon, std::move(archive), {}};
+                Mount mount{{}, addon, std::move(archive), {}, {}};
                 mount.archive->runForAllEntries([&](const std::string& entry, const vpkpp::Entry&) {
                     mount.entries.try_emplace(lookupKey(entry), entry);
                 });
@@ -148,7 +162,8 @@ Vfs::~Vfs() = default;
 Vfs::Vfs(Vfs&&) noexcept = default;
 Vfs& Vfs::operator=(Vfs&&) noexcept = default;
 
-Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver apps) try {
+Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver apps,
+                      std::vector<VfsProviderMount> providers) try {
     Vfs result;
     auto gameinfos = expand(profile.gameDirectory / "gameinfo.txt");
     if (gameinfos.empty()) {
@@ -298,6 +313,39 @@ Result<Vfs> Vfs::load(const GameProfile& profile, JobPool& jobs, AppResolver app
     }
     std::rotate(impl.mounts.begin(), impl.mounts.begin() + static_cast<std::ptrdiff_t>(baseCount),
                 impl.mounts.end());
+    // Providers go in after the ordering above, so an anchor sees the final profile mounts.
+    // Mounts that are themselves providers never match an anchor.
+    std::size_t firsts = 0;
+    for (auto& entry : providers) {
+        if (!entry.provider) continue;
+        Impl::Mount mount{{}, {}, {}, {}, entry.provider};
+        auto& all = impl.mounts;
+        std::size_t at = all.size();
+        const auto& position = entry.position;
+        if (position.kind == VfsPosition::Kind::First) {
+            at = std::min(firsts++, all.size());
+        } else if (position.kind != VfsPosition::Kind::Last) {
+            const auto needle = toLowerAscii(position.anchor);
+            std::optional<std::size_t> first, last;
+            for (std::size_t i = 0; !needle.empty() && i < all.size(); ++i) {
+                if (all[i].provider || toLowerAscii(Impl::label(all[i])).find(needle) == std::string::npos) continue;
+                if (!first) first = i;
+                last = i;
+            }
+            if (!first) {
+                impl.placementNotes.push_back("VFS provider " + entry.provider->name() +
+                                              ": no mount matches anchor '" + position.anchor + "', mounted last");
+            } else if (position.kind == VfsPosition::Kind::Before) {
+                at = *first;
+            } else {
+                at = *last + 1;
+                // Keep registration order among providers sharing this anchor.
+                while (at < all.size() && all[at].provider) ++at;
+            }
+        }
+        all.insert(all.begin() + static_cast<std::ptrdiff_t>(at), std::move(mount));
+    }
+    impl.rebuildNotes();
     auto refreshed = result.refresh(jobs);
     if (!refreshed) {
         return std::unexpected(refreshed.error());
@@ -360,7 +408,40 @@ Result<void> Vfs::refresh(JobPool& jobs) {
     if (!index) {
         return std::unexpected(index.error());
     }
+    // Provider listings are read on this thread, after the loose index is known good. A
+    // provider that fails or throws contributes nothing and is noted; it never fails the refresh.
+    std::vector<std::map<std::string, std::string>> listings(impl_->mounts.size());
+    std::vector<std::string> listingNotes;
+    for (std::size_t i = 0; i < impl_->mounts.size(); ++i) {
+        const auto& provider = impl_->mounts[i].provider;
+        if (!provider) continue;
+        std::string name = "provider";
+        try {
+            name = provider->name();
+            if (auto prepared = provider->refresh(); !prepared) {
+                listingNotes.push_back("VFS provider " + name + " refresh failed: " + prepared.error().what());
+                continue;
+            }
+            auto files = provider->files();
+            if (!files) {
+                listingNotes.push_back("VFS provider " + name + " listing failed: " + files.error().what());
+                continue;
+            }
+            for (const auto& file : *files)
+                if (const auto key = lookupKey(file); virtualPath(key)) listings[i].try_emplace(key, file);
+        } catch (const std::exception& e) {
+            listingNotes.push_back("VFS provider " + name + " threw: " + e.what());
+            listings[i].clear();
+        } catch (...) {
+            listingNotes.push_back("VFS provider " + name + " threw");
+            listings[i].clear();
+        }
+    }
     impl_->loose = std::move(*index);
+    for (std::size_t i = 0; i < listings.size(); ++i)
+        if (impl_->mounts[i].provider) impl_->mounts[i].entries = std::move(listings[i]);
+    impl_->listingNotes = std::move(listingNotes);
+    impl_->rebuildNotes();
     return {};
 }
 
@@ -397,6 +478,17 @@ Result<Blob> Vfs::openPrefix(std::string_view path, std::size_t maxBytes) const 
         }
         const auto& mount = impl_->mounts[i];
         if (auto it = mount.entries.find(key); it != mount.entries.end()) {
+            if (mount.provider) {
+                try {
+                    auto bytes = mount.provider->open(it->second, maxBytes);
+                    if (bytes && bytes->size() > maxBytes) bytes->resize(maxBytes);
+                    return bytes;
+                } catch (const std::exception& e) {
+                    return std::unexpected(Error{ErrorCode::IoError, std::string("Provider threw: ") + e.what()});
+                } catch (...) {
+                    return std::unexpected(Error{ErrorCode::IoError, "Provider threw"});
+                }
+            }
             auto bytes = mount.archive->readEntry(it->second);
             if (!bytes) {
                 return std::unexpected(Error{ErrorCode::IoError, "Cannot read VPK entry " + key});
@@ -418,6 +510,18 @@ std::optional<std::size_t> Vfs::provider(std::string_view path) const {
         const auto& mount = impl_->mounts[i];
         if ((loose != impl_->loose.end() && loose->second.mount == i) || mount.entries.contains(key))
             return mount.addon;
+    }
+    return {};
+}
+
+std::string Vfs::mountLabel(std::string_view path) const {
+    const auto key = lookupKey(path);
+    if (!virtualPath(key)) return {};
+    const auto loose = impl_->loose.find(key);
+    for (std::size_t i = 0; i < impl_->mounts.size(); ++i) {
+        const auto& mount = impl_->mounts[i];
+        if ((loose != impl_->loose.end() && loose->second.mount == i) || mount.entries.contains(key))
+            return Impl::label(mount);
     }
     return {};
 }
@@ -524,6 +628,7 @@ Result<std::string> Vfs::compileGameInfo(const fs::path& target) const {
     paths.append(kv1::Node::value("game+mod+default_write_path", "|gameinfo_path|.")).value();
     if (!target.empty()) paths.append(kv1::Node::value("game", fs::absolute(target).lexically_normal().generic_string())).value();
     for (const auto& mount : impl_->mounts) {
+        if (mount.provider) continue; // The compiler cannot read a plugin's files.
         const auto path = mount.archive ? fs::path(mount.archive->getFilepath()) : mount.directory;
         paths.append(kv1::Node::value("game", fs::absolute(path).lexically_normal().generic_string())).value();
     }
@@ -540,6 +645,32 @@ Result<std::string> Vfs::compileGameInfo(const fs::path& target) const {
         *fgd = kv1::Node::value("GameData", path.lexically_normal().generic_string());
     }
     return kv1::write(info);
+}
+
+std::vector<std::string> Vfs::omittedFromCompile() const {
+    std::vector<std::string> names;
+    for (const auto& mount : impl_->mounts)
+        if (mount.provider) names.push_back(mount.provider->name());
+    return names;
+}
+
+std::vector<std::string> Vfs::mountLabels() const {
+    std::vector<std::string> labels;
+    for (const auto& mount : impl_->mounts) labels.push_back(Impl::label(mount));
+    return labels;
+}
+
+const std::vector<std::string>& Vfs::notes() const { return impl_->notes; }
+
+std::optional<fs::path> Vfs::loosePath(std::string_view path) const {
+    const auto key = lookupKey(path);
+    if (!virtualPath(key)) return {};
+    const auto loose = impl_->loose.find(key);
+    for (std::size_t i = 0; i < impl_->mounts.size(); ++i) {
+        if (loose != impl_->loose.end() && loose->second.mount == i) return loose->second.path;
+        if (impl_->mounts[i].entries.contains(key)) return {};
+    }
+    return {};
 }
 
 } // namespace apex::assets

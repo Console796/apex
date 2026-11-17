@@ -9,7 +9,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                document/instance_test.cpp document/sidelist_remap_test.cpp document/connection_codec_test.cpp document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
                document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp document/displacement_test.cpp
                document/sidelist_upkeep_test.cpp document/overlay_oracle_test.cpp document/detail_props_oracle_test.cpp
-               assets/vfs_test.cpp assets/addons_test.cpp assets/addon_authoring_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
+               assets/vfs_test.cpp assets/addons_test.cpp assets/addon_authoring_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/vfs_provider_test.cpp assets/vmt_write_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/hotspot_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
@@ -45,7 +45,7 @@ doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
-add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/displacement_sculpt_measure_test.cpp editor/overlay_drag_measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp)
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/displacement_sculpt_measure_test.cpp editor/overlay_drag_measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp assets/vfs_provider_measure_test.cpp)
 target_link_libraries(apex_measure_tests PRIVATE apex_render apex_editor apex_assets sourcepp::vpkpp sourcepp::steampp apex_warnings doctest::doctest)
 doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")
@@ -55,7 +55,7 @@ target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_
                                               APEX_PRIMITIVE_VMF_OUT="${CMAKE_BINARY_DIR}/primitives.vmf"
                                               APEX_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/golden")
 
-add_executable(apex_plugin_host_tests main.cpp plugin_host/plugin_host_test.cpp)
+add_executable(apex_plugin_host_tests main.cpp plugin_host/plugin_host_test.cpp plugin_host/vfs_host_test.cpp)
 add_library(apex_crash_plugin MODULE plugin_host/crash_plugin.c)
 target_include_directories(apex_crash_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_executable(apex_plugin_crash_child plugin_host/crash_child.cpp)
@@ -84,6 +84,14 @@ if(TARGET apex_ui_tests)
   target_compile_definitions(apex_ui_tests PRIVATE ASYNC_PLUGIN_PATH="$<TARGET_FILE:apex_async_plugin>")
 endif()
 target_compile_definitions(apex_plugin_host_tests PRIVATE ASYNC_PLUGIN_PATH="$<TARGET_FILE:apex_async_plugin>")
+add_library(apex_vfs_plugin MODULE plugin_host/vfs_plugin.cpp)
+target_include_directories(apex_vfs_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_dependencies(apex_plugin_host_tests apex_vfs_plugin)
+target_compile_definitions(apex_plugin_host_tests PRIVATE VFS_PLUGIN_PATH="$<TARGET_FILE:apex_vfs_plugin>")
+if(TARGET apex_ui_tests)
+  add_dependencies(apex_ui_tests apex_vfs_plugin)
+  target_compile_definitions(apex_ui_tests PRIVATE VFS_PLUGIN_PATH="$<TARGET_FILE:apex_vfs_plugin>")
+endif()
 add_library(apex_bad_plugin MODULE plugin_host/bad_plugin.c)
 target_include_directories(apex_bad_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_library(apex_write_plugin MODULE plugin_host/write_plugin.c)

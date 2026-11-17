@@ -138,7 +138,7 @@ apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_
                           src/editor/displacement_edit.cpp src/editor/displacement_tool.cpp
            DEPS apex_document apex_geometry apex_core apex_compile)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/addon_authoring.cpp src/assets/unmounted_addons.cpp
-                         src/assets/vmt.cpp src/assets/hotspot.cpp src/assets/vtf.cpp src/assets/fgd.cpp src/assets/model_bake.cpp src/assets/model_pose.cpp
+                         src/assets/vmt.cpp src/assets/vmt_write.cpp src/assets/hotspot.cpp src/assets/vtf.cpp src/assets/fgd.cpp src/assets/model_bake.cpp src/assets/model_pose.cpp
                          src/assets/material_cache.cpp src/assets/model_cache.cpp src/assets/material_index.cpp src/assets/asset_index.cpp src/assets/thumbnail_cache.cpp DEPS apex_core)
 target_link_libraries(apex_assets PRIVATE sourcepp::vpkpp sourcepp::steampp
                                           sourcepp::vtfpp sourcepp::toolpp sourcepp::mdlpp sourcepp::kvpp sourcepp::bsppp)
@@ -290,7 +290,7 @@ if(APEX_BUILD_APP)
   if(APEX_BUILD_TESTS)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
-    add_executable(apex_ui_tests tests/main.cpp tests/ui/plugin_manager_test.cpp tests/ui/compile_test.cpp tests/ui/shell_test.cpp tests/ui/materials_test.cpp tests/ui/asset_browsers_test.cpp tests/ui/face_properties_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp tests/ui/tool_controls_test.cpp tests/ui/pie_popup_test.cpp tests/ui/instance_test.cpp tests/ui/sound_preview_test.cpp tests/ui/find_test.cpp tests/ui/addons_test.cpp tests/ui/vrad_view_test.cpp tests/ui/command_palette_test.cpp)
+    add_executable(apex_ui_tests tests/main.cpp tests/ui/plugin_manager_test.cpp tests/ui/compile_test.cpp tests/ui/shell_test.cpp tests/ui/materials_test.cpp tests/ui/asset_browsers_test.cpp tests/ui/face_properties_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp tests/ui/tool_controls_test.cpp tests/ui/pie_popup_test.cpp tests/ui/instance_test.cpp tests/ui/sound_preview_test.cpp tests/ui/find_test.cpp tests/ui/addons_test.cpp tests/ui/vrad_view_test.cpp tests/ui/command_palette_test.cpp tests/ui/vfs_provider_ui_test.cpp)
     target_sources(apex_ui_tests PRIVATE tests/ui/plugin_form_test.cpp tests/ui/plugin_ui_test.cpp tests/ui/plugin_overlay_test.cpp tests/ui/plugin_pump_test.cpp)
     target_link_libraries(apex_ui_tests PRIVATE apex_ui sourcepp::vtfpp sourcepp::bsppp sourcepp::vpkpp Qt6::Test Qt6::Multimedia apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE

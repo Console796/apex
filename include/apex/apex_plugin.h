@@ -282,8 +282,8 @@ typedef struct apex_problems_v1 {
    plugin.<plugin>.<name>; `extensions` is a comma-separated list without dots ("obj,mtl"), matched
    case-insensitively. import() runs on the editor thread, inside ONE edit transaction on the open
    document: whatever it creates through ctx->ops is a single undo step, and a non-OK return (or a
-   failed operation) rolls all of it back. `path` is a host file path in UTF-8 (the VFS arrives in
-   0.9.6; until then the importer reads the file itself). ctx->world is the NodeId of the world block.
+   failed operation) rolls all of it back. `path` is a host file path in UTF-8 (an arbitrary file the
+   user picked, not a VFS path: the importer reads it itself). ctx->world is the NodeId of the world block.
    ctx->report(sink, text) records a message the host shows to the user (the failure reason, or a
    summary). Everything is borrowed until import() returns. */
 typedef struct apex_import_context {
@@ -336,6 +336,90 @@ typedef struct apex_watch_v1 {
     apex_status (*watch)(void* host, apex_str path, void* user, apex_watch_callback on_changed, uint64_t* watch_id);
     apex_status (*unwatch)(void* host, uint64_t watch_id);
 } apex_watch_v1;
+
+/* apex.vfs/1 (0.9.6): a plugin serves files as a virtual mount. register_provider() is available only
+   during activate. `id` is plugin.<plugin>.<name>; `name` is the mount's display name (the log and the
+   compile warning use it). The mount sits where `position` says (NULL means last): kind 0 first, 1 last,
+   2 before and 3 after the first profile mount whose directory or archive path contains `anchor`
+   (case-insensitive; no match mounts it last and the host logs that). Earlier mounts win, so a first
+   provider overrides the game and a last one only fills gaps.
+   The host asks list() once when a game loads and again on every refresh, keeps the answer as the
+   mount's index, and answers exists/list/walk from it: a directory walk never calls the plugin. Only
+   open() is called per file. list() adds relative paths with '/' separators through sink->add (up to
+   200000 paths of at most 1024 bytes each; the rest are dropped). open() writes the file's bytes through
+   sink->write, in one or more calls, and writes at most sink->max_bytes (more is ignored); a non-OK
+   return means the file is missing or unreadable (APEX_ERR_NOT_FOUND for a missing one).
+   Threads: refresh() and list() run on whichever thread loads or refreshes the game (a host worker, not
+   necessarily the editor thread); open() runs on host workers, several at once. The host never runs
+   refresh() or list() at the same time as an open() of the same provider, and it serialises refresh(),
+   but several open() calls overlap, so open() must be thread-safe. Providers may not call any host
+   interface from these callbacks except the host's log(). They must return within the host's timeout
+   (5 s by default): a call that does not return, or an exception, fails that call and the file is
+   reported missing; a call that times out takes the provider out of service until it returns and the
+   game reloads. `user` and everything the provider points at must stay valid until the host is destroyed.
+   request_refresh() asks the host to reload the game's files because the provider's content changed; it
+   is available on the editor thread (for example from a watch or job callback), and `id` names the
+   provider. The reload is asynchronous. */
+typedef struct apex_vfs_file_sink {
+    uint32_t struct_size;
+    void* sink;
+    apex_status (*add)(void* sink, apex_str path);
+} apex_vfs_file_sink;
+typedef struct apex_vfs_data_sink {
+    uint32_t struct_size;
+    void* sink;
+    size_t max_bytes;
+    apex_status (*write)(void* sink, const void* data, size_t size);
+} apex_vfs_data_sink;
+typedef struct apex_vfs_provider {
+    uint32_t struct_size;
+    void* user;
+    apex_status (*refresh)(void* user); /* optional: prepare for a new listing */
+    apex_status (*list)(void* user, const apex_vfs_file_sink* sink);
+    apex_status (*open)(void* user, apex_str path, const apex_vfs_data_sink* sink);
+} apex_vfs_provider;
+typedef struct apex_vfs_position {
+    uint32_t struct_size;
+    uint32_t kind; /* 0 first, 1 last, 2 before anchor, 3 after anchor */
+    apex_str anchor;
+} apex_vfs_position;
+typedef struct apex_vfs_v1 {
+    uint32_t struct_size;
+    apex_status (*register_provider)(void* host, apex_str id, apex_str name, const apex_vfs_provider* provider,
+                                     const apex_vfs_position* position);
+    apex_status (*request_refresh)(void* host, apex_str id);
+} apex_vfs_v1;
+
+/* apex.assets/1 (0.9.6): the game's material index and VMT write-back. Both are editor-thread only.
+   list_materials() calls `visit` once per indexed material (the winning file of each name, as the
+   material browser sees it) until it returns non-zero; the strings are borrowed for the callback. The
+   index may still be loading: it reports what is indexed so far, and the plugin should list again after
+   a change it asked for. find_material() fills `out` for one name (path under materials/, without
+   extension, any case); its strings stay valid until the next call to the host.
+   write_vmt() edits the material's VMT: each edit sets `key` to `value`, or removes the key when
+   `remove` is non-zero (a new key goes at the end of the shader block; matching is case-insensitive).
+   Everything else in the file (comments, spacing, order, line endings) is kept. Only a loose file can
+   be written: a material that is served from an archive or from a plugin returns APEX_ERR_UNSUPPORTED.
+   The write is atomic (a temporary file replaces the VMT), then the host re-indexes that material, so
+   find_material() and the browser list show the new values right after the call returns (thumbnails and
+   the 3D view keep their old image of the material until the content next reloads). No document is
+   needed. All calls are on the editor thread. last_error() says why a call failed. */
+typedef struct apex_material_info {
+    uint32_t struct_size;
+    apex_str name, shader, base_texture, surface_prop, source; /* source: "game", the addon's name, or "provider:<name>" */
+} apex_material_info;
+typedef struct apex_vmt_edit {
+    uint32_t struct_size;
+    apex_str key, value;
+    uint32_t remove;
+} apex_vmt_edit;
+typedef int (*apex_material_visit)(void* user, const apex_material_info* info);
+typedef struct apex_assets_v1 {
+    uint32_t struct_size;
+    apex_status (*list_materials)(void* host, void* user, apex_material_visit visit);
+    apex_status (*find_material)(void* host, apex_str name, apex_material_info* out);
+    apex_status (*write_vmt)(void* host, apex_str material, const apex_vmt_edit* edits, size_t edit_count);
+} apex_assets_v1;
 
 typedef struct apex_host {
     uint32_t struct_size, abi_major, abi_minor;

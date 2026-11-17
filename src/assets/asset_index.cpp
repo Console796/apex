@@ -53,11 +53,11 @@ std::vector<std::string> manifestFiles(const kv1::Node& node) {
     }
     return result;
 }
-std::vector<MaterialIndexEntry> parseIndexEntry(MaterialKind, const MaterialReader& reader,
-    const std::string& path, const Metadata& metadata, kv1::EscapeMode) {
+} // namespace
+MaterialIndexEntry indexMaterial(const MaterialReader& reader, std::string_view name,
+                                 std::optional<std::size_t> mount) {
     MaterialIndexEntry entry;
-    const auto& [display, mount] = metadata.at(path);
-    entry.name = display.substr(10, display.size() - 14);
+    entry.name = std::string(name);
     entry.mount = mount;
     auto material = parseMaterial(reader, entry.name);
     if (!material) entry.error = material.error().what();
@@ -65,6 +65,7 @@ std::vector<MaterialIndexEntry> parseIndexEntry(MaterialKind, const MaterialRead
         entry.shader = toLowerAscii(material->shader);
         entry.previewTexture = material->previewTexture();
         entry.rectangleMap = material->rectangleMap;
+        entry.surfaceProp = material->surfaceProp;
         entry.baseTextureTransform = material->baseTextureTransform;
         auto words = toLowerAscii(material->keywords);
         std::replace(words.begin(), words.end(), ',', ' ');
@@ -73,7 +74,13 @@ std::vector<MaterialIndexEntry> parseIndexEntry(MaterialKind, const MaterialRead
         entry.toolTexture = material->hasToolTexture;
     }
     entry.toolTexture |= toLowerAscii(entry.name).starts_with("tools/");
-    return {std::move(entry)};
+    return entry;
+}
+namespace {
+std::vector<MaterialIndexEntry> parseIndexEntry(MaterialKind, const MaterialReader& reader,
+    const std::string& path, const Metadata& metadata, kv1::EscapeMode) {
+    const auto& [display, mount] = metadata.at(path);
+    return {indexMaterial(reader, display.substr(10, display.size() - 14), mount)};
 }
 std::uint32_t headerWord(std::string_view bytes, std::size_t offset) {
     std::uint32_t result = 0;

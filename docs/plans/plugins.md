@@ -459,3 +459,43 @@ that carry one (untinted faces in untouched solids stay batched); plugins should
 colours per face. If a later pass needs more headroom the fix is coalescing adjacent faces with equal
 tint into one index range (not done: Lit reflection points are per face), or a per-vertex tint
 attribute. Release-build numbers were not taken in this pass.
+
+### P3: VFS provider in mount order (0.9.6a, measured 2026-11-16)
+
+Method: `[measure] 0.9.6 P3 ...` in `tests/assets/vfs_provider_measure_test.cpp` (opt-in,
+`APEX_MEASURE=1 build/linux-gcc-debug/tests/apex_measure_tests -tc="*P3*"`; the build is `linux-gcc-debug`, so
+absolute times are pessimistic). Three loose profile mounts of 3,000 VMTs each (the same names in all
+three), plus an in-memory `assets::VfsProvider` of 6,000 entries (3,000 sharing the names, 3,000 its own)
+mounted between the second and third profile mounts. Each walk figure is the mean of 10 rounds of 4
+concurrent `walkTask("materials", "*.vmt")` closures on separate threads.
+
+| | Without provider | With provider |
+|---|---|---|
+| `Vfs::load` (full, 3 mounts x 3,000 files) | 63-68 ms | 79-84 ms (provider adds about 15 ms: `refresh` + `files()` of 6,000 entries) |
+| 4 concurrent `walkTask` | 4.3-4.9 ms, 3,000 files | 11.7-14.1 ms, 6,000 files (linear in entries) |
+| `Vfs::refresh` | n/a | 79-85 ms |
+| Provider calls made while walking | n/a | 0 |
+
+Findings:
+
+1. **It works, with one design change.** "Earlier mounts win" holds with the provider between mounts: a path
+   in all four layers resolves to the first profile mount, a provider-only path resolves to the provider,
+   and a path in the provider and the last mount resolves to the provider. Eight `walkTask` closures run as
+   `JobPool` jobs while nothing refreshes; all returned the full set.
+2. **The provider is indexed, not consulted.** The host asks the provider once per load or refresh for its
+   file list (`files()`), keeps that as the mount's index like a VPK's, and answers `exists`, `list`, `walk`
+   and `walkTask` from it. A walk therefore never calls into plugin code, so a slow or throwing provider
+   cannot stall or crash a walk, and the provider does not have to implement `exists`/`list`/`walk` (D4 said
+   it must be thread-safe for all four; now only `open` is). Only `open`/`openPrefix` reach the plugin, and
+   the material index and thumbnails do call those from workers (`asset_index.cpp`, `material_cache.cpp`).
+3. **D4's "refresh on the main thread" does not hold.** `GameContent::reload` runs `Vfs::load` on a
+   `JobPool` worker, and the probe confirms `refresh()` then runs on that worker. The contract is now:
+   `refresh()`/`files()` run on whichever thread loads or refreshes the Vfs, never at the same time as an
+   `open` on the same provider.
+4. **That last guarantee needs a lock in the adapter.** A new `Vfs` (reload) can call `refresh()` while an
+   older `Vfs`, kept alive by a queued walk or a `ThumbnailCache`, still calls `open`. The plugin host
+   serialises them with a shared mutex (`refresh` exclusive, `open` shared) and gives `open`, `files` and
+   `refresh` a timeout (below).
+5. **Positions.** `First`, `Last`, and `Before`/`After` a profile mount identified by a path substring.
+   Providers are inserted after the profile and addon mounts are ordered; an anchor that matches nothing
+   mounts the provider last and is recorded in `Vfs::notes()`.

@@ -15,7 +15,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <mutex>
+#include <optional>
+#include <shared_mutex>
 #include <thread>
 #include <cctype>
 #include <cmath>
@@ -147,6 +150,155 @@ private:
     std::function<void()> activate_, deactivate_;
     editor::Preview preview_;
 };
+
+// ---- apex.vfs/1: the adapter between assets::VfsProvider and a plugin's C callbacks ----
+// Providers are called from host workers, so every call goes through guardedCall: it runs the plugin code on
+// a helper thread, waits at most the timeout, catches exceptions, and serialises refresh/list (exclusive)
+// against open (shared). A call that times out cannot be stopped; the helper thread is left to finish
+// (it owns everything it touches), and the provider is out of service until it does and the game reloads.
+struct ProviderCore {
+    std::string id, name, owner;
+    void* user = nullptr;
+    apex_status (*refreshFn)(void*) = nullptr;
+    apex_status (*listFn)(void*, const apex_vfs_file_sink*) = nullptr;
+    apex_status (*openFn)(void*, apex_str, const apex_vfs_data_sink*) = nullptr;
+    std::shared_timed_mutex gate;
+    std::atomic<bool> faulted{false}, closed{false};
+    std::atomic<int> inFlight{0};
+    std::atomic<long long> timeoutMs{5000};
+};
+Error providerError(ErrorCode code, const ProviderCore& core, std::string what) {
+    return Error{code, "plugin provider " + core.name + ": " + std::move(what)};
+}
+Error statusError(const ProviderCore& core, apex_status status, std::string_view what) {
+    ErrorCode code = ErrorCode::IoError;
+    if (status == APEX_ERR_NOT_FOUND) code = ErrorCode::NotFound;
+    else if (status == APEX_ERR_UNSUPPORTED) code = ErrorCode::Unsupported;
+    else if (status == APEX_ERR_INVALID) code = ErrorCode::InvalidArgument;
+    return providerError(code, core, std::string(what) + " returned status " + std::to_string(static_cast<int>(status)));
+}
+template <class R, class F>
+Result<R> guardedCall(const std::shared_ptr<ProviderCore>& core, bool exclusive, std::string_view what, F fn) {
+    struct State {
+        std::mutex mutex;
+        std::condition_variable done;
+        bool finished = false;
+        std::optional<Result<R>> result;
+    };
+    core->inFlight.fetch_add(1);
+    if (core->closed.load()) {
+        core->inFlight.fetch_sub(1);
+        return std::unexpected(providerError(ErrorCode::IoError, *core, "the host is shutting down"));
+    }
+    if (core->faulted.load()) {
+        core->inFlight.fetch_sub(1);
+        return std::unexpected(providerError(ErrorCode::IoError, *core, "out of service after a call timed out"));
+    }
+    const auto timeout = std::chrono::milliseconds(core->timeoutMs.load());
+    auto state = std::make_shared<State>();
+    try {
+        std::thread([core, state, exclusive, timeout, fn = std::move(fn), label = std::string(what)]() mutable {
+            Result<R> result = std::unexpected(providerError(ErrorCode::Internal, *core, label + " failed"));
+            try {
+                const auto lockWait = timeout / 2;
+                const bool locked = exclusive ? core->gate.try_lock_for(lockWait) : core->gate.try_lock_shared_for(lockWait);
+                if (!locked) {
+                    result = std::unexpected(providerError(ErrorCode::IoError, *core, label + " is blocked by another call"));
+                } else {
+                    try { result = fn(); }
+                    catch (const std::exception& e) { result = std::unexpected(providerError(ErrorCode::Internal, *core, label + " threw: " + e.what())); }
+                    catch (...) { result = std::unexpected(providerError(ErrorCode::Internal, *core, label + " threw")); }
+                    if (exclusive) core->gate.unlock(); else core->gate.unlock_shared();
+                }
+            } catch (...) {}
+            {
+                std::lock_guard lock(state->mutex);
+                state->result = std::move(result);
+                state->finished = true;
+            }
+            state->done.notify_all();
+            core->inFlight.fetch_sub(1);
+        }).detach();
+    } catch (...) {
+        core->inFlight.fetch_sub(1);
+        return std::unexpected(providerError(ErrorCode::Internal, *core, "cannot start a thread for " + std::string(what)));
+    }
+    std::unique_lock lock(state->mutex);
+    if (!state->done.wait_for(lock, timeout, [&] { return state->finished; })) {
+        core->faulted.store(true);
+        log::warn("plugin {}: provider {}: {} did not return within {} ms; the provider is out of service",
+                  core->owner, core->name, what, timeout.count());
+        return std::unexpected(providerError(ErrorCode::IoError, *core, std::string(what) + " timed out"));
+    }
+    return std::move(*state->result);
+}
+struct FileSinkState { std::vector<std::string> paths; bool truncated = false; };
+struct DataSinkState { assets::Blob bytes; std::size_t limit = 0; };
+constexpr std::size_t kMaxProviderFiles = 200000, kMaxProviderPath = 1024;
+class PluginVfsProvider final : public assets::VfsProvider {
+public:
+    explicit PluginVfsProvider(std::shared_ptr<ProviderCore> core) : core_(std::move(core)) {}
+    std::string name() const override { return core_->name; }
+    Result<void> refresh() override {
+        if (core_->faulted.load()) {
+            if (core_->inFlight.load() != 0)
+                return std::unexpected(providerError(ErrorCode::IoError, *core_, "still stuck in an earlier call"));
+            core_->faulted.store(false);  // the stuck call returned: give the provider another chance
+        }
+        if (!core_->refreshFn) return {};
+        auto core = core_;
+        return guardedCall<void>(core_, true, "refresh", [core]() -> Result<void> {
+            const auto status = core->refreshFn(core->user);
+            if (status != APEX_OK) return std::unexpected(statusError(*core, status, "refresh"));
+            return {};
+        });
+    }
+    Result<std::vector<std::string>> files() override {
+        auto core = core_;
+        return guardedCall<std::vector<std::string>>(core_, true, "list", [core]() -> Result<std::vector<std::string>> {
+            FileSinkState state;
+            const apex_vfs_file_sink sink{sizeof(sink), &state, [](void* p, apex_str path) -> apex_status {
+                try {
+                    auto& out = *static_cast<FileSinkState*>(p);
+                    const auto text = view(path);
+                    if (text.empty() || text.size() > kMaxProviderPath) return APEX_ERR_INVALID;
+                    if (out.paths.size() >= kMaxProviderFiles) { out.truncated = true; return APEX_ERR_STATE; }
+                    out.paths.emplace_back(text);
+                    return APEX_OK;
+                } catch (...) { return APEX_ERR_INTERNAL; }
+            }};
+            const auto status = core->listFn(core->user, &sink);
+            if (state.truncated) log::warn("plugin {}: provider {} listed more than {} files; the rest are ignored",
+                                           core->owner, core->name, kMaxProviderFiles);
+            if (status != APEX_OK) return std::unexpected(statusError(*core, status, "list"));
+            return std::move(state.paths);
+        });
+    }
+    Result<assets::Blob> open(std::string_view path, std::size_t maxBytes) override {
+        auto core = core_;
+        return guardedCall<assets::Blob>(core_, false, "open", [core, name = std::string(path), maxBytes]() -> Result<assets::Blob> {
+            DataSinkState state;
+            state.limit = maxBytes;
+            const apex_vfs_data_sink sink{sizeof(sink), &state, maxBytes,
+                [](void* p, const void* data, size_t size) -> apex_status {
+                    try {
+                        auto& out = *static_cast<DataSinkState*>(p);
+                        if (size && !data) return APEX_ERR_INVALID;
+                        const auto room = out.limit - std::min(out.limit, out.bytes.size());
+                        const auto take = std::min(room, size);
+                        const auto* bytes = static_cast<const std::byte*>(data);
+                        out.bytes.insert(out.bytes.end(), bytes, bytes + take);
+                        return APEX_OK;
+                    } catch (...) { return APEX_ERR_INTERNAL; }
+                }};
+            const auto status = core->openFn(core->user, string(name), &sink);
+            if (status != APEX_OK) return std::unexpected(statusError(*core, status, "open"));
+            return std::move(state.bytes);
+        });
+    }
+private:
+    std::shared_ptr<ProviderCore> core_;
+};
 }
 
 struct Host::Impl {
@@ -177,6 +329,8 @@ struct Host::Impl {
     apex_helpers_v1 helpersApi{};
     apex_problems_v1 problemsApi{};
     apex_io_v1 ioApi{};
+    apex_vfs_v1 vfsApi{};
+    apex_assets_v1 assetsApi{};
     apex_jobs_v1 jobsApi{};
     apex_watch_v1 watchApi{};
     editor::ProblemRegistry* problems = &editor::mutableProblemRegistry();
@@ -194,6 +348,14 @@ struct Host::Impl {
     struct ImporterEntry { ImporterInfo info; void* user; apex_import_callback import; };
     std::vector<ImporterEntry> importerEntries;
     std::vector<ImporterInfo> importerInfos;
+    // apex.vfs/1 and apex.assets/1
+    struct VfsRegistration { std::string id, owner; std::shared_ptr<ProviderCore> core; assets::VfsPosition position; };
+    mutable std::mutex vfsMutex;                       // registrations are read from any thread
+    std::vector<VfsRegistration> vfsRegistrations;
+    std::chrono::milliseconds vfsTimeout{5000};
+    std::function<void(std::string_view)> vfsRefreshHandler;
+    AssetsBackend* assetsBackend = nullptr;
+    MaterialRecord materialScratch;
     // apex.jobs/1: thread-safe submission; completions are delivered by drainJobs on the editor thread.
     std::thread::id mainThread = std::this_thread::get_id();
     mutable std::mutex jobMutex;
@@ -247,6 +409,8 @@ struct Host::Impl {
         helpersApi = {sizeof(helpersApi), registerHelper};
         problemsApi = {sizeof(problemsApi), registerProblemCheck};
         ioApi = {sizeof(ioApi), registerImporter};
+        vfsApi = {sizeof(vfsApi), registerVfsProvider, requestVfsRefresh};
+        assetsApi = {sizeof(assetsApi), listMaterials, findMaterial, writeVmt};
         jobsApi = {sizeof(jobsApi), submitJob, cancelJob};
         watchApi = {sizeof(watchApi), watchPath, unwatchPath};
     }
@@ -273,6 +437,8 @@ struct Host::Impl {
         if (view(name) == "apex.helpers/1") return &self(context).helpersApi;
         if (view(name) == "apex.problems/1") return &self(context).problemsApi;
         if (view(name) == "apex.io/1") return &self(context).ioApi;
+        if (view(name) == "apex.vfs/1") return &self(context).vfsApi;
+        if (view(name) == "apex.assets/1") return &self(context).assetsApi;
         if (view(name) == "apex.jobs/1") return &self(context).jobsApi;
         if (view(name) == "apex.watch/1") return &self(context).watchApi;
         return nullptr;
@@ -819,6 +985,103 @@ struct Host::Impl {
         s.importerInfos.push_back(std::move(info));
         return APEX_OK;
     } catch (...) { return internal(c); }
+    // ---- apex.vfs/1, apex.assets/1 (0.9.6) ----
+    static apex_status registerVfsProvider(void* c, apex_str id, apex_str name, const apex_vfs_provider* provider,
+                                           const apex_vfs_position* position) try {
+        auto& s = self(c);
+        if (s.registering.empty()) return APEX_ERR_STATE;
+        if (!provider || provider->struct_size < offsetof(apex_vfs_provider, open) + sizeof(provider->open) ||
+            !provider->list || !provider->open || !inNamespace(s.registering, view(id)) || view(name).empty()) {
+            s.setError("vfs provider id outside plugin namespace, missing name, list or open");
+            return APEX_ERR_INVALID;
+        }
+        assets::VfsPosition place;
+        if (position) {
+            if (position->struct_size < offsetof(apex_vfs_position, anchor) + sizeof(position->anchor) || position->kind > 3 ||
+                (position->kind >= 2 && view(position->anchor).empty())) {
+                s.setError("invalid vfs position");
+                return APEX_ERR_INVALID;
+            }
+            place.kind = static_cast<assets::VfsPosition::Kind>(position->kind);
+            place.anchor = std::string(view(position->anchor));
+        }
+        std::lock_guard lock(s.vfsMutex);
+        if (std::ranges::any_of(s.vfsRegistrations, [&](const auto& r) { return r.id == view(id); })) {
+            s.setError("duplicate vfs provider");
+            return APEX_ERR_INVALID;
+        }
+        if (s.vfsRegistrations.size() >= 16) { s.setError("too many vfs providers"); return APEX_ERR_STATE; }
+        auto core = std::make_shared<ProviderCore>();
+        core->id = std::string(view(id));
+        core->name = std::string(view(name));
+        core->owner = s.registering;
+        core->user = provider->user;
+        core->refreshFn = provider->refresh;
+        core->listFn = provider->list;
+        core->openFn = provider->open;
+        core->timeoutMs.store(s.vfsTimeout.count());
+        s.vfsRegistrations.push_back({core->id, core->owner, std::move(core), std::move(place)});
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status requestVfsRefresh(void* c, apex_str id) try {
+        auto& s = self(c);
+        const auto owner = s.actingOwner();
+        if (owner.empty() || std::this_thread::get_id() != s.mainThread) return APEX_ERR_STATE;
+        {
+            std::lock_guard lock(s.vfsMutex);
+            const auto found = std::ranges::find_if(s.vfsRegistrations, [&](const auto& r) { return r.id == view(id); });
+            if (found == s.vfsRegistrations.end()) return APEX_ERR_NOT_FOUND;
+            if (found->owner != owner) { s.setError("vfs provider belongs to another plugin"); return APEX_ERR_INVALID; }
+        }
+        if (!s.vfsRefreshHandler) { s.setError("no game is loaded"); return APEX_ERR_STATE; }
+        s.vfsRefreshHandler(view(id));
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_material_info materialInfo(const MaterialRecord& m) {
+        return {sizeof(apex_material_info), string(m.name), string(m.shader), string(m.baseTexture), string(m.surfaceProp), string(m.source)};
+    }
+    static apex_status listMaterials(void* c, void* user, apex_material_visit visit) try {
+        auto& s = self(c);
+        if (std::this_thread::get_id() != s.mainThread || !s.assetsBackend) return APEX_ERR_STATE;
+        if (!visit) return APEX_ERR_INVALID;
+        s.assetsBackend->materials([&](const MaterialRecord& m) {
+            const auto info = materialInfo(m);
+            return visit(user, &info) == 0;
+        });
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status findMaterial(void* c, apex_str name, apex_material_info* out) try {
+        auto& s = self(c);
+        if (std::this_thread::get_id() != s.mainThread || !s.assetsBackend) return APEX_ERR_STATE;
+        if (!out || out->struct_size < sizeof(*out) || view(name).empty()) return APEX_ERR_INVALID;
+        auto found = s.assetsBackend->material(view(name));
+        if (!found) return APEX_ERR_NOT_FOUND;
+        s.materialScratch = std::move(*found);
+        *out = materialInfo(s.materialScratch);
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status writeVmt(void* c, apex_str material, const apex_vmt_edit* edits, size_t count) try {
+        auto& s = self(c);
+        if (std::this_thread::get_id() != s.mainThread || !s.assetsBackend) return APEX_ERR_STATE;
+        if (view(material).empty() || !edits || count == 0 || count > 256) { s.setError("write_vmt needs a material and 1 to 256 edits"); return APEX_ERR_INVALID; }
+        std::vector<VmtEditRequest> requests;
+        for (size_t i = 0; i < count; ++i) {
+            const auto& edit = edits[i];
+            const auto key = view(edit.key);
+            const auto value = view(edit.value);
+            if (edit.struct_size < sizeof(apex_vmt_edit) || key.empty() || key.size() > 256 || value.size() > 4096 ||
+                std::ranges::any_of(key, [](unsigned char ch) { return ch <= ' ' || ch == '"' || ch == '{' || ch == '}'; }) ||
+                std::ranges::any_of(value, [](unsigned char ch) { return ch < ' ' && ch != '\t'; })) {
+                s.setError("invalid vmt edit");
+                return APEX_ERR_INVALID;
+            }
+            requests.push_back({std::string(key), std::string(value), edit.remove != 0});
+        }
+        const auto result = s.assetsBackend->writeVmt(view(material), requests);
+        if (result.ok) return APEX_OK;
+        s.setError(result.message.c_str());
+        return result.unsupported ? APEX_ERR_UNSUPPORTED : result.notFound ? APEX_ERR_NOT_FOUND : APEX_ERR_STATE;
+    } catch (...) { return internal(c); }
     struct ImportSink { std::vector<std::string> messages; };
     static apex_status reportImport(void* sink, apex_str message) noexcept {
         try {
@@ -947,6 +1210,11 @@ struct Host::Impl {
         importerInfos.clear();
         for (const auto& item : importerEntries) importerInfos.push_back(item.info);
         std::erase_if(watches, [&](const Watch& w) { return w.owner == owner; });
+        {
+            std::lock_guard lock(vfsMutex);
+            for (auto& r : vfsRegistrations) if (r.owner == owner) r.core->closed.store(true);
+            std::erase_if(vfsRegistrations, [&](const VfsRegistration& r) { return r.owner == owner; });
+        }
         helperValid = false;
         ++overlayRevision;
     }
@@ -1170,6 +1438,20 @@ struct Host::Impl {
             jobsClosed = true;
         }
         jobPool.reset();
+        // Stop provider calls and wait for the ones in flight (they run plugin code on helper threads). A call
+        // that never returns pins its library: it is left mapped rather than unmapped under a running thread.
+        bool pinned = false;
+        {
+            std::vector<std::shared_ptr<ProviderCore>> cores;
+            { std::lock_guard lock(vfsMutex); for (auto& r : vfsRegistrations) cores.push_back(r.core); }
+            for (auto& core : cores) core->closed.store(true);
+            const auto deadline = std::chrono::steady_clock::now() + vfsTimeout + std::chrono::milliseconds(200);
+            for (auto& core : cores) {
+                while (core->inFlight.load() != 0 && std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                if (core->inFlight.load() != 0) pinned = true;
+            }
+        }
         // Destroy plugin-owned instances while their code and host APIs are live.
         for (const auto& weak : toolRetirements) if (auto retire = weak.lock()) (*retire)();
         lifetime.reset();
@@ -1178,7 +1460,7 @@ struct Host::Impl {
                 Mark mark(breadcrumb, plugins[it->index].id, "deactivate");
                 try { it->plugin->deactivate(it->plugin->user); } catch (...) { }
             }
-            closeLibrary(it->library);
+            if (!pinned) closeLibrary(it->library);
         }
     }
 };
@@ -1307,6 +1589,26 @@ ImportResult Host::importFile(std::string_view importerId, const std::filesystem
     for (const auto& line : sink.messages) result.message += (result.message.empty() ? "" : "; ") + line;
     return result;
 }
+std::vector<assets::VfsProviderMount> Host::vfsProviders() const {
+    std::lock_guard lock(impl_->vfsMutex);
+    std::vector<assets::VfsProviderMount> mounts;
+    for (const auto& r : impl_->vfsRegistrations) mounts.push_back({std::make_shared<PluginVfsProvider>(r.core), r.position});
+    return mounts;
+}
+std::vector<VfsProviderInfo> Host::vfsProviderInfos() const {
+    std::lock_guard lock(impl_->vfsMutex);
+    std::vector<VfsProviderInfo> infos;
+    for (const auto& r : impl_->vfsRegistrations)
+        infos.push_back({r.id, r.core->name, r.owner, r.core->faulted.load(), static_cast<std::size_t>(r.core->inFlight.load())});
+    return infos;
+}
+void Host::setVfsTimeout(std::chrono::milliseconds timeout) {
+    std::lock_guard lock(impl_->vfsMutex);
+    impl_->vfsTimeout = timeout;
+    for (auto& r : impl_->vfsRegistrations) r.core->timeoutMs.store(timeout.count());
+}
+void Host::setVfsRefreshHandler(std::function<void(std::string_view)> handler) { impl_->vfsRefreshHandler = std::move(handler); }
+void Host::setAssetsBackend(AssetsBackend* backend) { impl_->assetsBackend = backend; }
 std::size_t Host::drainJobs() {
     auto& s = *impl_;
     if (std::this_thread::get_id() != s.mainThread) return 0;

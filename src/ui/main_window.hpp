@@ -33,7 +33,7 @@ namespace apex::document {
 class Document;
 }
 
-namespace apex::plugin_host { class Host; }
+namespace apex::plugin_host { class Host; class AssetsBackend; }
 
 namespace apex::ui {
 
@@ -186,6 +186,7 @@ private:
     void closeEvent(QCloseEvent* event) override;
 
     plugin_host::Host* pluginHost_ = nullptr;
+    std::unique_ptr<plugin_host::AssetsBackend> pluginAssets_; // apex.assets/1 over gameContent_
     PluginUi* pluginUi_ = nullptr;
     PluginPump* pluginPump_ = nullptr;
     std::unique_ptr<document::Document> document_;

@@ -14,6 +14,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
+#include "core/log.hpp"
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -367,6 +368,15 @@ void CompilePanel::startCompile(bool withGame) {
     }
     addonNotice_.clear();
     addonsUsed_.clear();
+    if (const auto vfs = content_->vfs()) {
+        const auto omitted = vfs->omittedFromCompile();
+        if (!omitted.empty()) {
+            QStringList names;
+            for (const auto& name : omitted) names << QString::fromStdString(name);
+            addonNotice_ = tr("Plugin file providers are mounted in the editor only and are left out of this compile: %1").arg(names.join(QStringLiteral(", ")));
+            log::warn("compile: omitting plugin provider mounts from the compile gameinfo: {}", names.join(QStringLiteral(", ")).toStdString());
+        }
+    }
     if (!profile.addonDirectory.empty()) {
         paths.addonDirectory = std::filesystem::path(profile.addonDirectory);
         if (!paths.addonDirectory.is_absolute()) { error_ = tr("Choose an absolute addon target folder."); refresh(); return; }
@@ -388,7 +398,7 @@ void CompilePanel::startCompile(bool withGame) {
                     return entry.mounted && entry.resolved.lexically_normal() == paths.addonDirectory.lexically_normal();
                 })) differences << tr("Addon target is not mounted in the game: %1").arg(QString::fromStdU16String(paths.addonDirectory.u16string()));
         }
-        if (!differences.isEmpty()) addonNotice_ = tr("Compile uses editor mounts. Game mounts differ:\n%1").arg(differences.join('\n'));
+        if (!differences.isEmpty()) addonNotice_ += (addonNotice_.isEmpty() ? QString() : QStringLiteral("\n")) + tr("Compile uses editor mounts. Game mounts differ:\n%1").arg(differences.join('\n'));
         auto report = buildAssetReport(*document_, content_, session_);
         for (const auto& addon : report->addonsUsed()) addonsUsed_ << QString::fromStdString(addon) + tr(" (mounted)");
         for (const auto& missing : report->missing()) if (missing.addon)

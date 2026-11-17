@@ -2,6 +2,7 @@
 #include "apex_plugin.h"
 #include <string_view>
 #include <string>
+#include <functional>
 #include <vector>
 #include <exception>
 
@@ -283,5 +284,82 @@ inline apex_status watchPath(const apex_host& host, std::string_view absolutePat
 inline apex_status unwatch(const apex_host& host, uint64_t id) {
     const auto* api = watch(host);
     return api ? api->unwatch(host.context, id) : APEX_ERR_UNSUPPORTED;
+}
+
+// apex.vfs/1. Derive and implement list() and open(); both may run on host worker threads (open() on several
+// at once), so they must be thread-safe and quick, and must not call the host. Exceptions never cross the ABI
+// (a throw fails that call: the file is reported missing).
+class FileProvider {
+public:
+    virtual ~FileProvider() = default;
+    // Prepare for a new listing (optional).
+    virtual apex_status refresh() { return APEX_OK; }
+    // Call add(path) for each file: relative paths with '/' separators.
+    virtual apex_status list(const std::function<void(std::string_view)>& add) = 0;
+    // Return the file's bytes (at most maxBytes are kept) through `bytes`, or APEX_ERR_NOT_FOUND.
+    virtual apex_status open(std::string_view path, std::vector<char>& bytes) = 0;
+    static apex_vfs_provider table(FileProvider& provider) {
+        return {sizeof(apex_vfs_provider), &provider,
+            [](void* p) -> apex_status { try { return static_cast<FileProvider*>(p)->refresh(); } catch (...) { return APEX_ERR_INTERNAL; } },
+            [](void* p, const apex_vfs_file_sink* sink) -> apex_status {
+                try {
+                    if (!sink || !sink->add) return APEX_ERR_INVALID;
+                    return static_cast<FileProvider*>(p)->list([&](std::string_view path) { sink->add(sink->sink, string(path)); });
+                } catch (...) { return APEX_ERR_INTERNAL; }
+            },
+            [](void* p, apex_str path, const apex_vfs_data_sink* sink) -> apex_status {
+                try {
+                    if (!sink || !sink->write) return APEX_ERR_INVALID;
+                    std::vector<char> bytes;
+                    const auto status = static_cast<FileProvider*>(p)->open(view(path), bytes);
+                    if (status != APEX_OK) return status;
+                    return bytes.empty() ? APEX_OK : sink->write(sink->sink, bytes.data(), bytes.size());
+                } catch (...) { return APEX_ERR_INTERNAL; }
+            }};
+    }
+};
+inline const apex_vfs_v1* vfs(const apex_host& host) {
+    return static_cast<const apex_vfs_v1*>(host.get_interface(host.context, string("apex.vfs/1")));
+}
+inline const apex_assets_v1* assets(const apex_host& host) {
+    return static_cast<const apex_assets_v1*>(host.get_interface(host.context, string("apex.assets/1")));
+}
+// Activate only. `id` is plugin.<plugin>.<name>; `name` is the mount's display name. `kind`: 0 first, 1 last,
+// 2 before, 3 after the profile mount whose path contains `anchor`. `provider` must outlive the plugin.
+inline apex_status registerVfsProvider(const apex_host& host, std::string_view id, std::string_view name,
+                                       FileProvider& provider, uint32_t kind = 1, std::string_view anchor = {}) {
+    const auto* api = vfs(host);
+    if (!api) return APEX_ERR_UNSUPPORTED;
+    const auto table = FileProvider::table(provider);  // the host copies it during the call
+    const apex_vfs_position position{sizeof(position), kind, string(anchor)};
+    return api->register_provider(host.context, string(id), string(name), &table, &position);
+}
+// Editor thread: ask the host to reload the game's files because the provider's content changed.
+inline apex_status requestVfsRefresh(const apex_host& host, std::string_view id) {
+    const auto* api = vfs(host);
+    return api ? api->request_refresh(host.context, string(id)) : APEX_ERR_UNSUPPORTED;
+}
+// apex.assets/1 helpers (editor thread).
+inline apex_status findMaterial(const apex_host& host, std::string_view name, apex_material_info& out) {
+    const auto* api = assets(host);
+    out = {}; out.struct_size = sizeof(out);
+    return api ? api->find_material(host.context, string(name), &out) : APEX_ERR_UNSUPPORTED;
+}
+inline apex_status listMaterials(const apex_host& host, const std::function<bool(const apex_material_info&)>& visit) {
+    const auto* api = assets(host);
+    if (!api) return APEX_ERR_UNSUPPORTED;
+    struct Box { const std::function<bool(const apex_material_info&)>& visit; };
+    Box box{visit};
+    return api->list_materials(host.context, &box, [](void* user, const apex_material_info* info) -> int {
+        try { return static_cast<Box*>(user)->visit(*info) ? 0 : 1; } catch (...) { return 1; }
+    });
+}
+struct VmtEdit { std::string key, value; bool remove = false; };
+inline apex_status writeVmt(const apex_host& host, std::string_view material, const std::vector<VmtEdit>& edits) {
+    const auto* api = assets(host);
+    if (!api) return APEX_ERR_UNSUPPORTED;
+    std::vector<apex_vmt_edit> native;
+    for (const auto& e : edits) native.push_back({sizeof(apex_vmt_edit), string(e.key), string(e.value), e.remove ? 1u : 0u});
+    return api->write_vmt(host.context, string(material), native.data(), native.size());
 }
 }

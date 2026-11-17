@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <chrono>
 #include <map>
+#include <optional>
 #include <apex/apex_plugin.h>
+#include "assets/vfs.hpp"
 #include "core/math.hpp"
 namespace apex::document { class Document; }
 namespace apex::editor { class EditorSession; class ProblemRegistry; }
@@ -48,6 +50,22 @@ struct HelperDrawing {
 // apex.io/1: one registered importer.
 struct ImporterInfo { std::string id, name, owner; std::vector<std::string> extensions; };
 struct ImportResult { bool ok = false; std::string message; };
+// apex.assets/1: what a plugin may read and write about the game's materials. The UI implements it over
+// its GameContent; every call is on the editor thread.
+struct MaterialRecord { std::string name, shader, baseTexture, surfaceProp, source; };
+struct VmtEditRequest { std::string key, value; bool remove = false; };
+struct AssetsWriteResult { bool ok = false; bool unsupported = false; bool notFound = false; std::string message; };
+class AssetsBackend {
+public:
+    virtual ~AssetsBackend() = default;
+    // Calls `visit` for each indexed material until it returns false.
+    virtual void materials(const std::function<bool(const MaterialRecord&)>& visit) = 0;
+    virtual std::optional<MaterialRecord> material(std::string_view name) = 0;
+    // Edits the VMT through Apex's writer and refreshes that material in the index.
+    virtual AssetsWriteResult writeVmt(std::string_view material, const std::vector<VmtEditRequest>& edits) = 0;
+};
+// One registered apex.vfs/1 provider, for the plugin manager and tests.
+struct VfsProviderInfo { std::string id, name, owner; bool faulted = false; std::size_t inFlight = 0; };
 class Host {
 public:
     Host(std::filesystem::path state, std::filesystem::path breadcrumb,
@@ -98,6 +116,17 @@ public:
     // The UI calls this from a timer a few times a second; tests pass their own clock.
     std::size_t pollWatches(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     bool hasWatches() const;
+    // ---- apex.vfs/1 and apex.assets/1 ----
+    // Providers registered during activate, in registration order, for Vfs::load. Safe to call from any
+    // thread. Each is a thread-safe adapter that bounds every plugin call by the timeout below, catches its
+    // exceptions, and takes the plugin out of service after a timeout.
+    std::vector<assets::VfsProviderMount> vfsProviders() const;
+    std::vector<VfsProviderInfo> vfsProviderInfos() const;
+    // The longest a single provider call may take (default 5 s). Applies to calls made after this.
+    void setVfsTimeout(std::chrono::milliseconds timeout);
+    // Called on the editor thread when a plugin asks for its provider's files to be reloaded.
+    void setVfsRefreshHandler(std::function<void(std::string_view providerId)> handler);
+    void setAssetsBackend(AssetsBackend* backend);
     void setDocument(const document::Document* document);
     void setSession(editor::EditorSession* session);
     void setEnabled(std::string_view id, bool enabled);
