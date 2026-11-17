@@ -2,6 +2,7 @@
 
 #include "assets/path_expand.hpp"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -76,6 +77,16 @@ GameProfileDialog::GameProfileDialog(const assets::GameProfile* existing, QStrin
                            "games whose Hammer is Valve's, so saved maps open there unchanged."));
     form->addRow(tr("Engine branch"), escape_);
 
+    rtLightModes_ = new QCheckBox(tr("Realtime light modes (specular, direct and indirect)"), this);
+    rtLightModes_->setObjectName(QStringLiteral("gameRtLightModes"));
+    rtLightModes_->setToolTip(tr("Strata Source's light_rt keys. Leave off for engines that only have plain VRAD lights, "
+                                 "so the preview draws no light specular."));
+    form->addRow(tr("Engine features"), rtLightModes_);
+    pbrShader_ = new QCheckBox(tr("PBR material shader"), this);
+    pbrShader_->setObjectName(QStringLiteral("gamePbrShader"));
+    pbrShader_->setToolTip(tr("Strata Source's \"pbr\" shader. Leave off if the game does not have it."));
+    form->addRow(QString(), pbrShader_);
+
     toolDirectory_ = pathRow(tr("Tool folder"), QStringLiteral("gameToolDirectory"), true, form);
     toolDirectory_->setPlaceholderText(tr("bin/linux64 or bin/win64 beside the game folder"));
     vbsp_ = pathRow(tr("vbsp"), QStringLiteral("gameVbsp"), false, form);
@@ -145,6 +156,8 @@ void GameProfileDialog::load(const assets::GameProfile& profile) {
     fgds_->clear();
     for (const auto& fgd : profile.fgds) fgds_->addItem(fromPath(fgd));
     escape_->setCurrentIndex(profile.escapeMode == kv1::EscapeMode::Strata ? 0 : 1);
+    rtLightModes_->setChecked(profile.features.rtLightModes);
+    pbrShader_->setChecked(profile.features.pbrShader);
     toolDirectory_->setText(fromPath(profile.customToolDirectory));
     auto tool = [&](const char* name) {
         auto it = profile.toolPaths.find(name);
@@ -163,6 +176,7 @@ assets::GameProfile GameProfileDialog::profile() const {
     result.fgds.clear();
     for (int i = 0; i < fgds_->count(); ++i) result.fgds.push_back(toPath(fgds_->item(i)->text()));
     result.escapeMode = escape_->currentIndex() == 0 ? kv1::EscapeMode::Strata : kv1::EscapeMode::Legacy;
+    result.features = {rtLightModes_->isChecked(), pbrShader_->isChecked()};
     result.customToolDirectory = toPath(toolDirectory_->text());
     for (auto [key, edit] : {std::pair{"vbsp", vbsp_}, std::pair{"vvis", vvis_}, std::pair{"vrad", vrad_},
                              std::pair{"game", game_}}) {

@@ -138,6 +138,8 @@ TEST_CASE("suggestGameProfile reads a Valve-layout install") {
     CHECK(profile->fgds[0].filename() == "base.fgd");
     CHECK(profile->escapeMode == kv1::EscapeMode::Legacy);
     CHECK_FALSE(profile->vmfWrite.pointData);
+    CHECK_FALSE(profile->features.rtLightModes);
+    CHECK_FALSE(profile->features.pbrShader);
     // The suggestion round-trips through the profile file unchanged.
     auto decoded = parseGameProfile(writeGameProfile(*profile));
     REQUIRE(decoded);
@@ -155,6 +157,7 @@ TEST_CASE("suggestGameProfile recognises Strata and refuses folders without game
     CHECK(profile->name == "mymod");
     CHECK(profile->escapeMode == kv1::EscapeMode::Strata);
     CHECK(profile->customToolDirectory.empty());
+    CHECK(profile->features == EngineFeatures{});
     REQUIRE(profile->fgds.size() == 1);
     CHECK(profile->fgds[0].filename() == "mymod.fgd");
     CHECK_FALSE(suggestGameProfile(tree.root / "install"));
@@ -166,4 +169,21 @@ TEST_CASE("gameProfileFileName keeps names readable and file-safe") {
     CHECK(gameProfileFileName("Half-Life 2") == "Half-Life 2.json");
     CHECK(gameProfileFileName("a/b:c*?") == "a_b_c__.json");
     CHECK(gameProfileFileName(" .. ") == "game.json");
+}
+
+TEST_CASE("GameProfile engine features default to Strata's and round trip when changed") {
+    GameProfile profile;
+    profile.name = "x";
+    profile.gameDirectory = "/g";
+    CHECK(profile.features.rtLightModes);
+    CHECK(profile.features.pbrShader);
+    // Defaults are not written, so older profile files stay byte-identical.
+    CHECK(writeGameProfile(profile).find("features") == std::string::npos);
+    profile.features.rtLightModes = false;
+    auto decoded = parseGameProfile(writeGameProfile(profile));
+    REQUIRE(decoded);
+    CHECK_FALSE(decoded->features.rtLightModes);
+    CHECK(decoded->features.pbrShader);
+    CHECK(*decoded == profile);
+    CHECK_FALSE(parseGameProfile(R"({"name":"x","game_directory":"/g","features":{"pbr_shader":1}})"));
 }

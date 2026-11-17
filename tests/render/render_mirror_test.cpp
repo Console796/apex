@@ -2532,6 +2532,27 @@ TEST_CASE("mirror: light_rt helper flags indirect-only and shares the live clust
     check(scene.mirror.buildDrawList(options), true);
 }
 
+TEST_CASE("mirror: engines without light_rt modes ignore _specularmode and friends") {
+    REQUIRE_GPU();
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname light origin "0 0 64" _light "255 255 255 255" _quadratic_attn 1
+                 _directmode 0 _specularmode 2 _indirectmode 0 })"));
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Lit;
+    auto list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.lights.size() == 1);
+    CHECK(list.lights[0].specularMode == 2);
+    CHECK(list.lights[0].directMode == 0);
+    assets::EngineFeatures plain;
+    plain.rtLightModes = false;
+    scene.mirror.setEngineFeatures(plain);
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.lights.size() == 1);
+    CHECK(list.lights[0].specularMode == 0);
+    CHECK(list.lights[0].directMode == 1);
+    CHECK(list.lights[0].indirectMode == 1);
+}
+
 TEST_CASE("mirror: a missing skyname leaves checkerboard faces with no linear flag") {
     REQUIRE_GPU();
     // Missing faces sit on the checkerboard slot, which has no material record (render_pose crashed here).

@@ -26,6 +26,16 @@ struct AddonSettings {
     bool operator==(const AddonSettings&) const = default;
 };
 
+// What the game's engine branch implements, so the preview doesn't draw features it would not show.
+// Defaults are Strata Source's (and P2CE's); a profile for any other game turns them off unless set.
+struct EngineFeatures {
+    // light_rt's _specularmode/_directmode/_indirectmode keys. Off: lights are plain VRAD lights.
+    bool rtLightModes = true;
+    // The `pbr` material shader. Off: such materials are not shaded as PBR.
+    bool pbrShader = true;
+    bool operator==(const EngineFeatures&) const = default;
+};
+
 struct GameProfile {
     std::string name;
     // Directory containing gameinfo.txt, rather than the Steam install root.
@@ -34,6 +44,7 @@ struct GameProfile {
     std::map<std::string, std::filesystem::path> toolPaths;
     kv1::EscapeMode escapeMode = kv1::EscapeMode::Strata;
     VmfWriteOptions vmfWrite;
+    EngineFeatures features;
     AddonSettings addons;
     // Where the compile tools and their libraries live; empty means the Strata layout (bin/linux64, bin/win64).
     std::filesystem::path customToolDirectory;

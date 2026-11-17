@@ -260,6 +260,7 @@ struct RenderMirror::Impl {
     assets::ModelCache* modelCache = nullptr;
     TextureSlot errorSlot = kCheckerboardSlot;
     std::function<bool(const std::string&)> modelMaterialExists;
+    assets::EngineFeatures features;
     std::map<std::string, ModelMesh> models;
     std::vector<document::InstanceContent> instances;
     std::map<InstanceKey, std::unique_ptr<RenderMirror>> instanceMirrors;
@@ -511,7 +512,8 @@ struct RenderMirror::Impl {
         std::uint32_t flags = texture.format == assets::TextureFormat::Rgba32Float ||
             texture.format == assets::TextureFormat::Bc6Signed || texture.format == assets::TextureFormat::Bc6Unsigned ?
             kMaterialLinearBase : 0u;
-        const auto shader = lower(vmt.shader);
+        auto shader = lower(vmt.shader);
+        if (shader == "pbr" && !features.pbrShader) shader = "pbr (unsupported by this game)";
         if (shader == "sky" && material.skyHdrTexture) {
             if (auto hdr = heap.upload(*material.skyHdrTexture)) state.skyHdrSlot = *hdr;
             state.skyHdrLinear = material.skyHdrTexture->format == assets::TextureFormat::Rgba32Float ||
@@ -1075,6 +1077,10 @@ struct RenderMirror::Impl {
             }
             const auto* cls = entities.at(id).cls;
             auto built = cls ? lighting::lightsFromEntity(block, *cls, target) : lighting::lightsFromEntity(block, target);
+            if (!features.rtLightModes) {
+                // Only light_rt reads these keys; elsewhere a light is a plain VRAD light.
+                for (auto& light : built) { light.specularMode = 0; light.directMode = 1; light.indirectMode = 1; }
+            }
             std::uint64_t part = 0;
             for (auto& light : built) {
                 light.id = (std::uint64_t(id) << 3) | ++part;
@@ -1770,6 +1776,7 @@ struct RenderMirror::Impl {
                 continue;
             }
             auto mirror = std::make_unique<RenderMirror>(context, heap, jobs, cache, classes, modelCache, modelMaterialExists);
+            mirror->impl_->features = features;
             binding(*mirror->impl_);
             mirror->rebuild(*content.keys);
             instanceMirrors.emplace(key, std::move(mirror));
@@ -1807,6 +1814,12 @@ void RenderMirror::setLightmaps(std::shared_ptr<BakedLightmaps> maps) {
 }
 
 RenderMirror::~RenderMirror() = default;
+
+void RenderMirror::setEngineFeatures(const assets::EngineFeatures& features) {
+    impl_->features = features;
+    impl_->lightsDirty = true;
+    impl_->redraw = true;
+}
 
 void RenderMirror::setCubemapSource(CubemapSource source) {
     Impl& m = *impl_;

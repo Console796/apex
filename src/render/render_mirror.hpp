@@ -16,6 +16,7 @@
 // the mirror. Destroying the mirror cancels its jobs and releases its texture slots.
 
 #include "assets/fgd.hpp"
+#include "assets/game_profile.hpp"
 #include "assets/material_cache.hpp"
 #include "assets/model_cache.hpp"
 #include "core/job_pool.hpp"
@@ -164,6 +165,11 @@ class RenderMirror {
     ~RenderMirror();
     RenderMirror(const RenderMirror&) = delete;
     RenderMirror& operator=(const RenderMirror&) = delete;
+
+    // What the game's engine implements (default: Strata's). Set before rebuild(); instance contents inherit it.
+    // Without rtLightModes lights ignore _specularmode/_directmode/_indirectmode; without pbrShader `pbr`
+    // materials are not shaded as PBR.
+    void setEngineFeatures(const assets::EngineFeatures& features);
 
     // Treats every node of the document as created (initial load).
     void rebuild(const document::Document& document);

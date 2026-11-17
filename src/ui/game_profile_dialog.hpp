@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QStringList>
 
+class QCheckBox;
 class QComboBox;
 class QFormLayout;
 class QLabel;
@@ -39,6 +40,8 @@ private:
     QLineEdit* name_;
     QListWidget* fgds_;
     QComboBox* escape_;
+    QCheckBox* rtLightModes_;
+    QCheckBox* pbrShader_;
     QLineEdit* toolDirectory_;
     QLineEdit* vbsp_;
     QLineEdit* vvis_;

@@ -131,6 +131,18 @@ Result<GameProfile> parseGameProfile(std::string_view source) {
             }
         }
     }
+    if (auto v = find("features")) {
+        auto options = v->get<json::Value::Object>();
+        if (!options) return invalid();
+        for (auto [key, target] : {std::pair{"rt_light_modes", &result.features.rtLightModes},
+                                   std::pair{"pbr_shader", &result.features.pbrShader}}) {
+            if (auto it = options->find(key); it != options->end()) {
+                auto flag = it->second.get<bool>();
+                if (!flag) return invalid();
+                *target = *flag;
+            }
+        }
+    }
     if (auto v = find("addons")) {
         auto options = v->get<json::Value::Object>();
         if (!options) return invalid();
@@ -183,6 +195,9 @@ std::string writeGameProfile(const GameProfile& profile) {
         {"vmf_write", {json::Value::Object{{"point_data", {profile.vmfWrite.pointData}},
                                           {"markers", {profile.vmfWrite.markers}}}}}};
     // Written only when set, so profiles saved before the field existed stay byte-identical.
+    if (!(profile.features == EngineFeatures{}))
+        root["features"] = {json::Value::Object{{"rt_light_modes", {profile.features.rtLightModes}},
+                                                {"pbr_shader", {profile.features.pbrShader}}}};
     if (!profile.customToolDirectory.empty()) root["tool_directory"] = {profile.customToolDirectory.generic_string()};
     return json::write({std::move(root)}) + '\n';
 }
@@ -328,6 +343,7 @@ Result<GameProfile> suggestGameProfile(std::filesystem::path gameDirectory) {
     const bool strata = strataMounts || (result.toolPaths.contains("vbsp") && result.customToolDirectory.empty());
     result.escapeMode = strata ? kv1::EscapeMode::Strata : kv1::EscapeMode::Legacy;
     result.vmfWrite = {strata, strata};
+    result.features = {strata, strata};
     return result;
 }
 
