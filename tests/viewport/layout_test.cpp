@@ -106,3 +106,72 @@ TEST_CASE("layout JSON rejects malformed input") {
         "first":{"id":2,"type":"pane","viewport":{}},"second":{"id":3,"type":"pane","viewport":{}}}})"));
     CHECK_FALSE(bad(R"({"root":{"id":4,"type":"pane","viewport":{}}})"));
 }
+
+TEST_CASE("layout preserves an unavailable plugin panel") {
+    const auto parsed = json::parse(R"({"version":2,"active":1,"root":{
+        "id":3,"type":"split","orientation":"horizontal","ratio":0.3,
+        "first":{"id":1,"type":"pane","role":"viewport","viewport":{}},
+        "second":{"id":2,"type":"pane","role":"plugin",
+                  "panel":"plugin.example.face_stats","collapsed":true,"viewport":{}}
+    }})");
+    REQUIRE(parsed);
+    auto layout = ViewportLayout::fromJson(*parsed);
+    REQUIRE(layout);
+    CHECK(layout->paneIds() == std::vector<NodeId>{1, 2});
+    CHECK(layout->viewport(1));
+    CHECK_FALSE(layout->viewport(2));
+    CHECK(layout->active() == 1);
+    CHECK(layout->role(2) == AreaRole::Plugin);
+    CHECK(layout->panelId(2) == "plugin.example.face_stats");
+    CHECK(layout->tree().children[1].panelId == "plugin.example.face_stats");
+    CHECK(layout->collapsed(2));
+    CHECK(layout->splits()[0].ratio == 0.3);
+    const auto text = json::write(layout->toJson());
+    CHECK(text.find("plugin.example.face_stats") != std::string::npos);
+    auto back = ViewportLayout::fromJson(*json::parse(text));
+    REQUIRE(back);
+    CHECK(json::write(back->toJson()) == text);
+    ViewportLayout copy = *back;
+    const auto duplicate = copy.split(2, Orientation::Vertical);
+    REQUIRE(duplicate);
+    CHECK(copy.panelId(2) == "plugin.example.face_stats");
+    CHECK(copy.panelId(*duplicate) == copy.panelId(2));
+    CHECK_FALSE(copy.setRole(1, AreaRole::Plugin));
+    REQUIRE(copy.setRole(2, AreaRole::Outliner));
+    CHECK(copy.panelId(2).empty());
+    CHECK(back->panelId(2) == "plugin.example.face_stats");
+}
+
+TEST_CASE("layout still rejects unknown non-plugin roles") {
+    const auto parsed = json::parse(R"({"root":{"id":1,"type":"pane","role":"mystery","viewport":{}}})");
+    REQUIRE(parsed);
+    CHECK_FALSE(ViewportLayout::fromJson(*parsed));
+}
+
+TEST_CASE("layout rejects plugin panes without a panel identity") {
+    const auto missing = json::parse(R"({"root":{"id":1,"type":"pane","role":"plugin","viewport":{}}})");
+    REQUIRE(missing);
+    CHECK_FALSE(ViewportLayout::fromJson(*missing));
+    for (const auto* panel : {"null", "17", "\"\"", "\"plugin.example\"", "\"plugin..stats\"", "\"plugin.example.\""}) {
+        const auto parsed = json::parse(std::string(R"({"root":{"id":1,"type":"pane","role":"plugin","viewport":{},"panel":)") + panel + "}}");
+        REQUIRE(parsed);
+        CHECK_FALSE(ViewportLayout::fromJson(*parsed));
+    }
+}
+
+TEST_CASE("plugin panel registry sets and preserves a panel role") {
+    AreaRoleRegistry registry;
+    REQUIRE(registry.add({"plugin.example.stats", "Statistics"}));
+    CHECK_FALSE(registry.add({"plugin.example.stats", "Duplicate"}));
+    CHECK_FALSE(registry.add({"invalid", "Invalid"}));
+    registry.freeze();
+    CHECK_FALSE(registry.add({"plugin.example.other", "Other"}));
+    ViewportLayout layout;
+    const auto pane = layout.paneIds().front();
+    REQUIRE(layout.setPluginPanel(pane, "plugin.example.stats"));
+    CHECK(layout.role(pane) == AreaRole::Plugin);
+    CHECK(layout.panelId(pane) == "plugin.example.stats");
+    const auto restored = ViewportLayout::fromJson(layout.toJson());
+    REQUIRE(restored);
+    CHECK(restored->panelId(pane) == "plugin.example.stats");
+}

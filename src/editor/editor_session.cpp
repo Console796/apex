@@ -29,8 +29,44 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <stdexcept>
 
 namespace apex::editor {
+
+bool ToolRegistry::add(ToolId id, Factory factory) {
+    if (frozen_ || id.empty() || !factory || std::ranges::any_of(entries_, [&](const auto& e) { return e.id == id; })) return false;
+    entries_.push_back({std::move(id), std::move(factory)});
+    return true;
+}
+ToolRegistry& mutableToolRegistry() {
+    static ToolRegistry registry = [] {
+        ToolRegistry r;
+        r.add(EditorSession::Tool::Select, [](EditorSession& s) { return std::make_unique<SelectTool>(s); });
+        r.add(EditorSession::Tool::Entity, [](EditorSession& s) { return std::make_unique<EntityTool>(s); });
+        r.add(EditorSession::Tool::Block, [](EditorSession& s) { return std::make_unique<BlockTool>(s); });
+        r.add(EditorSession::Tool::Clip, [](EditorSession& s) { return std::make_unique<ClipTool>(s); });
+        r.add(EditorSession::Tool::Vertex, [](EditorSession& s) { return std::make_unique<VertexTool>(s); });
+        r.add(EditorSession::Tool::Primitive, [](EditorSession& s) { return std::make_unique<PrimitiveTool>(s); });
+        r.add(EditorSession::Tool::Apply, [](EditorSession& s) { return std::make_unique<ApplyTool>(s); });
+        r.add(EditorSession::Tool::Measure, [](EditorSession& s) { return std::make_unique<MeasureTool>(s); });
+        r.add(EditorSession::Tool::Overlay, [](EditorSession& s) { return std::make_unique<OverlayTool>(s); });
+        r.add(EditorSession::Tool::Rope, [](EditorSession& s) { return std::make_unique<RopeTool>(s); });
+        r.add(EditorSession::Tool::Displacement, [](EditorSession& s) { return std::make_unique<DisplacementTool>(s); });
+        return r;
+    }();
+    return registry;
+}
+const ToolRegistry& toolRegistry() { return mutableToolRegistry(); }
+
+bool EditorSession::addTool(std::unique_ptr<editor::Tool> tool) {
+    if (!tool) return false;
+    const auto id = tool->id();
+    if (id.empty() || tools_.contains(id)) return false;
+    if (!id.starts_with("tool.") && (!id.starts_with("plugin.") || id.find('.', 7) == std::string::npos || id.back() == '.')) return false;
+    tools_.emplace(id, std::move(tool));
+    toolIds_.push_back(id);
+    return true;
+}
 
 EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     instanceTemplates_ = std::make_unique<InstanceTemplates>();
@@ -39,17 +75,11 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
         return std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch());
     };
-    tools_.emplace(Tool::Select, std::make_unique<SelectTool>(*this));
-    tools_.emplace(Tool::Entity, std::make_unique<EntityTool>(*this));
-    tools_.emplace(Tool::Block, std::make_unique<BlockTool>(*this));
-    tools_.emplace(Tool::Primitive, std::make_unique<PrimitiveTool>(*this));
-    tools_.emplace(Tool::Clip, std::make_unique<ClipTool>(*this));
-    tools_.emplace(Tool::Vertex, std::make_unique<VertexTool>(*this));
-    tools_.emplace(Tool::Apply, std::make_unique<ApplyTool>(*this));
-    tools_.emplace(Tool::Measure, std::make_unique<MeasureTool>(*this));
-    tools_.emplace(Tool::Overlay, std::make_unique<OverlayTool>(*this));
-    tools_.emplace(Tool::Rope, std::make_unique<RopeTool>(*this));
-    tools_.emplace(Tool::Displacement, std::make_unique<DisplacementTool>(*this));
+    for (const auto& entry : toolRegistry().entries()) {
+        auto tool = entry.factory(*this);
+        if (!tool || tool->id() != entry.id || !addTool(std::move(tool)))
+            throw std::logic_error("invalid registered tool: " + entry.id);
+    }
     activeToolObject().activate();
     selection_.observe([this](const Selection&) {
         if (activeTool_ == "tool.select" && selectTool().lightEdit_.active()) selectTool().endTransform();
@@ -390,10 +420,12 @@ bool EditorSession::isToolEnabled(const ActionId& action) const {
 }
 bool EditorSession::isPieItemEnabled(const ActionId& action) const {
     if (tools_.contains(action)) return isToolEnabled(action);
+    if (action.starts_with("plugin.")) return document_ != nullptr; // A plugin action decides for itself.
     return document_ && !selectedNodes(selection_).empty();
 }
 bool EditorSession::perform(const ActionId& action) {
     if (activeToolObject().perform(action)) return true;
+    if (actionRegistry().invoke(action)) return true;
     // UI entry points use this policy; perform() remains available to programmatic callers.
     if (tools_.contains(action)) {
         setActiveTool(action);
@@ -1314,7 +1346,11 @@ bool EditorSession::input(const InputEvent& event, const ToolView& view) {
     }
     if (event.kind == InputKind::KeyDown && !event.autoRepeat && event.chord) {
         const auto action = keymap_.lookup(*event.chord, BindingContext::forTool(activeTool_));
-        if (const auto* menu = action ? pieFor(*action) : nullptr) {
+        const auto* layout = action ? pieFor(*action, preset_) : nullptr;
+        // Dormant items (a plugin that is absent) are left out of what opens, not out of the preset.
+        const auto shown = layout ? visiblePie(*layout) : PieMenu{};
+        if (layout && !shown.items.empty()) {
+            const auto* menu = &shown;
             if (event.navigating) pieRefusal_ = "Stop navigating first.";
             else if (activeToolObject().owns(event.source) || transformActive())
                 pieRefusal_ = "Finish the current gesture first.";

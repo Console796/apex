@@ -235,3 +235,66 @@ TEST_CASE("Tool scopes shadow global bindings and allow reuse in separate scopes
     CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.clip")) == "vertex.mode.edge");
     CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.select")) == "selection.mode.groups");
 }
+
+TEST_CASE("P0 plugin actions are optional in built-in presets") {
+    auto entries = actionRegistry().entries();
+    entries.push_back({"plugin.example.hello", "Hello", "Plugin", "Example action"});
+    const Actions actions(std::move(entries));
+    for (const auto* preset : {&hammerPreset(), &blenderPreset()}) {
+        CHECK(validate(*preset, actions).empty());
+        CHECK_NOTHROW(static_cast<void>(Keymap(*preset, actions)));
+    }
+}
+
+TEST_CASE("P0 missing built-in actions still fail validation") {
+    auto incomplete = hammerPreset();
+    incomplete.bindings.erase("edit.undo");
+    CHECK(hasProblem(validate(incomplete), "Missing action: edit.undo"));
+    CHECK_THROWS_AS(static_cast<void>(Keymap(incomplete)), std::invalid_argument);
+}
+
+TEST_CASE("action registry keeps built-ins first and freezes registration") {
+    ActionRegistry registry;
+    const auto builtinCount = registry.entries().size();
+    REQUIRE(registry.add({"plugin.example.hello", "Hello", "Plugin", "Hello"}));
+    CHECK(registry.entries().size() == builtinCount + 1);
+    CHECK(registry.entries().back().id == "plugin.example.hello");
+    CHECK_FALSE(registry.add({"plugin.example.hello", "Duplicate", "Plugin", "Duplicate"}));
+    registry.freeze();
+    CHECK_FALSE(registry.add({"plugin.example.other", "Other", "Plugin", "Other"}));
+}
+
+TEST_CASE("suggested plugin bindings report conflicts and never override the user") {
+    ActionRegistry actions;
+    Action conflict{"plugin.example.conflict", "Conflict", "Plugin", "Test action"};
+    conflict.suggestedBindings.emplace("Hammer", "Ctrl+Z");
+    REQUIRE(actions.add(std::move(conflict)));
+    Action available{"plugin.example.available", "Available", "Plugin", "Test action"};
+    available.suggestedBindings.emplace("Hammer", "F24");
+    REQUIRE(actions.add(std::move(available)));
+    Action scoped{"plugin.example.scoped", "Scoped", "Plugin", "Test action"};
+    scoped.suggestedBindings.emplace("Hammer", "F23");
+    scoped.suggestedContexts.emplace("Hammer", "plugin.example.tool");
+    REQUIRE(actions.add(std::move(scoped)));
+    auto preset = hammerPreset();
+    Keymap suggested(preset, actions);
+    CHECK(suggested.lookup(chord("Ctrl+Z")) == "edit.undo");
+    CHECK(suggested.lookup(chord("F24")) == "plugin.example.available");
+    CHECK_FALSE(suggested.lookup(chord("F23")));
+    CHECK(suggested.lookup(chord("F23"), BindingContext::forTool("plugin.example.tool")) == "plugin.example.scoped");
+    // The settings page lists these: every suggestion that took effect, with its context.
+    REQUIRE(suggested.suggestions().contains("plugin.example.available"));
+    CHECK(suggested.suggestions().at("plugin.example.available").chord == chord("F24"));
+    CHECK(suggested.suggestions().at("plugin.example.available").context == BindingContext::Always);
+    REQUIRE(suggested.suggestions().contains("plugin.example.scoped"));
+    CHECK(suggested.suggestions().at("plugin.example.scoped").context == BindingContext::forTool("plugin.example.tool"));
+    CHECK_FALSE(suggested.suggestions().contains("plugin.example.conflict"));
+    REQUIRE(suggested.suggestionConflicts().contains("plugin.example.conflict"));
+    CHECK(suggested.suggestionConflicts().at("plugin.example.conflict").find("edit.undo") != std::string::npos);
+    preset.bindings["plugin.example.available"] = Binding{std::vector<KeyChord>{chord("F23")}};
+    Keymap user(preset, actions);
+    CHECK(user.lookup(chord("F23")) == "plugin.example.available");
+    CHECK_FALSE(user.lookup(chord("F24")));
+    CHECK_FALSE(user.suggestions().contains("plugin.example.available"));  // A user binding replaces the suggestion.
+    CHECK_FALSE(preset.bindings.contains("plugin.example.conflict"));
+}

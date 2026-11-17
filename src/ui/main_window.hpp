@@ -33,10 +33,14 @@ namespace apex::document {
 class Document;
 }
 
+namespace apex::plugin_host { class Host; class AssetsBackend; }
+
 namespace apex::ui {
 
 class CompilePanel;
 class PieMenuPopup;
+class PluginUi;
+class PluginPump;
 class CommandPalette;
 class GameContent;
 class LogPanel;
@@ -74,6 +78,8 @@ public:
     bool saveFile(const QString& path);
     editor::EditorSession& editorSession() { return session_; }
     document::Document* document() const { return document_.get(); }
+    void setPluginHost(plugin_host::Host* host);
+    plugin_host::Host* pluginHost() const { return pluginHost_; }
     const QString& documentPath() const { return path_; }
 
     void setTheme(Theme theme);
@@ -132,6 +138,7 @@ public:
 
 private slots:
     void openDialog();
+    void importDialog();
     void save();
     void saveAs();
 
@@ -179,6 +186,10 @@ private:
     void restoreLayout();
     void closeEvent(QCloseEvent* event) override;
 
+    plugin_host::Host* pluginHost_ = nullptr;
+    std::unique_ptr<plugin_host::AssetsBackend> pluginAssets_; // apex.assets/1 over gameContent_
+    PluginUi* pluginUi_ = nullptr;
+    PluginPump* pluginPump_ = nullptr;
     std::unique_ptr<document::Document> document_;
     std::unique_ptr<GameContent> gameContent_;
     CompilePanel* compilePanel_ = nullptr;

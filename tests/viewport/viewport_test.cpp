@@ -388,3 +388,23 @@ TEST_CASE("Source capture FOV and pose use cl_showpos conventions") {
     checkVec(DVec3(camera.viewMatrix() * Vec4(0, 0, 1, 0)), {0, 0, 1});
     checkVec(DVec3(camera.viewMatrix() * Vec4(1, 0, 0, 0)), {0, 1, 0});
 }
+
+TEST_CASE("plugin overlays switched off for a viewport round trip, survive presets and validate") {
+    auto vp = makePreset(Preset::Camera);
+    CHECK(vp.overlays.pluginOff.empty());
+    vp.overlays.pluginOff = {"plugin.b.two", "plugin.a.one"};
+    const auto text = json::write(toJson(vp));
+    const auto back = viewportFromJson(*json::parse(text));
+    REQUIRE(back);
+    CHECK(back->overlays.pluginOff == std::set<std::string>{"plugin.a.one", "plugin.b.two"});
+    CHECK(json::write(toJson(*back)) == text); // sorted, so the text is stable
+    // Switching the camera preset keeps the user's choices for plugin overlays.
+    applyPreset(vp, Preset::Top);
+    CHECK(vp.overlays.pluginOff.size() == 2);
+    // Layouts saved before plugin overlays existed load with none off.
+    const auto older = viewportFromJson(*json::parse(R"({"overlays":{"grid":true}})"));
+    REQUIRE(older);
+    CHECK(older->overlays.pluginOff.empty());
+    CHECK_FALSE(viewportFromJson(*json::parse(R"({"overlays":{"pluginOff":"plugin.a"}})")));
+    CHECK_FALSE(viewportFromJson(*json::parse(R"({"overlays":{"pluginOff":[1]}})")));
+}

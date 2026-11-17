@@ -104,12 +104,13 @@ void GameContent::reload(const assets::GameProfile* profile) {
     if (!profile_) { clear(); return; }
     loading_ = true;
     timer_->start();
-    reloadJob_ = jobs_->submit(Priority::Normal, [profile = *profile_](CancelToken token) {
+    auto providers = providerSource_ ? providerSource_() : std::vector<assets::VfsProviderMount>{};
+    reloadJob_ = jobs_->submit(Priority::Normal, [profile = *profile_, providers = std::move(providers)](CancelToken token) {
         // Vfs::load waits on its loose-file indexing job, so give that work its own pool.
         using Loaded = std::pair<std::shared_ptr<const assets::Vfs>, std::unique_ptr<assets::UnmountedAddonIndex>>;
         try {
             JobPool workers(1);
-            auto loaded = assets::Vfs::load(profile, workers);
+            auto loaded = assets::Vfs::load(profile, workers, {}, providers);
             if (!loaded) return Result<Loaded>(std::unexpected(loaded.error()));
             if (token.cancelled()) return Result<Loaded>(std::unexpected(Error{ErrorCode::Internal, "Content reload cancelled"}));
             auto vfs = std::make_shared<assets::Vfs>(std::move(*loaded));
@@ -128,6 +129,9 @@ void GameContent::reload(const assets::GameProfile* profile) {
             unmounted_ = std::move(loaded->second);
             for (const auto& problem : vfs_->addons().problems) log::warn("game content: {}", problem);
             for (const auto& problem : unmounted_->problems()) log::warn("game content: {}", problem);
+            for (const auto& note : vfs_->notes()) log::warn("game content: {}", note);
+            for (const auto& name : vfs_->omittedFromCompile())
+                log::warn("game content: plugin provider \"{}\" is mounted in the editor only; compiles (vbsp, vvis, vrad) cannot read it", name);
             index_ = std::make_unique<assets::MaterialIndex>(*vfs_, *jobs_, profile_->escapeMode);
             modelIndex_ = std::make_unique<assets::ModelIndex>(*vfs_, *jobs_, profile_->escapeMode);
             soundIndex_ = std::make_unique<assets::SoundIndex>(*vfs_, *jobs_, profile_->escapeMode);
@@ -230,6 +234,22 @@ void GameContent::pump() {
     if (jobs_) jobs_->drainCompletions();
     if (!loading_ && !index_ && !modelIndex_ && !soundIndex_ && !particleIndex_ && !thumbnails_ && timer_) timer_->stop();
 }
+bool GameContent::refreshMaterial(std::string_view name) {
+    if (!snapshot_ || !vfs_ || !snapshot_->find(name)) return false;
+    const auto vfs = vfs_;
+    const assets::MaterialReader reader = [vfs](std::string_view path) -> Result<std::string> {
+        auto bytes = vfs->open(path);
+        if (!bytes) return std::unexpected(bytes.error());
+        return std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+    };
+    const auto mount = snapshot_->find(name)->mount;
+    snapshot_ = snapshot_->with(assets::indexMaterial(reader, name, mount));
+    hotspots_.clear();
+    textureSizes_.clear();
+    emit indexReady();
+    return true;
+}
+
 std::shared_ptr<const assets::MaterialIndexSnapshot> GameContent::snapshot() const {
     return snapshot_;
 }

@@ -36,6 +36,7 @@ class Document;
 namespace apex::ui {
 
 class GpuHost;
+class PluginUi;
 class PaneFrame;
 class AreaSplitter;
 class FloatingPanel;
@@ -66,6 +67,8 @@ public:
     void setEditorSession(editor::EditorSession* session);
     void setGameContent(GameContent* content);
     void setModelPicker(ModelsPanel* panel);
+    // Not owned. Plugin panels and sections need it; placeholders turn into the real panel once it knows the panel.
+    void setPluginUi(PluginUi* ui);
     CompilePanel* compilePanel() const { return compilePanel_; }
     void setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser);
     void setMaterialBrowser(std::function<void(QString, QString, std::function<void(QString)>)> browser);
@@ -161,7 +164,7 @@ private:
     QWidget* makeArea(const viewport::LayoutNode& node, bool maximized, bool canClose, bool verticalStrip);
     PaneFrame* makeFrame(viewport::NodeId pane, bool maximized, bool canClose);
     QWidget* panelFor(viewport::NodeId pane, viewport::AreaRole role);
-    QWidget* makePanel(viewport::AreaRole role);
+    QWidget* makePanel(viewport::AreaRole role, std::string_view panelId = {});
     void configurePanel(QWidget* panel);
     template <typename Frame> void connectArea(Frame* frame);  // Defined in the .cpp; used there only.
     void tick();
@@ -210,6 +213,7 @@ private:
     QWidget* root_ = nullptr;
     QWidget* body_ = nullptr;
     std::map<viewport::NodeId, QPointer<PaneFrame>> frames_;
+    QPointer<PluginUi> pluginUi_;
     std::map<viewport::NodeId, QPointer<QWidget>> panels_;
     std::map<viewport::AreaRole, QPointer<FloatingPanel>> floating_;
     QTimer timer_;

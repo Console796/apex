@@ -213,3 +213,20 @@ TEST_CASE("pie Input preferences apply persist reload and cancel") {
     }
     ui::savePieSettings(original);
 }
+
+TEST_CASE("P1 pie popup renders resolved slots for programmatic unpinned items") {
+    ui_test::app();
+    Fixture f;
+    f.window.newFile();
+    auto preset = editor::hammerPreset();
+    preset.pies["pie.tools"] = editor::PieMenu{"Unpinned", {
+        {"tool.select", std::nullopt, "Select"}, {"tool.block", std::nullopt, "Block"}}};
+    f.window.applyPreset(preset);
+    auto* popup = f.open();
+    REQUIRE(popup);
+    REQUIRE(f.window.editorSession().pie());
+    CHECK(f.window.editorSession().pie()->slot(0) == editor::PieSlot::W);
+    CHECK(f.window.editorSession().pie()->slot(1) == editor::PieSlot::E);
+    CHECK_FALSE(popup->grab().isNull());
+    key(*popup, Qt::Key_Escape);
+}

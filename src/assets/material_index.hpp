@@ -15,6 +15,7 @@ struct MaterialIndexEntry {
     bool toolTexture = false;
     std::string previewTexture;
     std::string rectangleMap; // %rectanglemap (plan 0.8 D13)
+    std::string surfaceProp;  // $surfaceprop as written (after patch resolution), empty when unset
     DMat3 baseTextureTransform{1.0};
     std::optional<std::size_t> mount; // Vfs::provider: addon index, empty for game content
     std::string error;
@@ -23,7 +24,12 @@ struct MaterialIndexSnapshot {
     explicit MaterialIndexSnapshot(std::vector<MaterialIndexEntry> entries = {});
     std::vector<MaterialIndexEntry> entries; // sorted case-insensitively by name
     const MaterialIndexEntry* find(std::string_view name) const;
+    // A copy with `entry` replacing the one of the same name (or added), still sorted.
+    std::shared_ptr<const MaterialIndexSnapshot> with(MaterialIndexEntry entry) const;
 };
+// Indexes one material the way the full index does, for refreshing a single entry after a write.
+MaterialIndexEntry indexMaterial(const MaterialReader& reader, std::string_view name,
+                                 std::optional<std::size_t> mount);
 struct MaterialFilter {
     std::string name; // substring or full-name glob; keyword:word tokens match whole keywords
     std::string shader;

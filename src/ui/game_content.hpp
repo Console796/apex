@@ -2,6 +2,8 @@
 
 #include <QObject>
 #include <filesystem>
+#include <functional>
+#include <vector>
 #include <memory>
 #include <optional>
 #include <string>
@@ -34,6 +36,15 @@ public:
     explicit GameContent(QObject* parent = nullptr);
     ~GameContent() override;
     void reload(const assets::GameProfile* profile);
+    // Where plugin file providers (apex.vfs/1) come from. Asked on the main thread at every reload and
+    // passed to Vfs::load, so a provider's files reach the material index, thumbnails and renderer through
+    // the Vfs like any mount. Set before the first reload.
+    using VfsProviderSource = std::function<std::vector<assets::VfsProviderMount>()>;
+    void setVfsProviderSource(VfsProviderSource source) { providerSource_ = std::move(source); }
+    // Re-indexes one material after its VMT was written (apex.assets/1) and tells the panels. False when
+    // the index is not ready or the material is unknown. Thumbnails and renderer caches keep their old
+    // image of it until the next content reload.
+    bool refreshMaterial(std::string_view name);
     void clear();
     std::shared_ptr<const assets::Vfs> vfs() const { return vfs_; }
     std::shared_ptr<const assets::MaterialIndexSnapshot> snapshot() const;
@@ -111,6 +122,7 @@ private:
     JobHandle classesJob_;
     std::unique_ptr<assets::ThumbnailCache> thumbnails_;
     std::optional<assets::GameProfile> profile_;
+    VfsProviderSource providerSource_;
     std::filesystem::path prefabUserFolder_;
     QTimer* timer_ = nullptr;
     QString error_;

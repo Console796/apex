@@ -61,6 +61,10 @@ struct Modified {
     NodeHandle handle;
     Dirty flags = Dirty::None;
 };
+struct ModifiedId {
+    NodeId id;
+    Dirty flags = Dirty::None;
+};
 struct SideLocation {
     Handle<Solid> solid;
     std::size_t faceIndex = 0;
@@ -75,7 +79,12 @@ struct ChangeSet {
     std::vector<NodeHandle> created;
     std::vector<Modified> modified;
     std::vector<NodeHandle> destroyed;
+    // Stable identities parallel to the handle vectors, including nodes already destroyed.
+    std::vector<NodeId> createdIds;
+    std::vector<ModifiedId> modifiedIds;
+    std::vector<NodeId> destroyedIds;
     std::vector<SideId> vanishedSides;
+    bool undoOrRedo = false;
     bool empty() const {
         return created.empty() && modified.empty() && destroyed.empty() && vanishedSides.empty();
     }
@@ -150,6 +159,8 @@ public:
     using Observer = std::function<void(const ChangeSet&)>;
     std::size_t observe(Observer observer);
     void unobserve(std::size_t token);
+    // Schedule work after the current observer pass; executes immediately otherwise.
+    void defer(std::function<void()> operation);
 
 private:
     explicit Document(std::nullptr_t) : cap_(0) {}
@@ -196,6 +207,8 @@ private:
     std::map<std::size_t, Observer> observers_;
     InstanceKeyTypes sideListTypes_;
     bool active_ = false, notifying_ = false, coalesceAllowed_ = false;
+    bool drainingDeferred_ = false;
+    std::vector<std::function<void()>> deferred_;
 
     NodeId import(const kv1::Node& block, NodeId parent);
     NodeValue value(NodeId id) const;

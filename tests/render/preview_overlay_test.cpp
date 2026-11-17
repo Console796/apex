@@ -13,7 +13,10 @@
 
 #include <vtfpp/VTF.h>
 
+#include <chrono>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <iomanip>
 #include <iostream>
 
@@ -432,4 +435,102 @@ TEST_CASE("glyph atlas: invalid byte counts and glyph rectangles fail before upl
     font.glyphs['A'].rect[0] = font.width;
     CHECK_FALSE(GlyphAtlas::create(*g.context, *g.heap, font));
     CHECK(g.heap->liveTextures() == textures);
+}
+
+// Plan 0.9.5 probe P4: what a per-face colour override on every face costs, refreshed at the 10 Hz
+// apex.overlay/1 rate. Opt-in (APEX_MEASURE=1). Reports CPU time of setHighlight + buildDrawList, the
+// draw count the split produces, and a recorded+submitted frame, with and without every face tinted.
+namespace {
+
+std::vector<document::SideId> allSideIds(const document::Document& doc) {
+    std::vector<document::SideId> ids;
+    const auto walk = [&](const auto& self, document::NodeId id) -> void {
+        const auto handle = doc.handle(id);
+        if (!handle) return;
+        const document::Node* node = doc.get(*handle);
+        if (std::holds_alternative<Handle<document::Solid>>(*handle) && node->block)
+            for (const auto* side : node->block->findAll("side"))
+                if (const auto* sideId = side->find("id"); sideId && sideId->asInt()) ids.push_back(*sideId->asInt());
+        for (const auto child : node->children) self(self, child);
+    };
+    for (const auto root : doc.roots()) walk(walk, root);
+    return ids;
+}
+
+void measureTint(Gpu& g, const char* label, document::Document& doc) {
+    using Clock = std::chrono::steady_clock;
+    const auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    RenderMirror mirror(*g.context, *g.heap, g.jobs, *g.cache);
+    mirror.rebuild(doc);
+    REQUIRE(mirror.settle(std::chrono::seconds(120)));
+    const auto sides = allSideIds(doc);
+    MirrorViewOptions view;
+    view.mode = DisplayMode::Textured;
+    view.view.cameraPosition = DVec3(0, 0, 4000);
+    view.view.viewProjection = reversedZOrtho(4000, 4000, 1, 9000) * rotationOnlyView(angleVectors({90, 0, 0}));
+    constexpr int kReps = 20;
+    const auto run = [&](const char* mode, bool tinted) {
+        double setMs = 0, buildMs = 0, frameMs = 0;
+        std::size_t draws = 0, outlines = 0;
+        for (int rep = 0; rep < kReps; ++rep) {
+            std::map<document::SideId, Vec4> tints;
+            const auto a = Clock::now();
+            if (tinted) {
+                // A new colour each pass (a 10 Hz plugin repaint); building the map is part of the cost.
+                const float t = float(rep % 10) / 10.0f;
+                for (const auto side : sides) tints[side] = Vec4(t, 1.0f - t, 0.5f, 0.4f);
+            }
+            view.sideTints = tinted ? &tints : nullptr;
+            const auto b = Clock::now();
+            auto list = mirror.buildDrawList(view);
+            const auto c = Clock::now();
+            draws = list.meshes.size();
+            outlines = list.outlines.size();
+            list.viewportSize = Vec2(kSize);
+            REQUIRE(g.context->oneShot([&](VkCommandBuffer commands) {
+                g.target.begin(commands, kClear);
+                g.renderer->record(commands, list);
+                g.target.end(commands);
+            }));
+            const auto d = Clock::now();
+            setMs += ms(a, b);
+            buildMs += ms(b, c);
+            frameMs += ms(c, d);
+        }
+        std::cout << "[measure P4] " << label << " " << mode << ": faces=" << sides.size() << " draws=" << draws
+                  << " outlines=" << outlines << " build tint map=" << setMs / kReps << " ms buildDrawList="
+                  << buildMs / kReps << " ms record+submit+wait=" << frameMs / kReps << " ms\n";
+    };
+    run("untinted", false);
+    run("all faces tinted", true);
+    run("untinted again", false);
+}
+
+} // namespace
+
+TEST_CASE("[measure] 0.9.5 P4 per-face tint on every face of the largest test maps") {
+    const auto* enabled = std::getenv("APEX_MEASURE");
+    if (!enabled || std::string_view(enabled) != "1") {
+        MESSAGE("APEX_MEASURE=1 is required; skipping release measurements");
+        return;
+    }
+    REQUIRE_GPU();
+    {
+        document::Document doc(editor_test::parsed());
+        for (int y = 0; y < 48; ++y)
+            for (int x = 0; x < 48; ++x) {
+                const DVec3 lo{x * 64.0, y * 64.0, -32.0};
+                editor_test::addBox(doc, lo, lo + DVec3{64.0, 64.0, 32.0});
+            }
+        measureTint(g, "48x48 boxes (13,824 faces)", doc);
+    }
+    const char* home = std::getenv("HOME");
+    const auto path = std::filesystem::path(home ? home : ".") / "maps/apex/test1.vmf";
+    if (!std::filesystem::exists(path)) { MESSAGE("test1.vmf missing"); return; }
+    std::ostringstream text;
+    text << std::ifstream(path).rdbuf();
+    auto parsed = vmf::parse(text.str());
+    REQUIRE(parsed);
+    document::Document doc(*parsed);
+    measureTint(g, "test1.vmf", doc);
 }

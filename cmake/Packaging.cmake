@@ -24,3 +24,25 @@ if(TARGET apex)
     install(FILES third_party/ibm-plex-sans/LICENSE.txt DESTINATION ${CMAKE_INSTALL_DOCDIR} RENAME LICENSE-IBM-Plex-Sans.txt COMPONENT apex)
   endif()
 endif()
+
+# ---- The plugin SDK (0.9.9, 0.9 D8): the `sdk` component ----
+# Headers, the CMake package (the ApexPlugin package: apex::plugin_sdk, apex_add_plugin()), the example plugins'
+# sources with the project file that builds them, and docs/plugins. No Apex source beyond that.
+# `tools/package.py --sdk` stages this component and zips it into apex-plugin-sdk-<version>.zip, one archive for
+# every platform. Paths are fixed (not GNUInstallDirs' lib64 and so on) because the archive is relocatable and
+# platform neutral; ApexPluginConfig.cmake finds the headers relative to itself.
+include(CMakePackageConfigHelpers)
+file(STRINGS "${PROJECT_SOURCE_DIR}/include/apex/apex_plugin.h" _abi_major REGEX "^#define APEX_PLUGIN_ABI_MAJOR ")
+file(STRINGS "${PROJECT_SOURCE_DIR}/include/apex/apex_plugin.h" _abi_minor REGEX "^#define APEX_PLUGIN_ABI_MINOR ")
+string(REGEX REPLACE "^.* ([0-9]+)u?$" "\\1" _abi_major "${_abi_major}")
+string(REGEX REPLACE "^.* ([0-9]+)u?$" "\\1" _abi_minor "${_abi_minor}")
+# The package version is the ABI version: a request for ApexPlugin 1 matches any 1.x, never 2.
+write_basic_package_version_file("${CMAKE_BINARY_DIR}/sdk/ApexPluginConfigVersion.cmake"
+  VERSION ${_abi_major}.${_abi_minor}.0 COMPATIBILITY SameMajorVersion ARCH_INDEPENDENT)
+install(FILES include/apex/apex_plugin.h include/apex/plugin.hpp DESTINATION include/apex COMPONENT sdk)
+install(FILES cmake/sdk/ApexPluginConfig.cmake cmake/sdk/ApexPluginHelpers.cmake
+              "${CMAKE_BINARY_DIR}/sdk/ApexPluginConfigVersion.cmake"
+        DESTINATION lib/cmake/ApexPlugin COMPONENT sdk)
+install(DIRECTORY examples/ DESTINATION share/apex-sdk/examples COMPONENT sdk)
+install(DIRECTORY docs/plugins/ DESTINATION share/doc/apex-sdk COMPONENT sdk FILES_MATCHING PATTERN "*.md")
+install(FILES LICENSE DESTINATION . COMPONENT sdk)

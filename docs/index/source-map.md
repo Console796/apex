@@ -167,6 +167,30 @@ How the map is seen. No Qt here.
 | `pick_math.hpp`, `.cpp` | Turns a pixel and a viewport into a ray. |
 | `view_context.hpp`, `.cpp` | What a tool sees of a viewport: plain camera data and the picking callback. |
 
+## `src/plugin_host/` (layer `plugin_host`)
+
+Host side of the plugin C ABI (0.9). Qt-free; may use `editor`, `assets` and `render`, and `ui` uses it.
+
+| File | Purpose |
+|---|---|
+| `plugin_host.*` | Discovery, manifests, loading, safe mode and the breadcrumb, the interface tables (`apex.document/1` through `apex.assets/1`), registries, VFS providers, jobs and file watch. |
+| `plugin_tool.*` | The `editor::Tool` adapter behind `apex.tools/1` (per-session instances). |
+| `abi_array.hpp` | Reads ABI arrays whose elements stride by their own `struct_size`. |
+| `script_engine.hpp` | The seam between the host and a script engine. |
+| `angelscript_engine.*` | The AngelScript 2.38.0 engine (`APEX_WITH_ANGELSCRIPT`): script plugins, reload on save, load budget and watchdog. |
+
+## `include/apex/`, `examples/`, `cmake/sdk/` and `docs/plugins/` (the plugin SDK)
+
+- `include/apex/apex_plugin.h` is the C ABI (major 1, minor 0, frozen). `include/apex/plugin.hpp` is the header-only
+  C++23 wrapper. Neither may include anything from `src/` or Qt (`tools/check_layers.py`).
+- `examples/` has `hello-tool`, `polygon-tool`, `face-stats`, `obj-import` and the AngelScript `stair`.
+- `cmake/sdk/` holds `ApexPluginConfig.cmake` and `ApexPluginHelpers.cmake` (`apex::plugin_sdk`, `apex_add_plugin()`,
+  `apex_add_script_plugin()`), installed by the `sdk` component in `cmake/Packaging.cmake`.
+  `tools/package.py --sdk` builds `apex-plugin-sdk-<version>.zip`.
+- `docs/plugins/` is the user documentation (22 pages); `tools/check_docs.py` checks it. `docs/plugin-sdk.md` is a pointer.
+- Tests: `tests/plugin_host/` (including `abi_layout.inc`, the golden struct sizes), `tests/plugin_sdk/out_of_tree.py`
+  (the `plugin_sdk_out_of_tree` case).
+
 ## `src/ui/` (layer `ui`)
 
 Qt. The largest directory after `editor`, and the only one that includes Qt headers besides `app`.
@@ -211,3 +235,8 @@ Qt. The largest directory after `editor`, and the only one that includes Qt head
   The editor tools are `src/editor/displacement_tool.*`, `displacement_edit.*`, `overlay_tool.*`,
   `overlay_placement.*`, `overlay_problems.*` and `rope_tool.*`; the Apply tool's Hotspot mode is in
   `src/editor/apply_tool.*`.
+- **Extensibility (0.9):** the loader and interface tables are in `src/plugin_host/`. The plugin manager,
+  plugin panels, the declarative form host and the Pies page are in `src/ui/` (`plugin_manager.*`,
+  `plugin_form.*`, `plugin_ui.*`, `plugin_pump.*`). `ChangeSet` carries `NodeId`s from
+  `src/document/document.hpp`, pie layouts are in `Preset::pies` (`src/editor/actions.hpp`), and plugin
+  actions go through the action registry in `src/editor/actions.*`.

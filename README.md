@@ -4,12 +4,12 @@ Apex is a native, cross-platform level editor for Source-engine maps, aimed at t
 (P2CE) toolchain. It is a C++23 / Qt 6 / Vulkan program that reads and writes `.vmf` files and is
 meant to interoperate with Strata Hammer in both directions without loss.
 
-**Status: 0.8 released, 0.9 in progress.** The latest release is `0.8.9-release` (tag
+**Status: 0.8 released, 0.9 feature complete with release checks open.** The latest release is `0.8.9-release` (tag
 `v0.8.9-release`), which completes milestone 0.8, advanced geometry and surfaces. Earlier releases
 are `0.7.7-release` (lighting II, baked preview), `0.6.8-release` (lighting I, realtime direct
 lighting), and the 0.1 to 0.3 releases. 0.4 and 0.5 have landed without a release tag; 0.5's
-verification is still open. Milestone 0.9 (extensibility: plugins and scripting) is in progress on
-`master`. Apex can open, author, entity-edit, compile and launch maps, preview direct and baked
+verification is still open. Milestone 0.9 (extensibility: plugins and scripting) is feature complete on
+`master` but not released: its release checks (Windows, Strata Hammer interop, the plugin round trip) are open. Apex can open, author, entity-edit, compile and launch maps, preview direct and baked
 lighting, and edit displacements, overlays and ropes. It is pre-release software. Back up every map
 before you open it.
 
@@ -99,8 +99,11 @@ Portal 2 itself. See [docs/source-game-support.md](docs/source-game-support.md) 
 
 ## What is not here yet
 
-- **Plugins and scripting** are milestone 0.9, in progress. The plugin C ABI, scripting host,
-  keymap and theme editors, and plugin manager have not shipped.
+- **Plugins and scripting** (milestone 0.9) are built on `master` and not released. The plugin C ABI is frozen at
+  major 1, minor 0; there is a plugin manager, AngelScript script plugins and an SDK package
+  (`python3 tools/package.py --sdk`). Windows and MSVC are untested for plugins, and scriptable primitives, floating plugin
+  panels and native hot reload are not built. See [docs/plugins](docs/plugins/README.md) and the
+  [draft release notes](docs/releases/0.9.9-release.md).
 - **Detail prop preview** was dropped from 0.8 and returns in a later milestone. The code stays in
   the tree with no menu entry.
 - **Displacement limits:** no clipping, carving or merging through a displaced face. Destroy the
@@ -206,12 +209,14 @@ The 0.8.9 Linux packages were built on Ubuntu 26.04 and need glibc 2.43 or newer
 | `src/editor` | Tools (including the Displacement, Overlay and Rope tools), selection, gizmos, snapping, clipboard, autosave, cordons, problems |
 | `src/assets` | Virtual filesystem, game profiles, addons, VMT/VTF/FGD, hotspot rects, asset indexes, model baking |
 | `src/render`, `src/viewport` | Vulkan renderer (including the `Lit` and bake passes) and viewport management |
-| `src/ui`, `src/app` | Qt shell and the `apex` executable |
+| `src/plugin_host` | Host side of the plugin ABI: loader, interface tables, tool adapter, the AngelScript script host (Qt-free) |
+| `src/ui`, `src/app` | Qt shell (including the plugin manager and plugin panels) and the `apex` executable |
+| `include/apex`, `examples`, `cmake/sdk` | The public plugin headers (C ABI and C++ wrapper), example plugins, and the SDK's CMake package |
 | `tests/` | doctest suites that mirror `src/`, fixtures (Apex-authored only), fuzz targets, golden images |
 | `tools/` | CI runner, layer and licence checks, packaging, VMF dump, probes, and Hammer and compile cross-checks |
 | `cmake/`, `third_party/`, `spikes/` | Build modules, vendored Wayland protocol XML, and throwaway experiments outside the build |
 | `scripts/` | Memory-capped build, test and memory-check wrappers |
-| `docs/` | [roadmap](docs/roadmap.md), [spec](docs/research.md), [releases](docs/releases), per-milestone [plans](docs/plans), [repository index](docs/index/README.md) |
+| `docs/` | [plugin SDK docs](docs/plugins/README.md), [roadmap](docs/roadmap.md), [spec](docs/research.md), [releases](docs/releases), per-milestone [plans](docs/plans), [repository index](docs/index/README.md) |
 
 ## New to the repository?
 

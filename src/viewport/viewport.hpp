@@ -7,6 +7,8 @@
 #include "viewport/camera.hpp"
 
 #include <optional>
+#include <set>
+#include <string>
 
 namespace apex::viewport {
 
@@ -34,6 +36,9 @@ struct Overlays {
     bool approxBounce = true;    // Realtime: constant ambient fill plus screen-space AO, a stand-in for bounce light.
     bool structural = false;     // Greys detail brushes and entities, leaving what cuts vis portals (0.8.9 D16).
     bool detailProps = false;    // detail.vbsp sprites and models on %detailtype displacements (0.8.9 D16).
+    // Plugin overlay toggles (0.9.5, apex.overlay/1): the namespaced IDs switched OFF in this viewport. Empty
+    // means every plugin overlay shows, so a plugin installed later appears without touching saved views.
+    std::set<std::string> pluginOff;
 
     bool operator==(const Overlays&) const = default;
 };

@@ -335,29 +335,66 @@ bool themeFromJson(const QJsonObject& json, ThemeEntry& out, QString* error) {
     return true;
 }
 
+namespace {
+bool readThemeFile(const QFileInfo& fi, ThemeEntry& out, QString& err) {
+    QFile f(fi.absoluteFilePath());
+    if (!f.open(QIODevice::ReadOnly)) {
+        err = QStringLiteral("cannot open");
+        return false;
+    }
+    QJsonParseError pe;
+    const auto doc = QJsonDocument::fromJson(f.readAll(), &pe);
+    if (!doc.isObject()) {
+        err = pe.errorString();
+        return false;
+    }
+    return themeFromJson(doc.object(), out, &err);
+}
+
+// Built-ins, then custom, then plugin themes; each group keeps its own order.
+void groupRegistry(QList<ThemeEntry>& r) {
+    const auto rank = [](const ThemeEntry& e) { return e.builtin ? 0 : e.plugin.isEmpty() ? 1 : 2; };
+    std::stable_sort(r.begin(), r.end(), [&](const ThemeEntry& a, const ThemeEntry& b) { return rank(a) < rank(b); });
+}
+}  // namespace
+
 void loadCustomThemes(const QString& dir, QStringList* errors) {
     auto& r = registry();
-    r.erase(std::remove_if(r.begin(), r.end(), [](const ThemeEntry& e) { return !e.builtin; }), r.end());
+    // Only custom themes are replaced: plugin themes are registered by setPluginThemes().
+    r.erase(std::remove_if(r.begin(), r.end(), [](const ThemeEntry& e) { return !e.builtin && e.plugin.isEmpty(); }), r.end());
     const auto files = QDir(dir).entryInfoList({QStringLiteral("*.json")}, QDir::Files, QDir::Name);
     for (const QFileInfo& fi : files) {
-        QFile f(fi.absoluteFilePath());
         QString err;
         ThemeEntry t;
-        QJsonParseError pe;
-        if (!f.open(QIODevice::ReadOnly)) {
-            err = QStringLiteral("cannot open");
-        } else {
-            const auto doc = QJsonDocument::fromJson(f.readAll(), &pe);
-            if (!doc.isObject()) err = pe.errorString();
-            else themeFromJson(doc.object(), t, &err);
-        }
-        if (!err.isEmpty()) {
+        if (!readThemeFile(fi, t, err)) {
             if (errors) errors->append(QStringLiteral("%1: %2").arg(fi.fileName(), err));
             continue;
         }
         t.id = QLatin1StringView(kCustomPrefix) + fi.completeBaseName();
         r.append(std::move(t));
     }
+    groupRegistry(r);
+}
+
+void setPluginThemes(const std::vector<PluginThemeSource>& sources, QStringList* errors) {
+    auto& r = registry();
+    r.erase(std::remove_if(r.begin(), r.end(), [](const ThemeEntry& e) { return !e.plugin.isEmpty(); }), r.end());
+    for (const PluginThemeSource& src : sources) {
+        if (src.pluginId.isEmpty() || src.dir.isEmpty()) continue;
+        const auto files = QDir(src.dir).entryInfoList({QStringLiteral("*.json")}, QDir::Files, QDir::Name);
+        for (const QFileInfo& fi : files) {
+            QString err;
+            ThemeEntry t;
+            if (!readThemeFile(fi, t, err)) {
+                if (errors) errors->append(QStringLiteral("%1/%2: %3").arg(src.pluginId, fi.fileName(), err));
+                continue;
+            }
+            t.id = QStringLiteral("plugin:%1:%2").arg(src.pluginId, fi.completeBaseName());
+            t.plugin = src.pluginName.isEmpty() ? src.pluginId : src.pluginName;
+            r.append(std::move(t));
+        }
+    }
+    groupRegistry(r);
 }
 
 QString saveCustomTheme(const ThemeEntry& theme, const QString& dir, QString* error) {

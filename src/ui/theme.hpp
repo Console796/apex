@@ -9,6 +9,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <vector>
+
 class QApplication;
 
 namespace apex::ui {
@@ -59,6 +61,16 @@ struct ThemeEntry {
     QString name;  // Display name.
     bool builtin = true;
     Tokens tokens;
+    // Non-empty for a theme a plugin ships (themes/*.json in its folder): the plugin's display name. Such a
+    // theme has id "plugin:<plugin id>:<file stem>" and is read-only: duplicate it to edit.
+    QString plugin;
+};
+
+// One enabled, loaded plugin's theme folder, handed to setPluginThemes() by the host application.
+struct PluginThemeSource {
+    QString pluginId;    // Registry id of the plugin (namespaces the theme ids).
+    QString pluginName;  // Display name, shown in the theme choice.
+    QString dir;         // The plugin's themes folder; every *.json in it is a theme (same format as custom themes).
 };
 
 // Names of the colour tokens in theme files, in editor order (the keys of the "colors" object).
@@ -75,6 +87,12 @@ editor::OverlayPalette overlayPalette(const Tokens& tokens);
 const QList<ThemeEntry>& themes();
 const ThemeEntry* findTheme(const QString& id);
 QString currentThemeId();
+
+// Replaces the plugin themes in the registry (built-ins and custom themes are untouched). A file that
+// fails to parse is skipped and named in `errors`. Plugin themes follow the custom ones in themes(). There
+// is deliberately no C interface for themes: a plugin ships them as data files (docs/plugins/ui.md).
+void setPluginThemes(const std::vector<PluginThemeSource>& sources, QStringList* errors = nullptr);
+inline bool isPluginTheme(const ThemeEntry& theme) { return !theme.plugin.isEmpty(); }
 
 // Directory holding custom theme files (<AppData>/themes). Rescans it into the registry; a file
 // that fails to parse is skipped and named in `errors`.

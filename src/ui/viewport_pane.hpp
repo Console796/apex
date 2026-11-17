@@ -1,12 +1,14 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QPointer>
 #include <QMouseEvent>
 #include <QFrame>
 #include <QPointF>
 #include <QWindow>
 #include <QTimer>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <span>
@@ -17,6 +19,7 @@
 #include "render/renderer.hpp"
 #include "render/scene_target.hpp"
 #include "render/swapchain.hpp"
+#include "ui/plugin_ui.hpp"
 #include "ui/pointer_lock.hpp"
 #include "ui/transform_input.hpp"
 #include "viewport/controllers.hpp"
@@ -29,6 +32,7 @@ class QLabel;
 class QToolButton;
 class QMenu;
 
+namespace apex::plugin_host { class Host; }
 namespace apex::ui {
 
 class GpuHost;
@@ -52,6 +56,13 @@ std::span<const OverlayInfo> overlayInfos();
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session);
 // Red X, green Y and blue Z from the world origin while the grid overlay is on.
 void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view);
+
+// 0.9.5: what plugins draw into a pane, in every display mode. Overlays whose id is in view.overlays.pluginOff
+// are skipped; entity helper drawing is added while the entity helpers overlay is on. Widths and sizes scale
+// by `scale` (the device pixel ratio), as the other world overlays do.
+void appendPluginOverlays(render::DrawList& list, plugin_host::Host& host, const viewport::Overlays& overlays, double scale);
+// The per-face tints of the plugin overlays that are on for a pane (later declarations win a shared side).
+std::map<document::SideId, Vec4> pluginSideTints(const plugin_host::Host& host, const viewport::Overlays& overlays);
 
 // Shared with offscreen tests, where a native Vulkan pane cannot be created.
 bool handleModelDrop(editor::EditorSession* session, const viewport::Viewport* view, QSizeF size,
@@ -95,6 +106,8 @@ public:
     // perspective camera with no gizmo, modal or pie active; false when it could not change.
     bool setFpv(bool on);
     bool fpv() const { return fpv_; }
+    // Plugin overlays and helpers draw from this UI's host; a pane redraws when an overlay list changes.
+    void setPluginUi(PluginUi* ui) { pluginUi_ = ui; dirty_ = true; }
     void setEditorSession(editor::EditorSession* session) {
         transform_.setSession(session);
         session_ = session;
@@ -140,6 +153,8 @@ private:
     float clear_[4] = {0.1f, 0.1f, 0.1f, 1.0f};
     bool resizeDragging_ = false;
     bool dirty_ = true;
+    QPointer<PluginUi> pluginUi_;
+    std::uint64_t pluginRevision_ = 0;
     bool failed_ = false;
     std::uint64_t frames_ = 0;
     VkCommandBuffer clusterCommands_ = VK_NULL_HANDLE;
@@ -180,12 +195,19 @@ public:
     // Checks each box from `overlays`; `realtimeIndirect` enables the probes box.
     void sync(const viewport::Overlays& overlays, bool realtimeIndirect);
     QCheckBox* box(OverlayField field) const;
+    // 0.9.5: one checkbox per plugin overlay (id, title), listed under a Plugins heading and checked unless
+    // the id is in overlays.pluginOff. Rebuilt on every call; an empty list hides the group.
+    void setPluginOverlays(const std::vector<std::pair<QString, QString>>& overlays, const viewport::Overlays& state);
+    QCheckBox* pluginBox(const QString& id) const;
 
 signals:
     void toggled(apex::ui::OverlayField field, bool on);
+    void pluginToggled(const QString& id, bool on);
 
 private:
     std::vector<std::pair<OverlayField, QCheckBox*>> boxes_;
+    QWidget* pluginGroup_ = nullptr;
+    std::vector<std::pair<QString, QCheckBox*>> pluginBoxes_;
 };
 
 // A viewport area in the splitter tree: a header strip (role switcher, title, mode badge, collapse
@@ -215,6 +237,7 @@ public:
     // Opens the overlay panel under the header's Overlays button (created on first use).
     void showOverlays();
     OverlayPanel* overlayPanel() const { return overlayPanel_; }
+    void setPluginUi(PluginUi* ui) { pluginUi_ = ui; }
     // Applies a change to this pane's viewport, then refreshes the title, redraws and emits edited().
     void edit(const std::function<void(viewport::Viewport&)>& change);
 
@@ -225,6 +248,7 @@ signals:
     void maximizeToggled(viewport::NodeId pane);
     void activated(viewport::NodeId pane);
     void roleRequested(viewport::NodeId pane, viewport::AreaRole role);
+    void pluginPanelRequested(viewport::NodeId pane, QString panel);
     void collapseRequested(viewport::NodeId pane);
     void vradRerunRequested();
     void vradCancelRequested();
@@ -244,6 +268,7 @@ private:
     QToolButton* menuButton_ = nullptr;
     QToolButton* overlaysButton_ = nullptr;
     OverlayPanel* overlayPanel_ = nullptr;
+    QPointer<PluginUi> pluginUi_;
     QToolButton* instanceVisibilityButton_ = nullptr;
     editor::EditorSession* session_ = nullptr;
     QMenu* menu_ = nullptr;

@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -23,8 +24,13 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <tuple>
+
 #include "core/log.hpp"
+#include "editor/pie_menus.hpp"
 #include "editor/preset_io.hpp"
+#include "plugin_host/plugin_host.hpp"
 #include "ui/bake_controller.hpp"
 #include "ui/game_content.hpp"
 #include "ui/key_chord.hpp"
@@ -130,10 +136,11 @@ SettingsDialog::SettingsDialog(MainWindow& window) : QDialog(&window), window_(w
     pages->addWidget(buildGeneralPage());
     pages->addWidget(buildKeysPage());
     pages->addWidget(buildInputPage());
+    pages->addWidget(buildPiesPage());
     auto* nav = new QListWidget;
     nav->setObjectName(QStringLiteral("settingsNav"));
     nav->setFixedWidth(150);
-    nav->addItems({tr("General"), tr("Keybindings"), tr("Input")});
+    nav->addItems({tr("General"), tr("Keybindings"), tr("Input"), tr("Pies")});
     connect(nav, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
     nav->setCurrentRow(0);
 
@@ -159,14 +166,17 @@ void SettingsDialog::reject() {
 void SettingsDialog::refreshThemeCombo(const QString& select) {
     const QSignalBlocker block(theme_);
     theme_->clear();
-    for (const ThemeEntry& t : themes()) theme_->addItem(t.builtin ? t.name : tr("%1 (custom)").arg(t.name), t.id);
+    for (const ThemeEntry& t : themes()) {
+        const QString label = t.builtin ? t.name : isPluginTheme(t) ? tr("%1 (plugin %2)").arg(t.name, t.plugin) : tr("%1 (custom)").arg(t.name);
+        theme_->addItem(label, t.id);
+    }
     const int i = theme_->findData(select);
     theme_->setCurrentIndex(i < 0 ? 0 : i);
 }
 
 void SettingsDialog::updateThemeButtons() {
     const ThemeEntry* t = findTheme(theme_->currentData().toString());
-    const bool custom = t && !t->builtin;
+    const bool custom = t && !t->builtin && !isPluginTheme(*t);  // Plugin themes are read-only.
     themeEdit_->setEnabled(custom);
     themeDelete_->setEnabled(custom);
 }
@@ -175,9 +185,10 @@ void SettingsDialog::editTheme(bool fromSelected) {
     const ThemeEntry* sel = findTheme(theme_->currentData().toString());
     if (!sel) return;
     ThemeEntry initial = *sel;
-    if (fromSelected || sel->builtin) {
+    if (fromSelected || sel->builtin || isPluginTheme(*sel)) {
         initial.id.clear();
         initial.builtin = false;
+        initial.plugin.clear();
         initial.name = tr("%1 copy").arg(sel->name);
     }
     ThemeEditorDialog dlg(window_, initial, this);
@@ -190,7 +201,7 @@ void SettingsDialog::editTheme(bool fromSelected) {
 void SettingsDialog::deleteTheme() {
     const QString id = theme_->currentData().toString();
     const ThemeEntry* t = findTheme(id);
-    if (!t || t->builtin) return;
+    if (!t || t->builtin || isPluginTheme(*t)) return;
     if (QMessageBox::question(this, tr("Delete theme"), tr("Delete the theme \"%1\"?").arg(t->name)) != QMessageBox::Yes) return;
     const bool wasCurrent = id == currentThemeId();
     removeCustomTheme(id);
@@ -508,6 +519,205 @@ QWidget* SettingsDialog::buildKeysPage() {
     return page;
 }
 
+// ---- Pies page (plan 0.9 D7) ---------------------------------------------------------------
+
+namespace {
+// Two layouts are the same when they put the same action and label in the same slots.
+bool samePie(const editor::PieMenu& a, const editor::PieMenu& b) {
+    if (a.title != b.title || a.items.size() != b.items.size()) return false;
+    const auto key = [](const editor::PieMenu& menu) {
+        std::vector<std::tuple<int, std::string, std::string>> keys;
+        const auto placed = editor::layoutSlots(menu);
+        for (std::size_t i = 0; i < menu.items.size(); ++i)
+            keys.emplace_back(static_cast<int>(placed[i]), menu.items[i].action, menu.items[i].label);
+        std::ranges::sort(keys);
+        return keys;
+    };
+    return key(a) == key(b);
+}
+}  // namespace
+
+QWidget* SettingsDialog::buildPiesPage() {
+    auto* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    auto* top = new QHBoxLayout;
+    top->addWidget(new QLabel(tr("Pie:")));
+    piePicker_ = new QComboBox;
+    piePicker_->setObjectName(QStringLiteral("piePicker"));
+    piePicker_->setMinimumWidth(200);
+    top->addWidget(piePicker_);
+    pieStatus_ = new QLabel;
+    pieStatus_->setObjectName(QStringLiteral("pieStatus"));
+    top->addWidget(pieStatus_);
+    top->addStretch(1);
+    pieReset_ = new QPushButton(tr("Reset to default"));
+    pieReset_->setObjectName(QStringLiteral("pieReset"));
+    pieReset_->setToolTip(tr("Drop this preset's layout and use the built-in one."));
+    top->addWidget(pieReset_);
+    layout->addLayout(top);
+    auto* hint = new QLabel(tr("A pie layout is stored in the keybinding preset. Changes are saved with it: use Save or Save As on the "
+                               "Keybindings page, or OK. An action from a plugin that is not loaded stays in the layout, hidden "
+                               "from the pie until the plugin is back."));
+    hint->setWordWrap(true);
+    layout->addWidget(hint);
+
+    auto* form = new QFormLayout;
+    pieTitle_ = new QLineEdit;
+    pieTitle_->setObjectName(QStringLiteral("pieTitle"));
+    form->addRow(tr("Title"), pieTitle_);
+    layout->addLayout(form);
+
+    const QStringList names{tr("Up (N)"), tr("Up right (NE)"), tr("Right (E)"), tr("Down right (SE)"),
+                            tr("Down (S)"), tr("Down left (SW)"), tr("Left (W)"), tr("Up left (NW)")};
+    auto* grid = new QGridLayout;
+    grid->setColumnStretch(1, 2);
+    grid->setColumnStretch(2, 1);
+    for (int i = 0; i < 8; ++i) {
+        auto& row = pieRows_[static_cast<std::size_t>(i)];
+        row.action = new QComboBox;
+        row.action->setObjectName(QStringLiteral("pieAction%1").arg(i));
+        row.label = new QLineEdit;
+        row.label->setObjectName(QStringLiteral("pieLabel%1").arg(i));
+        row.label->setPlaceholderText(tr("Label"));
+        row.note = new QLabel;
+        row.note->setObjectName(QStringLiteral("pieNote%1").arg(i));
+        grid->addWidget(new QLabel(names[i]), i, 0);
+        grid->addWidget(row.action, i, 1);
+        grid->addWidget(row.label, i, 2);
+        grid->addWidget(row.note, i, 3);
+        connect(row.action, &QComboBox::currentIndexChanged, this, [this, i] {
+            if (pieLoading_) return;
+            auto& r = pieRows_[static_cast<std::size_t>(i)];
+            // A label that was never typed by hand follows the action's name.
+            const auto* action = editor::actionRegistry().find(r.action->currentData().toString().toStdString());
+            const QString automatic = r.label->property("auto").toString();
+            if (r.label->text().isEmpty() || r.label->text() == automatic) {
+                const QString name = action ? fromStd(action->name) : QString();
+                r.label->setText(name);
+                r.label->setProperty("auto", name);
+            }
+            r.label->setEnabled(!r.action->currentData().toString().isEmpty());
+            pieEdited();
+        });
+        connect(row.label, &QLineEdit::textEdited, this, [this] { pieEdited(); });
+    }
+    layout->addLayout(grid);
+    layout->addStretch(1);
+
+    connect(piePicker_, &QComboBox::currentIndexChanged, this, [this] { loadPieRows(); });
+    connect(pieTitle_, &QLineEdit::textEdited, this, [this] { pieEdited(); });
+    connect(pieReset_, &QPushButton::clicked, this, [this] { resetPie(); });
+    return page;
+}
+
+editor::ActionId SettingsDialog::selectedPie() const {
+    return piePicker_ ? piePicker_->currentData().toString().toStdString() : editor::ActionId{};
+}
+
+void SettingsDialog::refreshPies() {
+    if (!piePicker_) return;
+    const auto keep = selectedPie();
+    {
+        const QSignalBlocker block(piePicker_);
+        piePicker_->clear();
+        for (const auto& [id, menu] : editor::pieRegistry().entries()) {
+            const auto* action = editor::actionRegistry().find(id);
+            piePicker_->addItem(action ? fromStd(action->name) : fromStd(menu.title), fromStd(id));
+        }
+        const int i = piePicker_->findData(fromStd(keep));
+        piePicker_->setCurrentIndex(i < 0 ? 0 : i);
+    }
+    loadPieRows();
+}
+
+void SettingsDialog::loadPieRows() {
+    if (!piePicker_) return;
+    const auto id = selectedPie();
+    const bool hasPie = !id.empty();
+    pieLoading_ = true;
+    const auto menu = hasPie ? editor::effectivePie(id, working_) : editor::PieMenu{};
+    pieTitle_->setEnabled(hasPie);
+    pieTitle_->setText(fromStd(menu.title));
+    std::array<const editor::PieItem*, 8> bySlot{};
+    const auto placed = editor::layoutSlots(menu);
+    for (std::size_t i = 0; i < menu.items.size() && i < placed.size(); ++i) bySlot[static_cast<std::size_t>(placed[i])] = &menu.items[i];
+    const QBrush dim = palette().brush(QPalette::Disabled, QPalette::Text);
+    for (std::size_t i = 0; i < 8; ++i) {
+        auto& row = pieRows_[i];
+        const QSignalBlocker block(row.action);
+        row.action->clear();
+        row.action->addItem(tr("(empty)"), QString());
+        for (const auto& action : editor::actionRegistry().entries()) {
+            row.action->addItem(fromStd(action.name), fromStd(action.id));
+            row.action->setItemData(row.action->count() - 1, fromStd(action.id), Qt::ToolTipRole);
+        }
+        const auto* item = bySlot[i];
+        QString note;
+        int index = 0;
+        if (item) {
+            const QString action = fromStd(item->action);
+            index = row.action->findData(action);
+            if (index < 0) {
+                // Dormant: kept in the layout, hidden from the pie while the plugin is absent.
+                row.action->addItem(tr("%1 (plugin not loaded)").arg(action), action);
+                index = row.action->count() - 1;
+                row.action->setItemData(index, dim, Qt::ForegroundRole);
+                note = tr("Hidden until the plugin is loaded");
+            }
+        }
+        row.action->setCurrentIndex(index);
+        row.label->setText(item ? fromStd(item->label) : QString());
+        row.label->setProperty("auto", QString());
+        row.label->setEnabled(item != nullptr);
+        row.action->setEnabled(hasPie);
+        row.note->setText(note);
+    }
+    pieLoading_ = false;
+    const bool own = hasPie && editor::hasOwnPie(working_, id);
+    pieStatus_->setText(own ? tr("Custom layout in this preset") : tr("Built-in layout"));
+    pieReset_->setEnabled(own);
+}
+
+editor::PieMenu SettingsDialog::pieFromRows() const {
+    editor::PieMenu menu;
+    menu.title = pieTitle_->text().toStdString();
+    for (std::size_t i = 0; i < 8; ++i) {
+        const auto& row = pieRows_[i];
+        const auto action = row.action->currentData().toString().toStdString();
+        if (action.empty()) continue;
+        std::string label = row.label->text().toStdString();
+        if (label.empty()) {
+            const auto* entry = editor::actionRegistry().find(action);
+            label = entry ? entry->name : action;
+        }
+        menu.items.push_back({action, static_cast<editor::PieSlot>(i), std::move(label)});
+    }
+    return menu;
+}
+
+void SettingsDialog::pieEdited() {
+    if (pieLoading_) return;
+    const auto id = selectedPie();
+    if (id.empty()) return;
+    auto menu = pieFromRows();
+    const auto* builtin = editor::pieRegistry().find(id);
+    // A layout equal to the built-in one is stored as "none", so presets stay minimal.
+    if (builtin && samePie(menu, *builtin)) working_.pies.erase(id);
+    else working_.pies[id] = std::move(menu);
+    const bool own = editor::hasOwnPie(working_, id);
+    pieStatus_->setText(own ? tr("Custom layout in this preset") : tr("Built-in layout"));
+    pieReset_->setEnabled(own);
+    refreshButtons();
+}
+
+void SettingsDialog::resetPie() {
+    const auto id = selectedPie();
+    if (id.empty()) return;
+    working_.pies.erase(id);
+    loadPieRows();
+    refreshButtons();
+}
+
 bool SettingsDialog::keysModified() const {
     return editor::serializePreset(working_) != editor::serializePreset(original_);
 }
@@ -523,6 +733,7 @@ void SettingsDialog::loadPreset(const std::string& name) {
     baseIsBuiltin_ = editor::findPreset(preset->name) != nullptr;
     refreshPresetCombo();
     refreshTree();
+    refreshPies();
 }
 
 void SettingsDialog::refreshPresetCombo() {
@@ -536,33 +747,96 @@ void SettingsDialog::refreshPresetCombo() {
     refreshButtons();
 }
 
+namespace {
+const editor::Binding& bindingOrDefault(const editor::Preset& preset, const editor::ActionId& id) {
+    const auto it = preset.bindings.find(id);
+    return it == preset.bindings.end() ? editor::defaultBinding(id) : it->second;
+}
+}
+
+QString SettingsDialog::pluginNameFor(std::string_view id) const {
+    if (!id.starts_with("plugin.")) return {};
+    const plugin_host::Plugin* best = nullptr;
+    if (const auto* host = window_.pluginHost()) {
+        for (const auto& plugin : host->plugins())
+            if (plugin_host::inNamespace(plugin.id, id) && (!best || plugin.id.size() > best->id.size())) best = &plugin;
+    }
+    if (best) return fromStd(best->name.empty() ? best->id : best->name);
+    // The plugin is not installed: its id is the second dotted component of "plugin.<id>.<name>".
+    const auto rest = id.substr(7);
+    const auto dot = rest.rfind('.');
+    return fromStd(dot == std::string_view::npos ? rest : rest.substr(0, dot));
+}
+
+namespace {
+// What the When column shows for a tool-scoped binding: the tool's name, not its id.
+QString contextText(const editor::BindingContext& context) {
+    if (context.toolId.empty()) return {};
+    if (const auto* tool = editor::actionRegistry().find(context.toolId))
+        return fromStd("While " + tool->name + " is active");
+    return fromStd("While " + context.toolId + " is active");
+}
+}  // namespace
+
 void SettingsDialog::refreshTree() {
     const QString query = filter_ ? filter_->text().trimmed() : QString();
     const auto selected = selectedAction();
+    // Plugin actions a preset does not bind may still carry the plugin's suggestion for it (docs/plans/0.9.md
+    // D1). Those are live, so the page shows them as suggestions, never as "not set".
+    suggestions_.clear();
+    suggestionConflicts_.clear();
+    try {
+        const editor::Keymap keymap(working_);
+        suggestions_ = keymap.suggestions();
+        suggestionConflicts_ = keymap.suggestionConflicts();
+    } catch (const std::exception& e) {
+        log::warn("keybinding page: {}", e.what());
+    }
     QSignalBlocker block(tree_);
     tree_->clear();
     std::map<std::string, QTreeWidgetItem*> categories;
-    for (const auto& action : editor::actionRegistry().entries()) {
-        const auto& binding = working_.bindings.at(action.id);
-        const QString keys = chordsText(binding);
-        if (!query.isEmpty() && !fromStd(action.name).contains(query, Qt::CaseInsensitive) &&
-            !fromStd(action.category).contains(query, Qt::CaseInsensitive) &&
-            !keys.contains(query, Qt::CaseInsensitive))
-            continue;
-        auto*& parent = categories[action.category];
+    const auto categoryItem = [&](const std::string& name, bool dim) {
+        auto*& parent = categories[name];
         if (!parent) {
-            parent = new QTreeWidgetItem(tree_, QStringList{fromStd(action.category)});
+            parent = new QTreeWidgetItem(tree_, QStringList{fromStd(name)});
             QFont font = parent->font(0);
             font.setBold(true);
             parent->setFont(0, font);
             parent->setFlags(Qt::ItemIsEnabled);
+            if (dim) parent->setForeground(0, tree_->palette().color(QPalette::Disabled, QPalette::Text));
         }
-        auto* item = new QTreeWidgetItem(parent);
+        return parent;
+    };
+    for (const auto& action : editor::actionRegistry().entries()) {
+        const auto& binding = bindingOrDefault(working_, action.id);
+        const bool bound = working_.bindings.contains(action.id);
+        const auto suggestion = suggestions_.find(action.id);
+        const bool suggested = !bound && suggestion != suggestions_.end();
+        QString keys = chordsText(binding);
+        QString when = contextText(binding.context);
+        if (suggested) {
+            keys = tr("%1 (suggested)").arg(fromStd(suggestion->second.chord.toString()));
+            when = contextText(suggestion->second.context);
+        }
+        const QString plugin = pluginNameFor(action.id);
+        const std::string category = plugin.isEmpty() ? action.category : ("Plugin: " + plugin.toStdString());
+        if (!query.isEmpty() && !fromStd(action.name).contains(query, Qt::CaseInsensitive) &&
+            !fromStd(category).contains(query, Qt::CaseInsensitive) &&
+            !keys.contains(query, Qt::CaseInsensitive))
+            continue;
+        auto* item = new QTreeWidgetItem(categoryItem(category, false));
         item->setData(0, kIdRole, fromStd(action.id));
         item->setText(0, fromStd(action.name));
         item->setText(1, keys.isEmpty() ? QStringLiteral("—") : keys);
-        if (!binding.context.toolId.empty())
-            item->setText(2, fromStd("Tool active: " + binding.context.toolId));
+        item->setText(2, when);
+        if (suggested) {
+            QFont font = item->font(1);
+            font.setItalic(true);
+            item->setFont(1, font);
+            item->setToolTip(1, tr("Suggested by the plugin for this preset. It is active; set or clear the key to override it."));
+        } else if (const auto conflict = suggestionConflicts_.find(action.id); !bound && conflict != suggestionConflicts_.end()) {
+            item->setToolTip(1, tr("The plugin's suggested key is not used: %1").arg(fromStd(conflict->second)));
+        }
         const auto* original = original_.bindings.contains(action.id) ? &original_.bindings.at(action.id) : nullptr;
         if (original && !sameBinding(*original, binding)) {
             QFont font = item->font(1);
@@ -571,6 +845,23 @@ void SettingsDialog::refreshTree() {
             item->setFont(1, font);
         }
         if (fromStd(action.id) == fromStd(selected)) tree_->setCurrentItem(item);
+    }
+    // Bindings for plugin actions whose plugin is absent or disabled stay in the preset (docs/plans/0.9.md
+    // D1). They are listed greyed, so the user can see them, and cannot be edited until the plugin is back.
+    for (const auto& [id, binding] : working_.bindings) {
+        if (!id.starts_with("plugin.") || editor::actionRegistry().find(id)) continue;
+        const QString plugin = pluginNameFor(id);
+        const QString keys = chordsText(binding);
+        const std::string category = "Plugin: " + plugin.toStdString() + " (not loaded)";
+        if (!query.isEmpty() && !fromStd(id).contains(query, Qt::CaseInsensitive) &&
+            !fromStd(category).contains(query, Qt::CaseInsensitive) && !keys.contains(query, Qt::CaseInsensitive))
+            continue;
+        auto* item = new QTreeWidgetItem(categoryItem(category, true));
+        item->setText(0, fromStd(id));
+        item->setText(1, keys.isEmpty() ? QStringLiteral("—") : keys);
+        item->setText(2, contextText(binding.context));
+        item->setFlags(Qt::NoItemFlags);  // Not selectable: nothing to edit while the plugin is absent.
+        item->setToolTip(0, tr("The plugin is not loaded. This binding is kept in the preset and applies again when it is."));
     }
     tree_->expandAll();
     block.unblock();
@@ -597,12 +888,23 @@ void SettingsDialog::refreshButtons() {
         return;
     }
     const auto* action = editor::actionRegistry().find(id);
-    const auto& binding = working_.bindings.at(id);
-    clearButton_->setEnabled(!std::holds_alternative<editor::Unbound>(binding.value));
-    resetButton_->setEnabled(!sameBinding(binding, original_.bindings.at(id)));
+    const auto& binding = bindingOrDefault(working_, id);
+    const bool suggested = !working_.bindings.contains(id) && suggestions_.contains(id);
+    clearButton_->setEnabled(suggested || !std::holds_alternative<editor::Unbound>(binding.value));
+    resetButton_->setEnabled(!sameBinding(binding, bindingOrDefault(original_, id)));
     QString text = QStringLiteral("<b>%1</b><br>%2").arg(fromStd(action->name).toHtmlEscaped(),
                                                        fromStd(action->description).toHtmlEscaped());
-    if (const auto* unbound = std::get_if<editor::Unbound>(&binding.value))
+    if (const QString plugin = pluginNameFor(id); !plugin.isEmpty())
+        text += QStringLiteral("<br>%1").arg(tr("Plugin: %1").arg(plugin.toHtmlEscaped()));
+    if (suggested) {
+        const auto& s = suggestions_.at(id);
+        text += QStringLiteral("<br><i>%1</i>")
+                    .arg(tr("Suggested key %1 from the plugin; it is active in this preset until you set or clear it.")
+                             .arg(fromStd(s.chord.toString()).toHtmlEscaped()));
+    } else if (const auto conflict = suggestionConflicts_.find(id);
+               !working_.bindings.contains(id) && conflict != suggestionConflicts_.end()) {
+        text += QStringLiteral("<br><i>%1</i>").arg(tr("The plugin's suggested key is not used: %1").arg(fromStd(conflict->second).toHtmlEscaped()));
+    } else if (const auto* unbound = std::get_if<editor::Unbound>(&binding.value))
         text += QStringLiteral("<br><i>%1</i>").arg(fromStd(unbound->reason).toHtmlEscaped());
     detail_->setText(text);
 }
@@ -618,11 +920,13 @@ void SettingsDialog::captureKey(bool additional) {
     if ((chord.key == "Ctrl" || chord.key == "Alt" || chord.key == "Shift")) additional = false;
     std::vector<editor::KeyChord> chords;
     if (additional) {
-        if (const auto* keys = std::get_if<std::vector<editor::KeyChord>>(&working_.bindings.at(id).value))
+        if (const auto* keys = std::get_if<std::vector<editor::KeyChord>>(&bindingOrDefault(working_, id).value))
             chords = *keys;
+        else if (const auto suggestion = suggestions_.find(id); suggestion != suggestions_.end() && !working_.bindings.contains(id))
+            chords.push_back(suggestion->second.chord);
     }
     if (std::ranges::find(chords, chord) == chords.end()) chords.push_back(chord);
-    if (const auto owner = editor::chordOwner(working_, chord, id, working_.bindings.at(id).context)) {
+    if (const auto owner = editor::chordOwner(working_, chord, id, bindingOrDefault(working_, id).context)) {
         const auto* other = editor::actionRegistry().find(*owner);
         const auto answer = QMessageBox::question(
             this, tr("Key already in use"),
@@ -641,7 +945,12 @@ void SettingsDialog::assign(const editor::ActionId& id, std::vector<editor::KeyC
 void SettingsDialog::resetSelected() {
     const auto id = selectedAction();
     if (id.empty()) return;
-    const auto& base = original_.bindings.at(id);
+    if (!original_.bindings.contains(id)) {
+        working_.bindings.erase(id);
+        refreshTree();
+        return;
+    }
+    const auto& base = bindingOrDefault(original_, id);
     if (const auto* keys = std::get_if<std::vector<editor::KeyChord>>(&base.value)) {
         editor::assignChords(working_, id, *keys);
         working_.bindings[id] = base;

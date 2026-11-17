@@ -317,6 +317,10 @@ bool GpuHost::updateVrad(bool active, const std::filesystem::path& map) {
     paths.escapeMode = profile_.escapeMode;
     // The tools see the editor's mounted content (addons, other games), as a real compile's gameinfo gives them.
     if (vfs_) {
+        if (auto omitted = vfs_->omittedFromCompile(); !omitted.empty() && loggedOmitted_ != omitted) {
+            loggedOmitted_ = omitted;
+            for (const auto& name : omitted) log::warn("viewports: VRAD gameinfo omits plugin provider mount \"{}\" (tools cannot read it)", name);
+        }
         if (auto info = vfs_->compileGameInfo()) paths.contentGameInfo = std::move(*info);
         else log::error("viewports: VRAD gameinfo: {}", info.error().what());
     }

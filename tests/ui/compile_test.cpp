@@ -3,6 +3,8 @@
 #include "../editor/fixtures.hpp"
 #include "../compile/scripted_runner.hpp"
 #include "ui/compile_panel.hpp"
+#include "editor/map_problems.hpp"
+#include "editor/editor_session.hpp"
 #include "ui/main_window.hpp"
 #include "ui/viewport_area.hpp"
 #include "ui/area_frame.hpp"
@@ -724,6 +726,68 @@ TEST_CASE("compile panel lists problems, gates a compile on errors and reports p
     panel.setDocument(&clean);
     CHECK(panel.checkProblems().empty());
     CHECK(summary->text().contains("No problems"));
+    panel.setDocument(nullptr);
+}
+
+namespace {
+bool pluginProblemsOn = false;
+document::NodeId pluginProblemObject{};
+const bool pluginProblemCheckRegistered = [] {
+    // The registry is process-wide and cannot unregister, so the check stays but only reports while a test asks.
+    editor::mutableProblemRegistry().add("plugin.test.grouping", [](const editor::ProblemContext&, std::vector<editor::Problem>& out) {
+        if (!pluginProblemsOn) return;
+        editor::Problem a; a.severity = editor::ProblemSeverity::Warning; a.kind = editor::ProblemKind::Plugin;
+        a.text = "alpha finding"; a.source = "alpha"; a.objects = {pluginProblemObject}; a.fixId = "select";
+        editor::Problem b = a; b.text = "beta finding"; b.source = "beta"; b.objects = {};  b.fixId.clear();
+        editor::Problem c = a; c.text = "alpha second"; c.objects = {};  c.fixId.clear();
+        out.push_back(a); out.push_back(b); out.push_back(c);
+    });
+    return true;
+}();
+}
+TEST_CASE("compile panel groups plugin problems under their plugin and selects their objects") {
+    REQUIRE(pluginProblemCheckRegistered);
+    ui_test::app();
+    document::Document doc(editor_test::parsed(
+        "world { id 1 classname worldspawn }\nentity { id 20 classname info_player_start origin \"0 0 0\" }\n"));
+    editor::EditorSession session;
+    session.attach(doc);
+    ui::CompilePanel panel;
+    panel.setDocument(&doc);
+    panel.setEditorSession(&session);
+    auto* table = panel.findChild<QTableWidget*>("problemsTable");
+    auto* filter = panel.findChild<QComboBox*>("problemsFilter");
+    REQUIRE(table); REQUIRE(filter);
+    document::NodeId entity{};
+    for (auto h : editor_test::nodes(doc)) {
+        const auto* node = doc.get(h);
+        const auto* cls = node->block ? node->block->find("classname") : nullptr;
+        if (cls && cls->decodedValue().value_or("") == "info_player_start") entity = node->id;
+    }
+    REQUIRE(entity != document::NodeId{});
+    pluginProblemObject = entity;
+    pluginProblemsOn = true;
+    panel.findChild<QPushButton*>("problemsCheck")->click();
+    pluginProblemsOn = false;
+    // Two plugins, in order of first appearance, each under a header spanning both columns.
+    REQUIRE(table->rowCount() == 5);
+    CHECK(table->item(0, 0)->text().contains("alpha"));
+    CHECK(table->item(0, 0)->text().contains("(2)"));
+    CHECK(table->columnSpan(0, 0) == 2);
+    CHECK(table->item(1, 1)->text() == "alpha finding");
+    CHECK(table->item(2, 1)->text() == "alpha second");
+    CHECK(table->item(3, 0)->text().contains("beta"));
+    CHECK(table->item(4, 1)->text() == "beta finding");
+    // A header does nothing; a problem with objects selects them.
+    emit table->cellClicked(0, 0);
+    CHECK(session.selection().ordered().empty());
+    emit table->cellClicked(2, 1);
+    CHECK(session.selection().ordered().empty()); // no objects
+    emit table->cellClicked(1, 1);
+    CHECK(session.selection().contains(editor::Target(entity)));
+    // The filter regroups: with notes hidden everything here is still a warning, so nothing changes; errors only empties it.
+    filter->setCurrentIndex(2);
+    CHECK(table->rowCount() == 0);
     panel.setDocument(nullptr);
 }
 

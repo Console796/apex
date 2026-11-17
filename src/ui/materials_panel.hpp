@@ -21,6 +21,8 @@ namespace apex::ui { class GameContent; }
 
 namespace apex::ui {
 
+class PluginSections;
+class PluginUi;
 class MaterialsPanel final : public QWidget {
     Q_OBJECT
 public:
@@ -29,6 +31,9 @@ public:
     void setGameContent(GameContent* content);
     void setDocument(document::Document* document);
     void setEditorSession(editor::EditorSession* session);
+    void setPluginUi(PluginUi* ui);
+    // The names plugin sections receive: the grid selection.
+    void updatePluginContext();
     void setPickMode(bool enabled, const QString& initial = {}, const QString& what = {});
     QStringList filteredNames() const;
     std::size_t thumbnailRequestCount() const;
@@ -74,6 +79,7 @@ private:
     bool pickMode_ = false;
     QString filterBeforePick_;
     QString pickMaterial_;
+    PluginSections* pluginSections_ = nullptr;
     class GridModel;
     GridModel* model_ = nullptr;
 };

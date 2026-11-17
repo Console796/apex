@@ -3795,6 +3795,17 @@ TEST_CASE("a gizmo drag leaves the editor actions alone") {
     session.cancelTransform();
 }
 
+TEST_CASE("missing plugin panel names its saved identity") {
+    (void)apex::ui_test::app();
+    std::unique_ptr<QWidget> panel(apex::ui::createPanel(apex::viewport::AreaRole::Plugin,
+        nullptr, nullptr, nullptr, "plugin.example.face_stats"));
+    auto* label = qobject_cast<QLabel*>(panel.get());
+    REQUIRE(label);
+    CHECK(label->text().contains(QStringLiteral("plugin.example.face_stats")));
+    CHECK(label->text().contains(QStringLiteral("not loaded")));
+    CHECK(label->wordWrap());
+}
+
 TEST_CASE("the outliner's Structural filter keeps world brushes and func_areaportal (0.8.9 D16)") {
     app();
     using namespace editor_test;
@@ -3837,4 +3848,22 @@ TEST_CASE("the outliner's Structural filter keeps world brushes and func_areapor
     CHECK(row(displaced)->isHidden()); // VBSP drops displacement brushes from the world.
     structural->setChecked(false);
     CHECK_FALSE(row(detailSolid)->isHidden());
+}
+
+TEST_CASE("area role menu offers registered plugin panels") {
+    (void)apex::ui_test::app();
+    auto& registry = apex::viewport::mutableAreaRoleRegistry();
+    struct Restore { apex::viewport::AreaRoleRegistry& target; apex::viewport::AreaRoleRegistry saved;
+        ~Restore() { target = std::move(saved); } } restore{registry, registry};
+    REQUIRE(registry.add({"plugin.menu_test.panel", "Test panel"}));
+    std::string selected;
+    std::unique_ptr<QToolButton> button(apex::ui::makeRoleButton(apex::viewport::AreaRole::Viewport,
+        [](apex::viewport::AreaRole) {}, nullptr, [&](std::string id) { selected = std::move(id); }));
+    REQUIRE(button->menu());
+    QAction* pluginAction = nullptr;
+    for (auto* action : button->menu()->actions())
+        if (action->data().toString() == QStringLiteral("plugin.menu_test.panel")) pluginAction = action;
+    REQUIRE(pluginAction);
+    pluginAction->trigger();
+    CHECK(selected == "plugin.menu_test.panel");
 }

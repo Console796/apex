@@ -2,6 +2,7 @@
 #include "../assets/fixture.hpp"
 #include "../assets/texture_fixture.hpp"
 #include "../editor/fixtures.hpp"
+#include "plugin_ui_fixture.hpp"
 
 #include <doctest/doctest.h>
 #include <QAction>
@@ -14,6 +15,7 @@
 #include <sstream>
 #include <QKeyEvent>
 #include <QMouseEvent>
+#include <QGroupBox>
 #include <QLabel>
 #include <QLocale>
 #include <QMenu>
@@ -786,4 +788,30 @@ TEST_CASE("Face Properties lists the overlays on the active face and marks decal
     REQUIRE(scene.session.selection().active());
     CHECK(std::get<document::NodeId>(*scene.session.selection().active()) ==
           static_cast<document::NodeId>(list->item(0) ? list->item(0)->data(Qt::UserRole).toULongLong() : 0));
+}
+
+TEST_CASE("Face Properties plugin sections receive the selected sides") {
+    app();
+    ui_test::UiPluginFixture f;
+    Scene scene;
+    const auto top = scene.side({0, 0, 1});
+    const auto bottom = scene.side({0, 0, -1});
+    ui::FacePropertiesPanel panel;
+    panel.setDocument(&scene.doc);
+    panel.setEditorSession(&scene.session);
+    panel.setPluginUi(f.ui.get());
+    panel.show();
+    app().processEvents();
+    const auto summary = [&] {
+        auto* box = panel.findChild<QGroupBox*>("plugin.ui.faces");
+        auto* label = box ? box->findChild<QLabel*>("summary") : nullptr;
+        return label ? label->text() : QString("missing");
+    };
+    CHECK(summary() == "sides names=0 ids=0 first=");
+    scene.session.selection().select(top);
+    app().processEvents();
+    CHECK(summary() == "sides names=0 ids=1 first=");
+    scene.session.selection().add(bottom);
+    app().processEvents();
+    CHECK(summary() == "sides names=0 ids=2 first=");
 }

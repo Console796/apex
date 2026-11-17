@@ -782,6 +782,47 @@ TEST_CASE("mirror: highlight golden images in every display mode") {
     }
 }
 
+TEST_CASE("plugin side tints colour only the tinted face in every display mode") {
+    REQUIRE_GPU();
+    Scene scene(*g);
+    const auto red = findSolid(*scene.doc, "test/red");
+    REQUIRE(red);
+    const document::SideId side = *scene.doc->get(*red)->block->find("side")->find("id")->asInt();
+    const Vec4 tint(0.9f, 0.1f, 0.8f, 0.5f);
+    const std::map<document::SideId, Vec4> tints{{side, tint}};
+    const std::map<document::SideId, Vec4> unknown{{side + 100000, tint}};
+    for (const auto mode : {DisplayMode::Textured, DisplayMode::Flat, DisplayMode::Wireframe}) {
+        CAPTURE(static_cast<int>(mode));
+        const auto tinted = [&](const DrawList& list) {
+            return std::ranges::count_if(list.meshes, [&](const MeshDraw& m) { return m.highlight == tint; });
+        };
+        MirrorViewOptions options;
+        options.mode = mode;
+        options.view = makeView({-220.0, -170.0, 130.0}, {23.0, 38.0, 0.0});
+        const auto plain = scene.mirror.buildDrawList(options);
+        CHECK(tinted(plain) == 0);
+        options.sideTints = &unknown;
+        CHECK(tinted(scene.mirror.buildDrawList(options)) == 0);
+        options.sideTints = &tints;
+        const auto list = scene.mirror.buildDrawList(options);
+        CHECK(tinted(list) == 1); // exactly the one face, split from its batch
+        CHECK(list.meshes.size() >= plain.meshes.size());
+        // The tint never selects: no extra outlines.
+        CHECK(list.outlines.size() == plain.outlines.size());
+        if (mode == DisplayMode::Wireframe) continue; // wireframe has no filled faces to tint
+        const auto before = drawFrame(*g, scene.mirror, mode);
+        // drawFrame builds its own options, so draw the tinted list directly.
+        REQUIRE(g->context->oneShot([&](VkCommandBuffer commands) {
+            g->target.begin(commands, kClear);
+            g->renderer->record(commands, list);
+            g->target.end(commands);
+        }));
+        const auto after = g->target.readback();
+        REQUIRE(after);
+        CHECK(after->pixels != before.pixels);
+    }
+}
+
 TEST_CASE("mirror preview changes draw state only and cancel restores the image") {
     REQUIRE_GPU();
     Scene scene(*g);

@@ -56,10 +56,10 @@ std::vector<editor::Problem> collectMapProblems(const document::Document& docume
         context.assets = &assets;
         context.classes = classes;
         if (session && session->document() == &document) context.instances = &session->instances().problems();
-        return editor::ProblemRegistry::builtin().run(context);
+        return editor::problemRegistry().run(context);
     }
     if (session && session->document() == &document) context.instances = &session->instances().problems();
-    return editor::ProblemRegistry::builtin().run(context);
+    return editor::problemRegistry().run(context);
 }
 
 } // namespace apex::ui

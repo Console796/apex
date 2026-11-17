@@ -18,6 +18,7 @@ enum class ProblemKind {
     DisplacementNonQuad, DisplacementAlphaRange, DisplacementUnreadable,
     DisplacementUnsewn, // 0.8 D6: neighbours sharing a base edge whose vertices differ by more than 0.1 units
     EmptyOverlay, // 0.8 D11 rule 4 (overlay_problems.hpp)
+    Plugin,
     SmallStructural // 0.8.9 D16: a world brush too small to hide a player still cuts vis portals
 };
 struct Problem {
@@ -26,6 +27,7 @@ struct Problem {
     std::string text;
     std::vector<document::NodeId> objects; // what "select" selects
     std::string fixId;                     // an offered action ("select"), never an automatic edit
+    std::string source;                    // plugin ID for ProblemKind::Plugin
 };
 
 // What the checks may read. Optional parts that are absent skip the checks that need them.
@@ -43,6 +45,8 @@ using ProblemCheck = std::function<void(const ProblemContext&, std::vector<Probl
 class ProblemRegistry {
 public:
     void add(std::string name, ProblemCheck check);
+    void freeze() { frozen_ = true; }
+    bool frozen() const { return frozen_; }
     const std::vector<std::string>& names() const { return names_; }
     // Errors first, then warnings and notes, each in registration order.
     std::vector<Problem> run(const ProblemContext& context) const;
@@ -50,7 +54,19 @@ public:
 private:
     std::vector<std::string> names_;
     std::vector<ProblemCheck> checks_;
+    bool frozen_ = false;
 };
+
+// 0.9.5: the problem list grouped for display. Apex's own problems come first (source empty), then one group
+// per plugin in order of first appearance. Each group lists indices into the input, keeping its order.
+struct ProblemGroup {
+    std::string source;
+    std::vector<std::size_t> indices;
+};
+std::vector<ProblemGroup> groupProblems(const std::vector<Problem>& problems);
+
+ProblemRegistry& mutableProblemRegistry();
+const ProblemRegistry& problemRegistry();
 
 // Plan 0.8 D1/D2: the problems of one side block (none for a flat side): a dispinfo that does not
 // parse, a displacement on a non-quad base face (skipped when poly is null), alphas outside 0..255.

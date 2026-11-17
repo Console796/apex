@@ -9,7 +9,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                document/instance_test.cpp document/sidelist_remap_test.cpp document/connection_codec_test.cpp document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
                document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp document/displacement_test.cpp
                document/sidelist_upkeep_test.cpp document/overlay_oracle_test.cpp document/detail_props_oracle_test.cpp
-               assets/vfs_test.cpp assets/addons_test.cpp assets/addon_authoring_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
+               assets/vfs_test.cpp assets/addons_test.cpp assets/addon_authoring_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/vfs_provider_test.cpp assets/vmt_write_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/hotspot_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
                assets/material_corpus_test.cpp assets/material_index_test.cpp assets/asset_index_test.cpp assets/asset_index_corpus_test.cpp assets/thumbnail_test.cpp assets/external_thumbnail_test.cpp core/json_test.cpp
@@ -45,7 +45,7 @@ doctest_discover_tests(apex_tests
                       PROPERTIES LABELS "apex-tests" ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan.supp")
 
 # Keep the opt-in measurement workload separately tagged and visibly skipped in ctest.
-add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/displacement_sculpt_measure_test.cpp editor/overlay_drag_measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp)
+add_executable(apex_measure_tests main.cpp editor/measure_test.cpp editor/displacement_sculpt_measure_test.cpp editor/overlay_drag_measure_test.cpp editor/p0_corpus_counts_test.cpp render/rayquery_measure_test.cpp render/scene_accel_measure_test.cpp render/bake_incremental_measure_test.cpp assets/vfs_provider_measure_test.cpp)
 target_link_libraries(apex_measure_tests PRIVATE apex_render apex_editor apex_assets sourcepp::vpkpp sourcepp::steampp apex_warnings doctest::doctest)
 doctest_discover_tests(apex_measure_tests TEST_PREFIX "measure::"
                       PROPERTIES LABELS "measure" SKIP_REGULAR_EXPRESSION "APEX_MEASURE=1 is required")
@@ -54,3 +54,120 @@ target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_
                                               APEX_COMPILE_LOG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/compile/logs"
                                               APEX_PRIMITIVE_VMF_OUT="${CMAKE_BINARY_DIR}/primitives.vmf"
                                               APEX_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/golden")
+
+add_executable(apex_plugin_host_tests main.cpp plugin_host/plugin_host_test.cpp plugin_host/vfs_host_test.cpp plugin_host/script_host_test.cpp plugin_host/abi_layout_c.c plugin_host/abi_layout_cpp.cpp plugin_host/abi_test.cpp)
+add_library(apex_crash_plugin MODULE plugin_host/crash_plugin.c)
+target_include_directories(apex_crash_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_executable(apex_plugin_crash_child plugin_host/crash_child.cpp)
+target_link_libraries(apex_plugin_crash_child PRIVATE apex_plugin_host)
+add_library(apex_read_plugin MODULE plugin_host/read_plugin.c)
+target_include_directories(apex_read_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex_registration_plugin MODULE plugin_host/registration_plugin.c)
+target_include_directories(apex_registration_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex_exception_plugin MODULE plugin_host/exception_plugin.cpp)
+target_include_directories(apex_exception_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_dependencies(apex_plugin_host_tests apex_exception_plugin)
+target_compile_definitions(apex_plugin_host_tests PRIVATE EXCEPTION_PLUGIN_PATH="$<TARGET_FILE:apex_exception_plugin>")
+add_library(apex_overlay_plugin MODULE plugin_host/overlay_plugin.cpp)
+target_include_directories(apex_overlay_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex_overlay_other_plugin MODULE plugin_host/overlay_plugin.cpp)
+target_include_directories(apex_overlay_other_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+target_compile_definitions(apex_overlay_plugin PRIVATE PLUGIN_NS="wrap" OTHER_NS="other")
+target_compile_definitions(apex_overlay_other_plugin PRIVATE PLUGIN_NS="other" OTHER_NS="wrap")
+add_dependencies(apex_plugin_host_tests apex_overlay_plugin apex_overlay_other_plugin)
+target_compile_definitions(apex_plugin_host_tests PRIVATE OVERLAY_PLUGIN_PATH="$<TARGET_FILE:apex_overlay_plugin>" OVERLAY_OTHER_PLUGIN_PATH="$<TARGET_FILE:apex_overlay_other_plugin>")
+add_library(apex_async_plugin MODULE plugin_host/async_plugin.cpp)
+target_include_directories(apex_async_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_dependencies(apex_plugin_host_tests apex_async_plugin)
+if(TARGET apex_ui_tests)
+  add_dependencies(apex_ui_tests apex_async_plugin)
+  target_compile_definitions(apex_ui_tests PRIVATE ASYNC_PLUGIN_PATH="$<TARGET_FILE:apex_async_plugin>")
+endif()
+target_compile_definitions(apex_plugin_host_tests PRIVATE ASYNC_PLUGIN_PATH="$<TARGET_FILE:apex_async_plugin>")
+add_library(apex_vfs_plugin MODULE plugin_host/vfs_plugin.cpp)
+target_include_directories(apex_vfs_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_dependencies(apex_plugin_host_tests apex_vfs_plugin)
+target_compile_definitions(apex_plugin_host_tests PRIVATE VFS_PLUGIN_PATH="$<TARGET_FILE:apex_vfs_plugin>")
+if(TARGET apex_ui_tests)
+  add_dependencies(apex_ui_tests apex_vfs_plugin)
+  target_compile_definitions(apex_ui_tests PRIVATE VFS_PLUGIN_PATH="$<TARGET_FILE:apex_vfs_plugin>")
+endif()
+add_library(apex_bad_plugin MODULE plugin_host/bad_plugin.c)
+target_include_directories(apex_bad_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex_write_plugin MODULE plugin_host/write_plugin.c)
+target_include_directories(apex_write_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex_edit_ops_plugin MODULE plugin_host/edit_ops_plugin.c)
+target_include_directories(apex_edit_ops_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex_tool_state_plugin MODULE plugin_host/tool_state_plugin.c)
+target_include_directories(apex_tool_state_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_dependencies(apex_plugin_host_tests apex_edit_ops_plugin apex_tool_state_plugin)
+target_compile_definitions(apex_plugin_host_tests PRIVATE EDIT_OPS_PLUGIN_PATH="$<TARGET_FILE:apex_edit_ops_plugin>" TOOL_STATE_PLUGIN_PATH="$<TARGET_FILE:apex_tool_state_plugin>")
+add_library(apex_ui_plugin MODULE plugin_host/ui_plugin.c)
+target_include_directories(apex_ui_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
+add_dependencies(apex_plugin_host_tests apex_ui_plugin)
+if(TARGET apex_ui_tests)
+  add_dependencies(apex_ui_tests apex_ui_plugin)
+  target_compile_definitions(apex_ui_tests PRIVATE UI_PLUGIN_PATH="$<TARGET_FILE:apex_ui_plugin>")
+  add_dependencies(apex_ui_tests apex_overlay_plugin apex_overlay_other_plugin)
+  target_compile_definitions(apex_ui_tests PRIVATE OVERLAY_PLUGIN_PATH="$<TARGET_FILE:apex_overlay_plugin>")
+endif()
+target_compile_definitions(apex_plugin_host_tests PRIVATE UI_PLUGIN_PATH="$<TARGET_FILE:apex_ui_plugin>")
+target_link_libraries(apex_plugin_host_tests PRIVATE apex_plugin_host apex_warnings doctest::doctest)
+add_dependencies(apex_plugin_host_tests apex_bad_plugin hello_tool apex_crash_plugin apex_plugin_crash_child apex_read_plugin apex_registration_plugin polygon_tool face_stats obj_import)
+add_dependencies(apex_plugin_host_tests apex_write_plugin)
+target_compile_definitions(apex_plugin_host_tests PRIVATE WRITE_PLUGIN_PATH="$<TARGET_FILE:apex_write_plugin>")
+target_compile_definitions(apex_plugin_host_tests PRIVATE BAD_PLUGIN_PATH="$<TARGET_FILE:apex_bad_plugin>" HELLO_PLUGIN_PATH="$<TARGET_FILE:hello_tool>" CRASH_PLUGIN_PATH="$<TARGET_FILE:apex_crash_plugin>" CRASH_CHILD_PATH="$<TARGET_FILE:apex_plugin_crash_child>" READ_PLUGIN_PATH="$<TARGET_FILE:apex_read_plugin>" REGISTRATION_PLUGIN_PATH="$<TARGET_FILE:apex_registration_plugin>" POLYGON_PLUGIN_PATH="$<TARGET_FILE:polygon_tool>" FACE_STATS_PLUGIN_PATH="$<TARGET_FILE:face_stats>" OBJ_IMPORT_PLUGIN_PATH="$<TARGET_FILE:obj_import>")
+if(APEX_WITH_ANGELSCRIPT)
+  add_dependencies(apex_plugin_host_tests stair_plugin)
+  if(CMAKE_CONFIGURATION_TYPES)
+    target_compile_definitions(apex_plugin_host_tests PRIVATE STAIR_PLUGIN_DIR="${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/stair")
+  else()
+    target_compile_definitions(apex_plugin_host_tests PRIVATE STAIR_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins/stair")
+  endif()
+endif()
+doctest_discover_tests(apex_plugin_host_tests TEST_PREFIX "plugin_host::")
+
+# 0.9.9 / D8: the SDK component is enough to build plugins. tests/plugin_sdk/out_of_tree.py packs the SDK with
+# tools/package.py --sdk, builds the SDK's examples as a separate project against the unpacked archive with
+# the ApexPlugin package (no Apex include path; one job; the generator and compilers of this build), then
+# loads the result with apex_plugin_sdk_loader.
+add_executable(apex_plugin_sdk_loader plugin_sdk/sdk_loader.cpp)
+target_link_libraries(apex_plugin_sdk_loader PRIVATE apex_plugin_host apex_warnings)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  add_test(NAME plugin_sdk_out_of_tree
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/plugin_sdk/out_of_tree.py
+                   --package-py ${PROJECT_SOURCE_DIR}/tools/package.py --build-dir ${CMAKE_BINARY_DIR}
+                   --source-dir ${PROJECT_SOURCE_DIR} --loader $<TARGET_FILE:apex_plugin_sdk_loader>
+                   --cmake ${CMAKE_COMMAND} --generator ${CMAKE_GENERATOR}
+                   --make-program "${CMAKE_MAKE_PROGRAM}" --c-compiler "${CMAKE_C_COMPILER}"
+                   --cxx-compiler "${CMAKE_CXX_COMPILER}" --build-type "${CMAKE_BUILD_TYPE}"
+                   --config $<CONFIG>)
+  set_tests_properties(plugin_sdk_out_of_tree PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+  # The include/apex/ rule of tools/check_layers.py (nothing from src/) catches planted violations.
+  add_test(NAME check_layers_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_layers.py --self-test)
+  # docs/plugins quotes the headers and examples verbatim; the checker proves it, and its self-test proves the checker.
+  add_test(NAME plugin_docs_check COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_docs.py ${PROJECT_SOURCE_DIR})
+  add_test(NAME plugin_docs_check_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_docs.py --self-test)
+endif()
+
+# P1: compile each side independently with the other compiler, then load and call both functions.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_program(APEX_PROBE_GCC gcc)
+  find_program(APEX_PROBE_GXX g++)
+  find_program(APEX_PROBE_CLANG clang)
+  find_program(APEX_PROBE_CLANGXX clang++)
+  if(APEX_PROBE_GCC AND APEX_PROBE_GXX AND APEX_PROBE_CLANG AND APEX_PROBE_CLANGXX)
+    set(_probe_dir ${CMAKE_CURRENT_BINARY_DIR}/plugin-abi-probe)
+    file(MAKE_DIRECTORY ${_probe_dir})
+    add_custom_command(OUTPUT ${_probe_dir}/gcc-plugin.so ${_probe_dir}/clang-plugin.so ${_probe_dir}/gcc-host ${_probe_dir}/clang-host
+      COMMAND ${APEX_PROBE_GCC} -shared -fPIC ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/stub.c -o ${_probe_dir}/gcc-plugin.so
+      COMMAND ${APEX_PROBE_CLANG} -shared -fPIC ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/stub.c -o ${_probe_dir}/clang-plugin.so
+      COMMAND ${APEX_PROBE_GXX} ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/host.cpp -ldl -o ${_probe_dir}/gcc-host
+      COMMAND ${APEX_PROBE_CLANGXX} ${CMAKE_CURRENT_SOURCE_DIR}/plugin_host/probe/host.cpp -ldl -o ${_probe_dir}/clang-host
+      DEPENDS plugin_host/probe/stub.c plugin_host/probe/host.cpp VERBATIM)
+    add_custom_target(apex_plugin_abi_probe DEPENDS ${_probe_dir}/gcc-plugin.so ${_probe_dir}/clang-plugin.so ${_probe_dir}/gcc-host ${_probe_dir}/clang-host)
+    add_test(NAME plugin_abi_gcc_host_clang_plugin COMMAND ${_probe_dir}/gcc-host ${_probe_dir}/clang-plugin.so)
+    add_test(NAME plugin_abi_clang_host_gcc_plugin COMMAND ${_probe_dir}/clang-host ${_probe_dir}/gcc-plugin.so)
+  endif()
+endif()

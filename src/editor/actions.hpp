@@ -3,6 +3,7 @@
 #include "core/result.hpp"
 
 #include <compare>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -19,6 +20,9 @@ struct Action {
     std::string name;
     std::string category;
     std::string description;
+    std::map<std::string, std::string, std::less<>> suggestedBindings{}; // preset name -> chord
+    std::map<std::string, std::string, std::less<>> suggestedContexts{}; // preset name -> tool ID
+    std::string owner{}; // The plugin ID for a plugin action (the settings page groups by it); empty for built-ins.
 };
 
 // Entries retain declaration order, independently of a preset's map order.
@@ -28,11 +32,20 @@ public:
     explicit Actions(std::vector<Action> entries);
     const std::vector<Action>& entries() const { return entries_; }
     const Action* find(std::string_view id) const;
+    // Registrations are appended in order; duplicates and changes after freeze are refused.
+    bool add(Action action, std::function<void()> invoke = {});
+    bool invoke(std::string_view id) const;
+    void freeze() { frozen_ = true; }
+    bool frozen() const { return frozen_; }
 
 private:
     std::vector<Action> entries_;
+    bool frozen_ = false;
+    std::map<ActionId, std::function<void()>, std::less<>> callbacks_;
 };
 
+using ActionRegistry = Actions;
+ActionRegistry& mutableActionRegistry();
 const Actions& actionRegistry();
 
 struct KeyChord {
@@ -67,9 +80,21 @@ struct Binding {
     bool provisional = false;
 };
 
+enum class PieSlot { N, NE, E, SE, S, SW, W, NW };
+struct PieItem {
+    ActionId action;
+    std::optional<PieSlot> slot;
+    std::string label;
+};
+struct PieMenu {
+    std::string title;
+    std::vector<PieItem> items;
+};
+
 struct Preset {
     std::string name;
     std::map<ActionId, Binding, std::less<>> bindings;
+    std::map<ActionId, PieMenu, std::less<>> pies;
 };
 
 const Preset& hammerPreset(); // Default preset.
@@ -82,11 +107,19 @@ class Keymap {
 public:
     // Throws invalid_argument with validation problems; never resolves conflicts silently.
     explicit Keymap(const Preset& preset, const Actions& actions = actionRegistry());
+    const std::map<ActionId, std::string, std::less<>>& suggestionConflicts() const { return suggestionConflicts_; }
+    const std::map<ActionId, KeyChord, std::less<>>& suggestedChords() const { return suggestedChords_; }
+    // Every suggestion that took effect (any context). The keybinding page shows these as suggestions.
+    struct Suggestion { KeyChord chord; BindingContext context; };
+    const std::map<ActionId, Suggestion, std::less<>>& suggestions() const { return suggestions_; }
     std::optional<ActionId> lookup(const KeyChord& chord,
                                   BindingContext activeTool = BindingContext::Always) const;
 
 private:
     std::map<std::pair<BindingContext, KeyChord>, ActionId> entries_;
+    std::map<ActionId, std::string, std::less<>> suggestionConflicts_;
+    std::map<ActionId, KeyChord, std::less<>> suggestedChords_;
+    std::map<ActionId, Suggestion, std::less<>> suggestions_;
 };
 
 } // namespace apex::editor

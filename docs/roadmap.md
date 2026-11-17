@@ -42,7 +42,7 @@ verification is still open: see [the 0.5 plan](plans/0.5.md) for the remaining g
 is tagged yet. 0.6.1 to 0.6.8 have landed, and the owner accepted the 0.6 release gates on 2026-11-01
 (parity, performance, Windows Lit goldens). 0.6 is released as `0.6.8-release` (tag `v0.6.8-release`). See [the 0.6 plan](plans/0.6.md).
 
-**Status (2026-11-16):** 0.7 is released as `0.7.7-release` (tag `v0.7.7-release`), and 0.8 is released as `0.8.9-release` (tag `v0.8.9-release`, [release notes](releases/0.8.9-release.md)). The 0.8 release's own checks are still open: the written outdoor scenario, the interop check of every fixture reopened in Strata Hammer, and the Windows run. 0.9 (extensibility) is in progress on `master`; no 0.9 plan file is in `docs/plans/` yet. The detail-prop preview moved out of 0.8 on 2026-11-16 and has no milestone yet.
+**Status (2026-11-16):** 0.7 is released as `0.7.7-release` (tag `v0.7.7-release`), and 0.8 is released as `0.8.9-release` (tag `v0.8.9-release`, [release notes](releases/0.8.9-release.md)). The 0.8 release's own checks are still open: the written outdoor scenario, the interop check of every fixture reopened in Strata Hammer, and the Windows run. 0.9 (extensibility) is feature complete (sub-milestones 0.9.1 to 0.9.9, plan in [plans/0.9.md](plans/0.9.md)) and its release checks are open: the written plugin round trip (D9) on Linux and Windows, interop with Strata Hammer, and the plugin ABI probe on the Windows compilers. It is not released, and the [draft release notes](releases/0.9.9-release.md) say what is still open. The plugin ABI is frozen at major 1, minor 0. The detail-prop preview moved out of 0.8 on 2026-11-16 and has no milestone yet.
 
 ## Principles that hold across every milestone
 
@@ -173,6 +173,18 @@ with Strata's content addons, which arrive in 0.3 to 0.5; plans/addons.md D10.)
 Requirements from one consumer, the Godot/brush-acoustics workflow (VFS providers, material panel sections,
 document read access, viewport overlays), are drafted in [plans/godot-acoustics.md](plans/godot-acoustics.md).
 **Exit:** a third-party tool can be built, loaded and shipped without rebuilding Apex.
+
+**As built (0.9 feature complete, release checks open).** Landed: a C ABI frozen at major 1, minor 0 with a header-only C++ wrapper
+(`include/apex/`), the `plugin_host` layer, interfaces for tools, actions, document read, edits, selection,
+declarative UI (panels, sections, dialogs), overlays, helpers, problems, importers, jobs, file watch, VFS providers and
+asset writes, **AngelScript** script plugins (reload on save) over the same ABI, a plugin manager, the SDK package
+(`tools/package.py --sdk`, `apex::plugin_sdk`, an out-of-tree build test) and 22 pages of `docs/plugins/`.
+Narrowed from the list above: the "keymap editor" is plugin awareness on the existing Keybindings page plus pie layouts stored
+in presets and a Pies page, and the "theme editor" (built in 0.3.4) is plugin-shipped themes (plans/0.9.md D7).
+**Not built:** scriptable and persistent primitives (probe P2 was never run, so primitives stay "adjust last operation";
+0.3 D6), `pie.user.*` pies, the pie "More" level, the native Qt panel tier, and native hot reload.
+**Exit (plans/0.9.md D9):** a scripted plugin round trip on Linux and Windows from the published SDK and binaries,
+plus interop and the ABI probe on release builds. Not yet run; see the [draft release notes](releases/0.9.9-release.md).
 
 ### 0.10: Production hardening → 1.0 RC
 Performance budgets on the largest available maps, an interop test suite against Strata Hammer

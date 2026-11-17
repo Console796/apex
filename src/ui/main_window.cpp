@@ -1,4 +1,9 @@
+#include "ui/plugin_manager.hpp"
+#include "plugin_host/plugin_host.hpp"
+#include "assets/vmt_write.hpp"
 #include "ui/main_window.hpp"
+#include "ui/plugin_ui.hpp"
+#include "ui/plugin_pump.hpp"
 #include "ui/compile_panel.hpp"
 #include "ui/asset_report_builder.hpp"
 #include "ui/game_content.hpp"
@@ -110,11 +115,51 @@ QIcon appIcon() {
 }
 
 namespace {
-constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
-    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure", "tool.overlay", "tool.rope", "tool.displacement"};
-}
-
-namespace {
+// apex.assets/1 over the game content: reads the material index snapshot, writes through Apex's VMT writer
+// (assets::writeVmt, which only writes loose files) and refreshes that one index entry.
+class ContentAssets final : public plugin_host::AssetsBackend {
+public:
+    explicit ContentAssets(GameContent& content) : content_(content) {}
+    void materials(const std::function<bool(const plugin_host::MaterialRecord&)>& visit) override {
+        const auto snapshot = content_.snapshot();
+        if (!snapshot) return;
+        for (const auto& entry : snapshot->entries)
+            if (!visit(record(entry))) return;
+    }
+    std::optional<plugin_host::MaterialRecord> material(std::string_view name) override {
+        const auto snapshot = content_.snapshot();
+        const auto* entry = snapshot ? snapshot->find(name) : nullptr;
+        if (!entry) return std::nullopt;
+        return record(*entry);
+    }
+    plugin_host::AssetsWriteResult writeVmt(std::string_view material, const std::vector<plugin_host::VmtEditRequest>& edits) override {
+        plugin_host::AssetsWriteResult result;
+        const auto vfs = content_.vfs();
+        if (!vfs || !content_.snapshot()) { result.message = "game content is not loaded"; return result; }
+        std::vector<assets::VmtEdit> list;
+        for (const auto& edit : edits)
+            list.push_back({edit.key, edit.remove ? std::nullopt : std::optional<std::string>(edit.value)});
+        auto written = assets::writeVmt(*vfs, material, list);
+        if (!written) {
+            result.message = written.error().what();
+            result.notFound = written.error().code == ErrorCode::NotFound;
+            result.unsupported = written.error().code == ErrorCode::Unsupported;
+            return result;
+        }
+        content_.refreshMaterial(material);
+        result.ok = true;
+        return result;
+    }
+private:
+    plugin_host::MaterialRecord record(const assets::MaterialIndexEntry& entry) const {
+        std::string source = "game";
+        if (entry.mount) source = content_.addonName(*entry.mount).toStdString();
+        else if (const auto vfs = content_.vfs())
+            if (auto label = vfs->mountLabel("materials/" + entry.name + ".vmt"); label.starts_with("provider:")) source = std::move(label);
+        return {entry.name, entry.shader, entry.previewTexture, entry.surfaceProp, std::move(source)};
+    }
+    GameContent& content_;
+};
 int undoCapMiB() {
     bool valid = false;
     const auto value = QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toLongLong(&valid);
@@ -355,6 +400,11 @@ MainWindow::MainWindow(QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+    if (pluginHost_) {
+        pluginHost_->setSession(nullptr);
+        pluginHost_->setAssetsBackend(nullptr);
+        pluginHost_->setVfsRefreshHandler({});
+    }
     compilePanel_->setDocument(nullptr);
     compilePanel_->setGameContent(nullptr);
     compilePanel_->setEditorSession(nullptr);
@@ -410,6 +460,8 @@ void MainWindow::buildMenus() {
     create->setObjectName(QStringLiteral("actionNew"));
     auto* open = file->addAction(tr("&Open..."), QKeySequence::Open, this, &MainWindow::openDialog);
     open->setObjectName(QStringLiteral("actionOpen"));
+    auto* import = file->addAction(tr("&Import..."), this, &MainWindow::importDialog);
+    import->setObjectName(QStringLiteral("actionImport"));
     recentMenu_ = file->addMenu(tr("Open &Recent"));
     recentMenu_->setObjectName(QStringLiteral("menuRecent"));
     file->addSeparator();
@@ -436,6 +488,15 @@ void MainWindow::buildMenus() {
 
     auto* edit = menuBar()->addMenu(tr("&Edit"));
     edit->setObjectName(QStringLiteral("menuEdit"));
+    for (const auto& entry : editor::actionRegistry().entries()) {
+        if (!entry.id.starts_with("plugin.")) continue;
+        if (std::ranges::any_of(editor::toolRegistry().entries(), [&](const auto& tool) { return tool.id == entry.id; })) continue;
+        auto* action = edit->addAction(fromStd(entry.name));
+        action->setObjectName(fromStd(entry.id));
+        action->setToolTip(fromStd(entry.description));
+        editorActions_.emplace(entry.id, action);
+        connect(action, &QAction::triggered, this, [this, id = entry.id] { session_.perform(id); });
+    }
     auto* selectionBar = addToolBar(tr("Selection"));
     selectionBar->setObjectName(QStringLiteral("toolbarSelection"));
     auto* modes = new QActionGroup(this);
@@ -522,6 +583,10 @@ void MainWindow::buildMenus() {
     connect(reloadAction, &QAction::triggered, this, &MainWindow::reloadGameContent);
     connect(addonsMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildAddonsMenu);
     rebuildAddonsMenu();
+
+    settings->addAction(tr("Plugins..."), this, [this] {
+        if (pluginHost_) PluginManager(*pluginHost_, this).exec();
+    });
 
     auto* help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About Apex"), this, [this] {
@@ -662,7 +727,26 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
     // Native pane key delivery uses this same session keymap.
     for (const auto& [id, action] : editorActions_) {
         QList<QKeySequence> sequences;
-        const auto& binding = session_.preset().bindings.at(id);
+        if (id.starts_with("plugin.")) {
+            if (const auto* entry = editor::actionRegistry().find(id)) action->setToolTip(fromStd(entry->description));
+        }
+        const auto bindingIt = session_.preset().bindings.find(id);
+        if (bindingIt == session_.preset().bindings.end()) {
+            const auto suggestion = session_.keymap().suggestedChords().find(id);
+            if (suggestion == session_.keymap().suggestedChords().end()) {
+                action->setShortcuts({});
+                if (const auto conflict = session_.keymap().suggestionConflicts().find(id);
+                    conflict != session_.keymap().suggestionConflicts().end())
+                    action->setToolTip(fromStd(conflict->second));
+            }
+            else {
+                action->setShortcut(keySequence(suggestion->second));
+                action->setShortcutContext(!suggestion->second.ctrl && !suggestion->second.alt
+                                               ? Qt::WidgetShortcut : Qt::WindowShortcut);
+            }
+            continue;
+        }
+        const auto& binding = bindingIt->second;
         const bool transformAction = isPaneKeyAction(id);
         const bool toolScoped = !binding.context.toolId.empty();
         if (!toolScoped) if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
@@ -888,7 +972,7 @@ void MainWindow::updateEditorActions() {
         // Rules below override this default, and the action is set once at the end: an action turned
         // off and back on makes Qt update every menu, toolbar button and shortcut that shows it, on
         // every pointer move of a drag.
-        bool enabled = session_.document() != nullptr;
+        bool enabled = session_.document() != nullptr || id.starts_with("plugin.");
         if (id == "instance.create") enabled = session_.document() && !editor::selectedNodes(session_.selection()).empty();
         if (id == "instance.collapse_all")
             enabled = session_.document() && (!session_.instances().contents().empty() || !session_.instances().problems().empty());
@@ -911,7 +995,7 @@ void MainWindow::updateEditorActions() {
             }
         }
         if (id == "assets.reload" || id.starts_with("compile.") || id == "view.properties" || id.starts_with("workspace.")) enabled = true;  // Window actions.
-        if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
+        if (std::ranges::find(session_.toolIds(), id) != session_.toolIds().end()) {
             enabled = session_.isToolEnabled(id);
             action->setChecked(session_.activeTool() == id);
             if (toolButton_ && action->isChecked()) toolButton_->setText(action->text());
@@ -1339,8 +1423,9 @@ void MainWindow::buildEntityUi() {
     toolButton_->setMenu(menu);
     bar->addWidget(toolButton_);
     auto* group = new QActionGroup(this);
-    for (const auto id : kToolActions) {
+    for (const auto& id : session_.toolIds()) {
         const auto* entry = editor::actionRegistry().find(id);
+        if (!entry) continue;
         auto* action = new QAction(fromStd(entry->name), this);
         action->setObjectName(fromStd(entry->id));
         action->setToolTip(fromStd(entry->description));
@@ -1683,6 +1768,25 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
 }
 
+void MainWindow::setPluginHost(plugin_host::Host* host) {
+    if (pluginHost_) { pluginHost_->setAssetsBackend(nullptr); pluginHost_->setVfsRefreshHandler({}); }
+    pluginHost_ = host;
+    pluginAssets_.reset();
+    gameContent_->setVfsProviderSource(host ? GameContent::VfsProviderSource([host] { return host->vfsProviders(); })
+                                            : GameContent::VfsProviderSource{});
+    if (host) {
+        pluginAssets_ = std::make_unique<ContentAssets>(*gameContent_);
+        host->setAssetsBackend(pluginAssets_.get());
+        // A provider asked for its files to be listed again: reload the content (providers are re-read by Vfs::load).
+        host->setVfsRefreshHandler([this](std::string_view) { reloadGameContent(); });
+        if (gameContent_->hasProfile() && !host->vfsProviders().empty()) reloadGameContent();
+    }
+    delete pluginUi_;
+    pluginUi_ = host ? new PluginUi(*host, this) : nullptr;
+    delete pluginPump_;
+    pluginPump_ = host ? new PluginPump(*host, this) : nullptr;
+    if (viewport_) viewport_->setPluginUi(pluginUi_);
+}
 void MainWindow::setTheme(Theme theme) {
     setThemeId(theme == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
 }
@@ -1709,7 +1813,7 @@ void MainWindow::refreshThemeMenu() {
             themeMenu_->addSeparator();
             separated = true;
         }
-        auto* a = themeMenu_->addAction(t.name, this, [this, id = t.id] { setThemeId(id); });
+        auto* a = themeMenu_->addAction(isPluginTheme(t) ? tr("%1 (plugin %2)").arg(t.name, t.plugin) : t.name, this, [this, id = t.id] { setThemeId(id); });
         a->setCheckable(true);
         a->setChecked(t.id == currentThemeId());
         a->setObjectName(QStringLiteral("theme_%1").arg(t.id));
@@ -1801,9 +1905,13 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
     viewport_->setDocument(nullptr);
     session_.detach();
     compilePanel_->setDocument(nullptr);
+    if (pluginHost_) pluginHost_->setDocument(nullptr);
+    if (pluginHost_) pluginHost_->setSession(nullptr);
     document_ = std::move(doc);
     document_->setUndoCap(static_cast<std::size_t>(undoCapMiB()) * 1024 * 1024);
     session_.attach(*document_);
+    if (pluginHost_) pluginHost_->setSession(&session_);
+    if (pluginHost_) pluginHost_->setDocument(document_.get());
     path_ = path;
     compilePanel_->setDocument(document_.get());
     compilePanel_->setSourcePath(std::filesystem::path(path_.toStdU16String()));
@@ -1944,6 +2052,34 @@ void MainWindow::openDialog() {
     const QString start = path_.isEmpty() ? QString() : QFileInfo(path_).absolutePath();
     const QString path = QFileDialog::getOpenFileName(this, tr("Open VMF"), start, tr("Valve Map (*.vmf);;All files (*)"));
     if (!path.isEmpty()) openFile(path);
+}
+
+void MainWindow::importDialog() {
+    if (!pluginHost_ || pluginHost_->importers().empty()) {
+        statusBar()->showMessage(tr("No importer plugin is enabled"), 4000);
+        return;
+    }
+    QStringList filters;
+    QStringList all;
+    for (const auto& importer : pluginHost_->importers()) {
+        QStringList patterns;
+        for (const auto& ext : importer.extensions) patterns << QStringLiteral("*.") + fromStd(ext);
+        all << patterns;
+        filters << tr("%1 (%2)").arg(fromStd(importer.name), patterns.join(QLatin1Char(' ')));
+    }
+    filters.prepend(tr("All importable (%1)").arg(all.join(QLatin1Char(' '))));
+    const QString start = path_.isEmpty() ? QString() : QFileInfo(path_).absolutePath();
+    const QString path = QFileDialog::getOpenFileName(this, tr("Import"), start, filters.join(QStringLiteral(";;")));
+    if (path.isEmpty()) return;
+    const std::filesystem::path file = path.toStdU16String();
+    const auto* importer = pluginHost_->importerFor(file);
+    if (!importer) {
+        statusBar()->showMessage(tr("No importer handles %1").arg(QFileInfo(path).suffix()), 5000);
+        return;
+    }
+    const auto result = pluginHost_->importFile(importer->id, file);
+    statusBar()->showMessage(result.ok ? tr("Imported %1").arg(QFileInfo(path).fileName())
+                                       : tr("Import failed: %1").arg(fromStd(result.message)), 6000);
 }
 
 void MainWindow::save() {

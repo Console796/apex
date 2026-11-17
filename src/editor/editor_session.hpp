@@ -66,6 +66,8 @@ public:
         static constexpr const char* Displacement = "tool.displacement";
     };
     const ToolId& activeTool() const { return activeTool_; }
+    bool addTool(std::unique_ptr<editor::Tool> tool);
+    const std::vector<ToolId>& toolIds() const { return toolIds_; }
     void setActiveTool(ToolId tool);
     editor::Tool& activeToolObject();
     const editor::Tool& activeToolObject() const;
@@ -387,6 +389,7 @@ private:
     void refreshInstances();
     Selection selection_;
     std::map<ToolId, std::unique_ptr<editor::Tool>> tools_;
+    std::vector<ToolId> toolIds_;
     ToolId activeTool_ = Tool::Select;
     std::string currentEntityClass_;
     std::string placementModel_;

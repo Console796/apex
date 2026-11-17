@@ -4,6 +4,7 @@
 #include <QCoreApplication>
 #include <QHBoxLayout>
 #include <QMenu>
+#include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSettings>
@@ -46,6 +47,7 @@ QString roleTitle(AreaRole role) {
     case AreaRole::Find: return tr("Find");
     case AreaRole::Addons: return tr("Addons");
     case AreaRole::Compile: return tr("Compilation");
+    case AreaRole::Plugin: return tr("Plugin panel");
     case AreaRole::FaceProperties: return tr("Face Properties");
     }
     return {};
@@ -88,10 +90,21 @@ void bindPanel(QWidget* panel, document::Document* document, editor::EditorSessi
     if (document) setPanelDocument(panel, document);
 }
 
-QWidget* createPanel(AreaRole role, document::Document* document, editor::EditorSession* session, GameContent* content) {
+QWidget* createPanel(AreaRole role, document::Document* document, editor::EditorSession* session, GameContent* content,
+                     std::string_view panelId) {
     QWidget* panel = nullptr;
     switch (role) {
     case AreaRole::Viewport: return nullptr;
+    case AreaRole::Plugin: {
+        auto* missing = new QLabel(QCoreApplication::translate("apex::ui::areas", "Plugin panel %1 is not loaded")
+                                      .arg(QString::fromUtf8(panelId.data(), static_cast<qsizetype>(panelId.size()))));
+        missing->setObjectName(QStringLiteral("MissingPluginPanel"));
+        missing->setProperty("panelId", QString::fromUtf8(panelId.data(), static_cast<qsizetype>(panelId.size())));
+        missing->setAlignment(Qt::AlignCenter);
+        missing->setWordWrap(true);
+        panel = missing;
+        break;
+    }
     case AreaRole::Outliner: panel = new OutlinerPanel; break;
     case AreaRole::Inspector: panel = new InspectorPanel; break;
     case AreaRole::Visgroups: panel = new VisgroupPanel; break;
@@ -112,7 +125,7 @@ QWidget* createPanel(AreaRole role, document::Document* document, editor::Editor
     return panel;
 }
 
-QToolButton* makeRoleButton(AreaRole current, std::function<void(AreaRole)> choose, QWidget* parent) {
+QToolButton* makeRoleButton(AreaRole current, std::function<void(AreaRole)> choose, QWidget* parent, std::function<void(std::string)> choosePlugin) {
     auto* button = new QToolButton(parent);
     button->setObjectName(QStringLiteral("AreaRoleButton"));
     button->setText(roleTitle(current) + QStringLiteral(" ▾"));
@@ -122,7 +135,7 @@ QToolButton* makeRoleButton(AreaRole current, std::function<void(AreaRole)> choo
     auto* menu = new QMenu(button);
     menu->setObjectName(QStringLiteral("AreaRoleMenu"));
     auto* group = new QActionGroup(menu);
-    for (const auto role : viewport::kAreaRoles) {
+    for (const auto role : viewport::areaRoleRegistry().builtins()) {
         auto* action = menu->addAction(roleTitle(role));
         action->setCheckable(true);
         action->setChecked(role == current);
@@ -131,6 +144,14 @@ QToolButton* makeRoleButton(AreaRole current, std::function<void(AreaRole)> choo
         QObject::connect(action, &QAction::triggered, button, [choose, role, current] {
             if (role != current) choose(role);
         });
+    }
+    if (choosePlugin && !viewport::areaRoleRegistry().panels().empty()) {
+        menu->addSeparator();
+        for (const auto& panel : viewport::areaRoleRegistry().panels()) {
+            auto* action = menu->addAction(QString::fromStdString(panel.title));
+            action->setData(QString::fromStdString(panel.id));
+            QObject::connect(action, &QAction::triggered, button, [choosePlugin, id = panel.id] { choosePlugin(id); });
+        }
     }
     button->setMenu(menu);
     return button;
@@ -170,7 +191,8 @@ PanelFrame::PanelFrame(viewport::NodeId pane, AreaRole role, QWidget* panel, boo
     header->setObjectName(QStringLiteral("AreaHeader"));
     auto* row = new QHBoxLayout(header);
     row->setContentsMargins(2, 2, 2, 2);
-    row->addWidget(makeRoleButton(role, [this](AreaRole r) { emit roleRequested(pane_, r); }, header));
+    row->addWidget(makeRoleButton(role, [this](AreaRole r) { emit roleRequested(pane_, r); }, header,
+                                  [this](std::string id) { emit pluginPanelRequested(pane_, QString::fromStdString(id)); }));
     row->addStretch(1);
     row->addWidget(makeCollapseButton([this] { emit collapseRequested(pane_); }, header));
     auto* menuButton = new QToolButton(header);

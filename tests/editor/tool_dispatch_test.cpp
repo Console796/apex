@@ -525,3 +525,28 @@ TEST_CASE("spotlight rotations update the separate pitch override used by compil
     CHECK(rotated->angles->x == doctest::Approx(60));
     CHECK(std::stod(rotated->keys.at("pitch")) == doctest::Approx(-60));
 }
+
+TEST_CASE("a session pie hides a dormant plugin item without removing it, and shows it again with the plugin") {
+    struct Restore { ActionRegistry& target; ActionRegistry saved;
+        ~Restore() { target = std::move(saved); } } restore{mutableActionRegistry(), mutableActionRegistry()};
+    Scene scene;
+    auto preset = hammerPreset();
+    preset.pies["pie.tools"] = PieMenu{"Mixed", {{"tool.block", PieSlot::E, "Block"},
+                                                 {"plugin.dormant.act", PieSlot::N, "Dormant"}}};
+    scene.session.setPreset(preset);
+    // The plugin is absent: the pie opens with only the item that can run.
+    REQUIRE(scene.session.input(shortcut("Q"), viewFor()));
+    REQUIRE(scene.session.pie());
+    REQUIRE(scene.session.pie()->menu().items.size() == 1);
+    CHECK(scene.session.pie()->menu().items[0].action == "tool.block");
+    CHECK(scene.session.preset().pies.at("pie.tools").items.size() == 2);  // Hidden, not removed.
+    scene.session.input(shortcut("Q", InputKind::KeyUp), viewFor());
+    scene.session.input(pointer(InputKind::Press, {100, 100}), viewFor());  // Close it.
+    REQUIRE_FALSE(scene.session.pie());
+    // The plugin arrives (registered here as the host would): the item is there again.
+    REQUIRE(mutableActionRegistry().add({"plugin.dormant.act", "Dormant", "Plugin", "A plugin action"}, [] {}));
+    scene.session.setPreset(preset);
+    REQUIRE(scene.session.input(shortcut("Q"), viewFor()));
+    REQUIRE(scene.session.pie());
+    CHECK(scene.session.pie()->menu().items.size() == 2);
+}

@@ -29,6 +29,7 @@
 #include "document/document.hpp"
 #include "editor/editor_session.hpp"
 #include "ui/game_content.hpp"
+#include "ui/plugin_ui.hpp"
 
 namespace apex::ui {
 namespace {
@@ -234,6 +235,10 @@ MaterialsPanel::MaterialsPanel(QWidget* parent) : QWidget(parent) {
     size_->setValue(std::clamp(QSettings().value(QStringLiteral("materials/thumbnailSize"), 64).toInt(), 32, 256));
     sizeRow->addWidget(size_, 1);
     layout->addLayout(sizeRow);
+    pluginSections_ = new PluginSections(QStringLiteral("materials"), this);
+    layout->addWidget(pluginSections_);
+    connect(grid_->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this] { updatePluginContext(); });
+    connect(model_, &QAbstractItemModel::modelReset, this, [this] { updatePluginContext(); });
     updateGridSize();
     connect(nameFilter_, &QLineEdit::textChanged, this, [this] { refilter(); });
     connect(shaderFilter_, &QComboBox::currentIndexChanged, this, [this] { refilter(); });
@@ -379,6 +384,13 @@ void MaterialsPanel::refilter() {
                 break;
             }
     }
+}
+void MaterialsPanel::setPluginUi(PluginUi* ui) { pluginSections_->setPluginUi(ui); updatePluginContext(); }
+void MaterialsPanel::updatePluginContext() {
+    plugin_host::UiContext context{"materials", {}, {}};
+    if (const auto* selection = grid_ ? grid_->selectionModel() : nullptr)
+        for (const auto& index : selection->selectedIndexes()) context.names.push_back(index.data(Qt::DisplayRole).toString().toStdString());
+    pluginSections_->setContext(std::move(context));
 }
 void MaterialsPanel::activate(const QString& name) {
     if (pickMode_) { remember(name); emit materialChosen(name); return; }

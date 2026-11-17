@@ -2,6 +2,7 @@
 #include "../assets/fixture.hpp"
 #include "../assets/texture_fixture.hpp"
 #include "../editor/fixtures.hpp"
+#include "plugin_ui_fixture.hpp"
 
 #include <doctest/doctest.h>
 #include <chrono>
@@ -10,6 +11,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
+#include <QGroupBox>
 #include <QKeyEvent>
 #include <QFont>
 #include <QFontMetrics>
@@ -555,4 +557,38 @@ TEST_CASE("Materials grid cells fit their names at the default size and with a l
     fits();
     slider->setValue(160);
     fits();
+}
+
+TEST_CASE("Materials plugin sections receive the selected material names") {
+    app();
+    GameTree tree;
+    auto profile = makeProfile(tree);
+    ui_test::UiPluginFixture f;
+    ui::MainWindow window;
+    window.setProfiles({profile});
+    waitForIndex(window.gameContent());
+    ui::MaterialsPanel panel;
+    panel.setGameContent(&window.gameContent());
+    panel.setPluginUi(f.ui.get());
+    panel.resize(700, 500);
+    panel.show();
+    app().processEvents();
+    auto* grid = panel.findChild<QListView*>("materialsGrid");
+    auto* filter = panel.findChild<QLineEdit*>("materialsNameFilter");
+    REQUIRE(grid); REQUIRE(filter);
+    const auto summary = [&] {
+        auto* box = panel.findChild<QGroupBox*>("plugin.ui.section");
+        auto* label = box ? box->findChild<QLabel*>("summary") : nullptr;
+        return label ? label->text() : QString("missing");
+    };
+    CHECK(summary() == "materials names=0 ids=0 first=");
+    filter->setText("brick");
+    REQUIRE(grid->model()->rowCount() == 1);
+    grid->setCurrentIndex(grid->model()->index(0, 0));
+    app().processEvents();
+    CHECK(summary() == "materials names=1 ids=0 first=brick");
+    filter->clear();
+    grid->clearSelection();
+    app().processEvents();
+    CHECK(summary() == "materials names=0 ids=0 first=");
 }

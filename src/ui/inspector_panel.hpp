@@ -15,6 +15,8 @@ class QTableWidget;
 class QKeyEvent;
 
 namespace apex::ui {
+class PluginSections;
+class PluginUi;
 
 class InspectorPanel : public QWidget {
     Q_OBJECT
@@ -32,6 +34,7 @@ public:
     void setRenameDialogPresenter(RenameDialogPresenter presenter) { renamePresenter_ = std::move(presenter); }
     // Tests replace the blocking menu.exec(); the hook receives the populated menu.
     void setConnectionMenuHook(std::function<void(QMenu*)> hook) { menuHook_ = std::move(hook); }
+    void setPluginUi(PluginUi* ui);
     void refresh();
 
 protected:
@@ -62,6 +65,7 @@ private:
     QVBoxLayout* propertiesLayout_ = nullptr;
     QTableWidget* outputs_ = nullptr;
     QTableWidget* inputs_ = nullptr;
+    PluginSections* pluginSections_ = nullptr;
     std::vector<document::NodeId> entities_;
     std::uint64_t selectionRevision_ = 0, classesRevision_ = 0;
     bool queued_ = false, rebuilding_ = false, colorDialogOpen_ = false;

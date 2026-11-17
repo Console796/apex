@@ -3,6 +3,7 @@
 
     tools/package.py [--build-dir DIR] [--out DIR] [--formats LIST] [--no-bundle-qt] [--qt-prefix DIR]
     tools/package.py --installer ZIP [--out DIR]
+    tools/package.py --sdk [--build-dir DIR] [--out DIR]
 
 Takes an existing build tree (default build/linux-gcc-release, or build/windows-msvc-release on
 Windows) of the `apex` target, runs `cmake --install --strip` into a staging directory, and writes
@@ -26,6 +27,15 @@ a Visual Studio environment, the C++ runtime DLLs app-local, so the zip runs wit
 redistributable. --installer turns that zip into apex-<version>-windows-x64.exe with NSIS's makensis
 (Linux or Windows): a per-machine install under Program Files with a Start menu shortcut and an
 uninstaller that removes only the files it installed.
+
+--sdk writes apex-plugin-sdk-<version>.zip instead (0.9.9): the `sdk` install component of the build tree, zipped
+as one archive for every platform, with no Qt and no Apex source. It holds
+      apex-plugin-sdk-<version>/include/apex/           apex_plugin.h, plugin.hpp
+      apex-plugin-sdk-<version>/lib/cmake/ApexPlugin/   find_package(ApexPlugin): apex::plugin_sdk, apex_add_plugin()
+      apex-plugin-sdk-<version>/share/apex-sdk/examples/ the example plugins' sources and the project that builds them
+      apex-plugin-sdk-<version>/share/doc/apex-sdk/     docs/plugins
+      apex-plugin-sdk-<version>/LICENSE
+The build tree only has to be configured; nothing is compiled.
 
 An AppImage is not produced: it needs appimagetool plus a patched Qt, which is not trivial
 (plan 0.1.10 allows skipping it). The Vulkan loader and GPU drivers always come from the system.
@@ -115,6 +125,20 @@ def qt_prefix_from_cache(build_dir: Path):
 def install(build_dir: Path, prefix: Path):
     run(["cmake", "--install", str(build_dir), "--prefix", str(prefix), "--strip",
          "--component", "apex"])
+
+
+def package_sdk(build_dir: Path, out: Path, work: Path, ver: str) -> Path:
+    """Stage the `sdk` install component and zip it as apex-plugin-sdk-<ver>.zip (every platform)."""
+    name = f"apex-plugin-sdk-{ver}"
+    stage = work / name
+    run(["cmake", "--install", str(build_dir), "--prefix", str(stage), "--component", "sdk"])
+    archive = out / f"{name}.zip"
+    archive.unlink(missing_ok=True)
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+        for path in sorted(stage.rglob("*")):
+            if path.is_file():
+                z.write(path, f"{name}/{path.relative_to(stage).as_posix()}")
+    return archive
 
 
 def bundle_qt_linux(stage: Path, exe: Path, qt_prefix):
@@ -380,6 +404,7 @@ def main():
     ap.add_argument("--formats", default="txz,deb,rpm", help="Linux: comma-separated txz, deb, rpm")
     ap.add_argument("--installer", type=Path, metavar="ZIP", help="build the NSIS installer from a Windows zip")
     ap.add_argument("--qt-prefix", type=Path, default=None)
+    ap.add_argument("--sdk", action="store_true", help="write apex-plugin-sdk-<version>.zip (the sdk component)")
     ap.add_argument("--no-bundle-qt", action="store_true", help="skip Qt runtime bundling")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
@@ -390,8 +415,11 @@ def main():
             return
         if not (a.build_dir / "CMakeCache.txt").exists():
             sys.exit(f"{a.build_dir} is not a configured build tree (build the `apex` target first)")
-        qt = a.qt_prefix or qt_prefix_from_cache(a.build_dir)
         ver = version(a.build_dir)
+        if a.sdk:
+            print("wrote", package_sdk(a.build_dir.resolve(), a.out.resolve(), work, ver))
+            return
+        qt = a.qt_prefix or qt_prefix_from_cache(a.build_dir)
         if win:
             print("wrote", package_windows(a.build_dir, a.out, work, not a.no_bundle_qt, qt, ver))
             return

@@ -161,3 +161,21 @@ TEST_CASE("structural brushes too small to hide a player are flagged (0.8.9 D16)
     problems = check(doc);
     CHECK(count(problems, ProblemKind::SmallStructural) == 3);
 }
+
+TEST_CASE("problems group by plugin with Apex's own first and first-appearance order kept") {
+    const auto make = [](ProblemKind kind, const char* source) {
+        Problem p; p.kind = kind; p.source = source; return p;
+    };
+    const std::vector<Problem> problems{
+        make(ProblemKind::Plugin, "zeta"), make(ProblemKind::InvalidSolid, ""), make(ProblemKind::Plugin, "alpha"),
+        make(ProblemKind::Plugin, "zeta"), make(ProblemKind::SmallStructural, "ignored source")};
+    const auto groups = groupProblems(problems);
+    REQUIRE(groups.size() == 3);
+    CHECK(groups[0].source.empty());
+    CHECK(groups[0].indices == std::vector<std::size_t>{1, 4}); // a non-plugin kind never takes a plugin group
+    CHECK(groups[1].source == "zeta");
+    CHECK(groups[1].indices == std::vector<std::size_t>{0, 3});
+    CHECK(groups[2].source == "alpha");
+    CHECK(groups[2].indices == std::vector<std::size_t>{2});
+    CHECK(groupProblems({}).empty());
+}

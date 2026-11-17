@@ -513,11 +513,27 @@ void Document::notify(const ChangeSet& changes) {
         for (const auto& [token, observer] : observers) {
             if (observers_.contains(token)) observer(changes);
         }
-    } catch (...) { notifying_ = false; throw; }
+    } catch (...) { notifying_ = false; deferred_.clear(); throw; }
     notifying_ = false;
+    if (!drainingDeferred_) {
+        drainingDeferred_ = true;
+        try {
+            while (!deferred_.empty()) {
+                auto pending = std::move(deferred_);
+                deferred_.clear();
+                for (auto& operation : pending) operation();
+            }
+        } catch (...) { drainingDeferred_ = false; throw; }
+        drainingDeferred_ = false;
+    }
+}
+void Document::defer(std::function<void()> operation) {
+    if (notifying_ || drainingDeferred_) deferred_.push_back(std::move(operation));
+    else operation();
 }
 ChangeSet Document::restore(const Entry& entry, bool after) {
     ChangeSet changes;
+    changes.undoOrRedo = true;
     const auto oldSides = sides_;
     for (const auto& delta : entry.deltas) {
         const auto old = handle(delta.id);
@@ -530,10 +546,16 @@ ChangeSet Document::restore(const Entry& entry, bool after) {
         }
         put(delta.id, target);
         const auto current = handle(delta.id);
-        if (!old && current) changes.created.push_back(*current);
-        else if (old && !current) changes.destroyed.push_back(*old);
-        else if (old && current && delta.flags != Dirty::None)
+        if (!old && current) {
+            changes.created.push_back(*current);
+            changes.createdIds.push_back(delta.id);
+        } else if (old && !current) {
+            changes.destroyed.push_back(*old);
+            changes.destroyedIds.push_back(delta.id);
+        } else if (old && current && delta.flags != Dirty::None) {
             changes.modified.push_back({*current, delta.flags});
+            changes.modifiedIds.push_back({delta.id, delta.flags});
+        }
     }
     roots_ = after ? entry.rootsAfter : entry.rootsBefore;
     historyState_ = after ? entry.stateAfter : entry.stateBefore;
@@ -1176,11 +1198,15 @@ ChangeSet Transaction::commit(bool coalesce, std::string coalesceKey) {
     std::map<SideId, bool> previousSides;
     for (const auto& delta : entry_.deltas) {
         const auto h = doc_->handle(delta.id);
-        if (!delta.before && h) changes.created.push_back(*h);
-        else if (delta.before && h && delta.flags != Dirty::None)
+        if (!delta.before && h) {
+            changes.created.push_back(*h);
+            changes.createdIds.push_back(delta.id);
+        } else if (delta.before && h && delta.flags != Dirty::None) {
             changes.modified.push_back({*h, delta.flags});
-        else if (delta.before && !h) {
+            changes.modifiedIds.push_back({delta.id, delta.flags});
+        } else if (delta.before && !h) {
             changes.destroyed.push_back(*delta.beforeHandle);
+            changes.destroyedIds.push_back(delta.id);
         }
         if (delta.before && std::holds_alternative<Solid>(*delta.before)) {
             for (const auto& side : base(*delta.before).block->children()) {

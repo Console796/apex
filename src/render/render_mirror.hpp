@@ -136,6 +136,12 @@ struct MirrorViewOptions {
     // Detail props (plan 0.8.9 D16): detail.vbsp's sprites and models where VBSP would scatter them on
     // %detailtype displacements. Textured and scene modes only.
     bool detailProps = false;
+    // Plan 0.9.5 (apex.overlay/1): per-face RGBA tint, blended like Highlight::selectTint in every display
+    // mode. Per call rather than Highlight because one mirror serves every pane and each pane toggles
+    // plugin overlays on its own. Selected faces and solids keep the selection tint. Only faces that
+    // carry a tint leave their batch's single draw; ignored for instance contents (their side IDs
+    // belong to other documents). Borrowed for the duration of the call.
+    const std::map<document::SideId, Vec4>* sideTints = nullptr;
 };
 
 struct SkyVisibilityState {

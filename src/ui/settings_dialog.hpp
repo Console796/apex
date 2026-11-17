@@ -4,7 +4,10 @@
 #include "editor/pie_menu.hpp"
 
 #include <QDialog>
+#include <array>
+#include <map>
 #include <optional>
+#include <string_view>
 
 class QDoubleSpinBox;
 class QCheckBox;
@@ -51,8 +54,32 @@ public:
     // Edits the keybinding working copy (exposed for tests).
     const editor::Preset& workingPreset() const { return working_; }
     bool keysModified() const;
+    // Plugin awareness of the Keybindings page (exposed for tests): the plugin an action id belongs to
+    // (its display name, empty for a built-in), and the suggestion shown for a plugin action.
+    QString pluginNameFor(std::string_view actionId) const;
 
 private:
+    QWidget* buildPiesPage();
+    void refreshPies();            // Reloads the Pies page from working_.
+    void loadPieRows();            // Fills the slot rows for the selected pie.
+    void pieEdited();              // A row changed: writes the layout to working_.
+    editor::PieMenu pieFromRows() const;
+    editor::ActionId selectedPie() const;
+    void resetPie();
+    std::map<editor::ActionId, editor::Keymap::Suggestion, std::less<>> suggestions_;
+    std::map<editor::ActionId, std::string, std::less<>> suggestionConflicts_;
+    struct PieRow {
+        QComboBox* action = nullptr;
+        QLineEdit* label = nullptr;
+        QLabel* note = nullptr;
+    };
+    std::array<PieRow, 8> pieRows_{};
+    QComboBox* piePicker_ = nullptr;
+    QLineEdit* pieTitle_ = nullptr;
+    QLabel* pieStatus_ = nullptr;
+    QPushButton* pieReset_ = nullptr;
+    bool pieLoading_ = false;
+
     QWidget* buildGeneralPage();
     QWidget* buildKeysPage();
     QWidget* buildInputPage();

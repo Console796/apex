@@ -1,3 +1,4 @@
+#include "ui/plugin_ui.hpp"
 #include "ui/face_properties_panel.hpp"
 
 #include <QApplication>
@@ -63,6 +64,8 @@ FacePropertiesPanel::FacePropertiesPanel(QWidget* parent) : QWidget(parent) {
     tabs_->setObjectName(QStringLiteral("facePropertiesTabs"));
     tabs_->setDocumentMode(true);
     layout_->addWidget(tabs_, 1);
+    pluginSections_ = new PluginSections(QStringLiteral("face_properties"), this);
+    layout_->addWidget(pluginSections_);
     auto* materialPage = new QWidget(tabs_);
     auto* materialPageLayout = new QVBoxLayout(materialPage);
     materialPageLayout->setContentsMargins(0, 2, 0, 0);
@@ -430,6 +433,7 @@ void FacePropertiesPanel::edit(editor::FaceField field, const QString& value, co
     auto result = session_->setFaceField(field, std::move(typed), token.toStdString());
     if (!result) emit statusMessage(fromStd(result.error().what()));
 }
+void FacePropertiesPanel::setPluginUi(PluginUi* ui) { pluginSections_->setPluginUi(ui); }
 void FacePropertiesPanel::refresh() {
     if (rebuilding_) return;
     const bool attached = session_ && document_ && session_->document() == document_;
@@ -454,6 +458,11 @@ void FacePropertiesPanel::refresh() {
     if (attached && session_->selection().mode() == editor::SelectionMode::Faces)
         for (const auto target : session_->selection().ordered())
             sides.push_back(std::get<document::SideId>(target));
+    {
+        plugin_host::UiContext context{"sides", {}, {}};
+        for (const auto side : sides) context.ids.push_back(static_cast<std::uint64_t>(side));
+        pluginSections_->setContext(std::move(context));
+    }
     // A focused field keeps its text while the user types, unless the selection changed under it:
     // then it shows the new faces and starts a new typing step, so text meant for A never edits B.
     if (fieldHasFocus()) {

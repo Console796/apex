@@ -173,6 +173,33 @@ void appendWorldAxes(render::DrawList& list, const viewport::Viewport& view) {
     for (const auto& [axis, colour] : axes) list.worldSegments.push_back({DVec3(0.0), axis * kReach, colour, 2.0f});
 }
 
+void appendPluginOverlays(render::DrawList& list, plugin_host::Host& host, const viewport::Overlays& overlays, double dpr) {
+    const auto scale = static_cast<float>(dpr);
+    bool labels = false;
+    for (const auto& overlay : host.overlays()) {
+        if (overlays.pluginOff.contains(overlay.id)) continue;
+        for (const auto& s : overlay.segments) list.worldSegments.push_back({s.a, s.b, s.colour, s.width * scale});
+        for (const auto& p : overlay.points) list.worldPoints.push_back({p.position, p.colour, p.size * scale});
+        for (const auto& t : overlay.triangles) list.worldTriangles.push_back({t.a, t.b, t.c, t.colour});
+        for (const auto& l : overlay.labels) { list.labels.push_back({l.position, l.text, Vec2(0.0f), l.colour}); labels = true; }
+    }
+    if (overlays.entityHelpers && host.hasHelpers()) {
+        const auto& drawing = host.helperDrawing();
+        for (const auto& s : drawing.segments) list.worldSegments.push_back({s.a, s.b, s.colour, s.width * scale});
+        for (const auto& l : drawing.labels) { list.labels.push_back({l.position, l.text, Vec2(0.0f), l.colour}); labels = true; }
+    }
+    if (labels) list.labelScale = scale;
+}
+
+std::map<document::SideId, Vec4> pluginSideTints(const plugin_host::Host& host, const viewport::Overlays& overlays) {
+    std::map<document::SideId, Vec4> tints;
+    for (const auto& overlay : host.overlays()) {
+        if (overlays.pluginOff.contains(overlay.id)) continue;
+        for (const auto& [side, colour] : overlay.tints) tints[side] = colour;
+    }
+    return tints;
+}
+
 render::GridSettings makeGridSettings(const viewport::Viewport& view, const editor::EditorSession* session) {
     render::GridSettings grid;
     grid.enabled = view.overlays.grid;
@@ -703,6 +730,7 @@ double PaneWindow::tick(bool forceDraw) {
     if (resizeDragging_ && !swapchain_) return -1.0;
     const bool retiring = swapchain_ && swapchain_->hasRetiredSwapchains();
     const auto* vp = accessor_();
+    if (pluginUi_ && pluginUi_->host().overlayRevision() != pluginRevision_) dirty_ = true;
     const bool accumulating = vp && vp->mode == viewport::DisplayMode::Realtime && vp->overlays.realtimeIndirect &&
                               host_.context() && host_.context()->info().rayQuery;
     if ((!dirty_ && !forceDraw && !retiring && !accumulating) || !isExposed() || failed_) return -1.0;
@@ -779,6 +807,12 @@ double PaneWindow::draw() {
     options.grid = makeGridSettings(*vp, session_);
     if (lightBackground) options.grid.colour = Vec4(0.25f, 0.25f, 0.3f, 0.8f);
 
+    std::map<document::SideId, Vec4> pluginTints;
+    if (pluginUi_) {
+        pluginTints = pluginSideTints(pluginUi_->host(), vp->overlays);
+        pluginRevision_ = pluginUi_->host().overlayRevision();
+        if (!pluginTints.empty()) options.sideTints = &pluginTints;
+    }
     render::DrawList list;
     if (auto* mirror = host_.mirror()) {
         list = mirror->buildDrawList(options);
@@ -791,6 +825,7 @@ double PaneWindow::draw() {
     }
     list.viewportSize = Vec2(static_cast<float>(extent.width), static_cast<float>(extent.height));
     appendWorldAxes(list, *vp);
+    if (pluginUi_) appendPluginOverlays(list, pluginUi_->host(), vp->overlays, devicePixelRatio());
     if (session_ && session_->compileOverlay() && session_->document()) {
         const auto& compiled = *session_->compileOverlay();
         const auto primitives = editor::compileOverlayPrimitives(compiled,
@@ -901,7 +936,8 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     auto* row = new QHBoxLayout(header);
     row->setContentsMargins(2, 2, 2, 2);
     row->addWidget(makeRoleButton(viewport::AreaRole::Viewport,
-                                  [this](viewport::AreaRole role) { emit roleRequested(pane_, role); }, header));
+                                  [this](viewport::AreaRole role) { emit roleRequested(pane_, role); }, header,
+                                  [this](std::string id) { emit pluginPanelRequested(pane_, QString::fromStdString(id)); }));
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("PaneTitle"));
     bakeStatus_ = new QLabel(this);
@@ -1095,6 +1131,38 @@ void OverlayPanel::sync(const viewport::Overlays& overlays, bool realtimeIndirec
     }
 }
 
+void OverlayPanel::setPluginOverlays(const std::vector<std::pair<QString, QString>>& overlays, const viewport::Overlays& state) {
+    auto* column = static_cast<QVBoxLayout*>(layout());
+    if (pluginGroup_) { column->removeWidget(pluginGroup_); delete pluginGroup_; pluginGroup_ = nullptr; }
+    pluginBoxes_.clear();
+    if (overlays.empty()) return;
+    pluginGroup_ = new QWidget(this);
+    auto* inner = new QVBoxLayout(pluginGroup_);
+    inner->setContentsMargins(0, 4, 0, 0);
+    inner->setSpacing(2);
+    auto* heading = new QLabel(tr("Plugins"), pluginGroup_);
+    heading->setObjectName(QStringLiteral("OverlayGroup"));
+    QFont font = heading->font();
+    font.setBold(true);
+    heading->setFont(font);
+    inner->addWidget(heading);
+    for (const auto& [id, title] : overlays) {
+        auto* box = new QCheckBox(title, pluginGroup_);
+        box->setObjectName(QStringLiteral("PluginOverlay"));
+        box->setToolTip(id);
+        box->setChecked(!state.pluginOff.contains(id.toStdString()));
+        inner->addWidget(box);
+        pluginBoxes_.emplace_back(id, box);
+        connect(box, &QCheckBox::toggled, this, [this, id](bool on) { emit pluginToggled(id, on); });
+    }
+    column->addWidget(pluginGroup_);
+}
+
+QCheckBox* OverlayPanel::pluginBox(const QString& id) const {
+    for (const auto& [i, box] : pluginBoxes_) if (i == id) return box;
+    return nullptr;
+}
+
 QCheckBox* OverlayPanel::box(OverlayField field) const {
     for (const auto& [f, box] : boxes_) if (f == field) return box;
     return nullptr;
@@ -1108,8 +1176,18 @@ void PaneFrame::showOverlays() {
         connect(overlayPanel_, &OverlayPanel::toggled, this, [this](OverlayField field, bool on) {
             edit([field, on](viewport::Viewport& v) { v.overlays.*field = on; });
         });
+        connect(overlayPanel_, &OverlayPanel::pluginToggled, this, [this](const QString& id, bool on) {
+            edit([key = id.toStdString(), on](viewport::Viewport& v) {
+                if (on) v.overlays.pluginOff.erase(key); else v.overlays.pluginOff.insert(key);
+            });
+        });
     }
     overlayPanel_->sync(vp->overlays, window_ && window_->realtimeIndirectAvailable());
+    std::vector<std::pair<QString, QString>> plugins;
+    if (pluginUi_)
+        for (const auto& overlay : pluginUi_->host().overlays())
+            plugins.emplace_back(QString::fromStdString(overlay.id), QString::fromStdString(overlay.name));
+    overlayPanel_->setPluginOverlays(plugins, vp->overlays);
     overlayPanel_->adjustSize();
     // Below the button, right-aligned to it, and kept on the pane's screen.
     QPoint at = overlaysButton_->mapToGlobal(QPoint(overlaysButton_->width() - overlayPanel_->width(),

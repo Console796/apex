@@ -1,3 +1,4 @@
+#include "editor/pie_menus.hpp"
 #include "editor/preset_io.hpp"
 
 #include <doctest/doctest.h>
@@ -89,6 +90,18 @@ TEST_CASE("assigning a chord takes it from its previous owner") {
     CHECK(blender.bindings.at("gizmo.mode.translate").context == BindingContext::SelectToolActive);
     CHECK(validate(blender).empty());
 
+    // P0 (0.9.8): the Blender preset's tool-scoped bindings keep their scope through clear and rebind,
+    // and a chord is only "owned" within its own context.
+    Preset scoped = blenderPreset();
+    REQUIRE(scoped.bindings.at("apply.click").context == BindingContext::forTool("tool.apply"));
+    assignChords(scoped, "apply.click", {});
+    CHECK(std::holds_alternative<Unbound>(scoped.bindings.at("apply.click").value));
+    assignChords(scoped, "apply.click", {chord("Alt")});
+    CHECK(scoped.bindings.at("apply.click").context == BindingContext::forTool("tool.apply"));
+    CHECK(chordOwner(scoped, chord("1"), "vertex.mode.vertex", BindingContext::Always) == "selection.mode.groups");
+    CHECK(chordOwner(scoped, chord("1"), "selection.mode.groups", BindingContext::forTool("tool.vertex")) == "vertex.mode.vertex");
+    CHECK(validate(scoped).empty());
+
     unbindAction(preset, "edit.redo");
     CHECK(validate(preset).empty());
     CHECK(allowsHeldModifier("snap.suspend"));
@@ -122,4 +135,90 @@ TEST_CASE("the preset store saves, lists, loads and removes user presets") {
     REQUIRE(store.remove("Mine"));
     CHECK(store.list().empty());
     CHECK_FALSE(store.remove("Mine"));
+}
+
+TEST_CASE("P0 missing plugin action binding survives preset round trip") {
+    const auto parsed = parsePreset(R"({"format":1,"name":"Plugin","bindings":{
+        "plugin.example.hello":{"keys":["F24"],"context":"always"},
+        "no.such.action":{"keys":["F23"]}}})");
+    REQUIRE(parsed);
+    REQUIRE(parsed->bindings.contains("plugin.example.hello"));
+    CHECK_FALSE(parsed->bindings.contains("no.such.action"));
+    CHECK(validate(*parsed).empty());
+    CHECK_FALSE(Keymap(*parsed).lookup(chord("F24")));
+    const auto restored = parsePreset(serializePreset(*parsed));
+    REQUIRE(restored);
+    REQUIRE(restored->bindings.contains("plugin.example.hello"));
+    CHECK(std::get<std::vector<KeyChord>>(restored->bindings.at("plugin.example.hello").value) ==
+          std::vector<KeyChord>{chord("F24")});
+}
+
+TEST_CASE("dormant plugin binding does not consume a built-in chord") {
+    const auto parsed = parsePreset(R"({"format":1,"name":"Dormant","bindings":{
+        "edit.undo":{"keys":["Ctrl+Z"]},
+        "plugin.example.hello":{"keys":["Ctrl+Z"]}}})");
+    REQUIRE(parsed);
+    CHECK(Keymap(*parsed).lookup(chord("Ctrl+Z")) == "edit.undo");
+    CHECK(parsed->bindings.contains("plugin.example.hello"));
+}
+
+TEST_CASE("preset pie layouts survive serialization") {
+    auto preset = hammerPreset();
+    preset.pies["pie.tools"] = PieMenu{"Custom tools", {{"tool.rope", PieSlot::N, "Rope"}}};
+    const auto loaded = parsePreset(serializePreset(preset));
+    REQUIRE(loaded);
+    REQUIRE(loaded->pies.contains("pie.tools"));
+    CHECK(loaded->pies.at("pie.tools").title == "Custom tools");
+    REQUIRE(loaded->pies.at("pie.tools").items.size() == 1);
+    CHECK(loaded->pies.at("pie.tools").items[0].action == "tool.rope");
+    CHECK(loaded->pies.at("pie.tools").items[0].slot == PieSlot::N);
+}
+
+TEST_CASE("P1 preset pies reject incomplete and conflicting layouts") {
+    for (int defect = 0; defect < 3; ++defect) {
+        CAPTURE(defect);
+        auto preset = hammerPreset();
+        PieMenu menu{"Invalid", {{"tool.rope", PieSlot::N, "Rope"}}};
+        if (defect == 0) menu.items[0].slot.reset();
+        if (defect == 1) menu.items.push_back(menu.items[0]);
+        if (defect == 2) for (int i = 1; i < 9; ++i)
+            menu.items.push_back({"tool.rope", static_cast<PieSlot>(i % 8), "Rope"});
+        preset.pies["pie.tools"] = menu;
+        const auto parsed = parsePreset(serializePreset(preset));
+        CHECK_FALSE(parsed);
+        if (!parsed) CHECK(parsed.error().what() != std::string{});
+    }
+}
+
+TEST_CASE("an edited pie round-trips through the preset store, dormant items included") {
+    TempDir dir;
+    PresetStore store(dir.path);
+    Preset mine = hammerPreset();
+    mine.name = "Pies";
+    CHECK(serializePreset(mine).find("pies") == std::string::npos);  // No layouts: nothing stored, defaults apply.
+    mine.pies["pie.tools"] = PieMenu{"My tools", {{"tool.rope", PieSlot::N, "Rope"},
+                                                  {"plugin.absent.action", PieSlot::SE, "Gone"},
+                                                  {"edit.undo", PieSlot::W, "Undo"}}};
+    REQUIRE(store.save(mine));
+    const auto loaded = store.find("Pies");
+    REQUIRE(loaded);
+    REQUIRE(loaded->pies.contains("pie.tools"));
+    const auto& menu = loaded->pies.at("pie.tools");
+    CHECK(menu.title == "My tools");
+    REQUIRE(menu.items.size() == 3);
+    CHECK(pieItemAt(menu, PieSlot::SE)->action == "plugin.absent.action");  // Kept although no plugin provides it.
+    CHECK(pieItemAt(menu, PieSlot::W)->label == "Undo");
+    CHECK_FALSE(loaded->pies.contains("pie.objects"));
+    CHECK(effectivePie("pie.objects", *loaded).items.size() == objectPie().items.size());
+}
+
+TEST_CASE("the preset store refuses a pie the loader would reject") {
+    TempDir dir;
+    PresetStore store(dir.path);
+    Preset bad = hammerPreset();
+    bad.name = "BadPie";
+    bad.pies["pie.tools"] = PieMenu{"Dup", {{"tool.rope", PieSlot::N, "A"}, {"tool.clip", PieSlot::N, "B"}}};
+    const auto saved = store.save(bad);
+    CHECK_FALSE(saved);
+    CHECK(store.list().empty());
 }

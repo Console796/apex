@@ -24,6 +24,14 @@ const MaterialIndexEntry* MaterialIndexSnapshot::find(std::string_view name) con
         [](const auto& entry, const auto& value) { return ciLess(entry.name, value); });
     return it != entries.end() && ciEquals(it->name, key) ? &*it : nullptr;
 }
+std::shared_ptr<const MaterialIndexSnapshot> MaterialIndexSnapshot::with(MaterialIndexEntry entry) const {
+    auto copy = entries;
+    const auto key = nameKey(entry.name);
+    auto it = std::ranges::find_if(copy, [&](const auto& e) { return ciEquals(e.name, key); });
+    if (it != copy.end()) *it = std::move(entry);
+    else copy.push_back(std::move(entry));
+    return std::make_shared<const MaterialIndexSnapshot>(std::move(copy));
+}
 std::vector<std::size_t> filterMaterials(const MaterialIndexSnapshot& snapshot, const MaterialFilter& filter) {
     std::vector<std::string> keywords;
     std::istringstream in(toLowerAscii(filter.name));

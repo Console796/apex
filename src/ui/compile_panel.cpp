@@ -14,6 +14,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFileDialog>
+#include "core/log.hpp"
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -367,6 +368,15 @@ void CompilePanel::startCompile(bool withGame) {
     }
     addonNotice_.clear();
     addonsUsed_.clear();
+    if (const auto vfs = content_->vfs()) {
+        const auto omitted = vfs->omittedFromCompile();
+        if (!omitted.empty()) {
+            QStringList names;
+            for (const auto& name : omitted) names << QString::fromStdString(name);
+            addonNotice_ = tr("Plugin file providers are mounted in the editor only and are left out of this compile: %1").arg(names.join(QStringLiteral(", ")));
+            log::warn("compile: omitting plugin provider mounts from the compile gameinfo: {}", names.join(QStringLiteral(", ")).toStdString());
+        }
+    }
     if (!profile.addonDirectory.empty()) {
         paths.addonDirectory = std::filesystem::path(profile.addonDirectory);
         if (!paths.addonDirectory.is_absolute()) { error_ = tr("Choose an absolute addon target folder."); refresh(); return; }
@@ -388,7 +398,7 @@ void CompilePanel::startCompile(bool withGame) {
                     return entry.mounted && entry.resolved.lexically_normal() == paths.addonDirectory.lexically_normal();
                 })) differences << tr("Addon target is not mounted in the game: %1").arg(QString::fromStdU16String(paths.addonDirectory.u16string()));
         }
-        if (!differences.isEmpty()) addonNotice_ = tr("Compile uses editor mounts. Game mounts differ:\n%1").arg(differences.join('\n'));
+        if (!differences.isEmpty()) addonNotice_ += (addonNotice_.isEmpty() ? QString() : QStringLiteral("\n")) + tr("Compile uses editor mounts. Game mounts differ:\n%1").arg(differences.join('\n'));
         auto report = buildAssetReport(*document_, content_, session_);
         for (const auto& addon : report->addonsUsed()) addonsUsed_ << QString::fromStdString(addon) + tr(" (mounted)");
         for (const auto& missing : report->missing()) if (missing.addon)
@@ -590,15 +600,37 @@ void CompilePanel::refreshProblemList() {
     shownProblems_.clear();
     problemsTable_->setRowCount(0);
     const int level = problemFilter_->currentIndex();
+    std::vector<editor::Problem> visible;
+    std::vector<int> original;
     for (std::size_t i = 0; i < problems_.size(); ++i) {
         const auto& p = problems_[i];
         if (level == 1 && p.severity == editor::ProblemSeverity::Note) continue;
         if (level == 2 && p.severity != editor::ProblemSeverity::Error) continue;
-        const int row = problemsTable_->rowCount();
-        problemsTable_->insertRow(row);
-        shownProblems_.push_back(static_cast<int>(i));
-        problemsTable_->setItem(row, 0, new QTableWidgetItem(tr(editor::severityName(p.severity))));
-        problemsTable_->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(p.text)));
+        visible.push_back(p);
+        original.push_back(static_cast<int>(i));
+    }
+    // Apex's own problems first, then one headed group per plugin (0.9.5). Header rows carry index -1.
+    for (const auto& group : editor::groupProblems(visible)) {
+        if (!group.source.empty()) {
+            const int row = problemsTable_->rowCount();
+            problemsTable_->insertRow(row);
+            shownProblems_.push_back(-1);
+            auto* header = new QTableWidgetItem(tr("Plugin %1 (%2)").arg(QString::fromStdString(group.source)).arg(group.indices.size()));
+            QFont font = header->font();
+            font.setBold(true);
+            header->setFont(font);
+            header->setFlags(Qt::ItemIsEnabled);
+            problemsTable_->setItem(row, 0, header);
+            problemsTable_->setSpan(row, 0, 1, 2);
+        }
+        for (const auto index : group.indices) {
+            const auto& p = visible[index];
+            const int row = problemsTable_->rowCount();
+            problemsTable_->insertRow(row);
+            shownProblems_.push_back(original[index]);
+            problemsTable_->setItem(row, 0, new QTableWidgetItem(tr(editor::severityName(p.severity))));
+            problemsTable_->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(p.text)));
+        }
     }
     problemSummary_->setText(problems_.empty() ? tr("No problems found") :
         tr("%1 errors, %2 warnings, %3 notes")
@@ -607,7 +639,8 @@ void CompilePanel::refreshProblemList() {
             .arg(editor::countProblems(problems_, editor::ProblemSeverity::Note)));
 }
 void CompilePanel::activateProblem(int row) {
-    if (row < 0 || row >= static_cast<int>(shownProblems_.size()) || !document_ || !session_) return;
+    if (row < 0 || row >= static_cast<int>(shownProblems_.size()) || shownProblems_[static_cast<std::size_t>(row)] < 0 ||
+        !document_ || !session_) return;
     const auto& problem = problems_[static_cast<std::size_t>(shownProblems_[static_cast<std::size_t>(row)])];
     std::vector<editor::Target> targets;
     for (const auto id : problem.objects) if (document_->handle(id)) targets.emplace_back(id);

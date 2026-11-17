@@ -69,7 +69,7 @@ It's a Qt 6 fork of Hammer. It has: Qt themes (`-theme`), Blender-style middle-m
 6. **Entities.** FGD → generated property inspector (choices, flags, color, studio/material/sound pickers, target autocompletion), I/O connection editor with validation, instance I/O.
 7. **Compile pipeline.** Drive vbsp/vvis/vrad (+ postcompiler) as cancellable background jobs; parse progress; overlay `.lin` leak files and `.prt` portals; map errors ("brush id N") back to selectable objects; launch the game with `-map`.
 8. **Lighting preview** (§4).
-9. **Extensibility.** Plugin API for tools, panels, importers and entity helpers, plus a scripting layer (see §6).
+9. **Extensibility.** Plugin API for tools, panels, importers and entity helpers, plus a scripting layer (see §6). *As built in 0.9:* a C ABI (major 1, minor 0, frozen) with a header-only C++ wrapper, versioned interfaces (tools, actions, document read, edit, selection, declarative UI, overlays, helpers, problems, importers, jobs, file watch, VFS providers and asset writes), and AngelScript script plugins over the same ABI. The design is [plans/plugins.md](plans/plugins.md), the user documentation is `docs/plugins/`, and the SDK ships as its own package. Scriptable parametric primitives were not built (plans/0.3.md D6, probe P2 not run).
 
 ---
 
@@ -185,10 +185,10 @@ apex/
   app/         executable: startup, profile selection, wiring
   (later milestones, above document/render as needed)
   lighting/    ILightBaker { realtime | progressive(GPU RT / Embree) | vrad-roundtrip }, shared light model
-  plugins/     public C ABI (or C++ ABI-stable facade) + scripting host
+  plugin_host/ the host side of the plugin C ABI (include/apex/): loader, interface tables, tool and action adapters, UI form host, the AngelScript script host; Qt-free (as built in 0.9)
 ```
 
-Layer stack as built in 0.1 (plan 0.1 §2) and extended in 0.2 (plan 0.2 D1), bottom to top: `core`, `document`/`geometry`, `assets`, `render`, `viewport`, `editor`, `ui`, `app` (`editor` depends on `document`, `geometry`, `core` and `compile`, and is Qt-free). Solids are stored as VMF blocks with geometry derived from them (plan 0.2 D4), and selection is keyed by `NodeId`/`SideId`, never by handle (plan 0.2 D3). 0.6 adds `lighting/` (plan 0.6 D1): it depends on `core` and `document` only, and `render` and `editor` depend on it. Dependencies only point downward, and `tools/check_layers.py` enforces it on `#include`s. `document` depends on `geometry` for geometry writes (0.2 D4), `assets` depends on `core` only, and `render` is Qt-free. Game profiles live in `assets/`. Tools are objects behind one `editor::Tool` interface in `editor/` (input, preview, overlay, readout, cancel, actions); the session dispatches input to the active tool, tools write only through `EditorSession::edit()`, and panes draw what the active tool describes instead of branching on tools (plan 0.3 D1). The separate `tools/` layer once sketched here is not needed: plugins in 0.9 add tools through the same interface.
+Layer stack as built in 0.1 (plan 0.1 §2) and extended in 0.2 (plan 0.2 D1), bottom to top: `core`, `document`/`geometry`, `assets`, `render`, `viewport`, `editor`, `ui`, `app` (`editor` depends on `document`, `geometry`, `core` and `compile`, and is Qt-free). Solids are stored as VMF blocks with geometry derived from them (plan 0.2 D4), and selection is keyed by `NodeId`/`SideId`, never by handle (plan 0.2 D3). 0.6 adds `lighting/` (plan 0.6 D1): it depends on `core` and `document` only, and `render` and `editor` depend on it. Dependencies only point downward, and `tools/check_layers.py` enforces it on `#include`s. `document` depends on `geometry` for geometry writes (0.2 D4), `assets` depends on `core` only, and `render` is Qt-free. Game profiles live in `assets/`. Tools are objects behind one `editor::Tool` interface in `editor/` (input, preview, overlay, readout, cancel, actions); the session dispatches input to the active tool, tools write only through `EditorSession::edit()`, and panes draw what the active tool describes instead of branching on tools (plan 0.3 D1). The separate `tools/` layer once sketched here is not needed: plugins in 0.9 add tools through the same interface. 0.9 adds `plugin_host/` (plans/0.9.md §2): it depends on `editor`, `assets` and `render` (and so on what they depend on), is Qt-free, and `ui` depends on it for the plugin manager and plugin panels. `include/apex/` is the public header directory of the C ABI (`apex_plugin.h`) and its C++ wrapper (`plugin.hpp`); it may include nothing from `src/` and no Qt, and `plugin.hpp` includes only `apex_plugin.h` and the standard library. `tools/check_layers.py` enforces all of this, and its self-test plants violations.
 
 Principles:
 - **Everything flows through commands.** Tools never touch the document directly. The document publishes change events; the render mirror, picking BVH and lighting invalidation all subscribe to those events and update incrementally.
@@ -228,6 +228,23 @@ Principles:
 - **Detail props:** the preview was dropped from 0.8 (owner, 2026-11-16). P2CE's Linux vbsp never places detail
   props, so the Windows vbsp is the oracle (`plans/probe-results/detail_props_0_8_9_p0.md`). The placement port is
   kept in the tree, switched off, for a later milestone.
+
+## 0.9 amendments (what the extensibility work settled)
+
+- **Plugin interface (§2 item 9, §6):** a C ABI behind one entry point and versioned interface tables, frozen at
+  major 1, minor 0 at 0.9.9 (`plans/plugins.md` D12 and §11). Plugins run in-process on the main thread, except
+  where an interface says otherwise. Writes go only through the session's `edit()`, and notifications carry `NodeId`s
+  (`ChangeSet` gained `createdIds`, `modifiedIds` and `destroyedIds` in `document/`, `plans/0.9.md` D3).
+- **Scripting decision:** AngelScript 2.38.0, behind `APEX_WITH_ANGELSCRIPT` (default ON), as a plugin that uses
+  the same ABI (`plans/plugins.md` D10). Scripts reload on save. Calls have a 250 ms watchdog and a script has 5 s to load.
+- **Layer stack (§6):** `plugin_host` and `include/apex/` as above.
+- **Not built, against the plan:** scriptable primitives (probe P2 was never run, so there is no observed Strata
+  encoding and primitives stay "adjust last operation", `plans/0.3.md` D6); `pie.user.<name>` pies, the pie "More"
+  level and plugin-suggested pie items (cut in 0.9.8); the native Qt panel tier (not shipped); native hot reload.
+- **VFS providers (probe P3):** a provider's entries are indexed into the VFS rather than consulted at lookup, and
+  a provider's `refresh` runs on the loading worker (`plans/plugins.md` §10).
+- **Open at 0.9 feature-complete:** the release checks in `releases/0.9.9-release.md` (Windows, interop,
+  P1 on Windows compilers, the D9 scenario on both platforms) have not run.
 
 ## Sources
 - Strata wiki source: https://github.com/StrataSource/Wiki (bsp-v25.md, vtf-v76.md, gameinfo.md, vrad.md, vbsp.md, clustered/what_is.md, angelscript/hammer/*, P2CE changelogs)
