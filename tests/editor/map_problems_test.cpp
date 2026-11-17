@@ -131,3 +131,33 @@ TEST_CASE("instance cycles are errors and unresolved instances are not reported 
     context.instances = &instances;
     CHECK(count(check(doc, &context), ProblemKind::InstanceProblem) == 1);
 }
+
+TEST_CASE("structural brushes too small to hide a player are flagged (0.8.9 D16)") {
+    Document doc(parsed(std::string("world { id 1 classname worldspawn }\n") + kStart));
+    const auto detail = addBlock(doc, "entity { id 20 classname func_detail }");
+    const auto small = addBox(doc, {0, 0, 0}, {32, 32, 32}, world(doc));
+    addBox(doc, {100, 0, 0}, {164, 64, 64}, world(doc));   // 64 square from every side
+    addBox(doc, {200, 0, 0}, {712, 512, 8}, world(doc));   // a floor slab hides from above
+    addBox(doc, {800, 0, 0}, {816, 512, 32}, world(doc));  // trim: no side 64 square
+    addBox(doc, {0, 100, 0}, {16, 116, 16}, detail);
+    auto problems = check(doc);
+    REQUIRE(count(problems, ProblemKind::SmallStructural) == 2);
+    for (const auto& p : problems)
+        if (p.kind == ProblemKind::SmallStructural) CHECK(p.severity == ProblemSeverity::Warning);
+    CHECK(std::ranges::any_of(problems, [&](const Problem& p) {
+        return p.kind == ProblemKind::SmallStructural && p.objects == std::vector<NodeId>{id(doc, small)};
+    }));
+
+    // A tool face (hint, clip...) exempts the brush; nodraw does not.
+    const auto textured = [&](DVec3 min, DVec3 max, std::string material) {
+        auto solid = solidBlock(geometry_test::build(geometry_test::boxSides(min, max)));
+        for (auto* side : solid.findAll("side")) side->append(kv1::Node::value("material", material)).value();
+        auto tx = doc.begin("textured box");
+        tx.create(std::move(solid), world(doc));
+        tx.commit();
+    };
+    textured({0, 200, 0}, {16, 216, 16}, "TOOLS/TOOLSHINT");
+    textured({0, 300, 0}, {16, 316, 16}, "tools/toolsnodraw");
+    problems = check(doc);
+    CHECK(count(problems, ProblemKind::SmallStructural) == 3);
+}

@@ -4,6 +4,8 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 using namespace apex;
 using namespace apex::geometry;
@@ -96,4 +98,51 @@ TEST_CASE("the drawn curve passes through each node with Subdiv Catmull-Rom poin
     const std::vector<DVec3> line{{0, 0, 0}, {10, 0, 0}, {20, 0, 0}, {30, 0, 0}};
     for (const auto& p : ropeCurve(line, 3)) CHECK(glm::length(DVec3{p.x, 0, 0} - p) < 1e-12);
     CHECK(ropeShape({0, 0, 0}, {512, 0, 0}, rope(100)) == ropeCurve(nodes, 2));
+}
+
+TEST_CASE("rope tube is deterministic with Width diameter, outward triangles and a UV seam") {
+    const std::vector<DVec3> curve{{0, 0, 0}, {0, 0, 16}, {0, 0, 32}};
+    const auto tube = ropeTube(curve, 4);
+    CHECK(tube == ropeTube(curve, 4));
+    REQUIRE(tube.vertices.size() == 27);
+    REQUIRE(tube.indices.size() == 96);
+    for (std::size_t i = 0; i < curve.size(); ++i) {
+        for (int j = 0; j <= 8; ++j) {
+            const auto& v = tube.vertices[i * 9 + j];
+            CHECK(glm::length(v.position - curve[i]) == doctest::Approx(2));
+            CHECK(glm::length(v.normal) == doctest::Approx(1));
+            CHECK(glm::dot(v.normal, DVec3{0, 0, 1}) == doctest::Approx(0));
+            CHECK(v.uv.x == doctest::Approx(i * 4));
+        }
+        CHECK(tube.vertices[i * 9].position == tube.vertices[i * 9 + 8].position);
+        CHECK(tube.vertices[i * 9].uv.y == 0);
+        CHECK(tube.vertices[i * 9 + 8].uv.y == 1);
+    }
+    for (std::size_t i = 0; i < tube.indices.size(); i += 3) {
+        const auto& a = tube.vertices.at(tube.indices[i]);
+        const auto& b = tube.vertices.at(tube.indices[i + 1]);
+        const auto& c = tube.vertices.at(tube.indices[i + 2]);
+        CHECK(glm::dot(glm::cross(b.position - a.position, c.position - a.position), a.normal) > 0);
+    }
+    const auto wider = ropeTube(curve, 8);
+    CHECK(glm::length(wider.vertices[0].position - curve[0]) == doctest::Approx(4));
+}
+
+TEST_CASE("rope tube handles repeated, reversing and degenerate points without invalid vertices") {
+    CHECK(ropeTube({}, 2).indices.empty());
+    const std::vector<DVec3> coincident(4, DVec3{1, 2, 3});
+    CHECK(ropeTube(coincident, 2).indices.empty());
+    const std::vector<DVec3> curve{{0, 0, 0}, {0, 0, 0}, {10, 0, 0}, {0, 0, 0}, {0, 0, 10}};
+    const auto tube = ropeTube(curve, 2);
+    CHECK(tube.vertices.size() == 36);
+    CHECK(tube == ropeTube(curve, 2));
+    for (const auto& v : tube.vertices) {
+        CHECK(std::isfinite(v.position.x)); CHECK(std::isfinite(v.position.y)); CHECK(std::isfinite(v.position.z));
+        CHECK(glm::length(v.normal) == doctest::Approx(1));
+    }
+    CHECK(ropeTube(curve, 0).vertices.empty());
+    CHECK(ropeTube(curve, -1).vertices.empty());
+    CHECK(ropeTube(curve, std::numeric_limits<double>::infinity()).vertices.empty());
+    const std::vector<DVec3> invalid{{0, 0, 0}, {NAN, 0, 0}};
+    CHECK(ropeTube(invalid, 2).vertices.empty());
 }

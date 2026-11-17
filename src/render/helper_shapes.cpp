@@ -313,7 +313,10 @@ struct Builder {
         const auto add = [&](DVec3 end, std::optional<document::NodeId> peer) {
             auto curve = geometry::ropeShape(c.pose.origin, end, settings);
             if (!std::ranges::all_of(curve, [](DVec3 p) { return finite(p); })) { invalid = true; return; }
-            shapes.ropes.push_back({c.pose.origin, end, settings, std::move(curve), c.defaultColour, peer});
+            auto material = text(c.block, "RopeMaterial").value_or("");
+            if (material.empty()) material = "cable/cable";
+            shapes.ropes.push_back({c.pose.origin, end, settings, std::move(curve), c.defaultColour, peer,
+                                   number(c.block, "Width").value_or(2.0), std::move(material)});
         };
         const auto peers = named(key);
         for (const auto& peer : peers) add(peer.position, peer.id);

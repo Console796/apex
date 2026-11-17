@@ -14,4 +14,18 @@ const PieMenu& toolPie() {
     }};
     return menu;
 }
+const PieMenu& objectPie() {
+    static const PieMenu menu{"Objects", {
+        {"edit.to_detail", PieSlot::N, "To Detail"},
+        {"edit.group", PieSlot::W, "Group"},
+        {"edit.ungroup", PieSlot::E, "Ungroup"},
+        {"edit.to_world", PieSlot::S, "To World"},
+    }};
+    return menu;
+}
+const PieMenu* pieFor(std::string_view action) {
+    if (action == "pie.tools") return &toolPie();
+    if (action == "pie.objects") return &objectPie();
+    return nullptr;
+}
 } // namespace apex::editor

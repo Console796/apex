@@ -13,10 +13,14 @@
 #include "core/entity_class.hpp"
 #include "editor/group_ops.hpp"
 
+#include <set>
 #include <span>
 #include <string>
 
 namespace apex::editor {
+
+// Reserves the next free numbered name in a set of lower-case names.
+std::string nextKeyframeName(std::string_view name, std::set<std::string>& taken);
 
 // Inside Duplicate's transaction, after its paste. `originals` are the selected nodes that were
 // copied (entities found below them too), `copies` what the paste created, and `names` the

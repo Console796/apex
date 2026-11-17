@@ -45,6 +45,8 @@ struct TieParams {
     std::optional<NodeId> entity;
     // Extra key values for a new entity (classname is set from className).
     std::vector<std::pair<std::string, std::string>> keyValues;
+    // Leave solids already in an entity of className where they are (To Detail, plan 0.8.9 D16).
+    bool skipSameClass = false;
 };
 
 // Selection targets that are document nodes (empty in Faces mode).
@@ -66,9 +68,11 @@ Result<EditedObjects> stageTieToEntity(const document::Document& doc, const Grou
                                        const Selection& selection, const TieParams& params,
                                        document::Transaction& tx);
 // Moves the selected brush-entity solids (or all solids of selected brush entities) into
-// the world, deleting entities that end up empty.
+// the world, deleting entities that end up empty. A non-empty onlyClass limits it to solids
+// of entities of that class (To World takes only func_detail, plan 0.8.9 D16).
 Result<EditedObjects> stageMoveToWorld(const document::Document& doc, const GroupIndex& groups,
-                                       const Selection& selection, document::Transaction& tx);
+                                       const Selection& selection, document::Transaction& tx,
+                                       std::string_view onlyClass = {});
 
 Result<EditedObjects> stageMoveNodesInto(const document::Document& doc, const GroupIndex& groups,
                                           std::vector<NodeId> nodes, NodeId container,

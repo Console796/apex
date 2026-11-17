@@ -5,10 +5,12 @@
 
 #include "core/log.hpp"
 #include "assets/model_pose.hpp"
+#include "document/displacement.hpp"
 #include "document/entity_transform.hpp"
 #include "geometry/solid_geometry.hpp"
 #include "lighting/cpu_accel.hpp"
 #include "render/helper_shapes.hpp"
+#include "render/detail_mirror.hpp"
 #include "render/overlay_mirror.hpp"
 #include "render/solid_mesh.hpp"
 
@@ -99,6 +101,7 @@ struct SolidState {
     bool inFlight = false;
     bool hidden = false;
     bool meshed = false;
+    bool displaced = false; // A side has dispinfo: VBSP drops the brush from the world, so it never cuts vis.
     JobHandle job;
     DVec3 origin{0.0};
     AABB bounds;          // World bounds of the last finished mesh; brush-entity helpers centre on these.
@@ -134,6 +137,15 @@ std::string modelMeshKey(const std::string& path, const std::string& sequence) {
     return sequence.empty() ? path : path + '\n' + sequence;
 }
 
+struct RopeMeshState {
+    std::vector<DVec3> curve;
+    double width = 0.0;
+    DVec3 origin{0.0};
+    Buffer vertices, indices, edges;
+    std::uint32_t indexCount = 0, edgeCount = 0;
+    AABB bounds;
+};
+
 struct EntityState {
     std::string model; // models map key (modelMeshKey), not the bare path.
     std::uint32_t skin = 0, body = 0;
@@ -150,6 +162,7 @@ struct EntityState {
     std::string sprite;             // Editor icon material of the class (iconsprite); empty when it has none.
     std::string nameKey;            // Lower case; empty when unnamed.
     HelperShapes helpers;
+    std::vector<RopeMeshState> ropeMeshes;
     std::set<std::string> watching; // Names peersNamed looked up during the last evaluation.
     // Brush entities have no box: their origin is the centre of their solids' bounds (or an `origin`
     // key), known once the solids have meshed.
@@ -181,6 +194,7 @@ struct MaterialState {
     AlphaMode alpha = AlphaMode::Opaque; // From $translucent / $alphatest once the VMT has loaded.
     bool sky = false;                   // %compilesky once loaded.
     bool nodraw = false;                 // %compilenodraw once loaded; see isNodraw().
+    std::string detailType;              // %detailtype once loaded (0.8.9 D16).
     std::set<NodeId> users;
 };
 
@@ -465,6 +479,7 @@ struct RenderMirror::Impl {
     // --- Materials -------------------------------------------------------------------------
 
     void uploadMaterial(const std::string& name, MaterialState& state, const assets::CachedMaterial& material) {
+        state.detailType = material.material.detailType;
         const auto skyFlag = material.material.compileFlags.find("%compilesky");
         const bool sky = skyFlag != material.material.compileFlags.end() && !skyFlag->second.empty() && skyFlag->second != "0";
         if (state.sky != sky) {
@@ -750,6 +765,42 @@ struct RenderMirror::Impl {
             return uploadBuffer(context, heap.uploadRing(), bytes, usage, true);
         };
     }
+    // 0.8.9 D16: detail props on %detailtype displacements (detail_mirror.hpp). detail.vbsp and the
+    // sprite material come from worldspawn's detailvbsp and detailmaterial keys.
+    DetailMirror details;
+    std::function<std::optional<std::string>(const std::string& path)> readDetailFile;
+    std::string detailVbspPath = "detail.vbsp", detailMaterial = "detail/detailsprites";
+    bool detailVbspRead = false;
+    void loadDetailVbsp() {
+        detailVbspRead = true;
+        std::shared_ptr<const geometry::DetailVbsp> vbsp;
+        if (readDetailFile) {
+            if (const auto text = readDetailFile(detailVbspPath)) {
+                if (auto parsed = geometry::parseDetailVbsp(*text))
+                    vbsp = std::make_shared<const geometry::DetailVbsp>(std::move(*parsed));
+                else log::warn("render mirror: {}: {}", detailVbspPath, parsed.error().what());
+            }
+        }
+        details.setVbsp(std::move(vbsp));
+        redraw = true;
+    }
+    void refreshDetails() {
+        const auto detailType = [this](const std::string& name) -> std::optional<std::string> {
+            const auto& state = resolveMaterial(name);
+            if (state.loading) return std::nullopt;
+            return state.detailType;
+        };
+        if (!details.refresh(detailType, overlayUpload(), garbage)) return;
+        redraw = true;
+        if (!modelCache) return;
+        details.forEachModel([&](NodeId, const DetailModelProp& prop) {
+            const auto path = assets::modelPath(prop.model);
+            auto [it, inserted] = models.try_emplace(modelMeshKey(path, ""));
+            if (!inserted) return;
+            it->second.path = path;
+            modelCache->request(path);
+        });
+    }
     OverlayMirror::DecalSize decalSize() {
         return [this](const std::string& name) -> std::optional<DVec2> {
             const auto& state = resolveMaterial(name);
@@ -981,6 +1032,7 @@ struct RenderMirror::Impl {
         for (const NodeId solid : state.brushSolids) {
             if (const auto it = brushOwner.find(solid); it != brushOwner.end() && it->second == id) brushOwner.erase(it);
         }
+        for (auto& mesh : found->second.ropeMeshes) retireRope(mesh);
         entities.erase(found);
     }
 
@@ -1162,6 +1214,74 @@ struct RenderMirror::Impl {
             context.pose = state.pose;
         }
         state.helpers = buildHelperShapes(context);
+        while (state.ropeMeshes.size() > state.helpers.ropes.size()) {
+            retireRope(state.ropeMeshes.back());
+            state.ropeMeshes.pop_back();
+        }
+    }
+
+    void retireRope(RopeMeshState& mesh) {
+        if (mesh.vertices) garbage.push_back(std::move(mesh.vertices));
+        if (mesh.indices) garbage.push_back(std::move(mesh.indices));
+        if (mesh.edges) garbage.push_back(std::move(mesh.edges));
+        mesh.indexCount = mesh.edgeCount = 0;
+    }
+
+    MeshDraw ropeDraw(NodeId id, std::size_t index, const std::vector<DVec3>& curve, double width) {
+        auto& meshes = entities.at(id).ropeMeshes;
+        if (meshes.size() < entities.at(id).helpers.ropes.size()) meshes.resize(entities.at(id).helpers.ropes.size());
+        auto& mesh = meshes[index];
+        if (mesh.curve != curve || mesh.width != width) {
+            retireRope(mesh);
+            mesh.curve = curve;
+            mesh.width = width;
+            mesh.bounds = {};
+            const auto tube = geometry::ropeTube(curve, width);
+            if (!tube.indices.empty()) {
+                mesh.origin = curve.front();
+                std::vector<BrushVertex> vertices;
+                std::vector<std::uint32_t> edges;
+                for (const auto& v : tube.vertices) {
+                    const auto local = v.position - mesh.origin;
+                    BrushVertex out{};
+                    for (int axis = 0; axis < 3; ++axis) {
+                        out.position[axis] = float(local[axis]);
+                        out.normal[axis] = float(v.normal[axis]);
+                    }
+                    out.uv[0] = float(v.uv.x);
+                    out.uv[1] = float(v.uv.y);
+                    vertices.push_back(out);
+                    mesh.bounds.expand(local);
+                }
+                // Ring edges and longitudinal edges, without the triangle diagonals.
+                constexpr std::uint32_t ring = 9;
+                for (std::uint32_t base = 0; base < vertices.size(); base += ring)
+                    for (std::uint32_t side = 0; side < ring - 1; ++side) {
+                        edges.insert(edges.end(), {base + side, base + side + 1});
+                        if (base) edges.insert(edges.end(), {base + side - ring, base + side});
+                    }
+                auto vb = upload(vertices, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                auto ib = upload(tube.indices, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+                auto eb = upload(edges, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+                if (vb && ib && eb) {
+                    mesh.vertices = std::move(*vb);
+                    mesh.indices = std::move(*ib);
+                    mesh.edges = std::move(*eb);
+                    mesh.indexCount = static_cast<std::uint32_t>(tube.indices.size());
+                    mesh.edgeCount = static_cast<std::uint32_t>(edges.size());
+                }
+            }
+        }
+        MeshDraw draw;
+        draw.vertices = &mesh.vertices;
+        draw.indices = &mesh.indices;
+        draw.indexCount = mesh.indexCount;
+        draw.edgeIndices = &mesh.edges;
+        draw.edgeIndexCount = mesh.edgeCount;
+        draw.origin = mesh.origin;
+        draw.bounds = mesh.bounds;
+        draw.edgeOverlay = false;
+        return draw;
     }
 
     // Re-evaluates the entities the change touched plus any helper that looked up a changed name.
@@ -1306,6 +1426,8 @@ struct RenderMirror::Impl {
         solidIds[handle] = solid->id;
         SolidState& state = solids[solid->id];
         state.block = solid->block;
+        state.displaced = std::ranges::any_of(solid->block->findAll("side"),
+                                              [](const kv1::Node* side) { return document::isDisplaced(*side); });
         state.hidden = hidden(doc, *solid);
         dirty.insert(solid->id);
     }
@@ -1383,9 +1505,32 @@ struct RenderMirror::Impl {
             if (solids.contains(id)) requestMesh(id);
         }
         if (overlays.apply(doc, changes, overlayUpload(), decalSize(), garbage)) redraw = true;
+        if (details.apply(doc, changes, garbage)) redraw = true;
+        for (const auto& handle : changes.created) worldDetailKeys(doc, handle);
+        for (const auto& modified : changes.modified) worldDetailKeys(doc, modified.handle);
+        refreshDetails();
         refreshHelpers();
         if (entitiesDirty) redraw = true;
         collectGarbage();
+    }
+
+    // Reloads detail.vbsp when worldspawn names another file; follows its detail sprite material.
+    void worldDetailKeys(const Document& doc, const NodeHandle& handle) {
+        if (!std::holds_alternative<Handle<document::Entity>>(handle)) return;
+        const auto* node = doc.get(handle);
+        if (!node || !node->block || lower(entityText(*node->block, "classname")) != "worldspawn") return;
+        auto path = lower(entityText(*node->block, "detailvbsp"));
+        auto material = lower(entityText(*node->block, "detailmaterial"));
+        if (path.empty()) path = "detail.vbsp";
+        if (material.empty()) material = "detail/detailsprites";
+        if (material != detailMaterial) {
+            detailMaterial = std::move(material);
+            redraw = true;
+        }
+        if (path != detailVbspPath || !detailVbspRead) {
+            detailVbspPath = std::move(path);
+            loadDetailVbsp();
+        }
     }
 
     kv1::Node effectiveBlock(NodeId id, const kv1::Node& source) const {
@@ -1637,6 +1782,7 @@ struct RenderMirror::Impl {
         // loads take the error model, so they never wait here.
         if (modelCache && std::ranges::any_of(models, [](const auto& entry) { return !entry.second.data; })) return true;
         if (previewCursor < previewGeometry.size()) return true;
+        if (details.pending()) return true;
         if (std::ranges::any_of(solids, [](const auto& s) { return s.second.inFlight; })) return true;
         return std::ranges::any_of(materials, [](const auto& m) { return m.second.loading; });
     }
@@ -1782,6 +1928,7 @@ bool RenderMirror::pump() {
     impl_->pumpModels();
     impl_->pumpMaterials();
     if (impl_->overlays.refreshDecals(impl_->overlayUpload(), impl_->decalSize(), impl_->garbage)) impl_->redraw = true;
+    impl_->refreshDetails();
     impl_->meshPreviews();
     impl_->collectGarbage();
     // Hidden contents are never drawn, so their dirty flags would never clear.
@@ -1817,6 +1964,12 @@ bool RenderMirror::needsRedraw() const {
     return std::ranges::any_of(impl_->instanceMirrors, [](const auto& item) { return item.second->needsRedraw(); });
 }
 bool RenderMirror::pending() const { return impl_->pending(); }
+void RenderMirror::setDetailSource(std::function<std::optional<std::string>(const std::string& path)> read) {
+    impl_->readDetailFile = std::move(read);
+    impl_->loadDetailVbsp();
+    impl_->refreshDetails();
+}
+std::size_t RenderMirror::detailPropCount() const { return impl_->details.propCount(); }
 SkyVisibilityState RenderMirror::skyVisibilityState() const {
     return {impl_->skyRevision, impl_->skyRequested, impl_->skyBuilding};
 }
@@ -1929,6 +2082,18 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
     list.edgeOverlay = options.edgeOverlay;
     list.edgeColour = options.edgeColour;
     list.occludedAlpha = m.highlight.occludedAlpha;
+    // Selection, then hover, then the Structural view's grey for what vis ignores.
+    const auto tintOf = [&](NodeId id, bool nonStructural) {
+        return m.selected.contains(id) ? m.highlight.selectTint
+             : m.highlight.hover == id ? m.highlight.hoverTint
+             : nonStructural && options.structural ? m.highlight.detailTint : Vec4(0.0f);
+    };
+    const auto brushIsDetail = [&](NodeId solid) {
+        if (const auto state = m.solids.find(solid); state != m.solids.end() && state->second.displaced) return true;
+        const auto owner = m.brushOwner.find(solid);
+        return owner != m.brushOwner.end() &&
+               lower(entityText(*m.entities.at(owner->second).block, "classname")) != "func_areaportal";
+    };
     m.resolvePreview();
     m.rebuildLights();
     list.lights = m.lights;
@@ -2075,9 +2240,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             case DisplayMode::Wireframe: draw.colour = options.wireColour; break;
             }
             const bool selected = m.selected.contains(id);
-            const Vec4 tint = selected ? m.highlight.selectTint
-                                      : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
-            draw.highlight = tint;
+            draw.highlight = tintOf(id, options.structural && brushIsDetail(id));
             draw.outlineOnlyWire = selected;
             const bool faceMode = !selected && std::ranges::any_of(batch.faces, [&](const FaceRange& face) {
                 return sides.contains(face.side);
@@ -2141,9 +2304,23 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             return previewIndex(m.effectivePreview.contains(solid) ? solid : overlay, origin);
         },
         [&](NodeId overlay) {
-            return m.selected.contains(overlay) ? m.highlight.selectTint
-                                                : m.highlight.hover == overlay ? m.highlight.hoverTint : Vec4(0.0f);
+            return tintOf(overlay, true);
         }});
+    // Detail props hide and move with their displacement, and are never structural.
+    const auto detailShown = [&](NodeId solid) {
+        const auto found = m.solids.find(solid);
+        return !replaced.contains(solid) && !(found != m.solids.end() && found->second.hidden);
+    };
+    const bool detailProps = textured && options.detailProps && m.details.vbsp();
+    if (detailProps) {
+        const auto& sprites = m.resolveMaterial(m.detailMaterial);
+        m.details.draw(list.meshes, {sprites.slot, sprites.alpha,
+            [&](NodeId solid, DVec3 origin) -> std::optional<std::uint32_t> {
+                if (!detailShown(solid)) return std::nullopt;
+                return previewIndex(solid, origin);
+            },
+            [&](NodeId solid) { return tintOf(solid, true); }});
+    }
     for (const auto& state : m.previewGeometry) {
         if (state.node) {
             const auto original = m.solids.find(state.node);
@@ -2211,8 +2388,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.firstInstance = instance++;
             draw.previewIndex = previewIndex(id, m.entityOrigin);
             const bool selected = m.selected.contains(id);
-            draw.tint = selected ? m.highlight.selectTint
-                                 : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
+            draw.tint = tintOf(id, true);
             draw.outlineOnlyWire = selected;
             list.boxes.push_back(draw);
             if (selected) {
@@ -2230,8 +2406,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.firstInstance = instance++;
             draw.previewIndex = previewIndex(id, m.entityOrigin);
             const bool selected = m.selected.contains(id);
-            draw.tint = selected ? m.highlight.selectTint
-                                 : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
+            draw.tint = tintOf(id, true);
             list.sprites.push_back(draw);
             if (selected) {
                 draw.tint = m.highlight.outlineColour;
@@ -2297,6 +2472,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 list.worldSegments.push_back({moved(segment.anchor.value_or(id), segment.a), moved(segment.peer.value_or(id), segment.b),
                                               segment.colour, 1.0f});
             }
+            std::size_t ropeIndex = 0;
             for (const HelperRope& rope : entity.helpers.ropes) {
                 // A move that carries both ends alike carries the shape; any other settles it again.
                 const DVec3 a = moved(id, rope.a), b = moved(rope.peer.value_or(id), rope.b);
@@ -2307,8 +2483,15 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                     if (glm::length((a - rope.a) - (b - rope.b)) < 1e-9) shift = a - rope.a;
                     else curve = &(settled = geometry::ropeShape(a, b, rope.settings));
                 }
-                for (std::size_t i = 0; i + 1 < curve->size(); ++i)
-                    list.worldSegments.push_back({(*curve)[i] + shift, (*curve)[i + 1] + shift, rope.colour, 1.0f});
+                auto draw = m.ropeDraw(id, ropeIndex++, *curve, rope.width);
+                if (!draw.indexCount) continue;
+                draw.origin += shift;
+                const auto& material = m.resolveMaterial(lower(rope.material));
+                draw.texture = material.slot;
+                draw.alpha = material.alpha;
+                draw.colour = textured ? Vec4(1.0f) : rope.colour;
+                draw.highlight = tintOf(id, true);
+                list.meshes.push_back(draw);
             }
             for (const HelperLabel& label : entity.helpers.labels)
                 if (self || label.visibility == HelperVisibility::Always) list.labels.push_back({moved(id, label.position), label.text, Vec2(0.0f), label.colour});
@@ -2323,18 +2506,17 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                 list.labels.push_back({moved(id, entity.position), entity.instanceFile, Vec2(8.0f, 8.0f), options.wireColour});
         }
     }
-    if (options.showEntities) {
+    {
         struct Group { MeshDraw draw; std::vector<DMat4> transforms; bool casts = true; };
         std::vector<Group> groups;
-        for (const auto& [id, entity] : m.entities) {
-            if (entity.model.empty()) continue;
-            const auto& mesh = m.models.at(entity.model);
-            if (!mesh.data) continue;
-            DMat4 transform = entity.transform;
+        const auto addModel = [&](NodeId id, const std::string& key, std::uint32_t body, std::uint32_t skin, Vec4 colour,
+                                  bool castsShadow, DMat4 transform) {
+            const auto found = m.models.find(key);
+            if (found == m.models.end() || !found->second.data) return;
+            const auto& mesh = found->second;
             if (const auto it = m.effectivePreview.find(id); it != m.effectivePreview.end()) transform = it->second * transform;
-            const Vec4 tint = m.selected.contains(id) ? m.highlight.selectTint
-                : m.highlight.hover == id ? m.highlight.hoverTint : Vec4(0.0f);
-            for (const auto& range : assets::modelDrawRanges(*mesh.data, entity.body, entity.skin)) {
+            const Vec4 tint = tintOf(id, true);
+            for (const auto& range : assets::modelDrawRanges(*mesh.data, body, skin)) {
                 if (range.indexCount == 0) continue;
                 MeshDraw draw;
                 draw.vertices = &mesh.vertices;
@@ -2354,7 +2536,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                     if (textured) draw.alpha = state.alpha;
                     draw.colour = options.mode == DisplayMode::Flat ? flatColour(material->second) : Vec4(1.0f);
                 } else {
-                    draw.colour = entity.colour;
+                    draw.colour = colour;
                     if (range.material < 0) draw.texture = m.errorSlot;
                 }
                 if (options.mode == DisplayMode::Wireframe) draw.colour = options.wireColour;
@@ -2363,12 +2545,24 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                     const auto& d = g.draw;
                     return d.vertices == draw.vertices && d.firstIndex == draw.firstIndex &&
                         d.indexCount == draw.indexCount && d.alpha == draw.alpha && d.texture == draw.texture && d.colour == draw.colour && d.highlight == tint &&
-                        g.casts == entity.castsShadow;
+                        g.casts == castsShadow;
                 });
-                if (group == groups.end()) { groups.push_back({draw, {}, entity.castsShadow}); group = std::prev(groups.end()); }
+                if (group == groups.end()) { groups.push_back({draw, {}, castsShadow}); group = std::prev(groups.end()); }
                 group->transforms.push_back(transform);
             }
-        }
+        };
+        if (options.showEntities)
+            for (const auto& [id, entity] : m.entities)
+                if (!entity.model.empty())
+                    addModel(id, entity.model, entity.body, entity.skin, entity.colour, entity.castsShadow, entity.transform);
+        // Detail models cast no shadow in the game. VBSP leaves out a prop whose model does not load
+        // (AddDetailToLump), so a failed one is skipped rather than drawn as the error model.
+        if (detailProps)
+            m.details.forEachModel([&](NodeId solid, const DetailModelProp& prop) {
+                const auto path = assets::modelPath(prop.model);
+                if (!detailShown(solid) || (m.modelCache && m.modelCache->state(path) == assets::ModelState::Failed)) return;
+                addModel(solid, modelMeshKey(path, ""), 0, 0, Vec4(1.0f), false, prop.transform);
+            });
         for (auto& group : groups) {
             group.draw.previewIndex = static_cast<std::uint32_t>(list.previews.size() + 1);
             group.draw.instanceCount = static_cast<std::uint32_t>(group.transforms.size());

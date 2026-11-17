@@ -1,0 +1,24 @@
+{
+  "id": "R-2",
+  "title": "0.4: Entities & assets",
+  "description": "",
+  "status": "built",
+  "milestone": "0.4",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:50:20-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "built",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "note": "0.4.1–0.4.9 landed per docs/roadmap.md; no 0.4 release tag."
+    }
+  ]
+}

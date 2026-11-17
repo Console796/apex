@@ -33,6 +33,13 @@ bool isEntity(const document::Document& doc, NodeId id) {
 bool isSolid(const document::Document& doc, NodeId id) { return is<document::Solid>(doc, id); }
 bool isGroup(const document::Document& doc, NodeId id) { return is<document::Group>(doc, id); }
 
+bool hasClass(const document::Document& doc, NodeId entity, std::string_view className) {
+    const auto* node = nodeOf(doc, entity);
+    const auto* key = node && node->block ? node->block->find("classname") : nullptr;
+    const auto value = key ? key->decodedValue() : Result<std::string>(std::string());
+    return value && ciEquals(*value, className);
+}
+
 // The non-world entity that owns a solid, through structural wrappers such as hidden.
 std::optional<NodeId> brushOwner(const document::Document& doc, NodeId solid) {
     const auto* node = nodeOf(doc, solid);
@@ -353,6 +360,7 @@ Result<EditedObjects> stageTieToEntity(const document::Document& doc, const Grou
     for (const auto solid : solids) {
         const auto old = brushOwner(doc, solid);
         if (old == targetNode) continue;
+        if (params.skipSameClass && old && hasClass(doc, *old, params.className)) continue;
         if (old) oldEntities.insert(*old);
         const auto group = groups.parentGroup(old ? *old : solid);
         if (first) common = group;
@@ -364,7 +372,9 @@ Result<EditedObjects> stageTieToEntity(const document::Document& doc, const Grou
         moved.insert(solid);
     }
     if (moved.empty())
-        return std::unexpected(Error{ErrorCode::InvalidArgument, "the solids are already in that entity"});
+        return std::unexpected(Error{ErrorCode::InvalidArgument, params.skipSameClass
+                                                                     ? "the solids are already " + params.className
+                                                                     : "the solids are already in that entity"});
     std::optional<NodeId> entityGroup;
     if (params.entity) {
         entityGroup = groups.parentGroup(targetNode);
@@ -386,13 +396,17 @@ Result<EditedObjects> stageTieToEntity(const document::Document& doc, const Grou
 }
 
 Result<EditedObjects> stageMoveToWorld(const document::Document& doc, const GroupIndex& groups,
-                                       const Selection& selection, document::Transaction& tx) {
+                                       const Selection& selection, document::Transaction& tx,
+                                       std::string_view onlyClass) {
     std::vector<NodeId> solids;
     for (const auto id : expandSelection(doc, groups, selection).solidsAndEntities) {
-        if (isSolid(doc, id) && brushOwner(doc, id)) solids.push_back(id);
+        const auto owner = isSolid(doc, id) ? brushOwner(doc, id) : std::nullopt;
+        if (owner && (onlyClass.empty() || hasClass(doc, *owner, onlyClass))) solids.push_back(id);
     }
     if (solids.empty())
-        return std::unexpected(Error{ErrorCode::InvalidArgument, "select brush entity solids to move to the world"});
+        return std::unexpected(Error{ErrorCode::InvalidArgument,
+                                     onlyClass.empty() ? std::string("select brush entity solids to move to the world")
+                                                       : "select " + std::string(onlyClass) + " solids to move to the world"});
     const auto world = worldHandle(doc);
     std::set<NodeId> moved, oldEntities, protectedGroups;
     EditedObjects result;

@@ -1,5 +1,6 @@
 #include "fixtures.hpp"
 #include "editor/editor_session.hpp"
+#include "editor/pie_menus.hpp"
 #include "core/strings.hpp"
 
 #include <cstdlib>
@@ -818,6 +819,55 @@ TEST_CASE("Tie to entity inside a group keeps the group, move to world restores 
     CHECK(m.session.groups().parentGroup(s.n(s.gbox)) == entity);
     CHECK(m.session.groups().members(*entity).size() == 2);
     checkGroupRefs(m.doc);
+}
+
+TEST_CASE("To Detail skips func_detail solids and To World takes only func_detail (0.8.9 D16)") {
+    Source s;
+    auto& m = s.m;
+    const auto extra = m.box({700, 0, 0}, {764, 64, 64});
+    m.mode("selection.mode.solids");
+    m.select({s.loose});
+    REQUIRE(m.session.toDetail());
+    const auto detail = m.session.groups().document().roots().back();
+    CHECK(valueOf(m.doc.get(*m.doc.handle(detail))->block.get(), "classname") == "func_detail");
+
+    // The already-detail solid stays in its func_detail; only the world solid moves into a new one.
+    m.select({s.loose, extra});
+    REQUIRE(m.session.toDetail());
+    CHECK(m.solidsIn(detail).size() == 1);
+    CHECK(count(bytes(m.doc), "func_detail") == 2);
+    const auto snapshot = bytes(m.doc);
+    CHECK_FALSE(m.session.toDetail()); // Both are func_detail now: nothing to do, nothing written.
+    CHECK(bytes(m.doc) == snapshot);
+
+    // To World leaves the func_door alone and dissolves the emptied func_detail entities.
+    const auto doorSolids = m.solidsIn(s.n(s.door));
+    m.selectIds({s.n(s.loose), s.n(extra), doorSolids.front()});
+    REQUIRE(m.session.toWorld());
+    CHECK(count(bytes(m.doc), "func_detail") == 0);
+    CHECK(m.solidsIn(s.n(s.door)).size() == 2);
+    m.selectIds({doorSolids.front()});
+    CHECK_FALSE(m.session.toWorld());
+    checkUniqueIds(m.doc);
+}
+
+TEST_CASE("The objects pie opens on its key and offers edit commands only with a selection") {
+    Source s;
+    auto& m = s.m;
+    const auto* pie = pieFor("pie.objects");
+    REQUIRE(pie);
+    CHECK(pie == &objectPie());
+    CHECK(pieFor("pie.tools") == &toolPie());
+    CHECK_FALSE(pieFor("pie.nothing"));
+    CHECK(m.session.preset().bindings.contains("pie.objects"));
+    m.select({});
+    CHECK_FALSE(m.session.isPieItemEnabled("edit.to_detail"));
+    CHECK(m.session.isPieItemEnabled("tool.block"));
+    m.mode("selection.mode.solids");
+    m.select({s.loose});
+    CHECK(m.session.isPieItemEnabled("edit.to_detail"));
+    CHECK(m.session.perform("edit.to_detail"));
+    CHECK(count(bytes(m.doc), "func_detail") == 1);
 }
 
 TEST_CASE("Clipboard registry actions are bound and left to the UI layer") {

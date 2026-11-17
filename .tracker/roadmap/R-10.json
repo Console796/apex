@@ -1,0 +1,24 @@
+{
+  "id": "R-10",
+  "title": "0.8.6: Overlays and decals (draw, clip, Overlay tool, Face Properties list)",
+  "description": "",
+  "status": "verified",
+  "milestone": "0.8",
+  "how_to_test": "ctest --preset linux-clang-release (includes OVERLAYS lump comparison with native vbsp). Manual: place an overlay with the Overlay tool, drag its quad, transform the brush; the overlay follows.",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:07:26-07:00",
+  "updated_by": "human",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "testable",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T17:07:26-07:00",
+      "actor": "human",
+      "status": "verified"
+    }
+  ]
+}

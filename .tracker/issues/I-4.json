@@ -1,0 +1,14 @@
+{
+  "id": "I-4",
+  "title": "Structural tint lost on func_instance contents",
+  "body": "src/render/render_mirror.cpp:~2632 instance composition overwrites child Structural highlights, so an unselected instance shows non-structural contents un-greyed. Preserve child tint unless owner selection/hover wins. (Codex review.)",
+  "kind": "bug",
+  "severity": "low",
+  "status": "open",
+  "roadmap_id": "R-13",
+  "created": "2026-11-16T17:28:09-07:00",
+  "created_by": "agent",
+  "updated": "2026-11-16T17:28:09-07:00",
+  "updated_by": "agent",
+  "comments": []
+}

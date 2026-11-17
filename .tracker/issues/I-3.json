@@ -1,0 +1,14 @@
+{
+  "id": "I-3",
+  "title": "Concave-crease darkening in the baker",
+  "body": "Open since 0.7 §3; also affects terrain valleys (recorded on the 0.8.5 displacement scene).",
+  "kind": "bug",
+  "severity": "low",
+  "status": "open",
+  "roadmap_id": "R-5",
+  "created": "2026-11-16T15:50:20-07:00",
+  "created_by": "claude",
+  "updated": "2026-11-16T15:50:20-07:00",
+  "updated_by": "claude",
+  "comments": []
+}

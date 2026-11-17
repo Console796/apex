@@ -1,0 +1,24 @@
+{
+  "id": "R-9",
+  "title": "0.8.4/0.8.5: Displacement sculpt & paint, displacement lightmaps, power resampling",
+  "description": "",
+  "status": "verified",
+  "milestone": "0.8",
+  "how_to_test": "ctest --preset linux-clang-release. Manual: sculpt and paint alpha in one stroke = one undo step; bake lighting and compare displacement lightmaps with VRAD.",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:07:31-07:00",
+  "updated_by": "human",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "testable",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T17:07:31-07:00",
+      "actor": "human",
+      "status": "verified"
+    }
+  ]
+}

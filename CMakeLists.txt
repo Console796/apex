@@ -115,7 +115,7 @@ apex_layer(geometry SOURCES src/geometry/convex_polyhedron.cpp src/geometry/face
                            src/geometry/solid_geometry.cpp src/geometry/bvh.cpp
                            src/geometry/convex_hull.cpp src/geometry/solid_block.cpp src/geometry/primitives.cpp
                            src/geometry/displacement.cpp src/geometry/displacement_rebase.cpp
-                           src/geometry/overlay.cpp src/geometry/displacement_ops.cpp src/geometry/displacement_sculpt.cpp src/geometry/hotspot.cpp src/geometry/rope.cpp
+                           src/geometry/overlay.cpp src/geometry/displacement_ops.cpp src/geometry/displacement_sculpt.cpp src/geometry/hotspot.cpp src/geometry/rope.cpp src/geometry/detail_props.cpp
            DEPS apex_core)
 apex_layer(document SOURCES src/document/vmf.cpp src/document/connection_codec.cpp
                             src/document/document.cpp src/document/entity_transform.cpp src/document/entity_helpers.cpp
@@ -134,7 +134,7 @@ apex_layer(editor SOURCES src/editor/compile_snapshot.cpp src/editor/diagnostic_
                           src/editor/gizmo.cpp src/editor/modal_transform.cpp
                           src/editor/bake_instances.cpp src/editor/vrad_roundtrip.cpp src/editor/instance_templates.cpp src/editor/instance_expansion.cpp src/editor/instance_watch_state.cpp src/editor/connection_validation.cpp src/editor/connection_completion.cpp
                           src/editor/connection_model.cpp src/editor/incoming_connections.cpp src/editor/rename_propagation.cpp src/editor/inspector_model.cpp src/editor/placement.cpp
-                          src/editor/overlay_problems.cpp src/editor/overlay_placement.cpp src/editor/overlay_tool.cpp
+                          src/editor/overlay_problems.cpp src/editor/overlay_placement.cpp src/editor/overlay_tool.cpp src/editor/rope_tool.cpp
                           src/editor/displacement_edit.cpp src/editor/displacement_tool.cpp
            DEPS apex_document apex_geometry apex_core apex_compile)
 apex_layer(assets SOURCES src/assets/game_profile.cpp src/assets/vfs.cpp src/assets/addons.cpp src/assets/addon_authoring.cpp src/assets/unmounted_addons.cpp
@@ -148,6 +148,7 @@ apex_layer(render SOURCES src/render/shader_blobs.cpp src/render/vma_impl.cpp sr
                          src/render/render_target.cpp src/render/scene_target.cpp src/render/model_thumbnail.cpp src/render/model_thumbnail_scheduler.cpp src/render/model_inspector.cpp src/render/swapchain.cpp
                          src/render/bake_setup.cpp src/render/lightmap_atlas.cpp src/render/vrad_lightmaps.cpp src/render/renderer.cpp src/render/glyph_atlas.cpp src/render/solid_mesh.cpp src/render/render_mirror.cpp
                          src/render/overlay_mirror.cpp
+                         src/render/detail_mirror.cpp
            DEPS apex_document apex_assets apex_lighting volk::volk GPUOpen::VulkanMemoryAllocator
                 Vulkan::Headers)
 # GLSL in src/render/shaders is compiled to SPIR-V and embedded in gen/render/shaders_spv.hpp (D14).

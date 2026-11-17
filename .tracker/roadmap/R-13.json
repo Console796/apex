@@ -1,0 +1,34 @@
+{
+  "id": "R-13",
+  "title": "0.8.9: Detail and structural tooling",
+  "description": "",
+  "status": "dropped",
+  "milestone": "0.8",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:05:50-07:00",
+  "updated_by": "human",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "in_progress",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "note": "Uncommitted on branch 0.8 (as of 2026-11-16): To Detail/To World, Structural overlay, SmallStructural problem, detail-prop preview, plus as-built notes in docs/plans/0.8.md."
+    },
+    {
+      "ts": "2026-11-16T16:51:05-07:00",
+      "actor": "agent",
+      "note": "Owner decision 2026-11-16: detail-prop preview dropped from 0.8 (moves to a later milestone). 0.8.9 ships To Detail/To World, Structural overlay and SmallStructural problem only."
+    },
+    {
+      "ts": "2026-11-16T17:05:50-07:00",
+      "actor": "human",
+      "status": "dropped"
+    }
+  ]
+}

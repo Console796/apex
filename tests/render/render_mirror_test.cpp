@@ -20,6 +20,7 @@
 
 #include <doctest/doctest.h>
 #include <vtfpp/VTF.h>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <algorithm>
 #include <fstream>
@@ -169,6 +170,9 @@ Gpu* gpu() {
             $model 1 $refractamount ".025" $refracttint "[0.5 0.25 1]" $normalmap test/normal $localrefract 1
             $localrefractdepth 0.05 $basetexture test/floor $envmap test/cube $envmaptint 0.2 $normalmapalphaenvmapmask 1
         })");
+        // 0.8.9 D16: the detail-prop fixture's displaced material and the sprite sheet.
+        g->tree.put("materials/apexprobe/grass.vmt", "LightmappedGeneric { $basetexture test/floor %detailtype apexprobe_grass }");
+        g->tree.put("materials/detail/detailsprites.vmt", "UnlitGeneric { $basetexture test/green $alphatest 1 }");
         g->tree.put("materials/test/refract.vmt", "Refract { $basetexture test/floor $normalmap test/normal $refractamount 0.1 }");
         for (const auto* suffix : {"rt", "lf", "bk", "ft", "up", "dn"})
             g->tree.put(std::string("materials/skybox/apex068") + suffix + ".vmt", "UnlitGeneric { $basetexture test/blue }");
@@ -260,9 +264,10 @@ FrameView makeView(DVec3 position, DVec3 anglesDeg) {
 }
 
 Rgba8Image drawFrame(Gpu& g, RenderMirror& mirror, DisplayMode mode, bool edges = false,
-                     std::optional<FrameView> view = std::nullopt, bool fullbright = false) {
+                     std::optional<FrameView> view = std::nullopt, bool fullbright = false, bool detailProps = true) {
     MirrorViewOptions options;
     options.mode = mode;
+    options.detailProps = detailProps;
     options.view = view ? *view : makeView({-220.0, -170.0, 130.0}, {23.0, 38.0, 0.0});
     options.edgeOverlay = edges;
     DrawList list = mirror.buildDrawList(options);
@@ -3120,4 +3125,121 @@ TEST_CASE("mirror: an info_overlay draws on its face and follows the face's soli
     REQUIRE(mirror.settle());
     CHECK(count(drawFrame(*g, mirror, DisplayMode::Textured, false, above), bluish) == blue);
     CHECK(g->context->validation().errorCount() == 0);
+}
+
+// Plan 0.8.9 D16: detail.vbsp's props appear on a %detailtype displacement once its material has
+// loaded, as one alpha-tested draw tinted with the displacement, and go with the overlay toggle.
+TEST_CASE("mirror: detail props scatter on a %detailtype displacement") {
+    REQUIRE_GPU();
+    auto file = vmf::parse(readFixture("../detail/detail_probe.vmf"));
+    REQUIRE(file.has_value());
+    Scene scene(*g, std::make_unique<document::Document>(*file));
+    auto& mirror = scene.mirror;
+    CHECK(mirror.detailPropCount() == 0); // No source: nothing is placed.
+    std::vector<std::string> reads;
+    mirror.setDetailSource([&](const std::string& path) -> std::optional<std::string> {
+        reads.push_back(path);
+        if (path != "detail.vbsp") return std::nullopt;
+        return readFixture("../detail/detail.vbsp");
+    });
+    REQUIRE(mirror.settle());
+    CHECK(reads == std::vector<std::string>{"detail.vbsp"});
+    CHECK(mirror.detailPropCount() == 901); // The Windows vbsp's count (tests/fixtures/detail/dprp.txt).
+
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Textured;
+    options.detailProps = true; // Off by default in 0.8.
+    const auto withProps = mirror.buildDrawList(options).meshes.size();
+    options.detailProps = false;
+    CHECK(mirror.buildDrawList(options).meshes.size() == withProps - 1);
+    options.detailProps = true;
+    options.mode = DisplayMode::Flat; // Textured and scene modes only.
+    const auto flat = mirror.buildDrawList(options).meshes.size();
+    options.detailProps = false;
+    CHECK(mirror.buildDrawList(options).meshes.size() == flat);
+
+    // The Structural view greys them with the other non-structural things.
+    options.detailProps = true;
+    options.mode = DisplayMode::Textured;
+    options.structural = true;
+    const auto list = mirror.buildDrawList(options);
+    CHECK(std::ranges::count_if(list.meshes, [&](const MeshDraw& d) {
+        return d.alpha == AlphaMode::Test && d.highlight == Highlight{}.detailTint;
+    }) >= 1);
+    // The displacement brush greys too (VBSP drops it from the world); the room's world brushes stay clear.
+    const auto greyBrushes = [&](const DrawList& drawn) {
+        return std::ranges::count_if(drawn.meshes, [&](const MeshDraw& d) {
+            return d.alpha == AlphaMode::Opaque && d.highlight == Highlight{}.detailTint;
+        });
+    };
+    CHECK(greyBrushes(list) >= 1);
+    CHECK(std::ranges::count_if(list.meshes, [](const MeshDraw& d) { return d.highlight == Vec4(0.0f); }) >= 1);
+    options.structural = false;
+    CHECK(greyBrushes(mirror.buildDrawList(options)) == 0);
+
+    // And they draw: looking across the displacement, the green sprites cover pixels the bare ground had.
+    const auto across = makeView({-128.0, -500.0, 100.0}, {15.0, 90.0, 0.0}); // Inside the sealed room.
+    const auto bare = drawFrame(*g, mirror, DisplayMode::Textured, false, across, false, false);
+    const auto grown = drawFrame(*g, mirror, DisplayMode::Textured, false, across, false, true);
+    REQUIRE(bare.pixels.size() == grown.pixels.size());
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i + 4 <= bare.pixels.size(); i += 4)
+        if (!std::equal(bare.pixels.begin() + i, bare.pixels.begin() + i + 4, grown.pixels.begin() + i)) ++changed;
+    MESSAGE("detail props changed " << changed << " of " << bare.pixels.size() / 4 << " pixels");
+    if (const char* out = std::getenv("APEX_DETAIL_OUT"); out && *out) {
+        const auto bytes = golden::encodePng(grown);
+        std::ofstream(out, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()),
+                                                   static_cast<std::streamsize>(bytes.size()));
+    }
+    CHECK(changed > 100);
+}
+
+TEST_CASE("mirror ropes draw Width tubes with RopeMaterial and follow endpoint previews") {
+    REQUIRE_GPU();
+    const auto classes = tableOf({helperClass("move_rope", {{"keyframe", ""}, {"animator", ""}},
+        {{"NextKey", "target_destination"}, {"Slack", "integer"}}),
+        helperClass("keyframe_rope", {{"keyframe", ""}},
+        {{"NextKey", "target_destination"}, {"Slack", "integer"}})});
+    Scene scene(*g, documentOf(R"(
+        entity { id 1 classname move_rope origin "0 0 128" NextKey end Width 6 RopeMaterial test/red }
+        entity { id 2 classname keyframe_rope origin "128 0 128" targetname end }
+    )"), &classes);
+    REQUIRE(scene.mirror.settle());
+    MirrorViewOptions options;
+    options.mode = DisplayMode::Textured;
+    auto list = scene.mirror.buildDrawList(options); // Requests the rope material.
+    REQUIRE(scene.mirror.settle());
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.meshes.size() == 1);
+    CHECK(list.worldSegments.empty());
+    const auto& tube = list.meshes[0];
+    CHECK(tube.indexCount == 12 * 48); // 5 physics nodes, 2 interpolated points per span.
+    CHECK(tube.texture != kCheckerboardSlot);
+    CHECK(tube.bounds.max.y - tube.bounds.min.y == doctest::Approx(6));
+    const auto* vertices = tube.vertices;
+    const auto initialBounds = tube.bounds;
+    CHECK(scene.mirror.buildDrawList(options).meshes[0].vertices == vertices);
+
+    const auto start = idOf(*scene.doc, "move_rope"), end = idOf(*scene.doc, "keyframe_rope");
+    const auto translation = glm::translate(DMat4(1), DVec3{16, 32, 48});
+    scene.mirror.setPreview({{start, translation}, {end, translation}});
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.meshes.size() == 1);
+    CHECK(list.meshes[0].vertices == vertices);
+    CHECK(list.meshes[0].origin == DVec3{16, 32, 176});
+    CHECK(list.meshes[0].bounds.min == initialBounds.min);
+    scene.mirror.setPreview({{end, translation}});
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.meshes.size() == 1);
+    CHECK(list.meshes[0].origin == DVec3{0, 0, 128});
+    CHECK(list.meshes[0].bounds.max.y > initialBounds.max.y + 20);
+    scene.mirror.setPreview({});
+    auto edit = scene.doc->begin("Widen rope");
+    edit.setKeyValue(*scene.doc->handle(start), "Width", "12");
+    edit.commit();
+    list = scene.mirror.buildDrawList(options);
+    REQUIRE(list.meshes.size() == 1);
+    CHECK(list.meshes[0].bounds.max.y - list.meshes[0].bounds.min.y == doctest::Approx(12));
+    options.showEntityHelpers = false;
+    CHECK(scene.mirror.buildDrawList(options).meshes.empty());
 }

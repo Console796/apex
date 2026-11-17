@@ -15,6 +15,7 @@
 #include "editor/apply_tool.hpp"
 #include "editor/measure_tool.hpp"
 #include "editor/overlay_tool.hpp"
+#include "editor/rope_tool.hpp"
 #include "editor/displacement_edit.hpp"
 #include "editor/displacement_tool.hpp"
 #include "editor/vertex_tool.hpp"
@@ -47,6 +48,7 @@ EditorSession::EditorSession() : preset_(hammerPreset()), keymap_(preset_) {
     tools_.emplace(Tool::Apply, std::make_unique<ApplyTool>(*this));
     tools_.emplace(Tool::Measure, std::make_unique<MeasureTool>(*this));
     tools_.emplace(Tool::Overlay, std::make_unique<OverlayTool>(*this));
+    tools_.emplace(Tool::Rope, std::make_unique<RopeTool>(*this));
     tools_.emplace(Tool::Displacement, std::make_unique<DisplacementTool>(*this));
     activeToolObject().activate();
     selection_.observe([this](const Selection&) {
@@ -386,6 +388,10 @@ Result<void> EditorSession::mergeSelection() {
 bool EditorSession::isToolEnabled(const ActionId& action) const {
     return tools_.contains(action) && (document_ || action == Tool::Select);
 }
+bool EditorSession::isPieItemEnabled(const ActionId& action) const {
+    if (tools_.contains(action)) return isToolEnabled(action);
+    return document_ && !selectedNodes(selection_).empty();
+}
 bool EditorSession::perform(const ActionId& action) {
     if (activeToolObject().perform(action)) return true;
     // UI entry points use this policy; perform() remains available to programmatic callers.
@@ -487,6 +493,8 @@ bool EditorSession::perform(const ActionId& action) {
     if (action == "edit.ungroup") return ungroupSelection().has_value();
     if (action == "edit.tie_to_entity") return tieToEntity().has_value();
     if (action == "edit.move_to_world") return moveToWorld().has_value();
+    if (action == "edit.to_detail") return toDetail().has_value();
+    if (action == "edit.to_world") return toWorld().has_value();
     if (action == "view.hide") return hideSelection().has_value();
     if (action == "view.unhide") return unhideAll().has_value();
     if (action == "view.hide_unselected") return hideUnselected().has_value();
@@ -1033,6 +1041,18 @@ Result<void> EditorSession::moveToWorld() {
         return stageMoveToWorld(*document_, *groups_, selection_, tx);
     });
 }
+Result<void> EditorSession::toDetail() {
+    TieParams params;
+    params.skipSameClass = true;
+    return runEdit("To Detail", AfterEdit::Computed, [&](document::Transaction& tx) {
+        return stageTieToEntity(*document_, *groups_, selection_, params, tx);
+    });
+}
+Result<void> EditorSession::toWorld() {
+    return runEdit("To World", AfterEdit::Computed, [&](document::Transaction& tx) {
+        return stageMoveToWorld(*document_, *groups_, selection_, tx, "func_detail");
+    });
+}
 Result<void> EditorSession::moveNodesInto(std::vector<NodeId> nodes, NodeId container) {
     return runEdit("Move in outliner", AfterEdit::Keep, [&](document::Transaction& tx) {
         return stageMoveNodesInto(*document_, *groups_, std::move(nodes), container, tx);
@@ -1294,16 +1314,16 @@ bool EditorSession::input(const InputEvent& event, const ToolView& view) {
     }
     if (event.kind == InputKind::KeyDown && !event.autoRepeat && event.chord) {
         const auto action = keymap_.lookup(*event.chord, BindingContext::forTool(activeTool_));
-        if (action == "pie.tools") {
+        if (const auto* menu = action ? pieFor(*action) : nullptr) {
             if (event.navigating) pieRefusal_ = "Stop navigating first.";
             else if (activeToolObject().owns(event.source) || transformActive())
                 pieRefusal_ = "Finish the current gesture first.";
             else {
                 pieRefusal_.clear();
-                pie_ = std::make_unique<PieGesture>(toolPie(), pieSettings_, event.cursor, *event.chord,
-                    [this](const ActionId& id) { return isToolEnabled(id); }, clock_());
+                pie_ = std::make_unique<PieGesture>(*menu, pieSettings_, event.cursor, *event.chord,
+                    [this](const ActionId& id) { return isPieItemEnabled(id); }, clock_());
                 pieSource_ = event.source;
-                if (pieTrace_) pieTrace_("open", "pie.tools", clock_());
+                if (pieTrace_) pieTrace_("open", *action, clock_());
             }
             if (!pieRefusal_.empty() && pieTrace_) pieTrace_("refusal", pieRefusal_, clock_());
             notify();

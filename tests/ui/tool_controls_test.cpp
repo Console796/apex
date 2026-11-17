@@ -26,7 +26,10 @@ TEST_CASE("Tools drop-down shares actions and follows active tool and options") 
     auto* view = window.findChild<QMenu*>("menuView");
     REQUIRE(tools); REQUIRE(transform); REQUIRE(button); REQUIRE(view);
     CHECK(button->popupMode() == QToolButton::InstantPopup);
-    REQUIRE(button->menu()->actions().size() == 10);
+    REQUIRE(button->menu()->actions().size() == 11);
+    auto* rope = window.findChild<QAction*>("tool.rope");
+    REQUIRE(rope);
+    CHECK(button->menu()->actions().contains(rope));
     for (auto* action : button->menu()->actions()) {
         CHECK(view->actions().contains(action));
         CHECK_FALSE(transform->actions().contains(action));

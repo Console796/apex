@@ -1,0 +1,45 @@
+{
+  "id": "R-15",
+  "title": "0.9: Extensibility (plugin C ABI, scripting host, keymap/theme editors, plugin manager)",
+  "description": "",
+  "status": "in_progress",
+  "milestone": "0.9",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:32:08-07:00",
+  "updated_by": "agent",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "planned",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T16:57:36-07:00",
+      "actor": "agent",
+      "status": "in_progress",
+      "note": "Design started: docs/plans/plugins.md on branch 0.9-plugin-api (worktree ../apex-wt/plugin-api). Draft only: D1–D13 (in-process C ABI, versioned interface tables, Tool adapters, edit/notify by ID, declarative panels, KV3 manifest, AngelScript recommended), probes P1–P5, godot-acoustics mapping. 4 owner decisions open (D1, D8, D10, D12). Not committed."
+    },
+    {
+      "ts": "2026-11-16T17:04:53-07:00",
+      "actor": "agent",
+      "note": "Owner accepted all design recommendations (D1 in-process, D8 declarative panels only, D10 AngelScript, D12 ABI v1 frozen at 0.9 release). Committed ad0d358 on 0.9-plugin-api. Next: probes P1–P5, then 0.9.1 ABI skeleton. Open: is godot-acoustics the acceptance consumer?"
+    },
+    {
+      "ts": "2026-11-16T17:14:51-07:00",
+      "actor": "agent",
+      "note": "0.9 build plan written: docs/plans/0.9.md on 0.9-plugin-api (uncommitted). Owner confirmed D1 (optional/dormant plugin bindings), D2 (placeholder panes), D3 (IDs in ChangeSet), D9 (Linux+Windows release round trip). Sub-milestones 0.9.1–0.9.9; 0.9.1 starts with 3 failing tests (preset validate, preset drop, layout unknown role). Blocked on 0.8.8/0.8.9 work merging first."
+    },
+    {
+      "ts": "2026-11-16T17:16:58-07:00",
+      "actor": "agent",
+      "note": "0.9 plan §6 revised (owner): no longer waits on 0.8. 0.9.1a (ChangeSet IDs, placeholder pane, plugin_host loader/manifest/breadcrumb, plugin manager, document reads, AngelScript dep, probe P1) can start now; 0.9.1b (preset rules, registries, startup order) after 0.8.8/0.8.9 commit and 0.8 merges into 0.9-plugin-api. Builds stay serialized with 0.8 builds."
+    },
+    {
+      "ts": "2026-11-16T17:32:08-07:00",
+      "actor": "agent",
+      "note": "0.9.1a started with Codex (gpt-6.1-sol) in worktree ../apex-wt/plugin-api. Slice 1: ChangeSet IDs (D3), placeholder pane + layout P0 test 3 (D2), AngelScript dep. Slice 2 (plugin_host loader/breadcrumb/manager/document reads/hello-tool, P1) follows."
+    }
+  ]
+}

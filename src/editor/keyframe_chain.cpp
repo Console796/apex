@@ -32,9 +32,11 @@ std::optional<Keyframe> keyframe(const document::Document& doc, const assets::En
     return Keyframe{*handle, classname, std::move(key), value(*node->block, "targetname"), std::move(next)};
 }
 
+} // namespace
+
 // The first free name after `name` counting up its trailing number, keeping its zero padding:
 // "rope_3" -> "rope_4", "node09" -> "node10", "wire" -> "wire_2".
-std::string following(std::string_view name, std::set<std::string>& taken) {
+std::string nextKeyframeName(std::string_view name, std::set<std::string>& taken) {
     auto end = name.size();
     while (end > 0 && std::isdigit(static_cast<unsigned char>(name[end - 1]))) --end;
     std::string base(name.substr(0, end));
@@ -51,8 +53,6 @@ std::string following(std::string_view name, std::set<std::string>& taken) {
         if (taken.insert(toLowerAscii(candidate)).second) return candidate;
     }
 }
-
-} // namespace
 
 Result<void> stageKeyframeChain(const document::Document& doc, document::Transaction& tx,
                                 const assets::EntityClassTable& classes, std::span<const NodeId> originals,
@@ -87,10 +87,10 @@ Result<void> stageKeyframeChain(const document::Document& doc, document::Transac
         auto name = original.name;
         if (name.empty()) {
             name = original.classname + "_0";
-            name = following(name, taken);
+            name = nextKeyframeName(name, taken);
             if (auto done = set(original.handle, "targetname", name); !done) return done;
         }
-        const auto next = following(name, taken);
+        const auto next = nextKeyframeName(name, taken);
         if (auto done = set(copy.handle, "targetname", next); !done) return done;
         if (auto done = set(copy.handle, copy.key, original.next.empty() ? std::nullopt : std::optional(original.next)); !done)
             return done;
@@ -100,7 +100,7 @@ Result<void> stageKeyframeChain(const document::Document& doc, document::Transac
     std::map<std::string, std::string> renamed; // Lower-case original name -> the copy's name.
     for (const auto& copy : after) {
         if (copy.name.empty()) continue;
-        const auto name = following(copy.name, taken);
+        const auto name = nextKeyframeName(copy.name, taken);
         renamed.try_emplace(toLowerAscii(copy.name), name);
         if (auto done = set(copy.handle, "targetname", name); !done) return done;
     }

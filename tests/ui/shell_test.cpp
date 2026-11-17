@@ -3794,3 +3794,47 @@ TEST_CASE("a gizmo drag leaves the editor actions alone") {
     CHECK(changed == 0);
     session.cancelTransform();
 }
+
+TEST_CASE("the outliner's Structural filter keeps world brushes and func_areaportal (0.8.9 D16)") {
+    app();
+    using namespace editor_test;
+    Document doc(parsed("world { id 1 classname worldspawn }"));
+    const auto worldSolid = id(doc, addBox(doc, {0, 0, 0}, {64, 64, 64}, worldHandle(doc)));
+    const auto detail = addBlock(doc, "entity { id 10 classname func_detail }");
+    const auto detailSolid = id(doc, addBox(doc, {100, 0, 0}, {164, 64, 64}, detail));
+    const auto portal = addBlock(doc, "entity { id 20 classname func_areaportal }");
+    const auto portalSolid = id(doc, addBox(doc, {200, 0, 0}, {201, 64, 64}, portal));
+    const auto target = id(doc, addBlock(doc, "entity { id 30 classname info_target origin \"0 0 0\" }"));
+    NodeId displaced = 0;
+    {
+        auto solid = solidBlock(geometry_test::build(geometry_test::boxSides({300, 0, 0}, {364, 64, 64})));
+        solid.findAll("side").front()->append(kv1::Node::block("dispinfo")).value();
+        auto tx = doc.begin("displacement");
+        displaced = doc.get(tx.create(std::move(solid), worldHandle(doc)))->id;
+        tx.commit();
+    }
+    EditorSession session;
+    session.attach(doc);
+    apex::ui::OutlinerPanel tree;
+    tree.setEditorSession(&session);
+    tree.setDocument(&doc);
+    const auto row = [&](NodeId id) -> QTreeWidgetItem* {
+        for (QTreeWidgetItemIterator it(&tree); *it; ++it)
+            if ((*it)->data(0, Qt::UserRole).toULongLong() == id) return *it;
+        return nullptr;
+    };
+    auto* structural = tree.findChild<QToolButton*>("outlinerStructural");
+    REQUIRE(structural);
+    for (const auto id : {worldSolid, detailSolid, portalSolid, target, displaced}) REQUIRE(row(id));
+    CHECK_FALSE(row(detailSolid)->isHidden());
+    structural->setChecked(true);
+    CHECK_FALSE(row(worldSolid)->isHidden());
+    CHECK(row(detailSolid)->isHidden());
+    CHECK(row(id(doc, detail))->isHidden());
+    CHECK_FALSE(row(portalSolid)->isHidden());
+    CHECK_FALSE(row(id(doc, portal))->isHidden());
+    CHECK(row(target)->isHidden());
+    CHECK(row(displaced)->isHidden()); // VBSP drops displacement brushes from the world.
+    structural->setChecked(false);
+    CHECK_FALSE(row(detailSolid)->isHidden());
+}

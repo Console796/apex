@@ -1,0 +1,14 @@
+{
+  "id": "I-5",
+  "title": "Rope cache test compares Buffer addresses, not handles",
+  "body": "tests/render/render_mirror_test.cpp:~3220 asserts address equality of Buffer objects, which stays the same when the Vulkan allocation is replaced; per-frame tube reupload would still pass. Compare handles or upload counters.",
+  "kind": "task",
+  "severity": "low",
+  "status": "open",
+  "roadmap_id": "R-12",
+  "created": "2026-11-16T17:28:10-07:00",
+  "created_by": "agent",
+  "updated": "2026-11-16T17:28:10-07:00",
+  "updated_by": "agent",
+  "comments": []
+}

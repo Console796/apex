@@ -1,0 +1,14 @@
+{
+  "id": "I-2",
+  "title": "P2CE Linux vbsp never places detail props",
+  "body": "External toolchain bug found in the 0.8.9 P0 probe: Linux vbsp divides glibc rand() by MSVC's 32767 (probe-results/detail_props_0_8_9_p0.md). Apex's preview can't be checked against Linux compiles.",
+  "kind": "bug",
+  "severity": "medium",
+  "status": "open",
+  "roadmap_id": "R-13",
+  "created": "2026-11-16T15:50:20-07:00",
+  "created_by": "claude",
+  "updated": "2026-11-16T15:50:20-07:00",
+  "updated_by": "claude",
+  "comments": []
+}

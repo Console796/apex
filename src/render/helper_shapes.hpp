@@ -39,6 +39,8 @@ struct HelperRope {
     std::vector<DVec3> curve;
     Vec4 colour;
     std::optional<document::NodeId> peer; // The entity whose move carries b; empty when it dangles.
+    double width = 2.0;
+    std::string material = "cable/cable";
 };
 struct HelperLabel { DVec3 position; std::string text; Vec4 colour; HelperVisibility visibility = HelperVisibility::Always; };
 struct HelperShapes {

@@ -17,6 +17,8 @@
 
 #include "core/math.hpp"
 
+#include <cstdint>
+#include <span>
 #include <vector>
 
 namespace apex::geometry {
@@ -35,5 +37,21 @@ std::vector<DVec3> ropeNodes(DVec3 start, DVec3 end, const RopeSettings& setting
 std::vector<DVec3> ropeCurve(const std::vector<DVec3>& nodes, int subdiv);
 // Both: the curve of the rope at rest.
 std::vector<DVec3> ropeShape(DVec3 start, DVec3 end, const RopeSettings& settings);
+
+// Open-ended tube, with a duplicated UV seam and outward triangle winding. Width is
+// the diameter in world units; U repeats every width along the rope, V wraps once.
+struct RopeVertex {
+    DVec3 position, normal;
+    DVec2 uv;
+    bool operator==(const RopeVertex&) const = default;
+};
+struct RopeTube {
+    std::vector<RopeVertex> vertices;
+    std::vector<std::uint32_t> indices;
+    bool operator==(const RopeTube&) const = default;
+};
+// Consecutive coincident points are ignored. Invalid points/width or fewer than two
+// distinct points produce no geometry. Frames are transported to avoid axis-switch twists.
+RopeTube ropeTube(std::span<const DVec3> curve, double width);
 
 } // namespace apex::geometry
