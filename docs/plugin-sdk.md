@@ -133,16 +133,58 @@ buttons (`APEX_EVENT_LEFT_HELD` ...), `APEX_EVENT_AUTO_REPEAT` and `APEX_EVENT_N
 parts of letters, digits, `_` and `-`. `<name>` is a single such part with no dot. Matching is on the
 `plugin.<yourid>.` boundary, so a plugin `com.example` cannot register `plugin.com.example.paint.brush` (that is
 `com.example.paint`'s `brush`). An empty name, a trailing dot, a second dot or any other character fails with
-`APEX_ERR_INVALID` at the registration call. *(Known issue I-6: until 0.9.3, tool
-callback state is shared between editor sessions.)*
+`APEX_ERR_INVALID` at the registration call.
+
+**Tool state is per editor session.** Every editor session builds its own tool object for each registered tool,
+so two windows or documents open at once do not see each other's tool state, provided the plugin uses
+`create_instance`. If `apex_tool_callbacks.create_instance` is set, the host calls it with the registration's
+`user` when a session creates its tool, passes the returned pointer instead of `user` to every other callback of
+that session's tool, and calls `destroy_instance` when the session's tool goes. `create_instance` and
+`destroy_instance` must be given together: registering with only one fails with `APEX_ERR_INVALID`.
+A *legacy* tool (no `create_instance`, or one that returns null) gets the registration's `user` in every
+session: all sessions share that one state. This is allowed and not refused, but the host logs one warning when
+a second session gets such a tool, because the sessions then overwrite each other's state. The C++ `Tool`
+wrapper supplies both callbacks: override `Tool::createInstance()` to return a new `Tool` (the host deletes it
+when the session's tool goes). The default returns null, which makes the tool a legacy tool.
 
 ### 4.4 Writing to the document
 
 `apex.edit/1` applies a callback's operations as one session edit and one undo step. The operation context
 and table are valid only during the callback. A failed operation or a non-OK callback return rolls the batch
-back; `last_error` contains the failure detail. The current table exposes key writes, node destruction and
-reparenting, solid creation and rebuilding, side-key writes, and displacement removal. Other `Transaction`
-operations are not yet exposed.
+back; `last_error` contains the failure detail. A failing operation returns `APEX_ERR_INVALID` and poisons the
+batch: it rolls back when the callback returns, even if the callback returns `APEX_OK`, and the selection is
+restored as for any undo step. Every ops-table member beyond the first seven is at the end of the table: check
+`struct_size` (the wrapper's `available(ops, &apex_edit_ops_v1::member)` does) before calling.
+
+| Operation | Effect |
+|---|---|
+| `set_key(node, key, value)` | Sets an entity or world key-value |
+| `destroy(node)` | Removes a node and its subtree; sides that vanish are reported in the change notice and the sidelists of overlays and similar entities are updated |
+| `create_solid(parent, planes, count, material)` | New convex solid from planes |
+| `reparent(node, parent, position)` | Moves a node |
+| `set_side_key(side, key, value)` | A side's material, UVs, plane and so on |
+| `remove_displacement(side)` | Removes a side's displacement |
+| `rebuild_solid(solid, planes, count)` | Replaces the shape from planes; the host infers which face is which (see `rebuild_solid_matched` to say so explicitly) |
+| `set_solid_geometry(solid, geometry)` | (0.9.3) Full geometry: a vertex pool and one `apex_face_geometry` per existing side (loops of vertex indices, UV axes, shifts, scales). Side IDs must be exactly the solid's; each side's other attributes are kept |
+| `set_displacement(side, disp)` | (0.9.3) Sets a side's dispinfo (power 2 to 4, `(2^power + 1)^2` normals, offsets, alphas and distances, `2 (2^power)^2` triangle tags). Invalid data, or a side that is not a quad, is refused |
+| `set_connections(entity, list, count)` | (0.9.3) Replaces the entity's outputs with `apex_connection` elements; count 0 removes them |
+| `rebuild_solid_matched(solid, planes, n, matches, m)` | (0.9.3) `rebuild_solid` plus `apex_face_match` elements saying which existing side each plane's face continues, so side IDs, materials, UVs and an overlay's face survive a rebuild that reorders or moves planes |
+| `create_block(parent, kv1, &out)` | (0.9.3) Creates one block from KV1 text (an entity, a group, ...) under `parent` (0 is the root) and returns its node ID. Worlds and solids are refused: use `create_solid`. IDs in the text are replaced |
+| `set_editor(node, kind, value)` | (0.9.3) Hammer editor-block changes (`apex_editor_kind`): group, visgroup add/remove, color, visgroup shown flags, comments |
+
+**Not exposed** (still in `Transaction`, nothing plugin-facing needs them yet): `setKeyValueOccurrence` and
+`setEntityKeyValueEntry` (editing one of several duplicate keys), and `createFragment` (an internal importer and
+paste mechanism). There is no read interface for displacements or connections yet, so a plugin can write them
+but not inspect them through `apex.document/1`. The AngelScript API has no bindings for the 0.9.3 operations
+(scripts keep the earlier set); script plugins that need them can be given bindings later, since the
+bindings would be additive.
+
+**Change notices.** `on_changed` receives, per committed transaction or undo/redo step, `created` and
+`destroyed` node IDs (a destroyed ID is no longer readable), `modified` (`apex_modified_node`: id plus
+`flags`, a bit set of geometry 1, material 2, key-values 4, visibility 8, hierarchy 16), `vanished_sides`
+(side IDs that no longer exist, so a plugin can drop references), `undo_or_redo` (1 when the step came from
+undo or redo, so the plugin should resynchronise instead of echoing its own edit), and `revision` (a value that
+changes with every undoable step and every undo or redo; compare it for equality, do not assume it is dense).
 
 `apex.selection/1` reads the selection mode and ordered IDs, or sets both together. Face mode uses side IDs;
 other modes use node IDs. The plugin's optional `on_changed` callback receives borrowed ID lists, dirty flags,
@@ -469,6 +511,9 @@ There is no new C interface and no ABI change: all three use data a plugin alrea
   `refresh(host, id)` and `showDialog(host, title, form)` (true when accepted). Descriptions are valid until the
   next `describe`, so keep any strings you point at in members of the form.
 
+- Edit-op argument helpers (0.9.3), which set `struct_size`: `faceGeometry(...)`, `solidGeometry(...)`,
+  `connection(...)`, `faceMatch(...)`, and `available(ops, &apex_edit_ops_v1::member)` to test that a host's table
+  has an operation.
 - `apex::plugin::overlays(host)`, `helpers(host)`, `problems(host)`: interface lookups.
 - `apex::plugin::Overlay`: vectors `segments`, `points`, `labels`, `ghosts`, `tints` with `clearLists()`;
   `declareOverlay(host, id, name)` in `activate`, then `setOverlay(host, id, overlay)` and `clearOverlay(host, id)`.
@@ -563,6 +608,10 @@ the reverse:
    `apex_tool_visual` / `apex_tool_readout` the host hands to a tool) carry the caller's `struct_size`; the
    callee writes only the part it covers.
 7. A function table grows by appending function pointers; a null or uncovered pointer is "not provided".
+
+0.9.3 added the structs `apex_face_geometry` (104 bytes), `apex_solid_geometry` (40), `apex_displacement` (112),
+`apex_connection` (104) and `apex_face_match` (16), and appended six functions to `apex_edit_ops_v1` (now 112
+bytes). Their sizes are pinned in `abi_layout.inc`; array elements follow rule 4.
 
 Changing a layout in 0.9 means editing the header, the list in `abi_layout.inc` (with the new golden size) and,
 once the ABI is frozen, only appending.

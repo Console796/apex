@@ -149,8 +149,80 @@ typedef struct apex_registration_v1 {
    View callbacks are valid only for the duration of the input callback. */
 typedef struct apex_vec3 { double x, y, z; } apex_vec3;
 typedef struct apex_plane { apex_vec3 normal; double distance; } apex_plane;
+/* Arguments of the edit operations added in 0.9.3. Every struct starts with struct_size, and an array of
+   them has a stride of its elements' struct_size (rule 4). Pointers must stay valid for the call only. */
+/* One face of apex_solid_geometry. `side` is an existing side ID of the solid; `indices` are vertex indices of
+   the face loop, counter-clockwise as seen from outside the solid (at least 3). */
+typedef struct apex_face_geometry {
+    uint32_t struct_size;
+    int32_t side;
+    apex_vec3 uaxis, vaxis;
+    double shift_u, shift_v, scale_u, scale_v;
+    const uint32_t* indices;
+    size_t index_count;
+} apex_face_geometry;
+/* A solid's full geometry: a vertex pool and one face per existing side of the solid (each side exactly once).
+   The faces' UV axes, shifts and scales are written too. */
+typedef struct apex_solid_geometry {
+    uint32_t struct_size;
+    uint32_t reserved;
+    const apex_vec3* vertices; size_t vertex_count;
+    const apex_face_geometry* faces; size_t face_count;
+} apex_solid_geometry;
+/* A displacement (dispinfo) of one side. power is 2..4; with n = (1 << power) + 1, normals, offsets,
+   offset_normals and alphas have n*n entries (row-major, as in a VMF) and triangle_tags has 2*(n-1)*(n-1).
+   offset_normals may be null (it then equals normals); allowed_verts may be null (count 0). */
+typedef struct apex_displacement {
+    uint32_t struct_size;
+    int32_t power;
+    apex_vec3 start_position;
+    double elevation;
+    int32_t flags;
+    int32_t subdiv;
+    const apex_vec3* normals;
+    const double* distances;
+    const apex_vec3* offsets;
+    const apex_vec3* offset_normals;
+    const double* alphas;
+    const int32_t* triangle_tags;
+    const uint8_t* allowed_verts;
+    size_t allowed_vert_count;
+} apex_displacement;
+/* One entity output: `output` is the connection's name, the other fields are the VMF's five. */
+typedef struct apex_connection {
+    uint32_t struct_size;
+    uint32_t reserved;
+    apex_str output, target, input, parameter, delay, times;
+} apex_connection;
+/* Face correspondence of rebuild_solid_matched: the face the plane at `plane_index` produces keeps the identity
+   (side ID, material, UVs) of the solid's existing side `old_side`. */
+typedef struct apex_face_match {
+    uint32_t struct_size;
+    uint32_t plane_index;
+    int32_t old_side;
+    uint32_t reserved;
+} apex_face_match;
+/* What set_editor changes (apex_edit_ops_v1.set_editor). The value is text: a decimal ID for the group and
+   visgroup kinds (an empty group value removes the node from its group), "R G B" for the color, "0" or "1"
+   for the shown flags, any text for comments. Works on a solid, entity or group. */
+enum apex_editor_kind { APEX_EDITOR_GROUP = 0, APEX_EDITOR_ADD_VISGROUP = 1, APEX_EDITOR_REMOVE_VISGROUP = 2,
+                        APEX_EDITOR_COLOR = 3, APEX_EDITOR_VISGROUP_SHOWN = 4, APEX_EDITOR_VISGROUP_AUTO_SHOWN = 5,
+                        APEX_EDITOR_COMMENTS = 6 };
 /* Operations run synchronously within one session transaction. Return a non-OK
-   status to roll the entire batch back. Operation context is callback-scoped. */
+   status to roll the entire batch back. Operation context is callback-scoped.
+   Every operation that fails (unknown ID, invalid geometry, ...) returns APEX_ERR_INVALID and poisons the
+   batch: the host rolls everything back when the callback returns, even if it returns APEX_OK.
+   Added in 0.9.3, at the end of the table (check struct_size before use):
+     set_solid_geometry  replaces a solid's geometry (and UVs); the side IDs must be the solid's own.
+     set_displacement    sets a side's displacement; an invalid one (or a side that is not a quad) is refused.
+     set_connections     replaces an entity's connections block (count 0 removes it).
+     rebuild_solid_matched  rebuild_solid with a face correspondence, so sides keep identity, material and
+                         UVs (and an overlay keeps its face). Matches whose plane was discarded as redundant
+                         are ignored; an unknown old_side is refused.
+     create_block        creates one block parsed from KV1 text under `parent` (0: at the root). Entities,
+                         groups and other containers; "world" and solids are refused (use create_solid).
+                         The IDs in the text are replaced with fresh ones. *out receives the new node's ID.
+     set_editor          a Hammer editor-block change, see apex_editor_kind. */
 typedef struct apex_edit_ops_v1 {
     uint32_t struct_size;
     uint32_t reserved;
@@ -161,6 +233,13 @@ typedef struct apex_edit_ops_v1 {
     apex_status (*set_side_key)(void*, int32_t side, apex_str key, apex_str value);
     apex_status (*remove_displacement)(void*, int32_t side);
     apex_status (*rebuild_solid)(void*, apex_node_id, const apex_plane*, size_t);
+    apex_status (*set_solid_geometry)(void*, apex_node_id solid, const apex_solid_geometry*);
+    apex_status (*set_displacement)(void*, int32_t side, const apex_displacement*);
+    apex_status (*set_connections)(void*, apex_node_id entity, const apex_connection*, size_t count);
+    apex_status (*rebuild_solid_matched)(void*, apex_node_id, const apex_plane*, size_t,
+                                         const apex_face_match*, size_t match_count);
+    apex_status (*create_block)(void*, apex_node_id parent, apex_str kv1, apex_node_id* out);
+    apex_status (*set_editor)(void*, apex_node_id, uint32_t kind, apex_str value);
 } apex_edit_ops_v1;
 typedef apex_status (*apex_edit_callback)(void*, const apex_edit_ops_v1*, void* operation_context);
 typedef struct apex_edit_v1 {
@@ -239,7 +318,12 @@ typedef struct apex_tool_callbacks {
     int (*perform)(void*, apex_str action);
     apex_callback cancel, document_changed;
     void (*forget)(void*, uint64_t source);
-    /* Optional factory and destructor for state owned by each editor session. */
+    /* Optional factory and destructor for state owned by each editor session; they are given together (a
+       registration with only one is refused with APEX_ERR_INVALID). The host calls create_instance once per
+       editor session and passes its result as the first argument of every other callback of that session's tool;
+       destroy_instance runs when the session's tool is destroyed. A tool without them, or whose create_instance
+       returns null, runs on the registration's `user` pointer, which every session shares; the host logs one
+       warning when a second session gets such a tool. */
     void* (*create_instance)(void* registration_user);
     void (*destroy_instance)(void* instance);
 } apex_tool_callbacks;

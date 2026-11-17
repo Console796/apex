@@ -19,6 +19,8 @@ public:
     using Revive = std::function<void(void* registrationUser, const apex_tool_callbacks&)>;
     std::weak_ptr<Revive> reviver() const { return reviver_; }
     void retire();
+    // True when the tool runs on the registration's user pointer (no create_instance, or it returned null).
+    bool sharesRegistrationState() const { return !ownsUser_; }
     editor::ToolId id() const override { return id_; }
     void activate() override;
     void deactivate() override;

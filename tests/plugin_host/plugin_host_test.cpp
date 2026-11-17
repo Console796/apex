@@ -7,6 +7,8 @@
 #include "../editor/fixtures.hpp"
 #include "geometry/solid_geometry.hpp"
 #include <doctest/doctest.h>
+#include <apex/plugin.hpp>
+#include "editor/selection_undo.hpp"
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
@@ -991,4 +993,454 @@ TEST_CASE("watch refuses paths outside the plugin folder and survives a throwing
     CHECK(host.pollWatches(now + std::chrono::milliseconds(300)) == 1);   // callback threw; host carried on
     unsetenv("APEX_TEST_WATCH");
     host.setDocument(nullptr); host.setSession(nullptr);
+}
+
+// ---- 0.9.3: edit operations and change notices -------------------------------------------------------------
+namespace {
+std::string noticeText(const document::ChangeSet& changes, std::uint64_t revision) {
+    std::string text = "notice rev=" + std::to_string(revision) + " u=" + (changes.undoOrRedo ? "1" : "0") + " c=";
+    for (const auto id : changes.createdIds) text += std::to_string(id) + ",";
+    text += " m=";
+    for (const auto& item : changes.modifiedIds) text += std::to_string(item.id) + ":" + std::to_string(static_cast<unsigned>(item.flags)) + ",";
+    text += " d=";
+    for (const auto id : changes.destroyedIds) text += std::to_string(id) + ",";
+    text += " v=";
+    for (const auto side : changes.vanishedSides) text += std::to_string(side) + ",";
+    return text;
+}
+std::string nodeText(const kv1::Node* node) {
+    if (!node) return "<none>";
+    const auto value = node->decodedValue();
+    return value ? *value : "<bad>";
+}
+struct Notice {
+    std::string text;
+    std::uint64_t revision = 0;
+    bool undoOrRedo = false;
+    std::vector<document::NodeId> created, destroyed;
+    std::vector<std::pair<document::NodeId, unsigned>> modified;
+    std::vector<int> vanished;
+};
+// A world with one 64-unit box and an entity whose `sides` key lists the box's six sides (+X -X +Y -Y +Z -Z),
+// driven by tests/plugin_host/edit_ops_plugin.c.
+struct EditFixture {
+    Temp temp;
+    document::Document document{editor_test::parsed("world { id 1 classname worldspawn }")};
+    std::vector<std::string> logs;
+    std::vector<Notice> notices;      // the changes the document reported, with the revision the host saw
+    std::vector<std::string> plugin;  // the notice lines the plugin logged
+    document::NodeHandle solid, entity;
+    std::array<int, 6> sides{};
+    Host host;
+    editor::EditorSession session;
+    std::size_t token = 0;
+    EditFixture() : host(temp.path / "state", temp.path / "breadcrumb", [this](std::string_view text) {
+        logs.emplace_back(text);
+        if (text.starts_with("notice ")) plugin.emplace_back(text);
+    }) {
+        temp.manifest("editops", entryFor(EDIT_OPS_PLUGIN_PATH));
+        const auto world = *document.handle(document.roots().front());
+        solid = editor_test::addBox(document, {0, 0, 0}, {64, 64, 64}, world);
+        const auto geometry = geometry::solidGeometry(*document.get(solid)->block);
+        REQUIRE(geometry);
+        const DVec3 normals[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+        std::string list;
+        for (int i = 0; i < 6; ++i) {
+            for (const auto& face : geometry->poly.faces)
+                if (glm::dot(face.plane.normal, normals[i]) > 0.999) sides[static_cast<size_t>(i)] = static_cast<int>(face.sideId);
+            REQUIRE(sides[static_cast<size_t>(i)] != 0);
+            list += (i ? " " : "") + std::to_string(sides[static_cast<size_t>(i)]);
+        }
+        entity = editor_test::addBlock(document, "entity { id 0 classname info_overlay targetname \"old\" sides \"" + list + "\" }");
+        host.discover({temp.path}); host.setDocument(&document); host.activate();
+        REQUIRE(host.plugins()[0].loaded);
+        session.attach(document); host.setSession(&session);
+        token = document.observe([this](const document::ChangeSet& changes) {
+            Notice n;
+            n.revision = document.historyState(); n.undoOrRedo = changes.undoOrRedo;
+            n.text = noticeText(changes, n.revision);
+            n.created = changes.createdIds; n.destroyed = changes.destroyedIds;
+            for (const auto& m : changes.modifiedIds) n.modified.emplace_back(m.id, static_cast<unsigned>(m.flags));
+            for (const auto s : changes.vanishedSides) n.vanished.push_back(s);
+            notices.push_back(std::move(n));
+        });
+    }
+    ~EditFixture() { document.unobserve(token); host.setSession(nullptr); host.setDocument(nullptr); }
+    const kv1::Node* childBlock(std::string_view name) const {   // connections and editor are child nodes
+        for (const auto child : document.get(entity)->children) {
+            const auto* node = document.get(*document.handle(child))->block.get();
+            if (node->key() == name) return node;
+        }
+        return nullptr;
+    }
+    const kv1::Node* connections() const { return childBlock("connections"); }
+    document::NodeId solidId() const { return document.get(solid)->id; }
+    document::NodeId entityId() const { return document.get(entity)->id; }
+    // Runs one plugin action; every notice the plugin saw must equal the document's, field for field.
+    std::string run(const std::string& action) {
+        logs.clear(); plugin.clear(); notices.clear();
+        REQUIRE(session.perform("plugin.editops." + action));
+        compare();
+        for (const auto& line : logs) if (line.starts_with(action + "=")) return line.substr(action.size() + 1);
+        FAIL("plugin did not report " << action);
+        return {};
+    }
+    void compare() {
+        REQUIRE(plugin.size() == notices.size());
+        for (size_t i = 0; i < plugin.size(); ++i) CHECK(plugin[i] == notices[i].text);
+    }
+    std::string key(document::NodeHandle h, std::string_view name) const {
+        return nodeText(document.get(h)->block->find(name));
+    }
+    const kv1::Node* sideBlock(int id) const {
+        for (const auto& child : document.get(solid)->block->children()) {
+            if (child.kind() != kv1::NodeKind::Block || child.key() != "side") continue;
+            if (const auto* sideId = child.find("id"); sideId && nodeText(sideId) == std::to_string(id)) return &child;
+        }
+        return nullptr;
+    }
+    void selectSolid() {
+        session.selection().setMode(editor::SelectionMode::Solids);
+        session.selection().select(solidId());
+    }
+    bool solidSelected() const {
+        return session.selection().mode() == editor::SelectionMode::Solids && session.selection().ordered().size() == 1 &&
+               session.selection().contains(solidId());
+    }
+    double maxX() const {
+        const auto geometry = geometry::solidGeometry(*document.get(solid)->block);
+        double result = -1e9;
+        for (const auto& v : geometry->poly.vertices) result = std::max(result, v.x);
+        return result;
+    }
+};
+const std::string kInvalid = std::to_string(APEX_ERR_INVALID);
+constexpr unsigned kGeometry = 1, kMaterial = 2, kKeyValues = 4, kVisibility = 8, kHierarchy = 16;
+}
+
+TEST_CASE("edit op set_solid_geometry writes geometry and UVs in one undo step") {
+    EditFixture f;
+    f.selectSolid();
+    CHECK(f.run("set_material") == "0");
+    const auto before = f.document.undoCount();
+    const auto revision = f.document.historyState();
+    CHECK(f.run("set_geometry") == "0");
+    CHECK(f.document.undoCount() == before + 1);
+    CHECK(f.maxX() == doctest::Approx(128.0));
+    const auto* top = f.sideBlock(f.sides[4]);
+    REQUIRE(top);
+    CHECK(nodeText(top->find("uaxis")).find("0.5") != std::string::npos);  // scale 0.5, shift 3.5
+    CHECK(nodeText(top->find("uaxis")).find("3.5") != std::string::npos);
+    CHECK(nodeText(top->find("material")) == "DEV/TEST");   // the side keeps its material
+    REQUIRE(f.notices.size() == 1);
+    CHECK(f.notices[0].revision > revision);
+    CHECK(f.notices[0].revision == f.document.historyState());
+    CHECK_FALSE(f.notices[0].undoOrRedo);
+    REQUIRE(f.notices[0].modified.size() >= 1);
+    const auto it = std::ranges::find_if(f.notices[0].modified, [&](const auto& m) { return m.first == f.solidId(); });
+    REQUIRE(it != f.notices[0].modified.end());
+    CHECK((it->second & kGeometry) != 0);
+    CHECK(f.notices[0].created.empty()); CHECK(f.notices[0].destroyed.empty()); CHECK(f.notices[0].vanished.empty());
+    CHECK(f.solidSelected());
+    CHECK(f.key(f.entity, "sides") == f.key(f.entity, "sides"));
+    // Undo is one step and reports undo_or_redo with a new revision.
+    f.logs.clear(); f.plugin.clear(); f.notices.clear();
+    f.session.selection().clear();                      // undo must bring the edit's selection back
+    REQUIRE_FALSE(f.solidSelected());
+    REQUIRE(f.document.undo());
+    REQUIRE(editor::restoreFromUndo(f.document, f.session.selection()));   // what the app does after an undo
+    f.compare();
+    REQUIRE(f.notices.size() == 1);
+    CHECK(f.notices[0].undoOrRedo);
+    CHECK(f.maxX() == doctest::Approx(64.0));
+    CHECK(f.solidSelected());
+    f.notices.clear(); f.plugin.clear();
+    f.session.selection().clear();
+    REQUIRE(f.document.redo());
+    REQUIRE(editor::restoreFromUndo(f.document, f.session.selection()));
+    f.compare();
+    CHECK(f.notices.back().undoOrRedo);
+    CHECK(f.maxX() == doctest::Approx(128.0));
+    CHECK(f.solidSelected());
+}
+
+TEST_CASE("edit op failures roll the whole batch back") {
+    EditFixture f;
+    f.selectSolid();
+    const auto undoCount = f.document.undoCount();
+    const auto revision = f.document.historyState();
+    for (const char* name : {"set_geometry_bad", "set_displacement_bad", "set_connections_bad", "rebuild_matched_bad", "create_block_bad", "editor_bad"}) {
+        CAPTURE(name);
+        CHECK(f.run(name) == kInvalid);
+        CHECK(f.document.undoCount() == undoCount);
+        CHECK(f.document.historyState() == revision);
+        CHECK(f.key(f.entity, "marker") == "<none>");   // the batch's first operation was rolled back too
+        CHECK(f.notices.empty());
+        CHECK(f.solidSelected());
+    }
+    CHECK(f.maxX() == doctest::Approx(64.0));
+}
+
+TEST_CASE("edit op set_displacement validates and writes a dispinfo") {
+    EditFixture f;
+    f.selectSolid();
+    REQUIRE(f.sideBlock(f.sides[4]));
+    CHECK(f.sideBlock(f.sides[4])->find("dispinfo") == nullptr);
+    const auto before = f.document.undoCount();
+    CHECK(f.run("set_displacement") == "0");
+    CHECK(f.document.undoCount() == before + 1);
+    const auto* disp = f.sideBlock(f.sides[4])->find("dispinfo");
+    REQUIRE(disp);
+    CHECK(nodeText(disp->find("power")) == "2");
+    REQUIRE(f.notices.size() == 1);
+    const auto it = std::ranges::find_if(f.notices[0].modified, [&](const auto& m) { return m.first == f.solidId(); });
+    REQUIRE(it != f.notices[0].modified.end());
+    CHECK((it->second & kGeometry) != 0);
+    CHECK(f.solidSelected());
+    REQUIRE(f.document.undo());
+    CHECK(f.sideBlock(f.sides[4])->find("dispinfo") == nullptr);
+}
+
+TEST_CASE("edit op set_connections replaces and clears an entity's outputs") {
+    EditFixture f;
+    const auto undoBefore = f.document.undoCount();
+    CHECK(f.run("set_connections") == "0");
+    CHECK(f.document.undoCount() == undoBefore + 1);
+    const auto* connections = f.connections();
+    REQUIRE(connections);
+    REQUIRE(connections->children().size() == 2);
+    CHECK(connections->children()[0].key() == "OnTrigger");
+    const auto first = nodeText(&connections->children()[0]);
+    CHECK(first.find("door") != std::string::npos);
+    CHECK(first.find("Open") != std::string::npos);
+    REQUIRE(f.notices.size() == 1);                  // the block is a child node of the entity
+    CHECK(f.notices[0].created.size() == 1);
+    CHECK(f.run("set_connections") == "0");          // replacing keeps the node and reports a key-value change
+    REQUIRE(f.notices.size() == 1);
+    CHECK(f.notices[0].created.empty());
+    REQUIRE(f.notices[0].modified.size() == 1);
+    CHECK((f.notices[0].modified[0].second & kKeyValues) != 0);
+    CHECK(f.run("clear_connections") == "0");
+    REQUIRE(f.notices.size() == 1);
+    CHECK(f.notices[0].destroyed.size() == 1);
+    CHECK(f.connections() == nullptr);
+    CHECK(f.run("set_connections_bad") == kInvalid);
+    CHECK(f.connections() == nullptr);
+}
+
+TEST_CASE("edit op rebuild_solid_matched keeps side identity, material and the overlay's face") {
+    EditFixture f;
+    CHECK(f.run("set_material") == "0");
+    REQUIRE(f.notices.size() == 1);
+    CHECK((f.notices[0].modified[0].second & kMaterial) != 0);
+    f.selectSolid();
+    const auto sidesKey = f.key(f.entity, "sides");
+    const auto before = f.document.undoCount();
+    CHECK(f.run("rebuild_matched") == "0");
+    CHECK(f.document.undoCount() == before + 1);
+    CHECK(f.maxX() == doctest::Approx(256.0));
+    for (const int id : f.sides) { CAPTURE(id); CHECK(f.document.side(id).has_value()); }
+    REQUIRE(f.sideBlock(f.sides[4]));
+    CHECK(nodeText(f.sideBlock(f.sides[4])->find("material")) == "DEV/TEST");  // material survived the rebuild
+    CHECK(f.key(f.entity, "sides") == sidesKey);                                      // overlay still lists every face
+    CHECK(f.notices.back().vanished.empty());
+    CHECK(f.solidSelected());
+    REQUIRE(f.document.undo());
+    CHECK(f.maxX() == doctest::Approx(64.0));
+    CHECK(f.key(f.entity, "sides") == sidesKey);
+}
+
+TEST_CASE("destroying a solid reports destroyed ids and vanished sides and prunes the overlay") {
+    EditFixture f;
+    f.selectSolid();
+    const auto solidId = f.solidId();
+    CHECK(f.run("destroy_solid") == "0");
+    REQUIRE(f.notices.size() == 1);
+    CHECK(f.notices[0].destroyed == std::vector<document::NodeId>{solidId});
+    std::vector<int> vanished = f.notices[0].vanished, expected(f.sides.begin(), f.sides.end());
+    std::ranges::sort(vanished); std::ranges::sort(expected);
+    CHECK(vanished == expected);
+    for (const int id : f.sides) CHECK_FALSE(f.document.side(id).has_value());
+    const auto remaining = f.key(f.entity, "sides");
+    for (const int id : f.sides) CHECK(remaining.find(std::to_string(id)) == std::string::npos);
+    CHECK_FALSE(f.solidSelected());                         // the destroyed solid left the selection
+    f.notices.clear(); f.plugin.clear();
+    REQUIRE(f.document.undo());
+    f.compare();
+    REQUIRE(f.notices.size() == 1);
+    CHECK(f.notices[0].undoOrRedo);
+    CHECK(f.notices[0].created.size() >= 1);
+    CHECK(f.notices[0].vanished.empty());
+    for (const int id : f.sides) CHECK(f.document.side(id).has_value());
+}
+
+TEST_CASE("edit op create_block and set_editor") {
+    EditFixture f;
+    const auto undoBefore = f.document.undoCount();
+    CHECK(f.run("create_block") == "0");
+    CHECK(f.document.undoCount() == undoBefore + 1);
+    REQUIRE(f.notices.size() == 1);
+    REQUIRE(f.notices[0].created.size() == 1);
+    const auto made = f.notices[0].created[0];
+    CHECK(std::ranges::find(f.logs, "created_id=" + std::to_string(made)) != f.logs.end());
+    const auto handle = f.document.handle(made);
+    REQUIRE(handle);
+    CHECK(f.key(*handle, "targetname") == "made");
+    CHECK(f.key(*handle, "classname") == "info_target");
+    CHECK(nodeText(f.document.get(*handle)->block->find("id")) != "0");  // the 0 placeholder was replaced
+    f.notices.clear(); f.plugin.clear();
+    CHECK(f.run("create_group") == "0");
+    REQUIRE(f.notices.size() == 1);
+    REQUIRE(f.notices[0].created.size() >= 1);        // the group and its editor block
+    CHECK(std::ranges::any_of(f.notices[0].created, [&](document::NodeId id) {
+        return f.document.get(*f.document.handle(id))->block->key() == "group";
+    }));
+
+    const auto editorBefore = f.document.undoCount();
+    CHECK(f.run("editor_color") == "0");
+    CHECK(f.document.undoCount() == editorBefore + 1);
+    const auto* editorBlock = f.childBlock("editor");
+    REQUIRE(editorBlock);
+    CHECK(nodeText(editorBlock->find("color")) == "10 20 30");
+    CHECK(f.run("editor_visgroup") == "0");
+    REQUIRE(f.notices.size() == 1);
+    REQUIRE(f.notices[0].modified.size() == 1);
+    CHECK((f.notices[0].modified[0].second & kVisibility) != 0);
+    CHECK(nodeText(f.childBlock("editor")->find("visgroupid")) == "7");
+}
+
+TEST_CASE("change notice reports every modified flag") {
+    EditFixture f;
+    const auto flagsOf = [&](const std::string& action, document::NodeId id) {
+        CHECK(f.run(action) == "0");
+        REQUIRE(f.notices.size() == 1);
+        unsigned flags = 0;
+        for (const auto& m : f.notices[0].modified) if (m.first == id) flags = m.second;
+        return flags;
+    };
+    CHECK(flagsOf("set_key", f.entityId()) == kKeyValues);
+    CHECK(f.key(f.entity, "targetname") == "renamed");
+    CHECK((flagsOf("set_material", f.solidId()) & kMaterial) != 0);
+    CHECK((flagsOf("set_geometry", f.solidId()) & kGeometry) != 0);
+    CHECK((flagsOf("editor_visgroup", f.entityId()) & kVisibility) != 0);
+    // Reparenting is a hierarchy change of the moved node.
+    CHECK((flagsOf("reparent_entity", f.entityId()) & kHierarchy) != 0);
+    CHECK(f.notices[0].created.empty());
+    CHECK(f.notices[0].destroyed.empty());
+}
+
+TEST_CASE("one batch of several edit ops is one undo step and one notice") {
+    EditFixture f;
+    f.selectSolid();
+    const auto before = f.document.undoCount();
+    CHECK(f.run("everything") == "0");
+    CHECK(f.document.undoCount() == before + 1);
+    CHECK(f.notices.size() == 1);
+    CHECK(f.key(f.entity, "targetname") == "renamed");
+    CHECK(f.connections() != nullptr);
+    CHECK(f.maxX() == doctest::Approx(128.0));
+    CHECK(f.solidSelected());
+    f.session.selection().clear();
+    REQUIRE(f.document.undo());
+    REQUIRE(editor::restoreFromUndo(f.document, f.session.selection()));
+    CHECK(f.document.undoCount() == before);
+    CHECK(f.key(f.entity, "targetname") == "old");
+    CHECK(f.connections() == nullptr);
+    CHECK(f.maxX() == doctest::Approx(64.0));
+    CHECK(f.solidSelected());
+    // Revisions keep increasing across edits and undo.
+    f.notices.clear();
+    CHECK(f.run("set_key") == "0");
+    const auto first = f.notices.back().revision;
+    CHECK(f.run("set_connections") == "0");
+    CHECK(f.notices.back().revision > first);
+}
+
+// ---- I-6: tool state is per editor session -----------------------------------------------------------------
+namespace {
+editor::ToolRegistry::Factory toolFactory(std::string_view id) {
+    for (const auto& entry : editor::toolRegistry().entries()) if (entry.id == id) return entry.factory;
+    return {};
+}
+}
+TEST_CASE("I-6 a tool with create_instance keeps independent state per editor session") {
+    Temp temp;
+    temp.manifest("toolstate", entryFor(TOOL_STATE_PLUGIN_PATH));
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view s) { logs.emplace_back(s); });
+    host.discover({temp.path}); host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    REQUIRE(toolFactory("plugin.toolstate.own"));
+    // Each session builds its own tool objects from the registry, so each gets its own instance.
+    auto first = std::make_unique<editor::EditorSession>();
+    auto second = std::make_unique<editor::EditorSession>();
+    first->setActiveTool("plugin.toolstate.own"); second->setActiveTool("plugin.toolstate.own");
+    auto& a = first->activeToolObject();
+    auto& b = second->activeToolObject();
+    a.perform("x"); a.perform("x"); b.perform("x");
+    CHECK(a.readout().status == "own=2 live=2 created=2");
+    CHECK(b.readout().status == "own=1 live=2 created=2");
+    second.reset();                                 // destroy_instance runs with the session's tool
+    CHECK(a.readout().status == "own=2 live=1 created=2");
+    editor::EditorSession third;                    // a new session starts from a fresh instance
+    third.setActiveTool("plugin.toolstate.own");
+    CHECK(third.activeToolObject().readout().status == "own=0 live=2 created=3");
+    for (const auto& line : logs) CHECK_FALSE((line.find("plugin.toolstate.own") != std::string::npos && line.find("shared between") != std::string::npos));
+}
+
+TEST_CASE("I-6 a legacy tool without create_instance shares its state and warns once") {
+    Temp temp;
+    temp.manifest("toolstate", entryFor(TOOL_STATE_PLUGIN_PATH));
+    std::vector<std::string> logs;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view s) { logs.emplace_back(s); });
+    host.discover({temp.path}); host.activate();
+    REQUIRE(host.plugins()[0].loaded);
+    const auto warnings = [&] {
+        return std::ranges::count_if(logs, [](const std::string& line) {
+            return line.find("plugin.toolstate.shared") != std::string::npos && line.find("shared between editor sessions") != std::string::npos;
+        });
+    };
+    editor::EditorSession first;
+    CHECK(warnings() == 0);                         // one session is the common case and needs no warning
+    editor::EditorSession second;
+    CHECK(warnings() == 1);
+    first.setActiveTool("plugin.toolstate.shared"); second.setActiveTool("plugin.toolstate.shared");
+    first.activeToolObject().perform("x");
+    CHECK(second.activeToolObject().readout().status == "count=1");   // documented behaviour: one shared instance
+    editor::EditorSession third;
+    CHECK(warnings() == 1);                         // warned once, not per session
+    // The half-given callbacks were refused at registration, so that tool does not exist.
+    CHECK(std::ranges::find(logs, "half refused") != logs.end());
+    CHECK_FALSE(toolFactory("plugin.toolstate.half"));
+}
+
+TEST_CASE("wrapper edit-op helpers set struct_size and detect a short ops table") {
+    const std::vector<apex_vec3> vertices{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+    const auto face = plugin::faceGeometry(7, {0, 1, 2}, apex_vec3{1, 0, 0}, apex_vec3{0, -1, 0});
+    CHECK(face.struct_size == sizeof(apex_face_geometry));
+    CHECK(face.side == 7);
+    CHECK(face.index_count == 3);
+    const std::vector<apex_face_geometry> faces{face};
+    const auto solid = plugin::solidGeometry(vertices, faces);
+    CHECK(solid.struct_size == sizeof(apex_solid_geometry));
+    CHECK(solid.face_count == 1);
+    CHECK(solid.vertex_count == 3);
+    const auto link = plugin::connection("OnTrigger", "door", "Open");
+    CHECK(link.struct_size == sizeof(apex_connection));
+    CHECK(std::string_view(link.target.data, link.target.size) == "door");
+    const auto match = plugin::faceMatch(2, 9);
+    CHECK(match.struct_size == sizeof(apex_face_match));
+    CHECK(match.plane_index == 2);
+    CHECK(match.old_side == 9);
+
+    apex_edit_ops_v1 ops{};
+    ops.struct_size = sizeof(ops);
+    CHECK(plugin::available(&ops, &apex_edit_ops_v1::set_editor) == nullptr);   // null pointer: not provided
+    ops.set_editor = [](void*, apex_node_id, uint32_t, apex_str) { return APEX_OK; };
+    ops.set_solid_geometry = [](void*, apex_node_id, const apex_solid_geometry*) { return APEX_OK; };
+    CHECK(plugin::available(&ops, &apex_edit_ops_v1::set_editor) != nullptr);
+    ops.struct_size = offsetof(apex_edit_ops_v1, set_solid_geometry);          // a host from before 0.9.3
+    CHECK(plugin::available(&ops, &apex_edit_ops_v1::set_solid_geometry) == nullptr);
+    CHECK(plugin::available(&ops, &apex_edit_ops_v1::set_editor) == nullptr);
+    CHECK(plugin::available<decltype(ops.set_editor)>(nullptr, &apex_edit_ops_v1::set_editor) == nullptr);
 }

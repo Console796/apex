@@ -6,10 +6,13 @@
 #include "core/log.hpp"
 #include "core/strings.hpp"
 #include "document/document.hpp"
+#include "document/connection_codec.hpp"
 #include "document/entity_transform.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/map_problems.hpp"
+#include "geometry/displacement.hpp"
 #include "geometry/solid_block.hpp"
+#include "geometry/solid_geometry.hpp"
 #include <apex/apex_plugin.h>
 #include "plugin_host/abi_array.hpp"
 
@@ -25,6 +28,7 @@
 #include <cmath>
 #include <cstddef>
 #include <map>
+#include <charconv>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -334,6 +338,7 @@ struct Host::Impl {
     std::shared_ptr<bool> lifetime = std::make_shared<bool>(true);
     struct ToolRetirement { std::string owner, tool; std::weak_ptr<std::function<void()>> retire; std::weak_ptr<PluginTool::Revive> revive; };
     std::vector<ToolRetirement> toolRetirements;
+    std::map<std::string, int> sharedToolSessions;   // sessions that got a tool without its own instance
     // Script plugins (0.9.7): one entry per enabled script plugin, kept even when its load failed so a later
     // save can reload it.
     struct ScriptEntry { Impl* host; std::size_t index; std::unique_ptr<ScriptEngine> engine; };
@@ -597,9 +602,201 @@ struct Host::Impl {
             e.tx.rebuildSolid(std::get<Handle<document::Solid>>(*h), *poly);
         });
     }
+    static DVec3 dvec(const apex_vec3& v) { return {v.x, v.y, v.z}; }
+    static Handle<document::Solid> solidHandle(EditContext& e, apex_node_id id) {
+        const auto h = e.doc.handle(id);
+        if (!h || !std::holds_alternative<Handle<document::Solid>>(*h)) throw std::invalid_argument("unknown solid ID");
+        return std::get<Handle<document::Solid>>(*h);
+    }
+    static apex_status setSolidGeometry(void* c, apex_node_id id, const apex_solid_geometry* in) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            const auto g = readStruct(in);
+            if (!g) throw std::invalid_argument("invalid solid geometry (struct_size)");
+            if (g->vertex_count > 4096 || g->face_count < 4 || g->face_count > 256 || (g->vertex_count && !g->vertices))
+                throw std::invalid_argument("invalid solid geometry counts");
+            const AbiArray<apex_face_geometry> faces(g->faces, g->face_count);
+            if (!faces.valid()) throw std::invalid_argument("invalid face array (struct_size)");
+            const auto solid = solidHandle(e, id);
+            auto before = geometry::solidGeometry(*e.doc.get(solid)->block);
+            if (!before) throw std::invalid_argument(before.error().what());
+            geometry::SolidGeometry next{{}, before->sides, false};
+            for (size_t i = 0; i < g->vertex_count; ++i) next.poly.vertices.push_back(dvec(g->vertices[i]));
+            for (size_t i = 0; i < faces.size(); ++i) {
+                const auto fin = faces[i];
+                if (fin.side < 0 || (fin.index_count && !fin.indices) || fin.index_count < 3 || fin.index_count > 1024)
+                    throw std::invalid_argument("invalid face geometry");
+                const auto old = std::ranges::find_if(before->poly.faces, [&](const auto& f) { return f.sideId == static_cast<uint32_t>(fin.side); });
+                if (old == before->poly.faces.end()) throw std::invalid_argument("geometry side IDs do not match solid");
+                geometry::Face face;
+                static_cast<geometry::FaceAttributes&>(face) = *old;
+                face.uv.uaxis = dvec(fin.uaxis); face.uv.vaxis = dvec(fin.vaxis); face.uv.shiftU = fin.shift_u; face.uv.shiftV = fin.shift_v; face.uv.scaleU = fin.scale_u; face.uv.scaleV = fin.scale_v;
+                for (size_t k = 0; k < fin.index_count; ++k) {
+                    if (fin.indices[k] >= g->vertex_count) throw std::invalid_argument("face index out of range");
+                    face.vertices.push_back(fin.indices[k]);
+                }
+                next.poly.faces.push_back(std::move(face));
+            }
+            for (auto& face : next.poly.faces) {
+                const auto plane = next.poly.derivePlane(face);
+                if (!plane) throw std::invalid_argument("degenerate face");
+                face.plane = *plane;
+            }
+            e.tx.setSolidGeometry(solid, next);
+        });
+    }
+    static apex_status setDisplacement(void* c, int32_t side, const apex_displacement* in) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            const auto d = readStruct(in);
+            if (!d) throw std::invalid_argument("invalid displacement (struct_size)");
+            if (d->power < geometry::Displacement::kMinPower || d->power > geometry::Displacement::kMaxPower)
+                throw std::invalid_argument("displacement power must be 2 to 4");
+            if (!d->normals || !d->distances || !d->offsets || !d->alphas || !d->triangle_tags)
+                throw std::invalid_argument("displacement arrays are missing");
+            if (d->allowed_vert_count > 4096 || (d->allowed_vert_count && !d->allowed_verts))
+                throw std::invalid_argument("invalid allowed_verts");
+            geometry::Displacement disp;
+            disp.power = d->power; disp.startPosition = dvec(d->start_position);
+            disp.flags = d->flags; disp.elevation = d->elevation; disp.subdiv = d->subdiv;
+            const auto n = disp.vertexCount();
+            for (size_t i = 0; i < n; ++i) {
+                disp.normals.push_back(dvec(d->normals[i]));
+                disp.distances.push_back(d->distances[i]);
+                disp.offsets.push_back(dvec(d->offsets[i]));
+                disp.offsetNormals.push_back(dvec((d->offset_normals ? d->offset_normals : d->normals)[i]));
+                disp.alphas.push_back(d->alphas[i]);
+            }
+            for (size_t i = 0; i < disp.triangleCount(); ++i) disp.triangleTags.push_back(d->triangle_tags[i]);
+            for (size_t i = 0; i < d->allowed_vert_count; ++i) disp.allowedVerts.push_back(d->allowed_verts[i] != 0);
+            if (const auto problem = disp.problem()) throw std::invalid_argument(*problem);
+            const auto location = e.doc.side(side);
+            if (!location) throw std::invalid_argument("unknown side ID");
+            const auto shape = geometry::solidGeometry(*e.doc.get(location->solid)->block);
+            if (!shape) throw std::invalid_argument(shape.error().what());
+            const auto face = std::ranges::find_if(shape->poly.faces, [&](const auto& f) { return f.sideId == static_cast<uint32_t>(side); });
+            if (face == shape->poly.faces.end()) throw std::invalid_argument("unknown side ID");
+            if (const auto corners = geometry::displacementCorners(shape->poly, *face); !corners)
+                throw std::invalid_argument(corners.error().what());
+            e.tx.setDisplacement(side, disp);
+        });
+    }
+    static apex_status setConnections(void* c, apex_node_id id, const apex_connection* in, size_t count) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            if (count > 4096) throw std::invalid_argument("too many connections");
+            const AbiArray<apex_connection> list(in, count);
+            if (!list.valid()) throw std::invalid_argument("invalid connection array (struct_size)");
+            const auto h = e.doc.handle(id);
+            if (!h) throw std::invalid_argument("unknown node ID");
+            auto block = kv1::Node::block("connections");
+            for (size_t i = 0; i < list.size(); ++i) {
+                const auto item = list[i];
+                document::Connection connection;
+                connection.target = std::string(view(item.target)); connection.input = std::string(view(item.input));
+                connection.parameter = std::string(view(item.parameter)); connection.delay = std::string(view(item.delay));
+                connection.times = std::string(view(item.times));
+                const auto output = std::string(view(item.output));
+                if (output.empty()) throw std::invalid_argument("a connection needs an output name");
+                for (const auto& field : connection.fields())
+                    if (field.find_first_of("\x1b\r\n") != std::string::npos)
+                        throw std::invalid_argument("a connection field has a control character");
+                if (output.find_first_of("\r\n") != std::string::npos) throw std::invalid_argument("invalid output name");
+                if (const auto added = block.append(kv1::Node::value(output, document::serialize(connection))); !added)
+                    throw std::invalid_argument(added.error().what());
+            }
+            e.tx.setConnections(*h, std::move(block));
+        });
+    }
+    static apex_status rebuildSolidMatched(void* c, apex_node_id id, const apex_plane* values, size_t count,
+                                           const apex_face_match* matches, size_t matchCount) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            if (!values || count < 4 || count > 256) throw std::invalid_argument("invalid plane count");
+            if (matchCount > 256) throw std::invalid_argument("too many face matches");
+            const AbiArray<apex_face_match> list(matches, matchCount);
+            if (!list.valid()) throw std::invalid_argument("invalid match array (struct_size)");
+            const auto solid = solidHandle(e, id);
+            std::map<uint32_t, int32_t> oldSide;
+            for (size_t i = 0; i < list.size(); ++i) {
+                const auto m = list[i];
+                if (m.plane_index >= count || m.old_side < 0 || !oldSide.emplace(m.plane_index, m.old_side).second)
+                    throw std::invalid_argument("invalid face match");
+            }
+            std::vector<geometry::PlaneSide> sides;
+            for (size_t i = 0; i < count; ++i) {
+                geometry::PlaneSide side;
+                side.plane = {{values[i].normal.x, values[i].normal.y, values[i].normal.z}, values[i].distance};
+                side.sideId = static_cast<uint32_t>(i + 1);   // survives fromPlanes: maps a face back to its plane
+                sides.push_back(side);
+            }
+            auto poly = geometry::ConvexPolyhedron::fromPlanes(sides);
+            if (!poly) throw std::invalid_argument("invalid solid planes");
+            geometry::FaceCorrespondence correspondence{std::in_place};
+            for (size_t n = 0; n < poly->faces.size(); ++n) {
+                const auto found = oldSide.find(poly->faces[n].sideId - 1);
+                if (found != oldSide.end()) correspondence->emplace(n, static_cast<uint32_t>(found->second));
+                poly->faces[n].sideId = 0;
+            }
+            e.tx.rebuildSolid(solid, *poly, correspondence);
+        });
+    }
+    static bool containsSolid(const kv1::Node& node) {
+        for (const auto& child : node.children())
+            if (child.kind() == kv1::NodeKind::Block && (ciEquals(child.key(), "solid") || containsSolid(child))) return true;
+        return false;
+    }
+    static apex_status createBlock(void* c, apex_node_id parent, apex_str text, apex_node_id* out) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            const auto p = parent ? e.doc.handle(parent) : std::optional<document::NodeHandle>{};
+            if (parent && !p) throw std::invalid_argument("unknown parent ID");
+            auto parsed = kv1::parse(std::string(view(text)));
+            if (!parsed) throw std::invalid_argument(parsed.error().what());
+            const auto& children = parsed->root().children();
+            if (children.size() != 1 || children[0].kind() != kv1::NodeKind::Block)
+                throw std::invalid_argument("create_block needs exactly one block");
+            const auto& block = children[0];
+            if (ciEquals(block.key(), "world") || ciEquals(block.key(), "solid") || containsSolid(block))
+                throw std::invalid_argument("create_block does not create worlds or solids; use create_solid");
+            const auto created = e.tx.create(block, p);
+            if (out) *out = e.doc.get(created)->id;
+        });
+    }
+    static apex_status setEditor(void* c, apex_node_id id, uint32_t kind, apex_str value) {
+        auto& e = *static_cast<EditContext*>(c);
+        return editOperation(e, [&] {
+            const auto h = e.doc.handle(id);
+            if (!h) throw std::invalid_argument("unknown node ID");
+            const std::string text(view(value));
+            const auto number = [&] {
+                int n = 0;
+                const auto r = std::from_chars(text.data(), text.data() + text.size(), n);
+                if (text.empty() || r.ec != std::errc{} || r.ptr != text.data() + text.size()) throw std::invalid_argument("expected a decimal ID");
+                return n;
+            };
+            const auto flag = [&] {
+                if (text != "0" && text != "1") throw std::invalid_argument("expected 0 or 1");
+                return text == "1";
+            };
+            using Edit = document::EditorEdit;
+            switch (kind) {
+            case APEX_EDITOR_GROUP: e.tx.setEditor(*h, Edit::setGroup(text.empty() ? std::optional<int>{} : std::optional<int>{number()})); break;
+            case APEX_EDITOR_ADD_VISGROUP: e.tx.setEditor(*h, Edit::addVisgroup(number())); break;
+            case APEX_EDITOR_REMOVE_VISGROUP: e.tx.setEditor(*h, Edit::removeVisgroup(number())); break;
+            case APEX_EDITOR_COLOR: e.tx.setEditor(*h, Edit::setColor(text)); break;
+            case APEX_EDITOR_VISGROUP_SHOWN: e.tx.setEditor(*h, Edit::setVisgroupShown(flag())); break;
+            case APEX_EDITOR_VISGROUP_AUTO_SHOWN: e.tx.setEditor(*h, Edit::setVisgroupAutoShown(flag())); break;
+            case APEX_EDITOR_COMMENTS: e.tx.setEditor(*h, Edit::setComments(text)); break;
+            default: throw std::invalid_argument("unknown editor kind");
+            }
+        });
+    }
     static const apex_edit_ops_v1& editOps() {
         static const apex_edit_ops_v1 ops{sizeof(ops), 0, setKey, destroyNode, createSolid,
-                                           reparentNode, setSideKey, removeDisplacement, rebuildSolid};
+                                           reparentNode, setSideKey, removeDisplacement, rebuildSolid,
+                                           setSolidGeometry, setDisplacement, setConnections, rebuildSolidMatched,
+                                           createBlock, setEditor};
         return ops;
     }
     static apex_status applyEdit(void* c, apex_str label, apex_str coalesce, void* user, apex_edit_callback callback) try {
@@ -729,6 +926,13 @@ struct Host::Impl {
         APEX_COPY_TOOL_CALLBACK(document_changed); APEX_COPY_TOOL_CALLBACK(forget);
         APEX_COPY_TOOL_CALLBACK(create_instance); APEX_COPY_TOOL_CALLBACK(destroy_instance);
 #undef APEX_COPY_TOOL_CALLBACK
+        // The pair belongs together: an instance without its destructor would leak, a destructor without
+        // its factory would never run. Refused at registration so the mistake is found while writing the plugin.
+        if (!item.callbacks.create_instance != !item.callbacks.destroy_instance) {
+            self(c).pending.pop_back();
+            self(c).lastError = "tool callbacks create_instance and destroy_instance must be given together";
+            return APEX_ERR_INVALID;
+        }
         return APEX_OK;
     } catch (...) { return internal(c); }
     static apex_status registerPanel(void* c, apex_str id, apex_str title) try {
@@ -1454,6 +1658,11 @@ struct Host::Impl {
                     [selfPtr, life](const char* message) { if (!life.expired()) selfPtr->setError(message); });
                 std::erase_if(selfPtr->toolRetirements, [](const auto& item) { return item.retire.expired(); });
                 selfPtr->toolRetirements.push_back({reg.owner, reg.id, tool->retirement(), tool->reviver()});
+                // A tool without a per-session instance (no factory, or one that returned null) runs on the
+                // registration's user pointer, shared by every session. Say so once, when it becomes true.
+                if (tool->sharesRegistrationState() && ++selfPtr->sharedToolSessions[reg.id] == 2)
+                    selfPtr->note("tool " + reg.id + " has no per-session instance (create_instance returned none): "
+                                  "its state is shared between editor sessions");
                 return tool;
             }
             auto on = [selfPtr, life, cell] { if (!life.expired() && !cell->dead) selfPtr->callback(cell->owner, "tool.activate", cell->first, cell->user); };

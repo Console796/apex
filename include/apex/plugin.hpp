@@ -162,6 +162,37 @@ inline apex_overlay_tint tint(int32_t side, const float (&rgba)[4]) {
     return t;
 }
 
+// Edit operation arguments (apex_edit_ops_v1, 0.9.3). Same rule: every element carries its struct_size.
+inline apex_face_geometry faceGeometry(int32_t side, const std::vector<uint32_t>& indices, apex_vec3 uaxis, apex_vec3 vaxis,
+                                       double shiftU = 0, double shiftV = 0, double scaleU = 0.25, double scaleV = 0.25) {
+    apex_face_geometry f{}; f.struct_size = sizeof(f); f.side = side; f.uaxis = uaxis; f.vaxis = vaxis;
+    f.shift_u = shiftU; f.shift_v = shiftV; f.scale_u = scaleU; f.scale_v = scaleV;
+    f.indices = indices.data(); f.index_count = indices.size();   // `indices` must outlive the call
+    return f;
+}
+inline apex_solid_geometry solidGeometry(const std::vector<apex_vec3>& vertices, const std::vector<apex_face_geometry>& faces) {
+    apex_solid_geometry g{}; g.struct_size = sizeof(g);
+    g.vertices = vertices.data(); g.vertex_count = vertices.size(); g.faces = faces.data(); g.face_count = faces.size();
+    return g;
+}
+inline apex_connection connection(std::string_view output, std::string_view target, std::string_view input,
+                                  std::string_view parameter = {}, std::string_view delay = "0", std::string_view times = "-1") {
+    apex_connection c{}; c.struct_size = sizeof(c); c.output = string(output); c.target = string(target);
+    c.input = string(input); c.parameter = string(parameter); c.delay = string(delay); c.times = string(times);
+    return c;
+}
+inline apex_face_match faceMatch(uint32_t planeIndex, int32_t oldSide) {
+    apex_face_match m{}; m.struct_size = sizeof(m); m.plane_index = planeIndex; m.old_side = oldSide;
+    return m;
+}
+// The operation table of an edit callback, checked: null when the host's table is too old to have `member`.
+// Use as `if (auto fn = plugin::available(ops, &apex_edit_ops_v1::set_connections)) fn(ctx, ...)`.
+template <class Fn> inline Fn available(const apex_edit_ops_v1* ops, Fn apex_edit_ops_v1::* member) {
+    if (!ops) return nullptr;
+    const auto end = reinterpret_cast<const char*>(&(ops->*member)) + sizeof(Fn) - reinterpret_cast<const char*>(ops);
+    return static_cast<size_t>(end) <= ops->struct_size ? ops->*member : nullptr;
+}
+
 // apex.overlay/1. Fill the vectors, then set(); the host copies them before set() returns.
 struct Overlay {
     std::vector<apex_tool_segment> segments;
