@@ -33,6 +33,11 @@ cmake --preset linux-clang-release
 cmake --build --preset linux-clang-release -j6
 ```
 
+On the development machine, use the memory-capped wrappers instead of calling CMake directly:
+`scripts/memcheck.sh` before a first build, then `scripts/build.sh linux-clang-release` and
+`scripts/test.sh linux-clang-release`. They size `-j` from available memory and run the build in a
+cgroup. Do not pass your own `-j` to them.
+
 Presets are `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan` (GCC
 ASan+UBSan), `linux-fuzz` (Clang libFuzzer) and `windows-msvc-{debug,release}`. Build trees go
 under `build/<preset>/`. Iterate on `linux-clang-release`: it builds several times faster than

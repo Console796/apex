@@ -42,6 +42,8 @@ verification is still open: see [the 0.5 plan](plans/0.5.md) for the remaining g
 is tagged yet. 0.6.1 to 0.6.8 have landed, and the owner accepted the 0.6 release gates on 2026-11-01
 (parity, performance, Windows Lit goldens). 0.6 is released as `0.6.8-release` (tag `v0.6.8-release`). See [the 0.6 plan](plans/0.6.md).
 
+**Status (2026-11-16):** 0.7 is released as `0.7.7-release` (tag `v0.7.7-release`), and 0.8 is released as `0.8.9-release` (tag `v0.8.9-release`, [release notes](releases/0.8.9-release.md)). The 0.8 release's own checks are still open: the written outdoor scenario, the interop check of every fixture reopened in Strata Hammer, and the Windows run. 0.9 (extensibility) is in progress on `master`; no 0.9 plan file is in `docs/plans/` yet. The detail-prop preview moved out of 0.8 on 2026-11-16 and has no milestone yet.
+
 ## Principles that hold across every milestone
 
 1. **Every task is doable in a 3D viewport.** Users can open any number of viewports and switch

@@ -1,0 +1,14 @@
+{
+  "id": "I-6",
+  "title": "Plugin tool callback state is shared across EditorSessions",
+  "body": "Found by Codex at 0.9.2 (src/plugin_host/plugin_tool.cpp): registered plugin tool callback state lives per registration, not per session, so two simultaneous sessions would share it. Needs per-session instances and a test (two sessions, tool state independent). Also: tool ABI exposes only world-line overlay segments, not every internal overlay primitive (0.9.5 overlays).",
+  "kind": "bug",
+  "severity": "medium",
+  "status": "open",
+  "roadmap_id": "R-15",
+  "created": "2026-11-16T19:46:17-07:00",
+  "created_by": "agent",
+  "updated": "2026-11-16T19:46:17-07:00",
+  "updated_by": "agent",
+  "comments": []
+}

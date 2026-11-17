@@ -2,12 +2,12 @@
   "id": "R-12",
   "title": "0.8.8: Ropes and cables preview",
   "description": "",
-  "status": "testable",
+  "status": "verified",
   "milestone": "0.8",
   "how_to_test": "scripts/test.sh linux-gcc-debug -R \"rope|helper_shapes|shell|tool_controls\". Manual: Tools > Rope, click points, Enter: chain of keyframe_rope linked by NextKey with sag and tube; Ctrl+Z removes it in one step.",
   "created": "2026-11-16T15:50:20-07:00",
-  "updated": "2026-11-16T17:17:26-07:00",
-  "updated_by": "agent",
+  "updated": "2026-11-16T17:37:40-07:00",
+  "updated_by": "human",
   "history": [
     {
       "ts": "2026-11-16T15:50:20-07:00",
@@ -30,6 +30,12 @@
       "actor": "agent",
       "status": "testable",
       "note": "Codex built tube drawing (Width/RopeMaterial) and Rope tool (Tools > Rope, Enter commits a linked chain, one undo step). Filtered tests 23/23 pass; full suite not run to completion (VRAD timeout). In-game P0 captures still owed."
+    },
+    {
+      "ts": "2026-11-16T17:37:40-07:00",
+      "actor": "human",
+      "status": "verified",
+      "note": "Verified by human"
     }
   ]
 }

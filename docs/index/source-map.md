@@ -198,3 +198,16 @@ Qt. The largest directory after `editor`, and the only one that includes Qt head
 - **Lighting (0.6):** the light model is in `src/lighting/`. The `Lit` passes are in `src/render/`
   (`scene_target`, `gpu_lighting`, `gpu_material`) and the shaders in `src/render/shaders/`. Light
   helpers and falloff edits are in `src/editor/light_edit.*`.
+- **Baked preview (0.7):** charting is in `src/lighting/charting.*`, the baker and its scene and
+  session code in `src/lighting/baker.*`, `bake_scene.*`, `bake_session.*` and `bake_casters.*`, and
+  the VRAD round-trip mapping in `bsp_lightmaps.*` and `bake_diff.*`. The GPU baker is
+  `src/render/gpu_bake.*`, with lightmap storage in `src/render/lightmap_atlas.*`.
+- **Advanced geometry (0.8):** displacement geometry is in `src/geometry/displacement*.cpp`
+  (`displacement_ops`, `displacement_sculpt`, `displacement_rebase`), with the VMF `dispinfo` model
+  in `src/document/displacement.*`. Overlay clipping is in `src/geometry/overlay.*`, and overlay
+  side tracking is in `src/document/overlay_fragments.*`. Hotspot fitting is in
+  `src/geometry/hotspot.*` and `src/assets/hotspot.*`. Rope drawing is in `src/geometry/rope.*`, and
+  detail and structural helpers are in `src/geometry/detail_props.*` and `src/render/detail_mirror.*`.
+  The editor tools are `src/editor/displacement_tool.*`, `displacement_edit.*`, `overlay_tool.*`,
+  `overlay_placement.*`, `overlay_problems.*` and `rope_tool.*`; the Apply tool's Hotspot mode is in
+  `src/editor/apply_tool.*`.
