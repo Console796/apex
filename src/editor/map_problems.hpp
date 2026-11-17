@@ -46,6 +46,7 @@ class ProblemRegistry {
 public:
     void add(std::string name, ProblemCheck check);
     void freeze() { frozen_ = true; }
+    bool frozen() const { return frozen_; }
     const std::vector<std::string>& names() const { return names_; }
     // Errors first, then warnings and notes, each in registration order.
     std::vector<Problem> run(const ProblemContext& context) const;
@@ -55,6 +56,14 @@ private:
     std::vector<ProblemCheck> checks_;
     bool frozen_ = false;
 };
+
+// 0.9.5: the problem list grouped for display. Apex's own problems come first (source empty), then one group
+// per plugin in order of first appearance. Each group lists indices into the input, keeping its order.
+struct ProblemGroup {
+    std::string source;
+    std::vector<std::size_t> indices;
+};
+std::vector<ProblemGroup> groupProblems(const std::vector<Problem>& problems);
 
 ProblemRegistry& mutableProblemRegistry();
 const ProblemRegistry& problemRegistry();

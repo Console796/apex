@@ -209,6 +209,75 @@ typedef struct apex_actions_v1 {
                                    const apex_action_suggestion* suggestions, size_t suggestion_count);
 } apex_actions_v1;
 
+/* apex.overlay/1 (0.9.5). Overlay lists are world primitives drawn in every display mode. declare() is
+   available only during activate and creates the per-viewport toggle named `name`; set() and clear()
+   need the declaring plugin and are available during activate and any callback into that plugin.
+   The host copies everything in a list before set() returns. Segment width is in pixels. Ghost
+   planes use the apex.tools ghost convention (a convex solid). Tints colour whole faces by side ID. */
+typedef struct apex_overlay_point { apex_vec3 position; float rgba[4]; float size; } apex_overlay_point;
+typedef struct apex_overlay_label { apex_vec3 position; apex_str text; float rgba[4]; } apex_overlay_label;
+typedef struct apex_overlay_ghost { const apex_plane* planes; size_t plane_count; float rgba[4]; } apex_overlay_ghost;
+typedef struct apex_overlay_tint { int32_t side; float rgba[4]; } apex_overlay_tint;
+typedef struct apex_overlay_list {
+    uint32_t struct_size;
+    const apex_tool_segment* segments; size_t segment_count;
+    const apex_overlay_point* points; size_t point_count;
+    const apex_overlay_label* labels; size_t label_count;
+    const apex_overlay_ghost* ghosts; size_t ghost_count;
+    const apex_overlay_tint* tints; size_t tint_count;
+} apex_overlay_list;
+typedef struct apex_overlay_v1 {
+    uint32_t struct_size;
+    apex_status (*declare)(void* host, apex_str id, apex_str name);
+    apex_status (*set)(void* host, apex_str id, const apex_overlay_list* list);
+    apex_status (*clear)(void* host, apex_str id);
+} apex_overlay_v1;
+
+/* apex.helpers/1 (0.9.5). register_helper() is available only during activate: `name` is an FGD helper
+   name (for example "mywidget(5)" is registered as "mywidget") that the host does not draw itself;
+   built-in helpers cannot be replaced and each name belongs to one plugin. draw() runs for each entity of
+   a class that lists the helper, on the editor thread, with apex.document readable. The call and sink
+   are borrowed until draw returns. Helpers draw from the saved document, so they do not follow a live
+   drag, and they are shown only while the viewport's entity helpers are on. */
+typedef struct apex_helper_call {
+    uint32_t struct_size;
+    apex_node_id entity;
+    apex_str class_name, helper, arguments;
+    apex_vec3 origin, angles;
+} apex_helper_call;
+typedef struct apex_helper_sink {
+    uint32_t struct_size;
+    void* sink;
+    apex_status (*segment)(void* sink, const apex_tool_segment* segment);
+    apex_status (*label)(void* sink, const apex_overlay_label* label);
+} apex_helper_sink;
+typedef apex_status (*apex_helper_draw)(void* user, const apex_helper_call* call, const apex_helper_sink* sink);
+typedef struct apex_helpers_v1 {
+    uint32_t struct_size;
+    apex_status (*register_helper)(void* host, apex_str name, void* user, apex_helper_draw draw);
+} apex_helpers_v1;
+
+/* apex.problems/1 (0.9.5). register_check() is available only during activate; `id` is namespaced
+   plugin.<plugin>.<name> and `name` is the check's title. check() runs on the editor thread whenever the
+   Problems list refreshes, with apex.document reading the document being checked, and reports through
+   the sink. Problems are listed grouped under the plugin, and "select" selects `objects`. */
+typedef struct apex_problem {
+    uint32_t struct_size;
+    uint32_t severity; /* 0 error, 1 warning, 2 note */
+    apex_str text;
+    const apex_node_id* objects; size_t object_count;
+} apex_problem;
+typedef struct apex_problem_sink {
+    uint32_t struct_size;
+    void* sink;
+    apex_status (*report)(void* sink, const apex_problem* problem);
+} apex_problem_sink;
+typedef apex_status (*apex_problem_check)(void* user, const apex_problem_sink* sink);
+typedef struct apex_problems_v1 {
+    uint32_t struct_size;
+    apex_status (*register_check)(void* host, apex_str id, apex_str name, void* user, apex_problem_check check);
+} apex_problems_v1;
+
 typedef struct apex_host {
     uint32_t struct_size, abi_major, abi_minor;
     void* context;

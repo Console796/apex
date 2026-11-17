@@ -1,14 +1,21 @@
 #include "plugin_host/plugin_host.hpp"
 #include "plugin_host/plugin_tool.hpp"
+#include "core/entity_helpers.hpp"
 #include "core/kv3.hpp"
 #include "core/log.hpp"
+#include "core/strings.hpp"
 #include "document/document.hpp"
+#include "document/entity_transform.hpp"
 #include "editor/editor_session.hpp"
+#include "editor/map_problems.hpp"
 #include "geometry/solid_block.hpp"
 #include <apex/apex_plugin.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstddef>
+#include <map>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -161,18 +168,32 @@ struct Host::Impl {
     apex_edit_v1 editApi{};
     apex_selection_v1 selectionApi{};
     apex_ui_v1 uiApi{};
+    apex_overlay_v1 overlayApi{};
+    apex_helpers_v1 helpersApi{};
+    apex_problems_v1 problemsApi{};
+    editor::ProblemRegistry* problems = &editor::mutableProblemRegistry();
+    std::vector<OverlayData> overlays;                  // declaration order
+    std::map<std::string, std::string, std::less<>> overlayOwner;
+    std::uint64_t overlayRevision = 0;
+    struct HelperRegistration { std::string owner; void* user; apex_helper_draw draw; };
+    std::map<std::string, HelperRegistration, std::less<>> helperRegistrations;  // by lower-case FGD name
+    HelperDrawing helperCache;
+    const document::Document* helperDocument = nullptr;
+    std::uint64_t helperState = 0, helperClasses = 0;
+    bool helperValid = false;
     UiBackend* uiBackend = nullptr;
     std::string registering;
     std::string callbackOwner;
     std::function<bool(std::string, std::string)> panelRegistrar;
     struct Registration {
-        enum class Kind { Action, Tool, Panel, Section, Dialog } kind;
+        enum class Kind { Action, Tool, Panel, Section, Dialog, Problem } kind;
         std::string id, name, description, owner, target;
         void* user;
         apex_callback first, second;
         bool extended = false;
         apex_tool_callbacks callbacks{};
         apex_ui_callbacks uiCallbacks{};
+        apex_problem_check problemCheck = nullptr;
         std::map<std::string, std::string, std::less<>> suggestions, suggestionContexts;
     };
     std::vector<Registration> pending;
@@ -191,6 +212,9 @@ struct Host::Impl {
         editApi = {sizeof(editApi), applyEdit, deferEdit};
         selectionApi = {sizeof(selectionApi), selectionInfo, selectionAt, selectionSet};
         uiApi = {sizeof(uiApi), registerUiPanel, refreshUi, registerUiSection, showUiDialog};
+        overlayApi = {sizeof(overlayApi), declareOverlay, setOverlay, clearOverlay};
+        helpersApi = {sizeof(helpersApi), registerHelper};
+        problemsApi = {sizeof(problemsApi), registerProblemCheck};
     }
     void setError(const char* message) noexcept {
         try { lastError.assign(message, std::min(std::strlen(message), lastError.capacity())); } catch (...) { }
@@ -210,6 +234,9 @@ struct Host::Impl {
         if (view(name) == "apex.edit/1") return &self(context).editApi;
         if (view(name) == "apex.selection/1") return &self(context).selectionApi;
         if (view(name) == "apex.ui/1") return &self(context).uiApi;
+        if (view(name) == "apex.overlay/1") return &self(context).overlayApi;
+        if (view(name) == "apex.helpers/1") return &self(context).helpersApi;
+        if (view(name) == "apex.problems/1") return &self(context).problemsApi;
         return nullptr;
     }
     static apex_status selectionInfo(void* c, uint32_t* mode, size_t* count) try {
@@ -529,9 +556,315 @@ struct Host::Impl {
         try { fn(user); } catch (...) { lastError = "exception in plugin callback"; }
         callbackOwner = previous;
     }
+    // ---- apex.overlay/1, apex.helpers/1, apex.problems/1 (0.9.5) ----
+    std::string actingOwner() const { return callbackOwner.empty() ? registering : callbackOwner; }
+    static bool finite(const apex_vec3& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+    static DVec3 vec(const apex_vec3& v) { return {v.x, v.y, v.z}; }
+    static bool rgba(const float c[4], Vec4& out) {
+        for (int i = 0; i < 4; ++i) if (!std::isfinite(c[i])) return false;
+        out = {c[0], c[1], c[2], c[3]};
+        return true;
+    }
+    static bool segmentOf(const apex_tool_segment& in, OverlaySegment& out) {
+        Vec4 colour;
+        if (!finite(in.a) || !finite(in.b) || !rgba(in.rgba, colour) || !std::isfinite(in.width)) return false;
+        out = {vec(in.a), vec(in.b), colour, std::clamp(in.width, 0.5f, 64.0f)};
+        return true;
+    }
+    static bool labelOf(const apex_overlay_label& in, OverlayLabel& out) {
+        Vec4 colour;
+        if (!finite(in.position) || !rgba(in.rgba, colour) || (!in.text.data && in.text.size)) return false;
+        out = {vec(in.position), std::string(view(in.text).substr(0, 256)), colour};
+        return true;
+    }
+    static constexpr std::size_t kMaxOverlayItems = 65536, kMaxOverlayTints = 262144, kMaxOverlayGhosts = 256;
+    static apex_status declareOverlay(void* c, apex_str id, apex_str name) try {
+        auto& s = self(c);
+        if (s.registering.empty()) return APEX_ERR_STATE;
+        if (!inNamespace(s.registering, view(id)) || view(name).empty()) {
+            s.setError("overlay id outside plugin namespace or missing name");
+            return APEX_ERR_INVALID;
+        }
+        if (s.overlayOwner.contains(view(id))) { s.setError("duplicate overlay"); return APEX_ERR_INVALID; }
+        s.overlayOwner.emplace(std::string(view(id)), s.registering);
+        OverlayData entry;
+        entry.id = std::string(view(id));
+        entry.name = std::string(view(name));
+        s.overlays.push_back(std::move(entry));
+        ++s.overlayRevision;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    OverlayData* ownedOverlay(std::string_view id, apex_status& status) {
+        const auto owner = actingOwner();
+        const auto found = overlayOwner.find(id);
+        if (owner.empty()) { status = APEX_ERR_STATE; return nullptr; }
+        if (found == overlayOwner.end()) { status = APEX_ERR_NOT_FOUND; return nullptr; }
+        if (found->second != owner) { setError("overlay belongs to another plugin"); status = APEX_ERR_INVALID; return nullptr; }
+        const auto it = std::ranges::find(overlays, id, &OverlayData::id);
+        if (it == overlays.end()) { status = APEX_ERR_NOT_FOUND; return nullptr; }
+        status = APEX_OK;
+        return &*it;
+    }
+    static apex_status setOverlay(void* c, apex_str id, const apex_overlay_list* list) try {
+        auto& s = self(c);
+        apex_status status = APEX_OK;
+        auto* entry = s.ownedOverlay(view(id), status);
+        if (!entry) return status;
+        if (!list || list->struct_size < offsetof(apex_overlay_list, segment_count) + sizeof(list->segment_count))
+            return APEX_ERR_INVALID;
+#define APEX_HAS(field) (list->struct_size >= offsetof(apex_overlay_list, field) + sizeof(list->field))
+#define APEX_BAD(count, ptr, limit) ((count) > (limit) || ((count) && !(ptr)))
+        OverlayData next;
+        next.id = entry->id;
+        next.name = entry->name;
+        if (APEX_HAS(segment_count)) {
+            if (APEX_BAD(list->segment_count, list->segments, kMaxOverlayItems)) return APEX_ERR_INVALID;
+            for (std::size_t i = 0; i < list->segment_count; ++i) {
+                OverlaySegment out;
+                if (!segmentOf(list->segments[i], out)) { s.setError("invalid overlay segment"); return APEX_ERR_INVALID; }
+                next.segments.push_back(out);
+            }
+        }
+        if (APEX_HAS(point_count)) {
+            if (APEX_BAD(list->point_count, list->points, kMaxOverlayItems)) return APEX_ERR_INVALID;
+            for (std::size_t i = 0; i < list->point_count; ++i) {
+                const auto& in = list->points[i];
+                Vec4 colour;
+                if (!finite(in.position) || !rgba(in.rgba, colour) || !std::isfinite(in.size)) {
+                    s.setError("invalid overlay point");
+                    return APEX_ERR_INVALID;
+                }
+                next.points.push_back({vec(in.position), colour, std::clamp(in.size, 1.0f, 64.0f)});
+            }
+        }
+        if (APEX_HAS(label_count)) {
+            if (APEX_BAD(list->label_count, list->labels, kMaxOverlayItems)) return APEX_ERR_INVALID;
+            for (std::size_t i = 0; i < list->label_count; ++i) {
+                OverlayLabel out;
+                if (!labelOf(list->labels[i], out)) { s.setError("invalid overlay label"); return APEX_ERR_INVALID; }
+                next.labels.push_back(std::move(out));
+            }
+        }
+        if (APEX_HAS(ghost_count)) {
+            if (APEX_BAD(list->ghost_count, list->ghosts, kMaxOverlayGhosts)) return APEX_ERR_INVALID;
+            for (std::size_t i = 0; i < list->ghost_count; ++i) {
+                const auto& ghost = list->ghosts[i];
+                Vec4 colour;
+                if (!ghost.planes || ghost.plane_count < 4 || ghost.plane_count > 256 || !rgba(ghost.rgba, colour)) {
+                    s.setError("invalid overlay ghost");
+                    return APEX_ERR_INVALID;
+                }
+                std::vector<geometry::PlaneSide> planes;
+                for (std::size_t j = 0; j < ghost.plane_count; ++j) {
+                    if (!finite(ghost.planes[j].normal) || !std::isfinite(ghost.planes[j].distance)) {
+                        s.setError("invalid overlay ghost plane");
+                        return APEX_ERR_INVALID;
+                    }
+                    geometry::PlaneSide side;
+                    side.plane = {vec(ghost.planes[j].normal), ghost.planes[j].distance};
+                    planes.push_back(std::move(side));
+                }
+                auto poly = geometry::ConvexPolyhedron::fromPlanes(planes);
+                if (!poly) { s.setError("overlay ghost planes do not close into a solid"); return APEX_ERR_INVALID; }
+                const Vec4 edge{colour.r, colour.g, colour.b, std::max(colour.a, 0.6f)};
+                for (const auto& face : poly->faces) {
+                    for (std::size_t k = 0; k < face.vertices.size(); ++k) {
+                        const auto from = face.vertices[k], to = face.vertices[(k + 1) % face.vertices.size()];
+                        if (from < to) // each edge is shared by two faces: draw it once
+                            next.segments.push_back({poly->vertices[from], poly->vertices[to], edge, 1.5f});
+                        if (k >= 2) next.triangles.push_back({poly->vertices[face.vertices[0]],
+                                                              poly->vertices[face.vertices[k - 1]],
+                                                              poly->vertices[face.vertices[k]], colour});
+                    }
+                }
+            }
+        }
+        if (APEX_HAS(tint_count)) {
+            if (APEX_BAD(list->tint_count, list->tints, kMaxOverlayTints)) return APEX_ERR_INVALID;
+            for (std::size_t i = 0; i < list->tint_count; ++i) {
+                Vec4 colour;
+                if (!rgba(list->tints[i].rgba, colour)) { s.setError("invalid overlay tint"); return APEX_ERR_INVALID; }
+                next.tints[list->tints[i].side] = colour;
+            }
+        }
+#undef APEX_HAS
+#undef APEX_BAD
+        *entry = std::move(next);
+        ++s.overlayRevision;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status clearOverlay(void* c, apex_str id) try {
+        auto& s = self(c);
+        apex_status status = APEX_OK;
+        auto* entry = s.ownedOverlay(view(id), status);
+        if (!entry) return status;
+        OverlayData empty;
+        empty.id = entry->id;
+        empty.name = entry->name;
+        *entry = std::move(empty);
+        ++s.overlayRevision;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    void dropOverlayData() {
+        for (auto& entry : overlays) {
+            entry.segments.clear(); entry.points.clear(); entry.triangles.clear(); entry.labels.clear(); entry.tints.clear();
+        }
+        ++overlayRevision;
+    }
+    static apex_status registerHelper(void* c, apex_str name, void* user, apex_helper_draw draw) try {
+        auto& s = self(c);
+        if (s.registering.empty()) return APEX_ERR_STATE;
+        const auto lower = toLowerAscii(view(name));
+        if (!draw || lower.empty() ||
+            !std::ranges::all_of(lower, [](unsigned char ch) { return std::isalnum(ch) || ch == '_'; })) return APEX_ERR_INVALID;
+        if (!std::holds_alternative<assets::UnknownHelper>(assets::parseHelper({lower, {}}))) {
+            s.setError("helper is built into the host");
+            return APEX_ERR_INVALID;
+        }
+        if (s.helperRegistrations.contains(lower)) { s.setError("helper already registered"); return APEX_ERR_INVALID; }
+        s.helperRegistrations.emplace(lower, HelperRegistration{s.registering, user, draw});
+        s.helperValid = false;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status registerProblemCheck(void* c, apex_str id, apex_str name, void* user, apex_problem_check check) try {
+        auto& s = self(c);
+        if (!check) return APEX_ERR_INVALID;
+        if (s.problems->frozen()) return APEX_ERR_STATE;
+        if (std::ranges::find(s.problems->names(), std::string(view(id))) != s.problems->names().end()) {
+            s.setError("duplicate registration");
+            return APEX_ERR_INVALID;
+        }
+        const auto result = registerItem(c, Registration::Kind::Problem, id, name, {}, user, nullptr, nullptr);
+        if (result != APEX_OK) return result;
+        s.pending.back().problemCheck = check;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    // Drops what a plugin registered directly when its activation failed.
+    void forgetOwner(const std::string& owner) {
+        std::erase_if(overlays, [&](const OverlayData& o) { const auto f = overlayOwner.find(o.id); return f != overlayOwner.end() && f->second == owner; });
+        std::erase_if(overlayOwner, [&](const auto& item) { return item.second == owner; });
+        std::erase_if(helperRegistrations, [&](const auto& item) { return item.second.owner == owner; });
+        helperValid = false;
+        ++overlayRevision;
+    }
+    struct ProblemSink {
+        Impl& host;
+        const document::Document& doc;
+        std::vector<editor::Problem>& out;
+        std::string owner;
+        std::size_t count = 0;
+    };
+    static apex_status reportProblem(void* sinkPointer, const apex_problem* problem) try {
+        auto& sink = *static_cast<ProblemSink*>(sinkPointer);
+        if (!problem || problem->struct_size < offsetof(apex_problem, object_count) + sizeof(problem->object_count) ||
+            problem->severity > 2 || view(problem->text).empty() || (problem->object_count && !problem->objects) ||
+            problem->object_count > 10000) return APEX_ERR_INVALID;
+        if (sink.count >= 1000) return APEX_ERR_STATE;
+        editor::Problem out;
+        out.severity = static_cast<editor::ProblemSeverity>(problem->severity);
+        out.kind = editor::ProblemKind::Plugin;
+        out.text = std::string(view(problem->text).substr(0, 1024));
+        out.source = sink.owner;
+        for (std::size_t i = 0; i < problem->object_count; ++i) {
+            if (!sink.doc.handle(problem->objects[i])) return APEX_ERR_NOT_FOUND;
+            out.objects.push_back(problem->objects[i]);
+        }
+        if (!out.objects.empty()) out.fixId = "select";
+        sink.out.push_back(std::move(out));
+        ++sink.count;
+        return APEX_OK;
+    } catch (...) { return internal(static_cast<ProblemSink*>(sinkPointer)->host.host.context); }
+    void runProblemCheck(const Registration& r, const editor::ProblemContext& context, std::vector<editor::Problem>& out) {
+        std::vector<editor::Problem> mine;
+        ProblemSink sink{*this, context.doc, mine, r.owner};
+        const apex_problem_sink native{sizeof(native), &sink, reportProblem};
+        const auto* previous = std::exchange(document, &context.doc);
+        apex_status status = APEX_ERR_INTERNAL;
+        const bool ran = guardedUi(r.owner, "problems.check", [&] { status = r.problemCheck(r.user, &native); });
+        document = previous;
+        if (ran && status == APEX_OK) {
+            std::ranges::move(mine, std::back_inserter(out));
+            return;
+        }
+        // A broken check reports itself instead of half its findings.
+        editor::Problem failed;
+        failed.severity = editor::ProblemSeverity::Warning;
+        failed.kind = editor::ProblemKind::Plugin;
+        failed.source = r.owner;
+        failed.text = "Check \"" + r.name + "\" failed" + (lastError.empty() ? std::string{} : ": " + lastError);
+        out.push_back(std::move(failed));
+    }
+    void drawHelpers() {
+        helperCache = {};
+        helperValid = true;
+        helperDocument = document;
+        helperState = document ? document->historyState() : 0;
+        helperClasses = session ? session->entityClassesRevision() : 0;
+        if (helperRegistrations.empty() || !document || !session) return;
+        const auto& classes = session->entityClasses();
+        constexpr std::size_t kMaxHelperItems = 200000;
+        const auto visit = [&](const auto& self, document::NodeId id) -> void {
+            if (helperCache.segments.size() + helperCache.labels.size() > kMaxHelperItems) return;
+            const auto handle = document->handle(id);
+            const auto* node = handle ? document->get(*handle) : nullptr;
+            if (!node) return;
+            if (std::holds_alternative<Handle<document::Entity>>(*handle) && node->block && !session->nodeHidden(id)) {
+                const auto* classname = node->block->find("classname");
+                const auto name = classname ? classname->decodedValue().value_or("") : std::string{};
+                if (const auto* cls = classes.find(name)) {
+                    for (const auto& helper : cls->helpers) {
+                        if (!std::holds_alternative<assets::UnknownHelper>(assets::parseHelper(helper))) continue;
+                        const auto found = helperRegistrations.find(toLowerAscii(trim(helper.name)));
+                        if (found == helperRegistrations.end()) continue;
+                        const auto pose = document::entityPose(*node->block);
+                        const std::string helperName = toLowerAscii(trim(helper.name));
+                        apex_helper_call call{sizeof(call), id, string(cls->name), string(helperName), string(helper.arguments),
+                            {pose.origin.x, pose.origin.y, pose.origin.z}, {pose.anglesDeg.x, pose.anglesDeg.y, pose.anglesDeg.z}};
+                        struct Out { HelperDrawing& drawing; } out{helperCache};
+                        const apex_helper_sink native{sizeof(native), &out,
+                            [](void* o, const apex_tool_segment* in) noexcept -> apex_status {
+                                try {
+                                    auto& drawing = static_cast<Out*>(o)->drawing;
+                                    OverlaySegment segment;
+                                    if (!in || !segmentOf(*in, segment)) return APEX_ERR_INVALID;
+                                    if (drawing.segments.size() >= 200000) return APEX_ERR_STATE;
+                                    drawing.segments.push_back(segment);
+                                    return APEX_OK;
+                                } catch (...) { return APEX_ERR_INTERNAL; }
+                            },
+                            [](void* o, const apex_overlay_label* in) noexcept -> apex_status {
+                                try {
+                                    auto& drawing = static_cast<Out*>(o)->drawing;
+                                    OverlayLabel label;
+                                    if (!in || !labelOf(*in, label)) return APEX_ERR_INVALID;
+                                    if (drawing.labels.size() >= 200000) return APEX_ERR_STATE;
+                                    drawing.labels.push_back(std::move(label));
+                                    return APEX_OK;
+                                } catch (...) { return APEX_ERR_INTERNAL; }
+                            }};
+                        const auto segmentsBefore = helperCache.segments.size(), labelsBefore = helperCache.labels.size();
+                        apex_status status = APEX_ERR_INTERNAL;
+                        const bool ran = guardedUi(found->second.owner, "helper.draw", [&] { status = found->second.draw(found->second.user, &call, &native); });
+                        if (!ran || status != APEX_OK) {
+                            helperCache.segments.resize(segmentsBefore);
+                            helperCache.labels.resize(labelsBefore);
+                        }
+                    }
+                }
+            }
+            for (const auto child : node->children) self(self, child);
+        };
+        for (const auto root : document->roots()) visit(visit, root);
+    }
     void commitRegistrations() {
         for (const auto& r : pending) {
             if (r.kind == Registration::Kind::Section) { uiPanels.emplace(r.id, r); continue; }
+            if (r.kind == Registration::Kind::Problem) {
+                problems->add(r.id, [this, life = std::weak_ptr(lifetime), r](const editor::ProblemContext& context, std::vector<editor::Problem>& out) {
+                    if (!life.expired()) runProblemCheck(r, context, out);
+                });
+                continue;
+            }
             if (r.kind == Registration::Kind::Panel) {
                 if (panelRegistrar(r.id, r.name) && r.uiCallbacks.describe) uiPanels.emplace(r.id, r);
                 continue;
@@ -714,10 +1047,23 @@ void Host::activate(bool safeMode) {
             if (plugin->activate) { Mark mark(impl_->breadcrumb, item.id, "activate"); if (plugin->activate(plugin->user) != APEX_OK) item.error = "activation failed"; }
         } catch (...) { item.error = "exception in activate"; }
         impl_->registering.clear();
-        if (!item.error.empty()) { impl_->pending.clear(); closeLibrary(lib); continue; }
+        if (!item.error.empty()) { impl_->pending.clear(); impl_->forgetOwner(item.id); closeLibrary(lib); continue; }
         impl_->commitRegistrations();
         impl_->loaded.push_back({i, lib, plugin}); item.loaded = true;
     }
+}
+void Host::useProblemRegistry(editor::ProblemRegistry& registry) { impl_->problems = &registry; }
+const std::vector<OverlayData>& Host::overlays() const { return impl_->overlays; }
+std::uint64_t Host::overlayRevision() const { return impl_->overlayRevision; }
+bool Host::hasHelpers() const { return !impl_->helperRegistrations.empty(); }
+const HelperDrawing& Host::helperDrawing() {
+    auto& s = *impl_;
+    const auto state = s.document ? s.document->historyState() : 0;
+    const auto classes = s.session ? s.session->entityClassesRevision() : 0;
+    if (!s.helperValid || s.helperDocument != s.document || s.helperState != state || s.helperClasses != classes) {
+        try { s.drawHelpers(); } catch (...) { s.helperCache = {}; s.setError("exception while drawing plugin helpers"); }
+    }
+    return s.helperCache;
 }
 void Host::setPanelRegistrar(std::function<bool(std::string, std::string)> registrar) {
     impl_->panelRegistrar = std::move(registrar);
@@ -784,14 +1130,20 @@ void Host::setDocument(const document::Document* document) {
     for (const auto& loaded : impl_->loaded) {
         if (impl_->document && loaded.plugin->struct_size >= offsetof(apex_plugin, on_document_closing) + sizeof(loaded.plugin->on_document_closing) && loaded.plugin->on_document_closing) {
             Mark mark(impl_->breadcrumb, impl_->plugins[loaded.index].id, "on_document_closing");
+            const auto previous = std::exchange(impl_->callbackOwner, impl_->plugins[loaded.index].id);
             try { loaded.plugin->on_document_closing(loaded.plugin->user); } catch (...) { impl_->plugins[loaded.index].error = "exception in on_document_closing"; }
+            impl_->callbackOwner = previous;
         }
     }
     impl_->document = document;
+    impl_->dropOverlayData();  // Plugin overlays describe one document; the plugin draws again when it opens.
+    impl_->helperValid = false;
     for (const auto& loaded : impl_->loaded) {
         if (document && loaded.plugin->struct_size >= offsetof(apex_plugin, on_document_opened) + sizeof(loaded.plugin->on_document_opened) && loaded.plugin->on_document_opened) {
             Mark mark(impl_->breadcrumb, impl_->plugins[loaded.index].id, "on_document_opened");
+            const auto previous = std::exchange(impl_->callbackOwner, impl_->plugins[loaded.index].id);
             try { loaded.plugin->on_document_opened(loaded.plugin->user); } catch (...) { impl_->plugins[loaded.index].error = "exception in on_document_opened"; }
+            impl_->callbackOwner = previous;
         }
     }
 }

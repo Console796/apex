@@ -433,3 +433,29 @@ Answered 2026-11-16: the owner accepted each recommendation.
 5. godot-acoustics is one input among others, not the 0.9 acceptance consumer (§5). It is a plugin the
    owner intends to build, but the API is not shaped around it; the exit criterion is tested by the
    example plugins (§6).
+
+## 10. Probe results
+
+### P4: per-face tint cost (0.9.5a, measured 2026-11-16)
+
+Method: `[measure] 0.9.5 P4 per-face tint ...` in `tests/render/preview_overlay_test.cpp` (opt-in,
+`APEX_MEASURE=1 scripts/test.sh linux-gcc-debug -R "P4 per-face" -V`). Every face of the map gets an RGBA
+tint through `render::MirrorViewOptions::sideTints`, rebuilt on each of 20 repetitions (a 10 Hz repaint);
+the mean per repetition covers building the tint map, `buildDrawList`, and one recorded and waited frame into a
+128x128 target on an RX 6600 (RADV). **Debug build** (`linux-gcc-debug`): absolute times are pessimistic,
+the ratios are what matters. The tint rides the existing selected-face path, which splits a solid's batch
+into one draw per face.
+
+| Map | Faces | Draws (untinted -> all tinted) | buildDrawList | Record + submit + wait |
+|---|---|---|---|---|
+| `~/maps/apex/test1.vmf` (largest real map here) | 776 | 260 -> 775 | 0.8 -> 1.05 ms | 1.55 -> 3.86 ms |
+| 48x48 floor of boxes (synthetic stress) | 13,824 | 2,304 -> 13,824 | 1.8 -> 7.2 ms | 11.6 -> 62.5 ms |
+
+Building the tint map is 0.22 ms (776 faces) to 5 ms (13,824). It is per call, not mirror-wide, because one mirror serves every pane. Reading: on the real map the cost is
+fine (a few ms in debug, at 10 Hz). On the synthetic 13.8k-face floor it is bad: the frame is about 5x
+slower (63 ms against a 16.7 ms 60 Hz frame), all of it draw-call count, because every tinted face is its
+own draw. Consequences taken for `apex.overlay/1`: tint is a map keyed by side ID, applied only to faces
+that carry one (untinted faces in untouched solids stay batched); plugins should tint regions, not unique
+colours per face. If a later pass needs more headroom the fix is coalescing adjacent faces with equal
+tint into one index range (not done: Lit reflection points are per face), or a per-vertex tint
+attribute. Release-build numbers were not taken in this pass.

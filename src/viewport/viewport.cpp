@@ -107,7 +107,9 @@ void applyPreset(Viewport& viewport, Preset preset) {
     const double height = viewport.camera.orthoHeight;
     const double fov = viewport.camera.fovYDegrees;
     const bool grid = viewport.overlays.grid;
+    auto pluginOff = std::move(viewport.overlays.pluginOff);
     viewport = makePreset(preset, focus, height);
+    viewport.overlays.pluginOff = std::move(pluginOff);
     viewport.camera.fovYDegrees = fov;
     viewport.overlays.grid = grid || viewport.overlays.grid;
 }
@@ -148,6 +150,9 @@ json::Value toJson(const Viewport& vp) {
     ov["approxBounce"] = boolean(vp.overlays.approxBounce);
     ov["toolFixedBrightness"] = boolean(vp.overlays.toolFixedBrightness);
     ov["luxelDensity"] = boolean(vp.overlays.luxelDensity);
+    json::Value::Array off;
+    for (const auto& id : vp.overlays.pluginOff) off.push_back(str(id));
+    ov["pluginOff"].data = std::move(off);
     json::Value::Object root;
     root["camera"].data = std::move(cam);
     root["mode"] = str(nameOf(vp.mode));
@@ -229,6 +234,15 @@ Result<Viewport> viewportFromJson(const json::Value& value) {
             auto b = readBool(*o, f.key, *f.dst);
             if (!b) return std::unexpected(b.error());
             *f.dst = *b;
+        }
+        if (const auto* off = member(*o, "pluginOff")) {
+            const auto* list = off->get<json::Value::Array>();
+            if (!list) return std::unexpected(bad("viewport: 'pluginOff' must be an array"));
+            for (const auto& item : *list) {
+                const auto* id = item.get<std::string>();
+                if (!id) return std::unexpected(bad("viewport: 'pluginOff' entries must be strings"));
+                vp.overlays.pluginOff.insert(*id);
+            }
         }
     }
     return vp;

@@ -2248,7 +2248,7 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             draw.highlight = tintOf(id, options.structural && brushIsDetail(id));
             draw.outlineOnlyWire = selected;
             const bool faceMode = !selected && std::ranges::any_of(batch.faces, [&](const FaceRange& face) {
-                return sides.contains(face.side);
+                return sides.contains(face.side) || (options.sideTints && options.sideTints->contains(face.side));
             });
             const auto records = m.heap.materials(); // By texture slot; a loading face has no record yet.
             const bool probeMaterial = state && state->slot < records.size() &&
@@ -2278,6 +2278,10 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
                     part.indexCount = face.indexCount;
                     part.firstEdgeIndex = face.firstEdgeIndex;
                     part.edgeIndexCount = face.edgeIndexCount;
+                    if (options.sideTints && !sides.contains(face.side)) {
+                        if (const auto tint = options.sideTints->find(face.side); tint != options.sideTints->end())
+                            part.highlight = tint->second;
+                    }
                     if (sides.contains(face.side)) {
                         part.highlight = m.highlight.selectTint;
                         part.outlineOnlyWire = true;
@@ -2604,7 +2608,9 @@ DrawList RenderMirror::buildDrawList(const MirrorViewOptions& options) {
             mirror.impl_->drawsInstanceContents = true;
             mirror.impl_->ownerInspected = selected || hovered;
             mirror.impl_->instanceFixup = content.fixup;
-            auto child = mirror.buildDrawList(options);
+            auto childOptions = options;
+            childOptions.sideTints = nullptr; // Side IDs belong to the host document, not the instance's.
+            auto child = mirror.buildDrawList(childOptions);
             m.drawnInstanceSolids += mirror.meshedSolidCount();
             DMat4 transform = content.transform;
             if (const auto it = m.effectivePreview.find(content.instance); it != m.effectivePreview.end()) transform = it->second * transform;

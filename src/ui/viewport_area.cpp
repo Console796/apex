@@ -227,6 +227,11 @@ void ViewportArea::setModelPicker(ModelsPanel* panel) {
 }
 void ViewportArea::setPluginUi(PluginUi* ui) {
     pluginUi_ = ui;
+    for (auto& [pane, frame] : frames_) {
+        if (!frame) continue;
+        frame->setPluginUi(ui);
+        if (frame->window()) frame->window()->setPluginUi(ui);
+    }
     bool restored = false;
     for (auto it = panels_.begin(); it != panels_.end();) {
         auto* p = it->second.data();
@@ -914,12 +919,14 @@ PaneFrame* ViewportArea::makeFrame(viewport::NodeId pane, bool maximized, bool c
     if (gpuReady_) {
         window = new PaneWindow(*host_, pane, accessor);
         window->setEditorSession(session_);
+        window->setPluginUi(pluginUi_);
         float clear[4];
         clearColourFor(currentTokens(), clear);
         window->setClearColour(clear);
     }
     auto* frame = new PaneFrame(pane, accessor, window, gpuReason_, maximized, canClose);
     frame->setEditorSession(session_);
+    frame->setPluginUi(pluginUi_);
     frames_[pane] = frame;
     if (session_) {
         frame->setModeText(modeSummary(*session_), session_->activeToolObject().readout().warn);

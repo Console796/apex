@@ -3,6 +3,7 @@
 #include "document/vmf.hpp"
 #include "document/document.hpp"
 #include "editor/editor_session.hpp"
+#include "editor/map_problems.hpp"
 #include "../editor/fixtures.hpp"
 #include "geometry/solid_geometry.hpp"
 #include <doctest/doctest.h>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <chrono>
+#include <algorithm>
 
 using namespace apex;
 using namespace apex::plugin_host;
@@ -610,4 +612,141 @@ TEST_CASE("P1 extended adapters and document observers retire before library unl
     editor::EditorSession later;
     REQUIRE(later.perform("plugin.polygon.tool"));
     CHECK_FALSE(later.input({}, {}));
+}
+
+TEST_CASE("overlays, helpers and problems from two plugins") {
+    Temp temp;
+    temp.manifest("wrap", entryFor(OVERLAY_PLUGIN_PATH));
+    temp.manifest("other", entryFor(OVERLAY_OTHER_PLUGIN_PATH));
+    document::Document document(editor_test::parsed(
+        "world { id 1 classname worldspawn } entity { id 7 classname wrapent origin \"32 0 0\" } "
+        "entity { id 8 classname wrapent origin \"0 64 0\" }"));
+    editor::EditorSession session;
+    session.attach(document);
+    assets::EntityClassTable classes;
+    assets::EntityClass cls; cls.name = "wrapent"; cls.type = "PointClass";
+    // widget draws; thrower throws after drawing; sphere is a host helper and must not reach plugins.
+    cls.helpers = {{"wrapwidget", "16"}, {"otherwidget", ""}, {"wrapthrower", ""}, {"sphere", "radius"}};
+    classes.classes["wrapent"] = std::move(cls);
+    session.setEntityClasses(std::move(classes));
+    std::vector<std::string> logs;
+    editor::ProblemRegistry registry;
+    {
+        Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+        host.useProblemRegistry(registry);
+        host.discover({temp.path}); host.setDocument(&document); host.setSession(&session);
+        host.activate();
+        REQUIRE(host.plugins().size() == 2);
+        for (const auto& plugin : host.plugins()) { CAPTURE(plugin.error); REQUIRE(plugin.loaded); }
+        const auto count = [&](const std::string& line) { return std::ranges::count(logs, line); };
+        const auto invalid = std::to_string(APEX_ERR_INVALID);
+        CHECK(count("declare_dup=" + invalid) == 2);
+        CHECK(count("declare_outside=" + invalid) == 2);
+        CHECK(count("helper_builtin=" + invalid) == 2);
+        CHECK(count("helper_dup=" + invalid) == 2);
+        CHECK(count("problem_outside=" + invalid) == 2);
+
+        // Overlays: declared in activate with the plugin's data, per-plugin and namespaced.
+        REQUIRE(host.overlays().size() == 4);
+        const auto find = [&](std::string_view id) -> const OverlayData* {
+            for (const auto& overlay : host.overlays()) if (overlay.id == id) return &overlay;
+            return nullptr;
+        };
+        const auto* main = find("plugin.wrap.main");
+        REQUIRE(main);
+        CHECK(main->name == "Wrap overlay");
+        CHECK(main->segments.size() == 1 + 12);   // the line plus the ghost cube's edges
+        CHECK(main->points.size() == 1);
+        CHECK(main->labels.size() == 1);
+        CHECK(main->triangles.size() == 12);      // 6 quads as 2 triangles each
+        CHECK(main->tints.size() == 1);
+        CHECK(main->tints.at(5).r == doctest::Approx(1.0f));
+        CHECK(main->tints.at(5).a == doctest::Approx(0.5f));
+        CHECK(find("plugin.wrap.other")->segments.empty());
+
+        // Callbacks: set works, invalid lists are rejected whole, ownership is enforced.
+        const auto revision = host.overlayRevision();
+        logs.clear();
+        REQUIRE(session.perform("plugin.wrap.act"));
+        CHECK(host.overlayRevision() > revision);
+        const auto state = [&](const char*) { return std::to_string(APEX_ERR_STATE); };
+        CHECK(std::ranges::count(logs, "set=0") == 1);
+        CHECK(std::ranges::count(logs, "set_nan=" + invalid) == 1);
+        CHECK(std::ranges::count(logs, "set_unknown=" + std::to_string(APEX_ERR_NOT_FOUND)) == 1);
+        CHECK(std::ranges::count(logs, "steal=" + invalid) == 1);
+        CHECK(std::ranges::count(logs, "declare_late=" + state("")) == 1);
+        CHECK(std::ranges::count(logs, "helper_late=" + state("")) == 1);
+        CHECK(find("plugin.wrap.main")->points.size() == 1); // the NaN list left it unchanged
+        REQUIRE(session.perform("plugin.other.clear"));
+        CHECK(find("plugin.wrap.main")->points.size() == 1); // other's clear touched only other's overlay
+        REQUIRE(session.perform("plugin.wrap.clear"));
+        CHECK(find("plugin.wrap.main")->points.empty());
+        CHECK(find("plugin.wrap.main")->name == "Wrap overlay"); // still declared, just empty
+        REQUIRE(session.perform("plugin.wrap.act"));
+        CHECK_FALSE(find("plugin.wrap.main")->segments.empty());
+        // A throwing callback is contained.
+        CHECK(session.perform("plugin.wrap.throw"));
+        // Overlay data belongs to a document: it is dropped when the document closes.
+        host.setDocument(nullptr);
+        CHECK(find("plugin.wrap.main")->segments.empty());
+        host.setDocument(&document);
+
+        // Helpers: host helpers never reach plugins; unknown names draw per entity; failures roll back.
+        REQUIRE(host.hasHelpers());
+        const auto& drawing = host.helperDrawing();
+        CHECK(drawing.segments.size() == 4);      // wrapwidget and otherwidget on two entities each
+        CHECK(drawing.labels.size() == 4);
+        const auto atX32 = std::ranges::count_if(drawing.segments, [](const OverlaySegment& s) { return s.a.x == 32.0 && s.b.x == 48.0; });
+        CHECK(atX32 == 2);
+        const auto* cached = &host.helperDrawing();
+        CHECK(cached == &drawing);
+        // Hidden entities draw nothing.
+        REQUIRE(session.setNodeHidden({document.roots()[1]}, true));
+        CHECK(host.helperDrawing().segments.size() == 2);
+        REQUIRE(session.unhideAll());
+        CHECK(host.helperDrawing().segments.size() == 4);
+
+        // Problems: grouped by plugin source, objects validated, a throwing check reports itself.
+        const auto problems = registry.run(editor::ProblemContext{document});
+        const auto text = [&](std::string_view needle, std::string_view source) {
+            return std::ranges::count_if(problems, [&](const editor::Problem& p) {
+                return p.text.find(needle) != std::string::npos && p.source == source && p.kind == editor::ProblemKind::Plugin;
+            });
+        };
+        CHECK(text("roots=3", "wrap") == 1);
+        CHECK(text("roots=3", "other") == 1);
+        CHECK(text("first root", "wrap") == 1);
+        CHECK(text("failed", "wrap") == 1);       // the broken check
+        CHECK(text("half a result", "wrap") == 0); // partial results are dropped
+        const auto first = std::ranges::find_if(problems, [](const editor::Problem& p) { return p.text == "first root" && p.source == "wrap"; });
+        REQUIRE(first != problems.end());
+        CHECK(first->fixId == "select");
+        CHECK(first->objects == std::vector<document::NodeId>{document.roots()[0]});
+        CHECK(first->severity == editor::ProblemSeverity::Warning);
+        CHECK(std::ranges::count(logs, "bad_severity=" + invalid) >= 1);
+        CHECK(std::ranges::count(logs, "unknown_object=" + std::to_string(APEX_ERR_NOT_FOUND)) >= 1);
+        const auto groups = editor::groupProblems(problems);
+        REQUIRE(groups.size() == 2);
+        CHECK(((groups[0].source == "wrap" && groups[1].source == "other") || (groups[0].source == "other" && groups[1].source == "wrap")));
+        std::size_t grouped = 0;
+        for (const auto& group : groups) grouped += group.indices.size();
+        CHECK(grouped == problems.size());
+    }
+    // The host is gone: its registered check must be inert rather than call freed state.
+    CHECK_NOTHROW(registry.run(editor::ProblemContext{document}));
+    CHECK(registry.run(editor::ProblemContext{document}).empty());
+}
+
+TEST_CASE("a plugin cannot register problem checks after the registry freezes") {
+    Temp temp;
+    temp.manifest("wrap", entryFor(OVERLAY_PLUGIN_PATH));
+    editor::ProblemRegistry registry;
+    registry.freeze();
+    Host host(temp.path / "state", temp.path / "breadcrumb");
+    host.useProblemRegistry(registry);
+    host.discover({temp.path}); host.activate();
+    REQUIRE(host.plugins().size() == 1);
+    CHECK_FALSE(host.plugins()[0].loaded);
+    CHECK(host.overlays().empty()); // a failed activation leaves no overlays or helpers behind
+    CHECK_FALSE(host.hasHelpers());
 }

@@ -1,6 +1,6 @@
 # Apex plugin SDK (DRAFT)
 
-> **Status: draft for 0.9.9.** Written against the ABI through 0.9.4. 0.9.5–0.9.8 add more interfaces. Sections
+> **Status: draft for 0.9.9.** Written against the ABI through 0.9.5a. 0.9.5b–0.9.8 add more interfaces. Sections
 > marked *(pending)* will be filled in as those land. The ABI is frozen at the 0.9 release; until then
 > anything here may change. See `docs/plans/plugins.md` for the design rationale.
 
@@ -213,10 +213,53 @@ allowed window, `APEX_ERR_NOT_FOUND` for an unknown id and `APEX_ERR_UNSUPPORTED
 (for example a headless run). An exception, or a non-OK status from `describe`, leaves the existing widgets
 as they were; `last_error` holds the detail.
 
-### 4.6 Later interfaces *(pending)*
+### 4.6 `apex.overlay/1`: lines, points, labels, ghosts and face tints
 
-Overlays, helpers, problems, importers, jobs and file watching (0.9.5), VFS and assets (0.9.6), scripts
-(0.9.7), pies and themes (0.9.8).
+Fetch `"apex.overlay/1"`. In `activate`, `declare(host, id, name)` creates a named overlay (`id` must be
+`plugin.<yourid>.<name>`; `name` is the checkbox label). Each viewport gets a "Plugins" group in its Overlays
+panel with one box per declared overlay, on by default; the choice is saved with the viewport layout.
+
+`set(host, id, list)` replaces what the overlay draws; `clear(host, id)` empties it. Both need the declaring
+plugin and work in `activate` and in any callback into your plugin (an action, a tool, a UI handler). The
+host copies the list before `set` returns, and rejects the whole list on a NaN/inf, a bad ghost or a bad
+`struct_size`, leaving the previous contents alone. A list holds:
+
+- `segments` (the `apex.tools` segment, width in pixels), `points` (size in pixels), `labels` (world position and
+  text), all in world space.
+- `ghosts`: a convex solid given as planes (the `apex.tools` ghost convention), drawn as translucent faces
+  and edges.
+- `tints`: `{side ID, rgba}` colours a whole face. Later declarations win a shared side. A tint never selects.
+
+Lists draw in every display mode. Tints apply to filled faces, so how a tint reads in wireframe is up to the
+display mode. A viewport with the overlay's box off draws none of its lists. Overlays are dropped when the
+document goes away; disabling a plugin takes effect on restart like everything else. Tinting every face of a very large map is measured in
+`docs/plans/plugins.md` (probe P4); keep updates to the rate a human can read.
+
+### 4.7 `apex.helpers/1`: FGD helper drawing
+
+Fetch `"apex.helpers/1"`. In `activate`, `register_helper(host, name, user, draw)` claims an FGD helper name
+(for `mywidget(5)` the name is `mywidget`). Only names the host does not draw itself are accepted:
+`APEX_ERR_INVALID` for a built-in helper, a duplicate or a name outside `activate`. For each entity whose class
+lists the helper, `draw(user, call, sink)` receives the entity, class, helper name, argument text, origin and
+angles, and pushes world segments and labels through the sink. Reading the document through `apex.document` is
+valid inside `draw`. The output is cached per document revision: helpers do not follow a live drag, and they
+are shown only while the viewport's "Entity helpers" overlay is on. A draw that throws or returns an error
+contributes nothing for that entity.
+
+### 4.8 `apex.problems/1`: Problems checks
+
+Fetch `"apex.problems/1"`. In `activate`, `register_check(host, id, name, user, check)` adds a check
+(`id` is `plugin.<yourid>.<name>`). Whenever Problems refreshes, `check(user, sink)` runs on the editor thread and
+reports `{severity (0 error, 1 warning, 2 note), text, objects}` through the sink; a bad severity, an object
+that is not in the document or a bad `struct_size` rejects that one report. The Problems list groups plugin
+reports under a header per plugin (Apex's own come first), and clicking one selects its `objects`. A check that
+throws or fails reports one warning ("failed") and none of its partial results. Registration closes once the
+first Problems run starts, so register in `activate`.
+
+### 4.9 Later interfaces *(pending)*
+
+Importers, jobs and file watching (0.9.5b), VFS and assets (0.9.6), scripts (0.9.7), pies and themes
+(0.9.8).
 
 ## 5. The C++ wrapper
 
@@ -233,6 +276,15 @@ Overlays, helpers, problems, importers, jobs and file watching (0.9.5), VFS and 
   `registerPanel(host, id, title, form)`, `registerSection(host, id, title, target, form)`,
   `refresh(host, id)` and `showDialog(host, title, form)` (true when accepted). Descriptions are valid until the
   next `describe`, so keep any strings you point at in members of the form.
+
+- `apex::plugin::overlays(host)`, `helpers(host)`, `problems(host)`: interface lookups.
+- `apex::plugin::Overlay`: vectors `segments`, `points`, `labels`, `ghosts`, `tints` with `clearLists()`;
+  `declareOverlay(host, id, name)` in `activate`, then `setOverlay(host, id, overlay)` and `clearOverlay(host, id)`.
+  Strings and ghost planes you point at must stay alive until `setOverlay` returns.
+- `apex::plugin::Helper`: derive and override `draw(call, sink)`, using `Helper::segment(sink, ...)` and
+  `Helper::label(sink, ...)`; `registerHelper(host, name, helper)`. Exceptions are caught at the C boundary.
+- `apex::plugin::ProblemCheck`: derive and override `check(sink)`, report with
+  `ProblemCheck::report(sink, severity, text, objects)`; `registerProblemCheck(host, id, name, check)`.
 
 ## 6. Examples
 
@@ -269,5 +321,6 @@ status, and any load errors, and lets you enable or disable them (takes effect o
 ## 8. Versioning
 
 ABI major changes only for breaking changes and is frozen at 1 for the whole 1.x series. New interfaces and
-new fields appended to existing structs bump the minor. Always set and honour `struct_size`, and treat a
+new fields appended to existing structs bump the minor once the ABI is frozen; during 0.9 the minor stays 0
+(0.9.4 and 0.9.5a added `apex.ui`, `apex.overlay`, `apex.helpers` and `apex.problems` without bumping it). Always set and honour `struct_size`, and treat a
 `NULL` from `get_interface` as "not available on this host".

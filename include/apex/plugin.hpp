@@ -3,6 +3,7 @@
 #include <string_view>
 #include <string>
 #include <vector>
+#include <exception>
 
 namespace apex::plugin {
 inline apex_str string(std::string_view text) { return {text.data(), text.size()}; }
@@ -116,5 +117,90 @@ inline bool showDialog(const apex_host& host, std::string_view title, Form& form
     const auto* api = ui(host);
     uint32_t accepted = 0;
     return api && api->show_dialog(host.context, string(title), &form, Form::callbacks(), &accepted) == APEX_OK && accepted;
+}
+inline const apex_overlay_v1* overlays(const apex_host& host) {
+    return static_cast<const apex_overlay_v1*>(host.get_interface(host.context, string("apex.overlay/1")));
+}
+inline const apex_helpers_v1* helpers(const apex_host& host) {
+    return static_cast<const apex_helpers_v1*>(host.get_interface(host.context, string("apex.helpers/1")));
+}
+inline const apex_problems_v1* problems(const apex_host& host) {
+    return static_cast<const apex_problems_v1*>(host.get_interface(host.context, string("apex.problems/1")));
+}
+
+// apex.overlay/1. Fill the vectors, then set(); the host copies them before set() returns.
+struct Overlay {
+    std::vector<apex_tool_segment> segments;
+    std::vector<apex_overlay_point> points;
+    std::vector<apex_overlay_label> labels;
+    std::vector<apex_overlay_ghost> ghosts;
+    std::vector<apex_overlay_tint> tints;
+    void clearLists() { segments.clear(); points.clear(); labels.clear(); ghosts.clear(); tints.clear(); }
+};
+// Activate only. `id` is plugin.<plugin>.<name>; `name` is the toggle's title.
+inline apex_status declareOverlay(const apex_host& host, std::string_view id, std::string_view name) {
+    const auto* api = overlays(host);
+    return api ? api->declare(host.context, string(id), string(name)) : APEX_ERR_UNSUPPORTED;
+}
+inline apex_status setOverlay(const apex_host& host, std::string_view id, const Overlay& overlay) {
+    const auto* api = overlays(host);
+    if (!api) return APEX_ERR_UNSUPPORTED;
+    apex_overlay_list list{};
+    list.struct_size = sizeof(list);
+    list.segments = overlay.segments.data(); list.segment_count = overlay.segments.size();
+    list.points = overlay.points.data(); list.point_count = overlay.points.size();
+    list.labels = overlay.labels.data(); list.label_count = overlay.labels.size();
+    list.ghosts = overlay.ghosts.data(); list.ghost_count = overlay.ghosts.size();
+    list.tints = overlay.tints.data(); list.tint_count = overlay.tints.size();
+    return api->set(host.context, string(id), &list);
+}
+inline apex_status clearOverlay(const apex_host& host, std::string_view id) {
+    const auto* api = overlays(host);
+    return api ? api->clear(host.context, string(id)) : APEX_ERR_UNSUPPORTED;
+}
+
+// apex.helpers/1. Derive and implement draw(); exceptions never cross the ABI.
+class Helper {
+public:
+    virtual ~Helper() = default;
+    virtual void draw(const apex_helper_call& call, const apex_helper_sink& sink) = 0;
+    static void segment(const apex_helper_sink& sink, const apex_tool_segment& value) {
+        if (sink.segment) sink.segment(sink.sink, &value);
+    }
+    static void label(const apex_helper_sink& sink, const apex_overlay_label& value) {
+        if (sink.label) sink.label(sink.sink, &value);
+    }
+    static apex_status trampoline(void* user, const apex_helper_call* call, const apex_helper_sink* sink) {
+        try { static_cast<Helper*>(user)->draw(*call, *sink); return APEX_OK; }
+        catch (...) { return APEX_ERR_INTERNAL; }
+    }
+};
+// Activate only. `name` is the FGD helper name; `helper` must outlive the plugin.
+inline apex_status registerHelper(const apex_host& host, std::string_view name, Helper& helper) {
+    const auto* api = helpers(host);
+    return api ? api->register_helper(host.context, string(name), &helper, &Helper::trampoline) : APEX_ERR_UNSUPPORTED;
+}
+
+// apex.problems/1. Derive and implement check(); report through the sink.
+class ProblemCheck {
+public:
+    virtual ~ProblemCheck() = default;
+    virtual void check(const apex_problem_sink& sink) = 0;
+    static apex_status report(const apex_problem_sink& sink, uint32_t severity, std::string_view text,
+                              const std::vector<apex_node_id>& objects = {}) {
+        apex_problem problem{};
+        problem.struct_size = sizeof(problem); problem.severity = severity; problem.text = string(text);
+        problem.objects = objects.data(); problem.object_count = objects.size();
+        return sink.report(sink.sink, &problem);
+    }
+    static apex_status trampoline(void* user, const apex_problem_sink* sink) {
+        try { static_cast<ProblemCheck*>(user)->check(*sink); return APEX_OK; }
+        catch (...) { return APEX_ERR_INTERNAL; }
+    }
+};
+// Activate only. `id` is plugin.<plugin>.<name>; `name` is the check's title.
+inline apex_status registerProblemCheck(const apex_host& host, std::string_view id, std::string_view name, ProblemCheck& check) {
+    const auto* api = problems(host);
+    return api ? api->register_check(host.context, string(id), string(name), &check, &ProblemCheck::trampoline) : APEX_ERR_UNSUPPORTED;
 }
 }

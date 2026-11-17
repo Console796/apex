@@ -394,6 +394,19 @@ ProblemRegistry ProblemRegistry::builtin() {
     return registry;
 }
 
+std::vector<ProblemGroup> groupProblems(const std::vector<Problem>& problems) {
+    std::vector<ProblemGroup> groups;
+    for (std::size_t i = 0; i < problems.size(); ++i) {
+        const std::string source = problems[i].kind == ProblemKind::Plugin ? problems[i].source : std::string{};
+        auto it = std::ranges::find(groups, source, &ProblemGroup::source);
+        if (it == groups.end()) it = groups.insert(groups.end(), ProblemGroup{source, {}});
+        it->indices.push_back(i);
+    }
+    // Apex's own group first; plugin groups keep their first-appearance order.
+    std::ranges::stable_partition(groups, [](const ProblemGroup& g) { return g.source.empty(); });
+    return groups;
+}
+
 ProblemRegistry& mutableProblemRegistry() {
     static ProblemRegistry registry = ProblemRegistry::builtin();
     return registry;
