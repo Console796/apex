@@ -22,6 +22,8 @@ class QTabWidget;
 class QResizeEvent;
 
 namespace apex::ui {
+class PluginSections;
+class PluginUi;
 class GameContent;
 class UvView;
 class FacePropertiesPanel final : public QWidget {
@@ -36,6 +38,7 @@ public:
     // Asks before an edit that drops detail (lowering a sculpted displacement's power); true goes
     // ahead. The default is a Yes/No message box.
     void setConfirm(std::function<bool(const QString& title, const QString& text)> confirm);
+    void setPluginUi(PluginUi* ui);
     void refresh();
     QSize minimumSizeHint() const override { return {160, 96}; }
 
@@ -84,6 +87,7 @@ private:
     QLabel* overlaysCaption_ = nullptr;
     QListWidget* overlays_ = nullptr; // Plan 0.8 D12: "Overlays on this face".
     void refreshOverlays(std::optional<document::SideId> side);
+    PluginSections* pluginSections_ = nullptr;
     std::vector<document::SideId> shown_; // The faces the fields show.
     bool queued_ = false, rebuilding_ = false;
     std::function<void(QString, QString, std::function<void(QString)>)> materialBrowser_;

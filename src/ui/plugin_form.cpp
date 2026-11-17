@@ -1,10 +1,12 @@
 #include "ui/plugin_form.hpp"
 #include <QCheckBox>
 #include <QComboBox>
+#include <QColorDialog>
 #include <QDoubleSpinBox>
 #include <QGroupBox>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
@@ -15,6 +17,13 @@ namespace apex::ui {
 namespace {
 QString text(apex_str s) { return s.data ? QString::fromUtf8(s.data, static_cast<qsizetype>(s.size)) : QString(); }
 }
+// A plugin may drop a control from inside that control's own signal, so it goes away on the next turn.
+void PluginForm::retire(QWidget* widget) {
+    layout_->removeWidget(widget);
+    widget->setObjectName({});
+    widget->hide();
+    widget->deleteLater();
+}
 PluginForm::PluginForm(QWidget* parent) : QWidget(parent), layout_(new QVBoxLayout(this)) {
     layout_->setContentsMargins(0, 0, 0, 0);
 }
@@ -24,19 +33,19 @@ bool PluginForm::describe(const apex_ui_form& form) {
     for (size_t i = 0; i < form.control_count; ++i) {
         const auto& c = form.controls[i];
         if (c.struct_size < sizeof(c) || c.value.struct_size < sizeof(c.value) || text(c.key).isEmpty() ||
-            (c.kind > APEX_UI_CHOICE && c.kind != APEX_UI_BUTTON && c.kind != APEX_UI_SECTION) ||
+            c.kind > APEX_UI_SECTION ||
             (c.kind != APEX_UI_SECTION && c.child_count) || (c.child_count && !c.children) ||
             !keys.insert(text(c.key)).second) return false;
     }
     for (auto* widget : findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
-        if (!keys.contains(widget->objectName())) { layout_->removeWidget(widget); delete widget; }
+        if (!keys.contains(widget->objectName())) retire(widget);
     }
     for (size_t i = 0; i < form.control_count; ++i) {
         const auto& c = form.controls[i];
         const auto key = text(c.key);
         auto* widget = findChild<QWidget*>(key, Qt::FindDirectChildrenOnly);
         if (widget && widget->property("apexKind").toUInt() != c.kind) {
-            layout_->removeWidget(widget); delete widget; widget = nullptr;
+            retire(widget); widget = nullptr;
         }
         if (!widget) {
             switch (c.kind) {
@@ -46,6 +55,11 @@ bool PluginForm::describe(const apex_ui_form& form) {
             case APEX_UI_CHECKBOX: widget = new QCheckBox(this); break;
             case APEX_UI_CHOICE: widget = new QComboBox(this); break;
             case APEX_UI_BUTTON: widget = new QPushButton(this); break;
+            case APEX_UI_COLOUR: widget = new QPushButton(this); break;
+            case APEX_UI_TABLE: widget = new QListWidget(this); break;
+            case APEX_UI_MATERIAL: case APEX_UI_MODEL: case APEX_UI_SOUND: {
+                auto* picker = new QComboBox(this); picker->setEditable(true); widget = picker; break;
+            }
             case APEX_UI_SECTION: {
                 auto* group = new QGroupBox(this);
                 group->setCheckable(true); group->setChecked(true);
@@ -75,10 +89,16 @@ bool PluginForm::describe(const apex_ui_form& form) {
                 const apex_ui_value v{sizeof(v), {}, 0, checked ? 1u : 0u}; change_(std::string_view(k.constData(), static_cast<size_t>(k.size())), v);
             });
             if (auto* choice = qobject_cast<QComboBox*>(widget)) connect(choice, &QComboBox::currentTextChanged, this, sendText);
-            if (auto* button = qobject_cast<QPushButton*>(widget)) connect(button, &QPushButton::clicked, this, [this, key] {
+            if (auto* list = qobject_cast<QListWidget*>(widget)) connect(list, &QListWidget::currentTextChanged, this, sendText);
+            if (auto* button = qobject_cast<QPushButton*>(widget); button && c.kind == APEX_UI_BUTTON) connect(button, &QPushButton::clicked, this, [this, key] {
                 if (!click_) return;
                 const auto k = key.toUtf8(); click_(std::string_view(k.constData(), static_cast<size_t>(k.size())));
             });
+            if (auto* button = qobject_cast<QPushButton*>(widget); button && c.kind == APEX_UI_COLOUR)
+                connect(button, &QPushButton::clicked, this, [this, button, sendText] {
+                    const auto chosen = QColorDialog::getColor(QColor(button->text()), this);
+                    if (chosen.isValid()) { button->setText(chosen.name(QColor::HexArgb)); sendText(button->text()); }
+                });
         }
         const QSignalBlocker block(widget);
         widget->setToolTip(text(c.label));
@@ -87,10 +107,19 @@ bool PluginForm::describe(const apex_ui_form& form) {
         if (auto* number = qobject_cast<QDoubleSpinBox*>(widget)) { number->setRange(c.minimum, c.maximum); number->setValue(c.value.number); }
         if (auto* check = qobject_cast<QCheckBox*>(widget)) { check->setText(text(c.label)); check->setChecked(c.value.checked != 0); }
         if (auto* choice = qobject_cast<QComboBox*>(widget)) {
-            choice->clear(); if (c.options) for (size_t j = 0; j < c.option_count; ++j) choice->addItem(text(c.options[j]));
-            choice->setCurrentText(text(c.value.text));
+            QStringList items;
+            if (c.options) for (size_t j = 0; j < c.option_count; ++j) items << text(c.options[j]);
+            QStringList current;
+            for (int j = 0; j < choice->count(); ++j) current << choice->itemText(j);
+            if (items != current) { choice->clear(); choice->addItems(items); }
+            if (choice->currentText() != text(c.value.text)) choice->setCurrentText(text(c.value.text));
         }
-        if (auto* button = qobject_cast<QPushButton*>(widget)) button->setText(text(c.label));
+        if (auto* list = qobject_cast<QListWidget*>(widget)) {
+            list->clear(); if (c.options) for (size_t j = 0; j < c.option_count; ++j) list->addItem(text(c.options[j]));
+            const auto matches = list->findItems(text(c.value.text), Qt::MatchExactly);
+            if (!matches.empty()) list->setCurrentItem(matches.front());
+        }
+        if (auto* button = qobject_cast<QPushButton*>(widget)) button->setText(c.kind == APEX_UI_COLOUR ? text(c.value.text) : text(c.label));
         if (auto* group = qobject_cast<QGroupBox*>(widget)) {
             group->setTitle(text(c.label));
             auto* child = static_cast<PluginForm*>(group->layout()->itemAt(0)->widget());

@@ -1,6 +1,6 @@
 # Apex plugin SDK (DRAFT)
 
-> **Status: draft for 0.9.9.** Written against the ABI through 0.9.3. 0.9.4–0.9.8 add more interfaces. Sections
+> **Status: draft for 0.9.9.** Written against the ABI through 0.9.4. 0.9.5–0.9.8 add more interfaces. Sections
 > marked *(pending)* will be filled in as those land. The ABI is frozen at the 0.9 release; until then
 > anything here may change. See `docs/plans/plugins.md` for the design rationale.
 
@@ -133,30 +133,119 @@ other modes use node IDs. The plugin's optional `on_changed` callback receives b
 vanished side IDs, the revision, and whether the notice is for undo or redo. Observers cannot edit directly:
 use `apex.edit/1`'s `defer` to run a callback after the notification pass.
 
-### 4.5 Later interfaces *(pending)*
+### 4.5 `apex.ui/1`: panels, sections and dialogs
 
-Panels and UI (0.9.4), overlays, helpers, problems, importers, jobs and file watching (0.9.5), VFS and
-assets (0.9.6), scripts (0.9.7), pies and themes (0.9.8).
+A plugin describes a form; the host draws it with native widgets. The plugin never sees a widget, and all
+callbacks run on the UI thread.
+
+```c
+typedef struct apex_ui_v1 {
+    uint32_t struct_size;
+    apex_status (*register_panel)(void* host, apex_str id, apex_str title, void* user, const apex_ui_callbacks*);
+    apex_status (*refresh)(void* host, apex_str id);
+    apex_status (*register_section)(void* host, apex_str id, apex_str title, apex_str target, void* user, const apex_ui_callbacks*);
+    apex_status (*show_dialog)(void* host, apex_str title, void* user, const apex_ui_callbacks*, uint32_t* accepted);
+} apex_ui_v1;
+```
+
+**Callbacks.** One `apex_ui_callbacks` table serves all three uses. `describe(user, context, &form)` returns the
+current `apex_ui_form` (an array of `apex_ui_control`). `on_change(user, key, value)` reports an edited
+control and `on_click(user, key)` a pressed button. The form, its strings and the value are borrowed: the
+host copies what it needs before `describe` returns, and the plugin must keep the description alive only
+until the next call to `describe`. `context` is `NULL` for panels and dialogs and set for sections.
+
+**Controls.** Every control has a stable `key` (unique within its form; it identifies the control across
+re-describes), a `label` and a `value` (`text`, `number` or `checked`, depending on the kind).
+
+| Kind | Widget | Value | Notes |
+|------|--------|-------|-------|
+| `APEX_UI_LABEL` | read-only text | `text` | |
+| `APEX_UI_TEXT` | line edit | `text` | `on_change` fires as the user types |
+| `APEX_UI_NUMBER` | spin box | `number` | `minimum` / `maximum` bound it |
+| `APEX_UI_CHECKBOX` | check box | `checked` | `label` is the box text |
+| `APEX_UI_CHOICE` | drop-down | `text` | `options` lists the entries; `text` is the selected one |
+| `APEX_UI_COLOUR` | colour button | `text`, `#aarrggbb` | opens the colour dialog; the button shows the value |
+| `APEX_UI_BUTTON` | push button | none | reports through `on_click` |
+| `APEX_UI_TABLE` | list of rows | `text` | `options` are the rows; `text` the selected row |
+| `APEX_UI_MATERIAL` | editable picker | `text` | material name; `options` are suggestions |
+| `APEX_UI_MODEL` | editable picker | `text` | model path |
+| `APEX_UI_SOUND` | editable picker | `text` | sound path |
+| `APEX_UI_SECTION` | collapsible group | none | `children` / `child_count` hold nested controls |
+
+Only `APEX_UI_SECTION` may have children. Set `struct_size` on every control and on every value, and always
+fill `kind`; a description the host cannot read is rejected as a whole and the previous widgets stay.
+
+**Re-describing.** Call `refresh(host, id)` whenever your state changes (also from inside `on_change` or
+`on_click`). The host queues it to the event loop and coalesces repeated requests, then calls `describe`
+again. The host matches controls by `key` and updates them in place, so widgets, the cursor and keyboard
+focus survive a re-describe. A control whose `kind` changes is rebuilt, and one whose key disappears is
+removed. Describing a value the user has just typed back unchanged is a no-op; describing a different one
+replaces what the user typed, so keep the state your form reports.
+
+**Panels.** `register_panel(host, id, title, user, callbacks)` is available only during `activate`. `id` must be
+`plugin.<plugin id>.<name>`. The panel appears in every area's role menu under `title`, lives in the same
+dockable area system as the built-in panels and is saved in the layout by `id`. If a saved layout names a
+panel whose plugin is missing, disabled or failed to load, the area shows a placeholder naming the panel
+and the layout keeps the entry; when the plugin is loaded again the placeholder becomes the real panel.
+Plugin panels dock in the main window; they cannot yet be popped out as separate floating windows.
+
+**Sections.** `register_section(host, id, title, target, user, callbacks)` (also `activate` only) adds a titled
+group to a built-in panel. `target` is `"materials"`, `"inspector"` or `"face_properties"`; sections are not
+area roles and are not saved in layouts. The host calls `describe` with an `apex_ui_context` that names the
+panel's current selection and again whenever it changes:
+
+| Target | `context->kind` | Selection |
+|--------|-----------------|-----------|
+| `materials` | `"materials"` | `names`: the selected material names |
+| `inspector` | `"entities"` | `ids`: the selected entity node IDs |
+| `face_properties` | `"sides"` | `ids`: the selected side IDs |
+
+Context arrays are borrowed until `describe` returns. An empty selection gives zero counts; the section stays
+visible, so describe what it should show then.
+
+**Dialogs.** `show_dialog(host, title, user, callbacks, &accepted)` opens a modal OK / Cancel dialog built from
+`describe`, valid only from inside one of your callbacks or `activate`. `on_change` and `on_click` run while it
+is open; the call returns when the user closes it and `*accepted` is 1 for OK. Read your own state to find out
+what to apply, since the host only reports the decision.
+
+**Errors and failure.** Calls return `APEX_ERR_INVALID` for a bad id, target or table, `APEX_ERR_STATE` outside the
+allowed window, `APEX_ERR_NOT_FOUND` for an unknown id and `APEX_ERR_UNSUPPORTED` when the host has no UI
+(for example a headless run). An exception, or a non-OK status from `describe`, leaves the existing widgets
+as they were; `last_error` holds the detail.
+
+### 4.6 Later interfaces *(pending)*
+
+Overlays, helpers, problems, importers, jobs and file watching (0.9.5), VFS and assets (0.9.6), scripts
+(0.9.7), pies and themes (0.9.8).
 
 ## 5. The C++ wrapper
 
 `plugin.hpp` provides:
 
 - `apex::plugin::string(std::string_view)` and `view(apex_str)` conversions.
-- `apex::plugin::tools(host)` and `actions(host)`: typed `get_interface` lookups.
+- `apex::plugin::tools(host)`, `actions(host)`, `ui(host)`, `edit(host)`, `selection(host)`: typed
+  `get_interface` lookups.
 - `apex::plugin::Tool`: derive and override `input`, `visual`, `readout`, `setParameter`, `perform`,
   `cancel`, `documentChanged`, `forget`. Pass `Tool::callbacks()` and a pointer to your object to
   `register_tool`. Exceptions are caught at the C boundary. The object must outlive its registration.
+- `apex::plugin::Form`: derive and override `describe(context, controls)` (push controls built with
+  `Form::control(kind, key, label)`), and optionally `changed` and `clicked`. Then
+  `registerPanel(host, id, title, form)`, `registerSection(host, id, title, target, form)`,
+  `refresh(host, id)` and `showDialog(host, title, form)` (true when accepted). Descriptions are valid until the
+  next `describe`, so keep any strings you point at in members of the form.
 
 ## 6. Examples
 
-Both are built by the main CMake project and placed under `<build>/plugins/<id>/` with a generated manifest.
+All are built by the main CMake project and placed under `<build>/plugins/<id>/` with a generated manifest.
 
 - [`examples/hello-tool/hello.c`](../examples/hello-tool/hello.c): plain C. Logs on activate, reads the
   document through `apex.document/1`, registers tool `plugin.hello.tool` and action
   `plugin.hello.read_document` with a suggested Hammer-preset binding on F24.
 - [`examples/polygon-tool/polygon.cpp`](../examples/polygon-tool/polygon.cpp): C++ using `plugin.hpp`. A
   click-to-place polygon tool that draws overlay segments and a ghost and commits through `apex.edit/1`.
+- [`examples/face-stats/face_stats.cpp`](../examples/face-stats/face_stats.cpp): C++ using `plugin.hpp`'s `Form`.
+  Registers a section under Face Properties that shows how many faces are selected, their side ID range and
+  the number of solids in the map, and refreshes itself from `on_changed`.
 
 To build your own: compile a `MODULE` library with `include/` on the include path, no prefix, export
 `apex_plugin_entry`, and write a `plugin.kv3` beside it.

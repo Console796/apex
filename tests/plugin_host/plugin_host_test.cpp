@@ -13,6 +13,84 @@
 
 using namespace apex;
 using namespace apex::plugin_host;
+TEST_CASE("plugin ui registration describes and refreshes a panel") {
+    struct Backend : UiBackend {
+        std::string refreshed; Host* host = nullptr; bool accept = true; std::string dialogTitle;
+        void formChanged(std::string_view id) override { refreshed = id; }
+        bool runDialog(std::string_view id, std::string_view title) override {
+            dialogTitle = title;
+            size_t count = 0;
+            const bool described = host->describePanel(id, [&](const apex_ui_form& form) { count = form.control_count; });
+            REQUIRE(described); CHECK(count == 1);
+            apex_ui_value value{}; value.struct_size = sizeof(value);
+            host->panelChanged(id, "d", value);
+            return accept;
+        }
+    } backend;
+    const auto path = std::filesystem::temp_directory_path() / "apex-ui-host-test";
+    std::filesystem::create_directories(path / "ui");
+    {
+        std::ofstream out(path / "ui" / "plugin.kv3");
+#ifdef _WIN32
+        constexpr auto platform = "windows-x86_64";
+#else
+        constexpr auto platform = "linux-x86_64";
+#endif
+        out << "<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->\n"
+            << "{ id = \"ui\" name = \"UI\" apex_abi = { major = 1 minor = 0 } entry = { \""
+            << platform << "\" = \"" << UI_PLUGIN_PATH << "\" } }";
+    }
+    std::vector<std::string> logs, panels;
+    {
+        Host host(path / "state", path / "breadcrumb", [&](std::string_view s) { logs.emplace_back(s); });
+        host.setPanelRegistrar([&](std::string id, std::string) { panels.push_back(std::move(id)); return true; });
+        host.setUiBackend(&backend); backend.host = &host;
+        host.discover({path}); host.activate();
+        REQUIRE(host.plugins().size() == 1);
+        CAPTURE(host.plugins()[0].error);
+        REQUIRE(host.plugins()[0].loaded);
+        REQUIRE(panels == std::vector<std::string>{"plugin.ui.panel"});
+        size_t count = 0; std::string firstKey;
+        const bool described = host.describePanel("plugin.ui.panel", [&](const apex_ui_form& form) {
+            count = form.control_count; firstKey.assign(form.controls[0].key.data, form.controls[0].key.size);
+        });
+        REQUIRE(described);
+        CHECK(count == 2); CHECK(firstKey == "field");
+        apex_ui_value value{}; value.struct_size = sizeof(value);
+        host.panelChanged("plugin.ui.panel", "field", value);
+        CHECK(backend.refreshed == "plugin.ui.panel");
+        host.panelClicked("plugin.ui.panel", "field");
+        CHECK(logs == std::vector<std::string>{"changed", "clicked"});
+        logs.clear();
+        host.panelClicked("plugin.ui.panel", "open");
+        CHECK(backend.dialogTitle == "Options");
+        CHECK(logs == std::vector<std::string>{"dialog changed", "dialog accepted"});
+        logs.clear(); backend.accept = false;
+        host.panelClicked("plugin.ui.panel", "open");
+        CHECK(logs == std::vector<std::string>{"dialog changed", "dialog cancelled"});
+        // Sections are not area roles; they receive the context the host panel names.
+        REQUIRE(host.sections("materials").size() == 1);
+        CHECK(host.sections("inspector").size() == 1);
+        CHECK(host.sections("face_properties").size() == 1);
+        CHECK(host.sections("nothing").empty());
+        CHECK(host.hasPanel("plugin.ui.panel"));
+        CHECK_FALSE(host.hasPanel("plugin.ui.section"));
+        UiContext context{"materials", {"dev/a", "dev/b"}, {}};
+        std::string summary;
+        const auto describeSection = [&](const UiContext& c) {
+            return host.describePanel("plugin.ui.section", &c, [&](const apex_ui_form& form) {
+                summary = std::string(form.controls[0].value.text.data, form.controls[0].value.text.size);
+            });
+        };
+        REQUIRE(describeSection(context));
+        CHECK(summary == "materials names=2 ids=0 first=dev/a");
+        UiContext sides{"sides", {}, {7, 9, 11}};
+        REQUIRE(describeSection(sides));
+        CHECK(summary == "sides names=0 ids=3 first=");
+        CHECK_FALSE(host.describePanel("plugin.ui.section", [](const apex_ui_form&) {}));  // sections need a context
+    }
+    std::filesystem::remove_all(path);
+}
 namespace {
 std::string entryFor(std::string_view path) {
 #ifdef _WIN32
@@ -153,6 +231,40 @@ TEST_CASE("document interface reads hierarchy and duplicate keyvalues") {
     REQUIRE(host.plugins().size() == 1);
     CAPTURE(host.plugins()[0].error);
     CHECK(host.plugins()[0].loaded);
+}
+
+TEST_CASE("face-stats example summarises the selected sides in a face properties section") {
+    Temp temp;
+    temp.manifest("facestats", entryFor(FACE_STATS_PLUGIN_PATH));
+    auto file = vmf::parse("world { id 1 classname worldspawn solid { id 2 } solid { id 3 } }");
+    REQUIRE(file);
+    document::Document document(*file);
+    Host host(temp.path / "state", temp.path / "breadcrumb");
+    host.discover({temp.path});
+    host.setDocument(&document);
+    host.activate();
+    REQUIRE(host.plugins().size() == 1);
+    CAPTURE(host.plugins()[0].error);
+    REQUIRE(host.plugins()[0].loaded);
+    const auto sections = host.sections("face_properties");
+    REQUIRE(sections.size() == 1);
+    CHECK(sections[0].id == "plugin.facestats.stats");
+    CHECK(host.sections("materials").empty());
+    const auto rows = [&](const UiContext& context) {
+        std::vector<std::string> out;
+        const bool described = host.describePanel(sections[0].id, &context, [&](const apex_ui_form& form) {
+            for (size_t i = 0; i < form.control_count; ++i)
+                out.emplace_back(form.controls[i].value.text.data, form.controls[i].value.text.size);
+        });
+        if (!described) out.emplace_back("describe failed");
+        return out;
+    };
+    CHECK(rows({"sides", {}, {9, 4, 7}}) == std::vector<std::string>{"Faces selected: 3", "Side IDs: 4 to 9", "Solids in the map: 2"});
+    CHECK(rows({"sides", {}, {5}}) == std::vector<std::string>{"Faces selected: 1", "Side IDs: 5", "Solids in the map: 2"});
+    CHECK(rows({"sides", {}, {}}) == std::vector<std::string>{"Select faces to see their stats"});
+    CHECK(rows({"entities", {}, {1}}) == std::vector<std::string>{"Select faces to see their stats"});
+    host.setDocument(nullptr);
+    CHECK(rows({"sides", {}, {5}}) == std::vector<std::string>{"Faces selected: 1", "Side IDs: 5", "No map is open"});
 }
 
 TEST_CASE("plugin activation registers only its namespace with editor registries") {

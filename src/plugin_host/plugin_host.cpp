@@ -160,19 +160,24 @@ struct Host::Impl {
     apex_actions_v1 actionsApi{};
     apex_edit_v1 editApi{};
     apex_selection_v1 selectionApi{};
+    apex_ui_v1 uiApi{};
+    UiBackend* uiBackend = nullptr;
     std::string registering;
     std::string callbackOwner;
     std::function<bool(std::string, std::string)> panelRegistrar;
     struct Registration {
-        enum class Kind { Action, Tool, Panel } kind;
-        std::string id, name, description, owner;
+        enum class Kind { Action, Tool, Panel, Section, Dialog } kind;
+        std::string id, name, description, owner, target;
         void* user;
         apex_callback first, second;
         bool extended = false;
         apex_tool_callbacks callbacks{};
+        apex_ui_callbacks uiCallbacks{};
         std::map<std::string, std::string, std::less<>> suggestions, suggestionContexts;
     };
     std::vector<Registration> pending;
+    std::map<std::string, Registration, std::less<>> uiPanels;  // panels, sections and open dialogs
+    unsigned dialogCounter = 0;
     Impl(std::filesystem::path s, std::filesystem::path b, std::function<void(std::string_view)> log)
         : state(std::move(s)), breadcrumb(b), logger(std::move(log)) {
         lastError.reserve(512);
@@ -185,6 +190,7 @@ struct Host::Impl {
         actionsApi = {sizeof(actionsApi), registerActionV1};
         editApi = {sizeof(editApi), applyEdit, deferEdit};
         selectionApi = {sizeof(selectionApi), selectionInfo, selectionAt, selectionSet};
+        uiApi = {sizeof(uiApi), registerUiPanel, refreshUi, registerUiSection, showUiDialog};
     }
     void setError(const char* message) noexcept {
         try { lastError.assign(message, std::min(std::strlen(message), lastError.capacity())); } catch (...) { }
@@ -203,6 +209,7 @@ struct Host::Impl {
         if (view(name) == "apex.actions/1") return &self(context).actionsApi;
         if (view(name) == "apex.edit/1") return &self(context).editApi;
         if (view(name) == "apex.selection/1") return &self(context).selectionApi;
+        if (view(name) == "apex.ui/1") return &self(context).uiApi;
         return nullptr;
     }
     static apex_status selectionInfo(void* c, uint32_t* mode, size_t* count) try {
@@ -387,7 +394,8 @@ struct Host::Impl {
             return APEX_ERR_INVALID;
         }
         if (std::ranges::any_of(s.pending, [&](const auto& p) { return p.id == idText; }) ||
-            (kind != Registration::Kind::Panel && editor::actionRegistry().find(idText)) ||
+            s.uiPanels.contains(idText) ||
+            ((kind == Registration::Kind::Action || kind == Registration::Kind::Tool) && editor::actionRegistry().find(idText)) ||
             (kind == Registration::Kind::Tool && std::ranges::any_of(editor::toolRegistry().entries(),
                                                      [&](const auto& tool) { return tool.id == idText; }))) {
             s.lastError = "duplicate registration";
@@ -396,7 +404,7 @@ struct Host::Impl {
         if (kind == Registration::Kind::Action && !first) return APEX_ERR_INVALID;
         if (kind == Registration::Kind::Panel && !s.panelRegistrar) return APEX_ERR_UNSUPPORTED;
         s.pending.push_back({kind, std::string(idText), std::string(view(name)), std::string(view(description)),
-                             s.registering, user, first, second});
+                             s.registering, {}, user, first, second});
         return APEX_OK;
     } catch (...) { return internal(context); }
     static apex_status registerAction(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback fn) try {
@@ -445,6 +453,75 @@ struct Host::Impl {
     static apex_status registerPanel(void* c, apex_str id, apex_str title) try {
         return registerItem(c, Registration::Kind::Panel, id, title, {}, nullptr, nullptr, nullptr);
     } catch (...) { return internal(c); }
+    static bool copyUiCallbacks(const apex_ui_callbacks* in, apex_ui_callbacks& out) {
+        if (!in || in->struct_size < offsetof(apex_ui_callbacks, describe) + sizeof(in->describe) || !in->describe) return false;
+        out = {};
+        out.struct_size = sizeof(out);
+        out.describe = in->describe;
+        if (in->struct_size >= offsetof(apex_ui_callbacks, on_change) + sizeof(in->on_change)) out.on_change = in->on_change;
+        if (in->struct_size >= offsetof(apex_ui_callbacks, on_click) + sizeof(in->on_click)) out.on_click = in->on_click;
+        return true;
+    }
+    static apex_status registerUiPanel(void* c, apex_str id, apex_str title, void* user,
+                                       const apex_ui_callbacks* callbacks) try {
+        apex_ui_callbacks copy;
+        if (!copyUiCallbacks(callbacks, copy)) return APEX_ERR_INVALID;
+        const auto result = registerItem(c, Registration::Kind::Panel, id, title, {}, user, nullptr, nullptr);
+        if (result != APEX_OK) return result;
+        self(c).pending.back().uiCallbacks = copy;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status registerUiSection(void* c, apex_str id, apex_str title, apex_str target, void* user,
+                                         const apex_ui_callbacks* callbacks) try {
+        apex_ui_callbacks copy;
+        const auto where = view(target);
+        if (!copyUiCallbacks(callbacks, copy) || (where != "materials" && where != "inspector" && where != "face_properties"))
+            return APEX_ERR_INVALID;
+        const auto result = registerItem(c, Registration::Kind::Section, id, title, {}, user, nullptr, nullptr);
+        if (result != APEX_OK) return result;
+        auto& item = self(c).pending.back();
+        item.uiCallbacks = copy;
+        item.target = std::string(where);
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status refreshUi(void* c, apex_str id) try {
+        auto& s = self(c);
+        const auto found = s.uiPanels.find(view(id));
+        if (found == s.uiPanels.end()) return APEX_ERR_NOT_FOUND;
+        if (!s.callbackOwner.empty() && s.callbackOwner != found->second.owner) return APEX_ERR_INVALID;
+        if (s.uiBackend) s.uiBackend->formChanged(found->first);
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    static apex_status showUiDialog(void* c, apex_str title, void* user, const apex_ui_callbacks* callbacks, uint32_t* accepted) try {
+        auto& s = self(c);
+        apex_ui_callbacks copy;
+        if (!accepted || !copyUiCallbacks(callbacks, copy)) return APEX_ERR_INVALID;
+        *accepted = 0;
+        if (!s.uiBackend) return APEX_ERR_UNSUPPORTED;
+        if (s.callbackOwner.empty() && s.registering.empty()) return APEX_ERR_STATE;
+        Registration entry{Registration::Kind::Dialog, "dialog." + std::to_string(++s.dialogCounter), std::string(view(title)), {},
+                           s.callbackOwner.empty() ? s.registering : s.callbackOwner, {}, user, nullptr, nullptr};
+        entry.uiCallbacks = copy;
+        const auto key = entry.id;
+        s.uiPanels.emplace(key, std::move(entry));
+        bool ok = false;
+        try { ok = s.uiBackend->runDialog(key, std::string(view(title))); }
+        catch (...) { s.uiPanels.erase(key); throw; }
+        s.uiPanels.erase(key);
+        *accepted = ok ? 1u : 0u;
+        return APEX_OK;
+    } catch (...) { return internal(c); }
+    // Runs one plugin UI callback under the owner's breadcrumb; exceptions never escape.
+    template <class Fn> bool guardedUi(const std::string& owner, const char* name, Fn&& fn) noexcept {
+        try {
+            Mark mark(breadcrumb, owner, name);
+            const auto previous = std::exchange(callbackOwner, owner);
+            bool ok = true;
+            try { fn(); } catch (...) { setError("exception in plugin ui callback"); ok = false; }
+            callbackOwner = previous;
+            return ok;
+        } catch (...) { return false; }
+    }
     void callback(const std::string& owner, const char* name, apex_callback fn, void* user) {
         if (!fn) return;
         Mark mark(breadcrumb, owner, name);
@@ -454,7 +531,11 @@ struct Host::Impl {
     }
     void commitRegistrations() {
         for (const auto& r : pending) {
-            if (r.kind == Registration::Kind::Panel) { panelRegistrar(r.id, r.name); continue; }
+            if (r.kind == Registration::Kind::Section) { uiPanels.emplace(r.id, r); continue; }
+            if (r.kind == Registration::Kind::Panel) {
+                if (panelRegistrar(r.id, r.name) && r.uiCallbacks.describe) uiPanels.emplace(r.id, r);
+                continue;
+            }
             const auto callbackFn = [this, life = std::weak_ptr(lifetime), owner = r.owner, user = r.user, fn = r.first] { if (!life.expired()) callback(owner, "action", fn, user); };
             editor::Action action{r.id, r.name, "Plugin", r.description};
             action.suggestedBindings = r.suggestions;
@@ -640,6 +721,57 @@ void Host::activate(bool safeMode) {
 }
 void Host::setPanelRegistrar(std::function<bool(std::string, std::string)> registrar) {
     impl_->panelRegistrar = std::move(registrar);
+}
+void Host::setUiBackend(UiBackend* backend) { impl_->uiBackend = backend; }
+bool Host::describePanel(std::string_view id, const std::function<void(const apex_ui_form&)>& consume) {
+    return describePanel(id, nullptr, consume);
+}
+bool Host::describePanel(std::string_view id, const UiContext* context, const std::function<void(const apex_ui_form&)>& consume) {
+    const auto it = impl_->uiPanels.find(id);
+    if (it == impl_->uiPanels.end() || !consume) return false;
+    try {
+        std::vector<apex_str> names;
+        for (const auto& n : context ? context->names : std::vector<std::string>{}) names.push_back({n.data(), n.size()});
+        apex_ui_context native{sizeof(native), {}, nullptr, 0, nullptr, 0};
+        if (context) {
+            native.kind = {context->kind.data(), context->kind.size()};
+            native.names = names.data(); native.name_count = names.size();
+            native.ids = context->ids.data(); native.id_count = context->ids.size();
+        }
+        const apex_ui_form* form = nullptr;
+        apex_status result = APEX_ERR_INTERNAL;
+        const auto& entry = it->second;
+        if (!impl_->guardedUi(entry.owner, "ui.describe", [&] {
+                result = entry.uiCallbacks.describe(entry.user, context ? &native : nullptr, &form);
+            })) return false;
+        if (result != APEX_OK || !form || form->struct_size < sizeof(apex_ui_form)) return false;
+        consume(*form);
+        return true;
+    } catch (...) { impl_->setError("exception while describing plugin ui"); return false; }
+}
+std::vector<UiSection> Host::sections(std::string_view target) const {
+    std::vector<UiSection> out;
+    try {
+        for (const auto& [id, r] : impl_->uiPanels)
+            if (r.kind == Impl::Registration::Kind::Section && r.target == target) out.push_back({id, r.name});
+    } catch (...) { }
+    return out;
+}
+bool Host::hasPanel(std::string_view id) const {
+    const auto it = impl_->uiPanels.find(id);
+    return it != impl_->uiPanels.end() && it->second.kind == Impl::Registration::Kind::Panel;
+}
+void Host::panelChanged(std::string_view id, std::string_view key, const apex_ui_value& value) {
+    const auto it = impl_->uiPanels.find(id);
+    if (it == impl_->uiPanels.end() || !it->second.uiCallbacks.on_change) return;
+    const auto& entry = it->second;
+    impl_->guardedUi(entry.owner, "ui.on_change", [&] { entry.uiCallbacks.on_change(entry.user, string(key), &value); });
+}
+void Host::panelClicked(std::string_view id, std::string_view key) {
+    const auto it = impl_->uiPanels.find(id);
+    if (it == impl_->uiPanels.end() || !it->second.uiCallbacks.on_click) return;
+    const auto& entry = it->second;
+    impl_->guardedUi(entry.owner, "ui.on_click", [&] { entry.uiCallbacks.on_click(entry.user, string(key)); });
 }
 void Host::setSession(editor::EditorSession* session) {
     if (impl_->observedDocument) impl_->observedDocument->unobserve(impl_->observerToken);

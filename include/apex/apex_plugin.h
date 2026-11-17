@@ -49,6 +49,32 @@ typedef struct apex_ui_form {
     const apex_ui_control* controls;
     size_t control_count;
 } apex_ui_form;
+/* What a host panel passes to a plugin section: kind is "materials" (names), "entities" or "sides" (ids). */
+typedef struct apex_ui_context {
+    uint32_t struct_size;
+    apex_str kind;
+    const apex_str* names;
+    size_t name_count;
+    const apex_node_id* ids;
+    size_t id_count;
+} apex_ui_context;
+/* Descriptions and callback values are borrowed until the callback returns.
+   context is null for panels and dialogs. */
+typedef struct apex_ui_callbacks {
+    uint32_t struct_size;
+    apex_status (*describe)(void* user, const apex_ui_context* context, const apex_ui_form** form);
+    void (*on_change)(void* user, apex_str key, const apex_ui_value* value);
+    void (*on_click)(void* user, apex_str key);
+} apex_ui_callbacks;
+typedef struct apex_ui_v1 {
+    uint32_t struct_size;
+    apex_status (*register_panel)(void* host, apex_str id, apex_str title, void* user, const apex_ui_callbacks*);
+    apex_status (*refresh)(void* host, apex_str id);
+    /* target: "materials", "inspector" or "face_properties". */
+    apex_status (*register_section)(void* host, apex_str id, apex_str title, apex_str target, void* user, const apex_ui_callbacks*);
+    /* Modal: returns once the user closes it; *accepted is 1 for OK. Callbacks run while it is open. */
+    apex_status (*show_dialog)(void* host, apex_str title, void* user, const apex_ui_callbacks*, uint32_t* accepted);
+} apex_ui_v1;
 
 /* Returned strings are borrowed until the next call to the same interface or document mutation. */
 typedef struct apex_document_info {

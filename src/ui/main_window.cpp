@@ -1,6 +1,7 @@
 #include "ui/plugin_manager.hpp"
 #include "plugin_host/plugin_host.hpp"
 #include "ui/main_window.hpp"
+#include "ui/plugin_ui.hpp"
 #include "ui/compile_panel.hpp"
 #include "ui/asset_report_builder.hpp"
 #include "ui/game_content.hpp"
@@ -1714,6 +1715,12 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     }
 }
 
+void MainWindow::setPluginHost(plugin_host::Host* host) {
+    pluginHost_ = host;
+    delete pluginUi_;
+    pluginUi_ = host ? new PluginUi(*host, this) : nullptr;
+    if (viewport_) viewport_->setPluginUi(pluginUi_);
+}
 void MainWindow::setTheme(Theme theme) {
     setThemeId(theme == Theme::Dark ? QStringLiteral("dark") : QStringLiteral("light"));
 }

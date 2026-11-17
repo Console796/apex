@@ -1,4 +1,5 @@
 #include "editor/light_edit.hpp"
+#include "ui/plugin_ui.hpp"
 #include "ui/inspector_panel.hpp"
 #include "editor/connection_completion.hpp"
 #include "editor/incoming_connections.hpp"
@@ -249,6 +250,8 @@ InspectorPanel::InspectorPanel(QWidget* parent) : QWidget(parent) {
     tabs_->addTab(outputsPage, tr("Outputs"));
     tabs_->addTab(inputs_, tr("Inputs"));
     layout_->addWidget(tabs_);
+    pluginSections_ = new PluginSections(QStringLiteral("inspector"), this);
+    layout_->addWidget(pluginSections_);
     outputs_->setItemDelegate(new ConnectionDelegate([this](int row, int column) {
         QStringList result;
         if (!session_ || !document_) return result;
@@ -403,6 +406,7 @@ bool InspectorPanel::eventFilter(QObject* object, QEvent* event) {
         static_cast<QFocusEvent*>(event)->reason() != Qt::PopupFocusReason) requestRefresh();
     return QWidget::eventFilter(object, event);
 }
+void InspectorPanel::setPluginUi(PluginUi* ui) { pluginSections_->setPluginUi(ui); }
 void InspectorPanel::refresh() {
     if (rebuilding_) return;
     const bool attached = session_ && document_ && session_->document() == document_;
@@ -425,6 +429,11 @@ void InspectorPanel::refresh() {
             if (!ciEquals(cls.type, "BaseClass")) classPicker_->addItem(text(cls.name));
         }
         entities_ = session_->inspectorModel().entities();
+    }
+    {
+        plugin_host::UiContext context{"entities", {}, {}};
+        for (const auto entity : entities_) context.ids.push_back(static_cast<std::uint64_t>(entity));
+        pluginSections_->setContext(std::move(context));
     }
     classPicker_->setEnabled(!entities_.empty());
     raw_->setEnabled(!entities_.empty());

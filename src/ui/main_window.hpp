@@ -39,6 +39,7 @@ namespace apex::ui {
 
 class CompilePanel;
 class PieMenuPopup;
+class PluginUi;
 class CommandPalette;
 class GameContent;
 class LogPanel;
@@ -76,7 +77,7 @@ public:
     bool saveFile(const QString& path);
     editor::EditorSession& editorSession() { return session_; }
     document::Document* document() const { return document_.get(); }
-    void setPluginHost(plugin_host::Host* host) { pluginHost_ = host; }
+    void setPluginHost(plugin_host::Host* host);
     const QString& documentPath() const { return path_; }
 
     void setTheme(Theme theme);
@@ -183,6 +184,7 @@ private:
     void closeEvent(QCloseEvent* event) override;
 
     plugin_host::Host* pluginHost_ = nullptr;
+    PluginUi* pluginUi_ = nullptr;
     std::unique_ptr<document::Document> document_;
     std::unique_ptr<GameContent> gameContent_;
     CompilePanel* compilePanel_ = nullptr;

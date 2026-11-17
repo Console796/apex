@@ -16,6 +16,7 @@ public:
     void setChange(Change change) { change_ = std::move(change); }
     void setClick(Click click) { click_ = std::move(click); }
 private:
+    void retire(QWidget* widget);
     QVBoxLayout* layout_;
     Change change_;
     Click click_;

@@ -1,5 +1,6 @@
 #include "render/vk.hpp"  // volk before Qt's Vulkan header.
 
+#include "ui/plugin_ui.hpp"
 #include "ui/viewport_area.hpp"
 #include "ui/outliner_panel.hpp"
 
@@ -224,6 +225,25 @@ void ViewportArea::setModelPicker(ModelsPanel* panel) {
     modelPicker_ = panel;
     if (panel) configurePanel(panel);
 }
+void ViewportArea::setPluginUi(PluginUi* ui) {
+    pluginUi_ = ui;
+    bool restored = false;
+    for (auto it = panels_.begin(); it != panels_.end();) {
+        auto* p = it->second.data();
+        if (p && p->objectName() == QLatin1String("MissingPluginPanel") && ui && ui->hasPanel(p->property("panelId").toString())) {
+            p->hide();
+            p->setParent(this);
+            delete p;
+            it = panels_.erase(it);
+            restored = true;
+        } else {
+            if (p) configurePanel(p);
+            ++it;
+        }
+    }
+    for (auto& [role, window] : floating_) if (window) configurePanel(window->panel());
+    if (restored) scheduleRebuild();
+}
 void ViewportArea::setAssetBrowser(std::function<void(QString, QString, QString, std::function<void(QString)>)> browser) {
     assetBrowser_ = std::move(browser);
     for (auto& [id, panel] : panels_) configurePanel(panel);
@@ -266,17 +286,20 @@ void ViewportArea::configurePanel(QWidget* panel) {
         });
     }
     if (auto* materials = qobject_cast<MaterialsPanel*>(panel)) {
+        materials->setPluginUi(pluginUi_);
         connect(materials, &MaterialsPanel::activeMaterialRequested, this,
                 &ViewportArea::activeMaterialRequested, Qt::UniqueConnection);
         connect(materials, &MaterialsPanel::statusMessage, this,
                 &ViewportArea::materialStatusMessage, Qt::UniqueConnection);
     }
     if (auto* inspector = qobject_cast<InspectorPanel*>(panel)) {
+        inspector->setPluginUi(pluginUi_);
         inspector->setMaterialBrowser(materialBrowser_);
         inspector->setAssetBrowser(assetBrowser_);
         inspector->setOpenInstanceHandler(instanceResolved_, openInstance_);
     }
     if (auto* properties = qobject_cast<FacePropertiesPanel*>(panel)) {
+        properties->setPluginUi(pluginUi_);
         properties->setMaterialBrowser(materialBrowser_);
         properties->setGameContent(gameContent_);
         connect(properties, &FacePropertiesPanel::statusMessage, this,
@@ -287,6 +310,12 @@ QWidget* ViewportArea::makePanel(viewport::AreaRole role, std::string_view panel
     QWidget* panel = nullptr;
     if (role == viewport::AreaRole::Compile) {
         panel = new CompilePanelView(compilePanel_, this);
+        panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));
+    } else if (role == viewport::AreaRole::Plugin && pluginUi_ && pluginUi_->hasPanel(QString::fromUtf8(panelId.data(), static_cast<qsizetype>(panelId.size())))) {
+        const auto id = QString::fromUtf8(panelId.data(), static_cast<qsizetype>(panelId.size()));
+        panel = pluginUi_->createPanel(id);
+        panel->setObjectName(QStringLiteral("PluginPanel"));
+        panel->setProperty("panelId", id);
         panel->setProperty("areaRole", QString::fromLatin1(viewport::nameOf(role)));
     } else panel = createPanel(role, document_, session_, gameContent_, panelId);
     configurePanel(panel);
@@ -344,6 +373,7 @@ QWidget* ViewportArea::showRole(viewport::AreaRole role, bool window) {
 
 FloatingPanel* ViewportArea::popOut(viewport::AreaRole role) {
     if (role == viewport::AreaRole::Viewport) return nullptr;  // Native Vulkan windows stay docked (D15).
+    if (role == viewport::AreaRole::Plugin) return nullptr;    // Floating windows are per role; plugin panels dock for now.
     auto& slot = floating_[role];
     if (!slot) slot = new FloatingPanel(role, makePanel(role), window());
     slot->show();
