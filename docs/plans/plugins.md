@@ -1,7 +1,7 @@
 # Apex: plugin interface design for 0.9
 
 **Status: draft, 2026-11-16. The owner accepted every recommendation on 2026-11-16, including the four
-owner decisions (D1, D8, D10, D12).** This is the cross-milestone design for the plugin interface, written
+owner decisions (D1, D8, D10, D12); godot-acoustics is one input among others (§9).** This is the cross-milestone design for the plugin interface, written
 ahead of the 0.9 milestone plan, which adds the sub-milestones' detail and owns the release gates. D11 stays
 gated on probe P2, and the probes in §4 can still reverse a decision.
 
@@ -375,6 +375,9 @@ custom VMF block kinds, network access APIs.
 
 ## 5. Acceptance: godot-acoustics against D13
 
+godot-acoustics is one consumer among others (owner, 2026-11-16): a plugin the owner intends to build, so this
+table checks the API covers it, but it doesn't define 0.9's acceptance. The example plugins (§6) do.
+
 | Requirement | Covered by | Gap |
 |---|---|---|
 | A: keep `surfaceProp` in the material index | Core change, any milestone | None for the API; `apex.assets/1` exposes it. |
@@ -427,4 +430,6 @@ Answered 2026-11-16: the owner accepted each recommendation.
 3. D10: AngelScript for the bundled script host.
 4. D12: ABI major 1 is frozen (additions only) at the 0.9 release.
 
-Still open: whether godot-acoustics is *the* acceptance consumer for 0.9 (§5) or one input among others.
+5. godot-acoustics is one input among others, not the 0.9 acceptance consumer (§5). It is a plugin the
+   owner intends to build, but the API is not shaped around it; the exit criterion is tested by the
+   example plugins (§6).
