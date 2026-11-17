@@ -55,6 +55,7 @@ struct Material {
     std::string toolTexture;
     std::string toolViewportTexture;
     std::string rectangleMap; // %rectanglemap: a Hammer++ hotspot .rect file (plan 0.8 D13).
+    std::string detailType; // %detailtype: the detail.vbsp type VBSP scatters on its displacements.
     std::string surfaceProp;
     std::string keywords;
     bool hasToolTexture = false;

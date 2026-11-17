@@ -1,0 +1,24 @@
+{
+  "id": "R-7",
+  "title": "0.8.2: Displacement core and display (draw, pick, snap, hide other sides)",
+  "description": "",
+  "status": "verified",
+  "milestone": "0.8",
+  "how_to_test": "ctest --preset linux-clang-release. Manual: open a map with displacements; they draw in every display mode, pick and snap.",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:07:35-07:00",
+  "updated_by": "human",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "testable",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T17:07:35-07:00",
+      "actor": "human",
+      "status": "verified"
+    }
+  ]
+}

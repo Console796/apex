@@ -136,6 +136,8 @@ json::Value toJson(const Viewport& vp) {
     ov["entityHelpers"] = boolean(vp.overlays.entityHelpers);
     ov["bounds"] = boolean(vp.overlays.bounds);
     ov["normals"] = boolean(vp.overlays.normals);
+    ov["structural"] = boolean(vp.overlays.structural);
+    ov["detailProps"] = boolean(vp.overlays.detailProps);
     ov["nodrawFaces"] = boolean(vp.overlays.nodrawFaces);
     ov["entityNames"] = boolean(vp.overlays.entityNames);
     ov["leak"] = boolean(vp.overlays.leak);
@@ -212,6 +214,8 @@ Result<Viewport> viewportFromJson(const json::Value& value) {
                                Field{"entityHelpers", &vp.overlays.entityHelpers},
                                Field{"bounds", &vp.overlays.bounds},
                                Field{"normals", &vp.overlays.normals},
+                               Field{"structural", &vp.overlays.structural},
+                               Field{"detailProps", &vp.overlays.detailProps},
                                Field{"nodrawFaces", &vp.overlays.nodrawFaces},
                                Field{"entityNames", &vp.overlays.entityNames},
                                Field{"leak", &vp.overlays.leak},

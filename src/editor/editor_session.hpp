@@ -62,6 +62,7 @@ public:
         static constexpr const char* Apply = "tool.apply";
         static constexpr const char* Measure = "tool.measure";
         static constexpr const char* Overlay = "tool.overlay";
+        static constexpr const char* Rope = "tool.rope";
         static constexpr const char* Displacement = "tool.displacement";
     };
     const ToolId& activeTool() const { return activeTool_; }
@@ -271,6 +272,10 @@ public:
     Result<void> ungroupSelection();
     Result<void> tieToEntity(const TieParams& params = {});
     Result<void> moveToWorld();
+    // One-step func_detail tie and untie (plan 0.8.9 D16): To Detail leaves solids already in a
+    // func_detail alone, To World takes only func_detail solids.
+    Result<void> toDetail();
+    Result<void> toWorld();
     Result<void> moveNodesInto(std::vector<NodeId> nodes, NodeId container);
     RenamePlan planEntityRename(NodeId entity, std::string_view targetname) const;
     Result<void> renameEntity(NodeId entity, std::string_view targetname);
@@ -300,6 +305,8 @@ public:
     const Keymap& keymap() const { return keymap_; }
     void setPreset(const Preset& preset);
     bool isToolEnabled(const ActionId& action) const;
+    // Whether an open pie offers this item: tools as isToolEnabled, edit commands with a selection.
+    bool isPieItemEnabled(const ActionId& action) const;
     bool perform(const ActionId& action);
     bool confirmNonConvexMerge = true;
     // The host sees preview() populated during the callback. Missing host means Cancel.
@@ -362,6 +369,7 @@ private:
     friend class ClipTool;
     friend class MeasureTool;
     friend class OverlayTool;
+    friend class RopeTool;
     friend class EntityTool;
     friend class VertexTool;
     SelectTool& selectTool();

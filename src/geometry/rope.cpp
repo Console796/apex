@@ -86,4 +86,48 @@ std::vector<DVec3> ropeShape(DVec3 start, DVec3 end, const RopeSettings& setting
     return ropeCurve(ropeNodes(start, end, settings), settings.subdiv);
 }
 
+RopeTube ropeTube(std::span<const DVec3> curve, double width) {
+    RopeTube tube;
+    if (!std::isfinite(width) || width <= 0.0) return tube;
+    std::vector<DVec3> points;
+    for (const auto p : curve) {
+        if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) return {};
+        if (points.empty() || glm::length(p - points.back()) > 1e-9) points.push_back(p);
+    }
+    if (points.size() < 2) return tube;
+    constexpr int sides = 8, ring = sides + 1;
+    DVec3 normal{0.0};
+    double distance = 0.0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        const auto outgoing = i + 1 < points.size() ? glm::normalize(points[i + 1] - points[i])
+                                                   : glm::normalize(points[i] - points[i - 1]);
+        DVec3 tangent = outgoing;
+        if (i > 0 && i + 1 < points.size()) {
+            const auto sum = outgoing + glm::normalize(points[i] - points[i - 1]);
+            if (glm::length(sum) > 1e-9) tangent = glm::normalize(sum);
+        }
+        normal -= tangent * glm::dot(normal, tangent);
+        if (glm::length(normal) < 1e-9) {
+            const auto axis = std::abs(tangent.z) < 0.9 ? DVec3{0, 0, 1} : DVec3{0, 1, 0};
+            normal = glm::cross(tangent, axis);
+        }
+        normal = glm::normalize(normal);
+        const auto binormal = glm::cross(tangent, normal);
+        if (i) distance += glm::length(points[i] - points[i - 1]);
+        for (int j = 0; j <= sides; ++j) {
+            const double angle = glm::radians(360.0 * (j % sides) / sides);
+            const auto radial = normal * std::cos(angle) + binormal * std::sin(angle);
+            tube.vertices.push_back({points[i] + radial * (width * 0.5), radial,
+                                     {distance / width, double(j) / sides}});
+        }
+        if (!i) continue;
+        const auto base = static_cast<std::uint32_t>((i - 1) * ring);
+        for (int j = 0; j < sides; ++j) {
+            const auto a = base + static_cast<std::uint32_t>(j), b = a + ring;
+            tube.indices.insert(tube.indices.end(), {a, a + 1, b, a + 1, b + 1, b});
+        }
+    }
+    return tube;
+}
+
 } // namespace apex::geometry

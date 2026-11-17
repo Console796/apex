@@ -158,7 +158,8 @@ bounce without baking.
 Displacements (create, sculpt, paint alpha/multiblend, sew, subdivide, and what each topology tool
 does to a displaced solid: clip, vertex, carve, hollow and merge refuse them until then, 0.3 D11), overlays
 (`info_overlay`, face sets), hotspot texturing (VTF hotspot resource + rect maps), decals,
-rope and cable preview, detail/structural tooling.
+rope and cable preview, detail/structural tooling (commands, filter and Problems check; the detail-prop
+preview is dropped from 0.8 and moves to a later milestone, decided 2026-11-16).
 **Exit:** organic and outdoor geometry workflows reach parity with Hammer++.
 
 ### 0.9: Extensibility
@@ -167,6 +168,8 @@ the 0.9 plan), custom tools/panels/importers, keymap editor for the Hammer and B
 theme editor, plugin manager, scriptable and persistent parametric primitives (including Strata
 Hammer's AngelScript ones; 0.3 D6), user-editable pie menus (0.3 D20). (Renamed from "addon manager" to avoid a clash
 with Strata's content addons, which arrive in 0.3 to 0.5; plans/addons.md D10.)
+Requirements from one consumer, the Godot/brush-acoustics workflow (VFS providers, material panel sections,
+document read access, viewport overlays), are drafted in [plans/godot-acoustics.md](plans/godot-acoustics.md).
 **Exit:** a third-party tool can be built, loaded and shipped without rebuilding Apex.
 
 ### 0.10: Production hardening → 1.0 RC

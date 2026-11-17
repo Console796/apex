@@ -362,6 +362,11 @@ TEST_CASE("helper shapes hang rope keyframes once by the engine's rope rule") {
     CHECK(rope.peer == 11);
     CHECK(rope.settings == geometry::RopeSettings{});
     CHECK(rope.curve == geometry::ropeShape(rope.a, rope.b, rope.settings));
+    CHECK(rope.width == 2.0);
+    CHECK(rope.material == "cable/cable");
+    f.set("Width", "6"); f.set("RopeMaterial", "cable/custom");
+    CHECK(f.build().ropes[0].width == 6.0);
+    CHECK(f.build().ropes[0].material == "cable/custom");
 
     f.set("slack", "150.9"); f.set("type", "1"); f.set("subdiv", "4"); f.set("dangling", "1");
     shapes = f.build();

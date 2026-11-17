@@ -1,0 +1,19 @@
+{
+  "id": "R-8",
+  "title": "0.8.3: Displacement create/destroy/sew and per-tool topology rules",
+  "description": "Subdivide was built then dropped on 2026-11-14 (Hammer's only smooths).",
+  "status": "testable",
+  "milestone": "0.8",
+  "how_to_test": "ctest --preset linux-clang-release. Manual: create and sew displacements; clip/vertex/carve/hollow/merge refuse displaced solids with a message; unsewn problem shows in Problems.",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:50:20-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "testable",
+      "note": "created"
+    }
+  ]
+}

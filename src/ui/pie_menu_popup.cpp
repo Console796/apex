@@ -49,7 +49,7 @@ PieMenuPopup::PieMenuPopup(editor::EditorSession& session, QWidget* parent)
     connect(&timer_, &QTimer::timeout, this, [this] { session_.tickPie(); sync(); });
 }
 QString PieMenuPopup::label(std::size_t index) const {
-    const auto& item = editor::toolPie().items[index];
+    const auto& item = session_.pie()->menu().items[index];
     const auto slot = *item.slot;
     constexpr std::array digits{8, 9, 6, 3, 2, 1, 4, 7};
     const auto shortcut = shortcutText(session_.preset(), item.action);
@@ -68,7 +68,7 @@ void PieMenuPopup::open(QWidget* pane) {
     origin_ = pane->mapTo(top, QPoint());
     const QPointF requested = origin_ + QPointF(start.x, start.y);
     labelSize_ = QSizeF(0, fontMetrics().height() * 2 + 16);
-    for (std::size_t i = 0; i < editor::toolPie().items.size(); ++i)
+    for (std::size_t i = 0; i < session_.pie()->menu().items.size(); ++i)
         for (const auto& line : label(i).split('\n'))
             labelSize_.setWidth(std::max(labelSize_.width(), double(fontMetrics().horizontalAdvance(line) + 24)));
     const double radius = std::max(session_.pieSettings().radius, session_.pieSettings().deadZone);
@@ -180,14 +180,14 @@ void PieMenuPopup::paintEvent(QPaintEvent*) {
     p.setBrush(tokens.text);
     p.drawEllipse(QPointF(), 2, 2);
     const auto highlighted = session_.pie()->highlighted();
-    for (std::size_t i = 0; i < editor::toolPie().items.size(); ++i) {
-        const auto& item = editor::toolPie().items[i];
+    for (std::size_t i = 0; i < session_.pie()->menu().items.size(); ++i) {
+        const auto& item = session_.pie()->menu().items[i];
         const auto direction = editor::slotDirection(*item.slot);
         const QPointF position(direction.x * settings.radius, direction.y * settings.radius);
         const QRectF box(position.x() - (direction.x < 0 ? labelSize_.width() : direction.x == 0 ? labelSize_.width() / 2 : 0),
                          position.y() - (direction.y < 0 ? labelSize_.height() : direction.y == 0 ? labelSize_.height() / 2 : 0),
                          labelSize_.width(), labelSize_.height());
-        const bool enabled = session_.isToolEnabled(item.action);
+        const bool enabled = session_.isPieItemEnabled(item.action);
         p.setOpacity(progress * (enabled ? 1 : 0.4));
         p.setPen(QPen(highlighted == i ? tokens.accent : tokens.border, highlighted == i ? 2 : 1));
         p.setBrush(highlighted == i ? tokens.selection : tokens.raised);

@@ -1,0 +1,29 @@
+{
+  "id": "R-5",
+  "title": "0.7: Lighting II, baked preview (lightmap baking)",
+  "description": "",
+  "status": "built",
+  "milestone": "0.7",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:52:45-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "verified",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "note": "Released v0.7.7-release (docs/releases/0.7.7-release.md). Windows baker validation still owed (see issue)."
+    },
+    {
+      "ts": "2026-11-16T15:52:45-07:00",
+      "actor": "claude",
+      "status": "built"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "R-14",
+  "title": "0.8 release: D15 outdoor scenario, Strata Hammer interop, Windows, spec amendments",
+  "description": "Exit: organic/outdoor workflows reach Hammer++ parity. Gates in docs/plans/0.8.md §3 '0.8 release'.",
+  "status": "planned",
+  "milestone": "0.8",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:28:18-07:00",
+  "updated_by": "agent",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "planned",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T17:28:18-07:00",
+      "actor": "agent",
+      "note": "Spec amendments drafted (research.md, plans/0.3.md D11, roadmap). Remaining owner-only: D15 outdoor scenario, Strata Hammer interop, Windows."
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "R-16",
+  "title": "0.10: Production hardening → 1.0 RC",
+  "description": "Perf budgets, Strata Hammer interop suite, manual, installers, localization scaffolding, accessibility, bug bash.",
+  "status": "planned",
+  "milestone": "0.10",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:50:20-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "planned",
+      "note": "created"
+    }
+  ]
+}

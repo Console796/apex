@@ -1,0 +1,34 @@
+{
+  "id": "R-1",
+  "title": "0.1–0.3: Foundations, selection & manipulation, brush authoring in 3D",
+  "description": "",
+  "status": "built",
+  "milestone": "0.3",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:52:45-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "verified",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "note": "Released as v0.3.10-release (0.2 as v0.2.11-release); roadmap marks 0.1–0.3 complete. Seeded as verified from that record."
+    },
+    {
+      "ts": "2026-11-16T15:52:45-07:00",
+      "actor": "claude",
+      "status": "built"
+    },
+    {
+      "ts": "2026-11-16T15:52:45-07:00",
+      "actor": "claude",
+      "note": "Seeded as built: owner sign-off is in docs/roadmap.md; mark verified yourself"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "R-11",
+  "title": "0.8.7: Hotspot texturing",
+  "description": "",
+  "status": "testable",
+  "milestone": "0.8",
+  "how_to_test": "ctest --preset linux-clang-release. Manual: Apply tool in Hotspot mode on a material with a VTF hotspot resource or .rect file; browser thumbnail shows 'H'; Alt picks the alt group.",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:50:20-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "testable",
+      "note": "created"
+    }
+  ]
+}

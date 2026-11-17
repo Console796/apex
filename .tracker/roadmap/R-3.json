@@ -1,0 +1,24 @@
+{
+  "id": "R-3",
+  "title": "0.5: Compile & play",
+  "description": "Compile targets, addon authoring (0.5.7), Create Instance from Selection (0.5.8).",
+  "status": "verified",
+  "milestone": "0.5",
+  "how_to_test": "Work through the remaining release gates in docs/plans/0.5.md (owner playtests already confirmed on 1f89631). No 0.5 release tag yet.",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:07:09-07:00",
+  "updated_by": "human",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "testable",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T17:07:09-07:00",
+      "actor": "human",
+      "status": "verified"
+    }
+  ]
+}

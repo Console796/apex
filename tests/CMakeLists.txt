@@ -8,7 +8,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                core/log_test.cpp core/job_pool_test.cpp core/kv1_test.cpp core/kv3_test.cpp
                document/instance_test.cpp document/sidelist_remap_test.cpp document/connection_codec_test.cpp document/vmf_test.cpp document/document_test.cpp document/p0_write_path_test.cpp document/p0_topology_test.cpp
                document/entity_transform_test.cpp document/geometry_number_test.cpp document/solid_geometry_test.cpp document/rebuild_solid_test.cpp document/displacement_test.cpp
-               document/sidelist_upkeep_test.cpp document/overlay_oracle_test.cpp
+               document/sidelist_upkeep_test.cpp document/overlay_oracle_test.cpp document/detail_props_oracle_test.cpp
                assets/vfs_test.cpp assets/addons_test.cpp assets/addon_authoring_test.cpp assets/addons_corpus_test.cpp assets/vfs_walk_test.cpp assets/game_profile_test.cpp assets/material_test.cpp
                assets/texture_test.cpp assets/hotspot_test.cpp assets/fgd_test.cpp assets/material_cache_test.cpp
                assets/model_bake_test.cpp assets/model_bake_corpus_test.cpp assets/model_cache_test.cpp assets/sourcepp_confirm_test.cpp
@@ -18,7 +18,7 @@ add_executable(apex_tests main.cpp compile/compile_test.cpp core/version_test.cp
                geometry/face_uv_test.cpp geometry/face_matching_test.cpp geometry/kernel_test.cpp geometry/primitives_test.cpp
                geometry/solid_geometry_test.cpp geometry/bvh_test.cpp geometry/displacement_test.cpp geometry/displacement_ops_test.cpp geometry/displacement_sculpt_test.cpp geometry/hotspot_test.cpp geometry/rope_test.cpp
                geometry/overlay_test.cpp
-editor/cordon_test.cpp editor/compile_snapshot_test.cpp editor/vrad_roundtrip_test.cpp editor/diagnostic_lookup_test.cpp editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/instance_create_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/placement_item_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/hotspot_edit_test.cpp editor/measure_tool_test.cpp editor/overlay_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
+editor/cordon_test.cpp editor/compile_snapshot_test.cpp editor/vrad_roundtrip_test.cpp editor/diagnostic_lookup_test.cpp editor/autosave_test.cpp editor/instance_collapse_command_test.cpp editor/instance_create_test.cpp editor/inspector_model_test.cpp editor/placement_test.cpp editor/placement_item_test.cpp editor/tool_test.cpp editor/tool_dispatch_test.cpp editor/block_tool_test.cpp editor/chamber_test.cpp editor/primitive_tool_test.cpp editor/clip_tool_test.cpp editor/face_edit_test.cpp editor/apply_tool_test.cpp editor/hotspot_edit_test.cpp editor/measure_tool_test.cpp editor/overlay_tool_test.cpp editor/rope_tool_test.cpp editor/topology_ops_test.cpp editor/vertex_edit_test.cpp editor/vertex_tool_test.cpp
                editor/pie_menu_test.cpp
                editor/displacement_pick_test.cpp editor/displacement_topology_test.cpp editor/displacement_tool_test.cpp editor/displacement_sculpt_test.cpp
                editor/snapper_test.cpp editor/pick_index_test.cpp editor/pick_model_test.cpp editor/visibility_test.cpp editor/hide_ops_test.cpp editor/visgroups_test.cpp editor/actions_test.cpp editor/preset_io_test.cpp

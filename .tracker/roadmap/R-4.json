@@ -1,0 +1,29 @@
+{
+  "id": "R-4",
+  "title": "0.6: Lighting I, realtime preview",
+  "description": "",
+  "status": "built",
+  "milestone": "0.6",
+  "how_to_test": "",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:52:45-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "verified",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "note": "Owner accepted the 0.6 release gates on 2026-11-01 (parity, performance, Windows Lit goldens); released v0.6.8-release."
+    },
+    {
+      "ts": "2026-11-16T15:52:45-07:00",
+      "actor": "claude",
+      "status": "built"
+    }
+  ]
+}

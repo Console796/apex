@@ -1,0 +1,35 @@
+{
+  "id": "R-12",
+  "title": "0.8.8: Ropes and cables preview",
+  "description": "",
+  "status": "testable",
+  "milestone": "0.8",
+  "how_to_test": "scripts/test.sh linux-gcc-debug -R \"rope|helper_shapes|shell|tool_controls\". Manual: Tools > Rope, click points, Enter: chain of keyframe_rope linked by NextKey with sag and tube; Ctrl+Z removes it in one step.",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T17:17:26-07:00",
+  "updated_by": "agent",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "in_progress",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "note": "Built: FGD MoveClass/KeyFrameClass fix, SDK rope relaxation (geometry/rope.hpp), keyframe chaining on Duplicate. Not done: tube drawing with Width/RopeMaterial (lines only), the Rope tool, P0 in-game captures."
+    },
+    {
+      "ts": "2026-11-16T16:49:18-07:00",
+      "actor": "agent",
+      "note": "Delegated rope tube drawing + Rope tool to Codex (run apex-rope-tool)."
+    },
+    {
+      "ts": "2026-11-16T17:17:26-07:00",
+      "actor": "agent",
+      "status": "testable",
+      "note": "Codex built tube drawing (Width/RopeMaterial) and Rope tool (Tools > Rope, Enter commits a linked chain, one undo step). Filtered tests 23/23 pass; full suite not run to completion (VRAD timeout). In-game P0 captures still owed."
+    }
+  ]
+}

@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <memory>
 #include <map>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
@@ -86,6 +87,7 @@ struct Highlight {
     std::vector<document::SideId> selectedSides;
     Vec4 selectTint{1.0f, 0.55f, 0.1f, 0.45f};
     Vec4 hoverTint{0.2f, 0.85f, 1.0f, 0.35f};
+    Vec4 detailTint{0.5f, 0.5f, 0.52f, 0.75f}; // The Structural view's grey (MirrorViewOptions::structural).
     Vec4 outlineColour{1.0f, 0.65f, 0.15f, 1.0f};
     float occludedAlpha = 0.25f;
     bool operator==(const Highlight&) const = default;
@@ -126,6 +128,14 @@ struct MirrorViewOptions {
     bool showNormals = false;
     // Samples entity icon sprites with nearest filtering instead of linear.
     bool iconNearest = false;
+    // Structural view (plan 0.8.9 D16): greys what vis ignores, so the world brushes that cut
+    // portals stand out. Brush entities (except func_areaportal, which vis uses), displacement brushes
+    // (VBSP drops them from the world), point entities, models, overlays and detail props take
+    // Highlight::detailTint; selection and hover still win.
+    bool structural = false;
+    // Detail props (plan 0.8.9 D16): detail.vbsp's sprites and models where VBSP would scatter them on
+    // %detailtype displacements. Textured and scene modes only.
+    bool detailProps = false;
 };
 
 struct SkyVisibilityState {
@@ -159,6 +169,9 @@ class RenderMirror {
     // probe reflects the heap's default cube. rebuild() also loads engine/defaultcubemap into
     // that default slot (through the MaterialCache's Vfs) until it succeeds once.
     void setCubemapSource(CubemapSource source);
+    // Reads a game file (detail.vbsp, named by worldspawn's detailvbsp) for the detail-prop preview, or
+    // nothing when it is absent. Without a source no detail props are placed.
+    void setDetailSource(std::function<std::optional<std::string>(const std::string& path)> read);
     // New layout remeshes brush UVs; upload() on the same maps changes radiance only.
     // Bake and mirror must share one expanded document snapshot (NodeId/SideId identity).
     void setLightmaps(std::shared_ptr<BakedLightmaps> maps);
@@ -202,6 +215,7 @@ class RenderMirror {
     std::size_t meshedSolidCount() const;
     std::size_t entityBoxCount() const;
     std::size_t batchCount() const;     // GPU batches (draws per frame at most).
+    std::size_t detailPropCount() const; // Placed detail props, sprites and models.
     InstanceMirrorStats instanceStats() const;
     std::size_t meshBytes() const;
     std::size_t textureBytes() const;

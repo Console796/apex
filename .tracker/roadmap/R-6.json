@@ -1,0 +1,19 @@
+{
+  "id": "R-6",
+  "title": "0.8.1: Displacement/overlay fixtures and the two latent transform/paste bugs",
+  "description": "",
+  "status": "testable",
+  "milestone": "0.8",
+  "how_to_test": "ctest --preset linux-clang-release. Manual: rotate a sculpted displacement 90° and save/reopen (mesh matches); duplicate a brush with an info_overlay (copy's sides list the copy's faces).",
+  "created": "2026-11-16T15:50:20-07:00",
+  "updated": "2026-11-16T15:50:20-07:00",
+  "updated_by": "claude",
+  "history": [
+    {
+      "ts": "2026-11-16T15:50:20-07:00",
+      "actor": "claude",
+      "status": "testable",
+      "note": "created"
+    }
+  ]
+}

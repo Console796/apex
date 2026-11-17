@@ -17,7 +17,8 @@ enum class ProblemKind {
     OutOfRange, EmptyBrushEntity, MissingOrigin, MissingPlayerStart, EmptyCordon,
     DisplacementNonQuad, DisplacementAlphaRange, DisplacementUnreadable,
     DisplacementUnsewn, // 0.8 D6: neighbours sharing a base edge whose vertices differ by more than 0.1 units
-    EmptyOverlay // 0.8 D11 rule 4 (overlay_problems.hpp)
+    EmptyOverlay, // 0.8 D11 rule 4 (overlay_problems.hpp)
+    SmallStructural // 0.8.9 D16: a world brush too small to hide a player still cuts vis portals
 };
 struct Problem {
     ProblemSeverity severity = ProblemSeverity::Warning;

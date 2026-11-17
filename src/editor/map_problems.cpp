@@ -248,6 +248,33 @@ void displacements(const ProblemContext& context, std::vector<Problem>& out) {
 }
 // D6: neighbouring displacements whose shared base edge has a gap. Unreadable and non-quad
 // displacements are left to the checks above.
+// docs/plans/probe-results/structural_0_8_9_p0.md: a structural brush adds the same vis portals whatever
+// its size, but only pays for them by hiding things. Flag a world brush that has no side, seen along any
+// axis, at least 64 units square: it cannot hide a standing player. Tool brushes (hint, skip, clip...)
+// and displacement brushes are exempt; nodraw is a real occluder.
+void smallStructural(const ProblemContext& context, std::vector<Problem>& out) {
+    constexpr double kMinSide = 64.0;
+    for (const auto& solid : scan(context.doc).solids) {
+        if (!solid.world || !solid.bounds) continue;
+        const auto size = solid.bounds->max - solid.bounds->min;
+        const auto hides = [&](int a, int b) { return size[a] >= kMinSide && size[b] >= kMinSide; };
+        if (hides(1, 2) || hides(0, 2) || hides(0, 1)) continue;
+        const auto handle = context.doc.handle(solid.id);
+        const auto* node = handle ? context.doc.get(*handle) : nullptr;
+        if (!node || !node->block) continue;
+        const auto exempt = [](const kv1::Node* side) {
+            if (document::isDisplaced(*side)) return true;
+            const auto material = toLowerAscii(value(*side, "material"));
+            return material.starts_with("tools/") && material != "tools/toolsnodraw";
+        };
+        if (std::ranges::any_of(node->block->findAll("side"), exempt)) continue;
+        std::ostringstream text;
+        text << "Structural solid " << solid.id << " (" << size.x << " x " << size.y << " x " << size.z
+             << ") is too small to hide a player but still cuts vis portals; consider To Detail";
+        out.push_back({ProblemSeverity::Warning, ProblemKind::SmallStructural, text.str(), {solid.id}, "select"});
+    }
+}
+
 void unsewnDisplacements(const ProblemContext& context, std::vector<Problem>& out) {
     std::vector<geometry::DisplacementPatch> patches;
     struct Owner { int side; NodeId select; };
@@ -361,6 +388,7 @@ ProblemRegistry ProblemRegistry::builtin() {
     registry.add("displacements", displacements);
     registry.add("displacement-seams", unsewnDisplacements);
     registry.add("overlays", overlayProblems);
+    registry.add("small-structural", smallStructural);
     return registry;
 }
 

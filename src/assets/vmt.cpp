@@ -243,6 +243,7 @@ Result<Material> parseMaterial(const MaterialReader& read, std::string_view name
     result.toolTexture = value(*root, "%tooltexture");
     result.toolViewportTexture = value(*root, "%ToolViewportTexture");
     result.rectangleMap = value(*root, "%rectanglemap");
+    result.detailType = value(*root, "%detailtype");
     result.keywords = value(*root, "%keywords") + " " + std::string(result.parameter("$keywords"));
     result.hasToolTexture = root->find("%tooltexture") != nullptr;
     result.surfaceProp = result.parameter("$surfaceprop");

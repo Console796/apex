@@ -219,6 +219,7 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
     if (!document) return;
     mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get(),
         models_.get(), [this](const std::string& path) { return vfs_->exists(path); });
+    // Detail-prop preview is off in 0.8 (moves to a later milestone): no setDetailSource, so none are placed.
     mirror_->rebuild(*document);
     bake_ = std::make_unique<BakeController>(*document, vfs_, *context_, *heap_, *mirror_, *jobs_);
     profile_ = effective;

@@ -4,6 +4,7 @@
 #include <QString>
 #include <QMenu>
 #include <QLineEdit>
+#include <QToolButton>
 #include <QStyledItemDelegate>
 #include <QDrag>
 #include <QMimeData>
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <string_view>
 
+#include "document/displacement.hpp"
 #include "document/document.hpp"
 
 namespace apex::ui {
@@ -56,6 +58,7 @@ QString entityLabel(const document::Node& n) {
 constexpr int NameRole = Qt::UserRole + 1;
 constexpr int EntityRole = Qt::UserRole + 2;
 constexpr int ExpansionRole = Qt::UserRole + 3;
+constexpr int StructuralRole = Qt::UserRole + 4; // Kept by the Structural filter on its own merits.
 const char* const mimeType = "application/x-apex-outliner";
 
 class NameDelegate : public QStyledItemDelegate {
@@ -119,6 +122,13 @@ OutlinerPanel::OutlinerPanel(QWidget* parent) : QTreeWidget(parent) {
     auto* filterLayout = new QHBoxLayout(header());
     filterLayout->setContentsMargins(0, 0, 0, 0);
     filterLayout->addWidget(filter_);
+    structural_ = new QToolButton(header());
+    structural_->setObjectName("outlinerStructural");
+    structural_->setText(tr("Structural"));
+    structural_->setToolTip(tr("Show only world brushes (not displacements) and func_areaportal: what cuts vis portals."));
+    structural_->setCheckable(true);
+    filterLayout->addWidget(structural_);
+    connect(structural_, &QToolButton::toggled, this, &OutlinerPanel::applyFilter);
     header()->setFixedHeight(filter_->sizeHint().height());
     connect(filter_, &QLineEdit::textChanged, this, &OutlinerPanel::applyFilter);
     connect(this, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem* item, int) {
@@ -245,6 +255,18 @@ void OutlinerPanel::refresh() {
             item->setData(0, NameRole, value(*n->block, "targetname"));
         }
         item->setFlags(flags);
+        const auto areaportal = [&](const document::Node& entity) {
+            return value(*entity.block, "classname").compare("func_areaportal", Qt::CaseInsensitive) == 0;
+        };
+        if (is(*n, "entity")) item->setData(0, StructuralRole, areaportal(*n));
+        else if (is(*n, "solid")) {
+            // VBSP drops a brush with a displaced side from the world, so it never cuts vis.
+            const auto owner = editor::brushEntityOf(doc, n->id);
+            const auto* entity = owner ? node(*owner) : nullptr;
+            const bool displaced = std::ranges::any_of(n->block->findAll("side"),
+                                                       [](const kv1::Node* side) { return document::isDisplaced(*side); });
+            item->setData(0, StructuralRole, !displaced && (!entity || areaportal(*entity)));
+        } else item->setData(0, StructuralRole, false); // A group shows through its members.
         bool hidden = !editor::isVisible(doc, n->id);
         if (is(*n, "group")) {
             const auto members = groups.members(n->id, true);
@@ -294,8 +316,11 @@ void OutlinerPanel::refresh() {
 
 void OutlinerPanel::applyFilter() {
     const auto filter = filter_->text();
+    const bool structural = structural_->isChecked();
     const auto visit = [&](const auto& self, QTreeWidgetItem* item) -> bool {
-        bool match = item->text(0).contains(filter, Qt::CaseInsensitive);
+        const auto kept = item->data(0, StructuralRole);
+        bool match = item->text(0).contains(filter, Qt::CaseInsensitive) &&
+                     (!structural || !kept.isValid() || kept.toBool());
         for (int i = 0; i < item->childCount(); ++i) match = self(self, item->child(i)) || match;
         item->setHidden(!match);
         return match;

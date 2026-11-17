@@ -2,6 +2,7 @@
 
 #include <QTreeWidget>
 class QLineEdit;
+class QToolButton;
 #include "editor/editor_session.hpp"
 
 namespace apex::document {
@@ -38,6 +39,7 @@ private:
     void applyFilter();
     bool visibilityClick_ = false;
     QLineEdit* filter_ = nullptr;
+    QToolButton* structural_ = nullptr; // Shows only what cuts vis portals, as the Structural view (0.8.9 D16).
     document::Document* document_ = nullptr;
     std::size_t documentObserver_ = 0;
     editor::EditorSession* session_ = nullptr;

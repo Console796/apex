@@ -217,6 +217,18 @@ Principles:
 - **Does mdlpp handle P2CE's shipped MDLs?** Check on day one; if not, budget a model loader.
 - **Is any 2D view needed at all? Closed (0.1, D15).** There is one viewport type; a "2D view" is a preset of it (axis-locked orthographic camera, wireframe, grid). Tools see a `ViewContext` (ray, projection kind, work plane), never a view kind.
 
+## 0.8 amendments (what the geometry and surface work settled)
+
+- **VMF (§1):** `dispinfo` is parsed, edited and written row by row. The fixtures and their provenance are in
+  `plans/0.8.md` (D1, D3).
+- **Geometry rules:** displacement meshes follow VBSP's rule; transforms, sewing and the per-tool topology rules
+  are `plans/0.8.md` D2 and D4-D6. Overlays are clipped on the CPU (D10). Hotspot sources and precedence are D13.
+  Ropes use the engine's relaxation, with `Type` setting the node count (D14, 0.8.8).
+- **Lighting (§4):** displacement lightmaps follow D9.
+- **Detail props:** the preview was dropped from 0.8 (owner, 2026-11-16). P2CE's Linux vbsp never places detail
+  props, so the Windows vbsp is the oracle (`plans/probe-results/detail_props_0_8_9_p0.md`). The placement port is
+  kept in the tree, switched off, for a later milestone.
+
 ## Sources
 - Strata wiki source: https://github.com/StrataSource/Wiki (bsp-v25.md, vtf-v76.md, gameinfo.md, vrad.md, vbsp.md, clustered/what_is.md, angelscript/hammer/*, P2CE changelogs)
 - Strata Source (VDC): https://developer.valvesoftware.com/wiki/Strata_Source

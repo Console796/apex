@@ -39,6 +39,7 @@ public:
     PieResult focusLost();
     std::optional<std::size_t> highlighted() const;
     DVec2 centre() const { return centre_; }
+    const PieMenu& menu() const { return menu_; }
     bool triggerHeld() const { return triggerHeld_; }
     const KeyChord& trigger() const { return trigger_; }
     bool clickStyle() const { return clickStyle_; }

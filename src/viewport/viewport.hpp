@@ -32,6 +32,8 @@ struct Overlays {
     bool luxelDensity = false;   // Baked/Vrad/Hybrid: the lightmap lattice as a checker, one cell per luxel (0.7.5 D7).
     bool realtimeIndirect = false; // Realtime: ray-traced irradiance probes (approximation).
     bool approxBounce = true;    // Realtime: constant ambient fill plus screen-space AO, a stand-in for bounce light.
+    bool structural = false;     // Greys detail brushes and entities, leaving what cuts vis portals (0.8.9 D16).
+    bool detailProps = false;    // detail.vbsp sprites and models on %detailtype displacements (0.8.9 D16).
 
     bool operator==(const Overlays&) const = default;
 };

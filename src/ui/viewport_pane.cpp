@@ -113,6 +113,8 @@ constexpr OverlayInfo kOverlayInfos[] = {
     {"Cordons", "The map's cordon boxes.", "Scene", &viewport::Overlays::cordons},
     {"Bounds", "Each brush's axis-aligned bounding box.", "Scene", &viewport::Overlays::bounds},
     {"Normals", "A short line from each brush face's centre along its outward normal, coloured by direction.", "Scene", &viewport::Overlays::normals},
+    {"Structural", "Grey out func_detail, other brush entities, displacements, entities and overlays: what is left cuts vis portals.",
+     "Scene", &viewport::Overlays::structural},
     {"Nodraw faces", "Show nodraw faces in the Textured and Flat views; off hides them.", "Faces",
      &viewport::Overlays::nodrawFaces},
     {"Backface culling", "Hide the back of each face; off draws both sides.", "Faces",
@@ -771,6 +773,8 @@ double PaneWindow::draw() {
     options.showEntityNames = vp->overlays.entityNames;
     options.showBounds = vp->overlays.bounds;
     options.showNormals = vp->overlays.normals;
+    options.structural = vp->overlays.structural;
+    options.detailProps = false; // hidden in 0.8: the detail-prop preview moves to a later milestone
     options.iconNearest = session_ && session_->entityIconsNearest();
     options.grid = makeGridSettings(*vp, session_);
     if (lightBackground) options.grid.colour = Vec4(0.25f, 0.25f, 0.3f, 0.8f);

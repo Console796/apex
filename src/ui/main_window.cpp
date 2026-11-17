@@ -113,7 +113,7 @@ QIcon appIcon() {
 
 namespace {
 constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
-    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure", "tool.overlay", "tool.displacement"};
+    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure", "tool.overlay", "tool.rope", "tool.displacement"};
 }
 
 namespace {
@@ -140,7 +140,7 @@ bool isPaneKeyAction(const editor::ActionId& id) {
     return isTransformAction(id) ||
            (id.starts_with("view.") && id != "view.properties" && id != "view.center_selection") ||
            id == "edit.delete" || id == "edit.duplicate" || id.starts_with("selection.mode.") ||
-           id.starts_with("vertex.mode.") || id == "pie.tools";
+           id.starts_with("vertex.mode.") || id.starts_with("pie.");
 }
 
 bool looksLikeFragment(std::string_view text) {
@@ -927,6 +927,7 @@ void MainWindow::updateEditorActions() {
             const bool objects = have && !editor::selectedNodes(session_.selection()).empty();
             if (id == "edit.copy" || id == "edit.cut" || id == "edit.delete" || id == "edit.duplicate" ||
                 id == "edit.group" || id == "edit.ungroup" || id == "edit.tie_to_entity" || id == "edit.move_to_world" ||
+                id == "edit.to_detail" || id == "edit.to_world" ||
                 id == "edit.carve" || id == "edit.hollow" || id == "edit.merge" || id == "edit.create_prefab")
                 enabled = objects;
             // Faces mode selects sides, not nodes.
@@ -1523,6 +1524,12 @@ bool MainWindow::performEditAction(const editor::ActionId& id) {
         openTieDialog();
     } else if (id == "edit.create_prefab") {
         openPrefabDialog();
+    } else if (id == "edit.to_detail" || id == "edit.to_world") {
+        if (auto done = id == "edit.to_detail" ? session_.toDetail() : session_.toWorld(); !done) {
+            say(tr("%1: %2").arg(fromStd(editor::actionRegistry().find(id)->name),
+                                 QString::fromStdString(done.error().what())));
+            ok = false;
+        }
     } else {
         ok = session_.perform(id);
         const bool reports = id == "edit.carve" || id == "edit.hollow" || id == "edit.merge" ||
@@ -1628,7 +1635,8 @@ void MainWindow::buildClipboardUi() {
     edit->addSeparator();
     for (const char* id : {"edit.cut", "edit.copy", "edit.paste", "edit.paste_in_place", "edit.paste_special",
                            "edit.duplicate", "edit.delete", "edit.group", "edit.ungroup", "edit.tie_to_entity",
-                           "edit.move_to_world", "edit.carve", "edit.hollow", "edit.merge", "edit.destroy_displacement",
+                           "edit.move_to_world", "edit.to_detail", "edit.to_world", "edit.carve", "edit.hollow", "edit.merge",
+                           "edit.destroy_displacement",
                            "edit.create_prefab"}) {
         const auto* entry = editor::actionRegistry().find(id);
         auto* action = edit->addAction(fromStd(entry->name));
