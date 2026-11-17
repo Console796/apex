@@ -6,7 +6,7 @@
   "milestone": "0.9",
   "how_to_test": "",
   "created": "2026-11-16T15:50:20-07:00",
-  "updated": "2026-11-16T23:14:41-07:00",
+  "updated": "2026-11-17T02:56:41-07:00",
   "updated_by": "agent",
   "history": [
     {
@@ -105,6 +105,41 @@
       "ts": "2026-11-16T23:14:41-07:00",
       "actor": "agent",
       "note": "0.9.6 committed: apex.vfs/1 (guarded providers, 5s timeout, omitted from compileGameInfo with log), apex.assets/1 (index reads, VMT write-back), P3 probe in plugins.md s10. 1324 tests pass, check_layers ok (gcc). Limits: renderer untested (no headless Vulkan); VMT write leaves stale thumbnails until reload; timed-out provider thread leaks. Whole-process apex_plugin_host_tests fails (dup registration; ctest per-case passes). Next 0.9.7 scripts."
+    },
+    {
+      "ts": "2026-11-16T23:57:24-07:00",
+      "actor": "agent",
+      "note": "0.9.7 partial committed: script manifest loading, ScriptEngine seam, reload-on-save with no leaked registrations, tests with a bridge engine (1333 pass, layers ok). BLOCKED: AngelScript host + stair example + P5 script timing need AngelScript v2.38.0, which cmake/deps.cmake fetches from GitHub only with APEX_WITH_ANGELSCRIPT=ON (no network in agent builds). P2 not run (needs Strata Hammer). P5 native host floor: 0.52-0.56 ms at 64 steps (release). Primitives will use 0.3 D6 'adjust last operation' unless P2 finds an encoding."
+    },
+    {
+      "ts": "2026-11-17T00:50:34-07:00",
+      "actor": "agent",
+      "note": "0.9.7 done and committed: AngelScript engine (APEX_WITH_ANGELSCRIPT now default ON), apex:: API, examples/stair, reload without leaks, hostile-script containment (5s load, 250ms/call watchdog). P5: stair@64 steps 0.77 ms mean/0.93 p99 (budget 2 ms), +1.45 MiB test-binary size. 1339 tests pass, layers+licenses ok (gcc). P2 NOT RUN (needs Strata Hammer) so primitives use 0.3 D6 adjust-last-operation. Limits: Windows/MSVC untested; empty-body loops not interruptible; single-file scripts. Next 0.9.8."
+    },
+    {
+      "ts": "2026-11-17T01:18:05-07:00",
+      "actor": "agent",
+      "note": "0.9.8 committed: pie layouts in presets + Pies settings page (dormant plugin items hidden not removed), keybinding page plugin groups + suggested-key display (fixes I-7 #12), plugin themes from <plugin>/themes/*.json (no ABI change), Blender tool-scope rebind bug fixed. 1346 tests pass, checks ok (gcc). Cut: context chooser UI, pie.user.* and More level, plugin-suggested pie items. Open: suggestions keyed by preset name (user presets get none); rebinding a suggested tool-scoped action loses tool scope; saved plugin theme falls back when plugin absent. Next 0.9.9 (SDK, docs, freeze) + I-7 P2 5/6 before freeze + release items."
+    },
+    {
+      "ts": "2026-11-17T01:48:06-07:00",
+      "actor": "agent",
+      "note": "I-7 closed (c80c846): ABI array/padding evolution settled before freeze. Next: 0.9.3 leftovers (transaction op mappings, change-notice tests, I-6), then 0.9.9 SDK/docs/freeze."
+    },
+    {
+      "ts": "2026-11-17T02:21:33-07:00",
+      "actor": "agent",
+      "note": "0.9.3 leftovers committed: 6 new edit ops (geometry, displacement, connections, matched rebuild, create_block, set_editor), change-notice field tests, I-6 closed. 1365 tests pass (10 measure skipped). Not done: script bindings for edits, read API for displacements/connections. Next: 0.9.9 SDK/docs/freeze."
+    },
+    {
+      "ts": "2026-11-17T02:50:30-07:00",
+      "actor": "agent",
+      "note": "0.9.9 committed: SDK package (apex::plugin_sdk, apex_add_plugin), package.py --sdk, plugin_sdk_out_of_tree test, docs/plugins (22 pages, check_docs.py), D12 freeze statement + review log in plugins.md. 1369 tests pass (10 measure skipped). All 0.9.x sub-milestones now committed. Remaining release items: D9 Linux+Windows round trip from published SDK, P1 on Windows compilers, SDK/AngelScript/MSVC verification, spec amendments, flaky-test note, remaining non-passing tests."
+    },
+    {
+      "ts": "2026-11-17T02:56:41-07:00",
+      "actor": "agent",
+      "note": "0.9 release prep committed: spec amendments applied, docs/releases/0.9.9-release.md DRAFT (placeholder version), README/source-map/development/architecture updated. Not released: no version bump or tag. Open release checks: D9 on Windows (owner review), P1 on Windows compilers, Strata Hammer interop, MSVC SDK build, AngelScript on other platforms, one unexplained P1 test flake, 4 previously non-passing tests."
     }
   ]
 }

@@ -4,17 +4,23 @@
   "body": "Source: Codex read-only review (run apex-0-9-review-1a-2) of 573fbe1..a5335a2. Unverified by me yet.\nP1: (1) registrations outlive host/unloaded libs, plugin_host.cpp:256/264; (2) plugin tool state changes don't publishToolStatus, plugin_tool.cpp:64; (3) preset pie with omitted/duplicate/>8 slots crashes, preset_io.cpp:141; (4) host exceptions can cross plugin frames, plugin_host.cpp:202.\nP2: (5) unsized array element structs (apex_tool_parameter/segment/ghost/suggestion) block append-only evolution, apex_plugin.h:93; (6) apex_tool_event tail padding, apex_plugin.h:70; (7) namespace prefix overlap com.example vs com.example.paint, plugin_host.cpp:189; (8) ghost preview overwritten by another pane's input, plugin_tool.cpp:84; (9) key identities dropped (modalKeyName), plugin_tool.cpp:60; (10) no owns()/gesture ownership for plugin tools; (11) tool id with trailing dot passes registration but aborts session construction; (12) suggested shortcuts show unbound in settings_dialog.cpp:607.\nItems 5, 6 must be decided before the ABI freeze. Fix after 0.9.3 lands (touches plugin_tool.cpp).",
   "kind": "bug",
   "severity": "high",
-  "status": "open",
+  "status": "closed",
   "roadmap_id": "",
   "created": "2026-11-16T20:02:18-07:00",
   "created_by": "agent",
-  "updated": "2026-11-16T20:16:02-07:00",
+  "updated": "2026-11-17T01:48:05-07:00",
   "updated_by": "agent",
   "comments": [
     {
       "ts": "2026-11-16T20:16:02-07:00",
       "actor": "agent",
       "text": "P1s 1-4 confirmed real (5 regression tests failed first) and fixed in the commit after bb86c82; I verified 227 tests pass. P2s 5-12 still open; 5 and 6 must be decided before the ABI freeze."
+    },
+    {
+      "ts": "2026-11-17T01:48:05-07:00",
+      "actor": "agent",
+      "text": "P2 5-11 fixed in c80c846 (12 fixed in 0.9.8). 5: struct_size on every array element, stride by it; 6: no implicit padding, golden layout checked in C and C++ (58 structs). 7 dot-boundary prefix, 8 per-source ghosts, 9 key names, 10 owns() while button held, 11 id validation. Full run 1353 tests, 0 failed (10 measure skipped); layers and licences ok. Caveat: layout/array tests were written after the header change, never seen failing. Existing plugins must be rebuilt.",
+      "status": "closed"
     }
   ]
 }
