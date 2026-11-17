@@ -108,6 +108,11 @@ struct SolidState {
     bool bounded = false;
     std::vector<GpuBatch> batches;
     std::vector<std::string> materials;
+    SolidState() = default;
+    SolidState(const SolidState&) = delete;
+    SolidState& operator=(const SolidState&) = delete;
+    SolidState(SolidState&&) noexcept = default;
+    SolidState& operator=(SolidState&&) noexcept = default;
 };
 
 struct ModelMesh {
