@@ -536,6 +536,13 @@ void SettingsDialog::refreshPresetCombo() {
     refreshButtons();
 }
 
+namespace {
+const editor::Binding& bindingOrDefault(const editor::Preset& preset, const editor::ActionId& id) {
+    const auto it = preset.bindings.find(id);
+    return it == preset.bindings.end() ? editor::defaultBinding(id) : it->second;
+}
+}
+
 void SettingsDialog::refreshTree() {
     const QString query = filter_ ? filter_->text().trimmed() : QString();
     const auto selected = selectedAction();
@@ -543,7 +550,7 @@ void SettingsDialog::refreshTree() {
     tree_->clear();
     std::map<std::string, QTreeWidgetItem*> categories;
     for (const auto& action : editor::actionRegistry().entries()) {
-        const auto& binding = working_.bindings.at(action.id);
+        const auto& binding = bindingOrDefault(working_, action.id);
         const QString keys = chordsText(binding);
         if (!query.isEmpty() && !fromStd(action.name).contains(query, Qt::CaseInsensitive) &&
             !fromStd(action.category).contains(query, Qt::CaseInsensitive) &&
@@ -597,9 +604,9 @@ void SettingsDialog::refreshButtons() {
         return;
     }
     const auto* action = editor::actionRegistry().find(id);
-    const auto& binding = working_.bindings.at(id);
+    const auto& binding = bindingOrDefault(working_, id);
     clearButton_->setEnabled(!std::holds_alternative<editor::Unbound>(binding.value));
-    resetButton_->setEnabled(!sameBinding(binding, original_.bindings.at(id)));
+    resetButton_->setEnabled(!sameBinding(binding, bindingOrDefault(original_, id)));
     QString text = QStringLiteral("<b>%1</b><br>%2").arg(fromStd(action->name).toHtmlEscaped(),
                                                        fromStd(action->description).toHtmlEscaped());
     if (const auto* unbound = std::get_if<editor::Unbound>(&binding.value))
@@ -618,11 +625,11 @@ void SettingsDialog::captureKey(bool additional) {
     if ((chord.key == "Ctrl" || chord.key == "Alt" || chord.key == "Shift")) additional = false;
     std::vector<editor::KeyChord> chords;
     if (additional) {
-        if (const auto* keys = std::get_if<std::vector<editor::KeyChord>>(&working_.bindings.at(id).value))
+        if (const auto* keys = std::get_if<std::vector<editor::KeyChord>>(&bindingOrDefault(working_, id).value))
             chords = *keys;
     }
     if (std::ranges::find(chords, chord) == chords.end()) chords.push_back(chord);
-    if (const auto owner = editor::chordOwner(working_, chord, id, working_.bindings.at(id).context)) {
+    if (const auto owner = editor::chordOwner(working_, chord, id, bindingOrDefault(working_, id).context)) {
         const auto* other = editor::actionRegistry().find(*owner);
         const auto answer = QMessageBox::question(
             this, tr("Key already in use"),
@@ -641,7 +648,12 @@ void SettingsDialog::assign(const editor::ActionId& id, std::vector<editor::KeyC
 void SettingsDialog::resetSelected() {
     const auto id = selectedAction();
     if (id.empty()) return;
-    const auto& base = original_.bindings.at(id);
+    if (!original_.bindings.contains(id)) {
+        working_.bindings.erase(id);
+        refreshTree();
+        return;
+    }
+    const auto& base = bindingOrDefault(original_, id);
     if (const auto* keys = std::get_if<std::vector<editor::KeyChord>>(&base.value)) {
         editor::assignChords(working_, id, *keys);
         working_.bindings[id] = base;

@@ -23,9 +23,35 @@ const PieMenu& objectPie() {
     }};
     return menu;
 }
+bool PieRegistry::add(std::string action, PieMenu menu) {
+    if (frozen_ || action.empty() || find(action)) return false;
+    entries_.emplace_back(std::move(action), std::move(menu));
+    return true;
+}
+const PieMenu* PieRegistry::find(std::string_view action) const {
+    for (const auto& [id, menu] : entries_) if (id == action) return &menu;
+    return nullptr;
+}
+PieRegistry& mutablePieRegistry() {
+    static PieRegistry registry = [] {
+        PieRegistry r;
+        r.add("pie.tools", toolPie());
+        r.add("pie.objects", objectPie());
+        return r;
+    }();
+    return registry;
+}
+const PieRegistry& pieRegistry() { return mutablePieRegistry(); }
 const PieMenu* pieFor(std::string_view action) {
+    const auto* menu = pieRegistry().find(action);
+    if (!menu) return nullptr;
+    // Preserve the long-standing identities exposed by the built-in accessors.
     if (action == "pie.tools") return &toolPie();
     if (action == "pie.objects") return &objectPie();
-    return nullptr;
+    return menu;
+}
+const PieMenu* pieFor(std::string_view action, const Preset& preset) {
+    const auto it = preset.pies.find(action);
+    return it == preset.pies.end() ? pieFor(action) : &it->second;
 }
 } // namespace apex::editor

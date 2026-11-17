@@ -289,3 +289,18 @@ TEST_CASE("preferences open the bake and VRAD settings dialogs") {
         CHECK(opened == QString::fromLatin1(title));
     }
 }
+
+TEST_CASE("preferences and shortcuts tolerate an unbound plugin action") {
+    (void)apex::ui_test::app();
+    auto& registry = apex::editor::mutableActionRegistry();
+    struct Restore { apex::editor::ActionRegistry& target; apex::editor::ActionRegistry saved;
+        ~Restore() { target = std::move(saved); } } restore{registry, registry};
+    REQUIRE(registry.add({"plugin.preferences.example", "Plugin example", "Plugin", "Example action"}));
+    apex::ui::MainWindow window;
+    CHECK_NOTHROW(window.applyPreset(apex::editor::hammerPreset()));
+    auto* pluginAction = window.findChild<QAction*>(QStringLiteral("plugin.preferences.example"));
+    REQUIRE(pluginAction);
+    CHECK(pluginAction->isEnabled());
+    apex::ui::SettingsDialog dialog(window);
+    CHECK_FALSE(dialog.workingPreset().bindings.contains("plugin.preferences.example"));
+}

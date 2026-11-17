@@ -225,6 +225,7 @@ signals:
     void maximizeToggled(viewport::NodeId pane);
     void activated(viewport::NodeId pane);
     void roleRequested(viewport::NodeId pane, viewport::AreaRole role);
+    void pluginPanelRequested(viewport::NodeId pane, QString panel);
     void collapseRequested(viewport::NodeId pane);
     void vradRerunRequested();
     void vradCancelRequested();

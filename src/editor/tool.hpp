@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 
 namespace apex::editor {
 
@@ -110,6 +111,22 @@ public:
     virtual std::optional<GizmoHandle> hovered(InputSource) const { return {}; }
     virtual std::optional<GizmoHandle> dragged(InputSource) const { return {}; }
 };
+
+// Factories are registered during startup, then used by every editor session.
+class ToolRegistry {
+public:
+    using Factory = std::function<std::unique_ptr<Tool>(EditorSession&)>;
+    struct Entry { ToolId id; Factory factory; };
+    bool add(ToolId id, Factory factory);
+    void freeze() { frozen_ = true; }
+    bool frozen() const { return frozen_; }
+    const std::vector<Entry>& entries() const { return entries_; }
+private:
+    std::vector<Entry> entries_;
+    bool frozen_ = false;
+};
+ToolRegistry& mutableToolRegistry();
+const ToolRegistry& toolRegistry();
 
 // Shared 0.2 pointer gesture mechanics. Each tool owns its instance and pane histories.
 class SelectionGesture {

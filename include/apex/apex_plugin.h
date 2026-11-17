@@ -43,6 +43,17 @@ typedef struct apex_document_v1 {
     apex_status (*key_at)(void* host, apex_node_id id, size_t index, apex_str* key, apex_str* value);
 } apex_document_v1;
 
+/* Registration is available only during activate; IDs must belong to the plugin. */
+typedef void (*apex_callback)(void* user);
+typedef struct apex_registration_v1 {
+    uint32_t struct_size;
+    apex_status (*action)(void* host, apex_str id, apex_str name, apex_str description,
+                          void* user, apex_callback invoke);
+    apex_status (*tool)(void* host, apex_str id, apex_str name, apex_str description,
+                        void* user, apex_callback activate, apex_callback deactivate);
+    apex_status (*panel)(void* host, apex_str id, apex_str title);
+} apex_registration_v1;
+
 typedef struct apex_host {
     uint32_t struct_size, abi_major, abi_minor;
     void* context;

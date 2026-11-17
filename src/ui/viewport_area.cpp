@@ -524,7 +524,9 @@ void ViewportArea::rebuild() {
     for (auto it = panels_.begin(); it != panels_.end();) {
         auto* p = it->second.data();
         const bool keep = p && layout_.hasPane(it->first) &&
-                          p->property("areaRole").toString() == QLatin1String(viewport::nameOf(layout_.role(it->first)));
+                          p->property("areaRole").toString() == QLatin1String(viewport::nameOf(layout_.role(it->first))) &&
+                          (layout_.role(it->first) != viewport::AreaRole::Plugin ||
+                           p->property("panelId").toString().toStdString() == layout_.panelId(it->first));
         if (p) {
             p->hide();
             p->setParent(this);
@@ -846,6 +848,13 @@ template <typename Frame> void ViewportArea::connectArea(Frame* frame) {
         emit layoutChanged();
     });
     connect(frame, &Frame::roleRequested, this, &ViewportArea::setRole);
+    connect(frame, &Frame::pluginPanelRequested, this, [this](viewport::NodeId pane, const QString& id) {
+        if (layout_.panelId(pane) == id.toStdString()) return;
+        if (layout_.setPluginPanel(pane, id.toStdString())) {
+            scheduleRebuild();
+            emit layoutChanged();
+        }
+    });
     connect(frame, &Frame::collapseRequested, this, [this](viewport::NodeId p) { setCollapsed(p, true); });
 }
 

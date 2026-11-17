@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <system_error>
@@ -48,6 +49,24 @@ std::string serializePreset(const Preset& preset) {
     root["format"] = Value{kFormat};
     root["name"] = Value{preset.name};
     root["bindings"] = Value{std::move(bindings)};
+    if (!preset.pies.empty()) {
+        Value::Object pies;
+        for (const auto& [id, menu] : preset.pies) {
+            Value::Array items;
+            for (const auto& item : menu.items) {
+                Value::Object entry;
+                entry["action"] = Value{item.action};
+                entry["label"] = Value{item.label};
+                if (item.slot) entry["slot"] = Value{static_cast<double>(*item.slot)};
+                items.push_back(Value{std::move(entry)});
+            }
+            Value::Object entry;
+            entry["title"] = Value{menu.title};
+            entry["items"] = Value{std::move(items)};
+            pies[id] = Value{std::move(entry)};
+        }
+        root["pies"] = Value{std::move(pies)};
+    }
     return json::write(Value{std::move(root)});
 }
 
@@ -72,7 +91,7 @@ Result<Preset> parsePreset(std::string_view text, const Actions& actions) {
     Preset preset;
     preset.name = *name->get<std::string>();
     for (const auto& [id, value] : *bindings->get<Value::Object>()) {
-        if (!actions.find(id)) continue;
+        if (!actions.find(id) && !id.starts_with("plugin.")) continue;
         const auto* entry = value.get<Value::Object>();
         if (!entry) return std::unexpected(bad("Binding is not an object: " + id));
         Binding binding;
@@ -102,8 +121,36 @@ Result<Preset> parsePreset(std::string_view text, const Actions& actions) {
         }
         preset.bindings.emplace(id, std::move(binding));
     }
+    if (const auto* pies = field(*root, "pies")) {
+        const auto* object = pies->get<Value::Object>();
+        if (!object) return std::unexpected(bad("Pies is not an object"));
+        for (const auto& [id, value] : *object) {
+            const auto* objectMenu = value.get<Value::Object>();
+            const auto* title = objectMenu ? field(*objectMenu, "title") : nullptr;
+            const auto* items = objectMenu ? field(*objectMenu, "items") : nullptr;
+            if (!title || !title->get<std::string>() || !items || !items->get<Value::Array>())
+                return std::unexpected(bad("Invalid pie: " + id));
+            PieMenu menu{*title->get<std::string>(), {}};
+            for (const auto& item : *items->get<Value::Array>()) {
+                const auto* entry = item.get<Value::Object>();
+                const auto* action = entry ? field(*entry, "action") : nullptr;
+                const auto* label = entry ? field(*entry, "label") : nullptr;
+                const auto* slot = entry ? field(*entry, "slot") : nullptr;
+                if (!action || !action->get<std::string>() || !label || !label->get<std::string>())
+                    return std::unexpected(bad("Invalid pie item: " + id));
+                std::optional<PieSlot> parsedSlot;
+                if (slot) {
+                    const auto* n = slot->get<double>();
+                    if (!n || *n < 0 || *n > 7 || *n != std::floor(*n)) return std::unexpected(bad("Invalid pie slot: " + id));
+                    parsedSlot = static_cast<PieSlot>(static_cast<int>(*n));
+                }
+                menu.items.push_back({*action->get<std::string>(), parsedSlot, *label->get<std::string>()});
+            }
+            preset.pies.emplace(id, std::move(menu));
+        }
+    }
     for (const auto& action : actions.entries()) {
-        if (!preset.bindings.contains(action.id))
+        if (!action.id.starts_with("plugin.") && !preset.bindings.contains(action.id))
             preset.bindings.emplace(action.id, Binding{Unbound{"Not set in this preset."}});
     }
     if (const auto problems = validate(preset, actions); !problems.empty()) {
@@ -138,7 +185,7 @@ Result<std::string> checkPresetName(std::string_view name) {
 std::optional<ActionId> chordOwner(const Preset& preset, const KeyChord& chord,
                                    std::string_view except, BindingContext context) {
     for (const auto& [id, binding] : preset.bindings) {
-        if (id == except || binding.context != context) continue;
+        if (id == except || binding.context != context || !actionRegistry().find(id)) continue;
         if (const auto* keys = std::get_if<std::vector<KeyChord>>(&binding.value);
             keys && std::ranges::find(*keys, chord) != keys->end())
             return id;
@@ -148,7 +195,12 @@ std::optional<ActionId> chordOwner(const Preset& preset, const KeyChord& chord,
 
 bool allowsHeldModifier(const ActionId& id) { return id == "snap.suspend"; }
 
-const Binding& defaultBinding(const ActionId& id) { return hammerPreset().bindings.at(id); }
+const Binding& defaultBinding(const ActionId& id) {
+    const auto it = hammerPreset().bindings.find(id);
+    if (it != hammerPreset().bindings.end()) return it->second;
+    static const Binding unbound{Unbound{"Not set in this preset."}};
+    return unbound;
+}
 
 void unbindAction(Preset& preset, const ActionId& id, std::string reason) {
     auto& binding = preset.bindings[id];
@@ -158,10 +210,11 @@ void unbindAction(Preset& preset, const ActionId& id, std::string reason) {
 
 std::vector<ActionId> assignChords(Preset& preset, const ActionId& id, std::vector<KeyChord> chords) {
     std::vector<ActionId> changed;
+    if (!preset.bindings.contains(id)) preset.bindings.emplace(id, defaultBinding(id));
     const auto targetContext = preset.bindings.at(id).context;
     for (const auto& chord : chords) {
         for (auto& [other, binding] : preset.bindings) {
-            if (other == id || binding.context != targetContext) continue;
+            if (other == id || binding.context != targetContext || !actionRegistry().find(other)) continue;
             auto* keys = std::get_if<std::vector<KeyChord>>(&binding.value);
             if (!keys) continue;
             const auto before = keys->size();

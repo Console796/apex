@@ -123,3 +123,40 @@ TEST_CASE("the preset store saves, lists, loads and removes user presets") {
     CHECK(store.list().empty());
     CHECK_FALSE(store.remove("Mine"));
 }
+
+TEST_CASE("P0 missing plugin action binding survives preset round trip") {
+    const auto parsed = parsePreset(R"({"format":1,"name":"Plugin","bindings":{
+        "plugin.example.hello":{"keys":["F24"],"context":"always"},
+        "no.such.action":{"keys":["F23"]}}})");
+    REQUIRE(parsed);
+    REQUIRE(parsed->bindings.contains("plugin.example.hello"));
+    CHECK_FALSE(parsed->bindings.contains("no.such.action"));
+    CHECK(validate(*parsed).empty());
+    CHECK_FALSE(Keymap(*parsed).lookup(chord("F24")));
+    const auto restored = parsePreset(serializePreset(*parsed));
+    REQUIRE(restored);
+    REQUIRE(restored->bindings.contains("plugin.example.hello"));
+    CHECK(std::get<std::vector<KeyChord>>(restored->bindings.at("plugin.example.hello").value) ==
+          std::vector<KeyChord>{chord("F24")});
+}
+
+TEST_CASE("dormant plugin binding does not consume a built-in chord") {
+    const auto parsed = parsePreset(R"({"format":1,"name":"Dormant","bindings":{
+        "edit.undo":{"keys":["Ctrl+Z"]},
+        "plugin.example.hello":{"keys":["Ctrl+Z"]}}})");
+    REQUIRE(parsed);
+    CHECK(Keymap(*parsed).lookup(chord("Ctrl+Z")) == "edit.undo");
+    CHECK(parsed->bindings.contains("plugin.example.hello"));
+}
+
+TEST_CASE("preset pie layouts survive serialization") {
+    auto preset = hammerPreset();
+    preset.pies["pie.tools"] = PieMenu{"Custom tools", {{"tool.rope", PieSlot::N, "Rope"}}};
+    const auto loaded = parsePreset(serializePreset(preset));
+    REQUIRE(loaded);
+    REQUIRE(loaded->pies.contains("pie.tools"));
+    CHECK(loaded->pies.at("pie.tools").title == "Custom tools");
+    REQUIRE(loaded->pies.at("pie.tools").items.size() == 1);
+    CHECK(loaded->pies.at("pie.tools").items[0].action == "tool.rope");
+    CHECK(loaded->pies.at("pie.tools").items[0].slot == PieSlot::N);
+}

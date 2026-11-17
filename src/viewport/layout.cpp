@@ -98,6 +98,18 @@ std::optional<AreaRole> roleFromName(std::string_view name) {
     return std::nullopt;
 }
 
+AreaRoleRegistry::AreaRoleRegistry() : builtins_(std::begin(kAreaRoles), std::end(kAreaRoles)) {}
+
+bool AreaRoleRegistry::add(PluginPanel panel) {
+    if (frozen_ || !panel.id.starts_with("plugin.") || (panel.id.find('.', 7) == std::string::npos || panel.id.find('.', 7) == 7) ||
+        panel.id.back() == '.' || panel.title.empty() ||
+        std::ranges::any_of(panels_, [&](const auto& p) { return p.id == panel.id; })) return false;
+    panels_.push_back(std::move(panel));
+    return true;
+}
+AreaRoleRegistry& mutableAreaRoleRegistry() { static AreaRoleRegistry registry; return registry; }
+const AreaRoleRegistry& areaRoleRegistry() { return mutableAreaRoleRegistry(); }
+
 ViewportLayout::ViewportLayout() : ViewportLayout(makePreset(Preset::Camera)) {}
 
 ViewportLayout::ViewportLayout(Viewport single) {
@@ -199,6 +211,16 @@ Result<void> ViewportLayout::setRole(NodeId pane, AreaRole role) {
         return std::unexpected(bad("setRole: plugin role requires a panel ID"));
     n->role = role;
     if (role != AreaRole::Plugin) n->panelId.clear();
+    fixActive();
+    return {};
+}
+
+Result<void> ViewportLayout::setPluginPanel(NodeId pane, std::string panelId) {
+    auto* n = findNode(root_.get(), pane);
+    if (!n || !n->leaf || !panelId.starts_with("plugin.") || (panelId.find('.', 7) == std::string::npos || panelId.find('.', 7) == 7) || panelId.back() == '.')
+        return std::unexpected(bad("setPluginPanel: invalid pane or panel ID"));
+    n->role = AreaRole::Plugin;
+    n->panelId = std::move(panelId);
     fixActive();
     return {};
 }

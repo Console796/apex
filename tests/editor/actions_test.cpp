@@ -235,3 +235,31 @@ TEST_CASE("Tool scopes shadow global bindings and allow reuse in separate scopes
     CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.clip")) == "vertex.mode.edge");
     CHECK(keymap.lookup(chord("1"), BindingContext::forTool("tool.select")) == "selection.mode.groups");
 }
+
+TEST_CASE("P0 plugin actions are optional in built-in presets") {
+    auto entries = actionRegistry().entries();
+    entries.push_back({"plugin.example.hello", "Hello", "Plugin", "Example action"});
+    const Actions actions(std::move(entries));
+    for (const auto* preset : {&hammerPreset(), &blenderPreset()}) {
+        CHECK(validate(*preset, actions).empty());
+        CHECK_NOTHROW(static_cast<void>(Keymap(*preset, actions)));
+    }
+}
+
+TEST_CASE("P0 missing built-in actions still fail validation") {
+    auto incomplete = hammerPreset();
+    incomplete.bindings.erase("edit.undo");
+    CHECK(hasProblem(validate(incomplete), "Missing action: edit.undo"));
+    CHECK_THROWS_AS(static_cast<void>(Keymap(incomplete)), std::invalid_argument);
+}
+
+TEST_CASE("action registry keeps built-ins first and freezes registration") {
+    ActionRegistry registry;
+    const auto builtinCount = registry.entries().size();
+    REQUIRE(registry.add({"plugin.example.hello", "Hello", "Plugin", "Hello"}));
+    CHECK(registry.entries().size() == builtinCount + 1);
+    CHECK(registry.entries().back().id == "plugin.example.hello");
+    CHECK_FALSE(registry.add({"plugin.example.hello", "Duplicate", "Plugin", "Duplicate"}));
+    registry.freeze();
+    CHECK_FALSE(registry.add({"plugin.example.other", "Other", "Plugin", "Other"}));
+}

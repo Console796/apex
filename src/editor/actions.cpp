@@ -148,10 +148,24 @@ const Action* Actions::find(std::string_view id) const {
     return it == entries_.end() ? nullptr : &*it;
 }
 
-const Actions& actionRegistry() {
-    static const Actions actions;
+bool Actions::add(Action action, std::function<void()> invoke) {
+    if (frozen_ || action.id.empty() || find(action.id)) return false;
+    if (invoke) callbacks_.emplace(action.id, std::move(invoke));
+    entries_.push_back(std::move(action));
+    return true;
+}
+bool Actions::invoke(std::string_view id) const {
+    const auto it = callbacks_.find(id);
+    if (it == callbacks_.end()) return false;
+    it->second();
+    return true;
+}
+
+ActionRegistry& mutableActionRegistry() {
+    static ActionRegistry actions;
     return actions;
 }
+const Actions& actionRegistry() { return mutableActionRegistry(); }
 
 namespace {
 bool validKey(std::string_view key) {
@@ -434,11 +448,15 @@ std::vector<std::string_view> presetNames() { return {hammerPreset().name, blend
 std::vector<std::string> validate(const Preset& preset, const Actions& actions) {
     std::vector<std::string> problems;
     for (const auto& action : actions.entries()) {
-        if (!preset.bindings.contains(action.id)) problems.push_back("Missing action: " + action.id);
+        if (!action.id.starts_with("plugin.") && !preset.bindings.contains(action.id))
+            problems.push_back("Missing action: " + action.id);
     }
     std::map<std::pair<BindingContext, KeyChord>, ActionId> chords;
     for (const auto& [id, binding] : preset.bindings) {
-        if (!actions.find(id)) problems.push_back("Unknown action: " + id);
+        if (!actions.find(id)) {
+            if (id.starts_with("plugin.")) continue; // Dormant bindings do not take keys or conflict.
+            problems.push_back("Unknown action: " + id);
+        }
         if (const auto* unboundValue = std::get_if<Unbound>(&binding.value)) {
             if (unboundValue->reason.find_first_not_of(" \t\r\n") == std::string::npos)
                 problems.push_back("Unbound action has no reason: " + id);
@@ -466,6 +484,7 @@ Keymap::Keymap(const Preset& preset, const Actions& actions) {
         throw std::invalid_argument(message);
     }
     for (const auto& [id, binding] : preset.bindings) {
+        if (!actions.find(id)) continue;
         if (const auto* keys = std::get_if<std::vector<KeyChord>>(&binding.value)) {
             for (const auto& chord : *keys) entries_.emplace(std::pair{binding.context, chord}, id);
         }

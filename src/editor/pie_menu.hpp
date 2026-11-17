@@ -6,18 +6,7 @@
 
 namespace apex::editor {
 
-enum class PieSlot { N, NE, E, SE, S, SW, W, NW };
 DVec2 slotDirection(PieSlot slot);
-
-struct PieItem {
-    ActionId action;
-    std::optional<PieSlot> slot;
-    std::string label;
-};
-struct PieMenu {
-    std::string title;
-    std::vector<PieItem> items;
-};
 std::vector<PieSlot> layoutSlots(const PieMenu& menu);
 
 struct PieSettings {

@@ -31,6 +31,22 @@ inline constexpr AreaRole kAreaRoles[] = {AreaRole::Viewport, AreaRole::Outliner
 const char* nameOf(AreaRole role); // Stable JSON name: "viewport", "outliner", ...
 std::optional<AreaRole> roleFromName(std::string_view name);
 
+struct PluginPanel { std::string id, title; };
+class AreaRoleRegistry {
+public:
+    AreaRoleRegistry();
+    const std::vector<AreaRole>& builtins() const { return builtins_; }
+    bool add(PluginPanel panel);
+    void freeze() { frozen_ = true; }
+    const std::vector<PluginPanel>& panels() const { return panels_; }
+private:
+    std::vector<AreaRole> builtins_;
+    std::vector<PluginPanel> panels_;
+    bool frozen_ = false;
+};
+AreaRoleRegistry& mutableAreaRoleRegistry();
+const AreaRoleRegistry& areaRoleRegistry();
+
 struct Rect {
     double x = 0, y = 0, w = 1, h = 1;
     bool operator==(const Rect&) const = default;
@@ -85,6 +101,7 @@ public:
 
     AreaRole role(NodeId pane) const;
     Result<void> setRole(NodeId pane, AreaRole role);
+    Result<void> setPluginPanel(NodeId pane, std::string panelId);
     std::string_view panelId(NodeId pane) const;
     // A collapsed area shows only a strip; its split ratio is kept for when it expands. At least
     // one area always stays expanded.

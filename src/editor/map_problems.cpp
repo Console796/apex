@@ -9,6 +9,7 @@
 #include "geometry/solid_geometry.hpp"
 
 #include <algorithm>
+#include <stdexcept>
 #include <cmath>
 #include <map>
 #include <iterator>
@@ -363,6 +364,7 @@ std::vector<Problem> displacementProblems(const kv1::Node& solid, const kv1::Nod
 }
 
 void ProblemRegistry::add(std::string name, ProblemCheck check) {
+    if (frozen_) throw std::logic_error("problem registry is frozen");
     names_.push_back(std::move(name));
     checks_.push_back(std::move(check));
 }
@@ -391,6 +393,12 @@ ProblemRegistry ProblemRegistry::builtin() {
     registry.add("small-structural", smallStructural);
     return registry;
 }
+
+ProblemRegistry& mutableProblemRegistry() {
+    static ProblemRegistry registry = ProblemRegistry::builtin();
+    return registry;
+}
+const ProblemRegistry& problemRegistry() { return mutableProblemRegistry(); }
 
 int countProblems(const std::vector<Problem>& problems, ProblemSeverity severity) {
     return static_cast<int>(std::count_if(problems.begin(), problems.end(),

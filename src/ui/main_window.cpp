@@ -112,11 +112,6 @@ QIcon appIcon() {
 }
 
 namespace {
-constexpr std::string_view kToolActions[] = {"tool.select", "tool.entity", "tool.block", "tool.clip",
-    "tool.vertex", "tool.primitive", "tool.apply", "tool.measure", "tool.overlay", "tool.rope", "tool.displacement"};
-}
-
-namespace {
 int undoCapMiB() {
     bool valid = false;
     const auto value = QSettings().value(QStringLiteral("history/undoCapMiB"), 512).toLongLong(&valid);
@@ -438,6 +433,15 @@ void MainWindow::buildMenus() {
 
     auto* edit = menuBar()->addMenu(tr("&Edit"));
     edit->setObjectName(QStringLiteral("menuEdit"));
+    for (const auto& entry : editor::actionRegistry().entries()) {
+        if (!entry.id.starts_with("plugin.")) continue;
+        if (std::ranges::any_of(editor::toolRegistry().entries(), [&](const auto& tool) { return tool.id == entry.id; })) continue;
+        auto* action = edit->addAction(fromStd(entry.name));
+        action->setObjectName(fromStd(entry.id));
+        action->setToolTip(fromStd(entry.description));
+        editorActions_.emplace(entry.id, action);
+        connect(action, &QAction::triggered, this, [this, id = entry.id] { session_.perform(id); });
+    }
     auto* selectionBar = addToolBar(tr("Selection"));
     selectionBar->setObjectName(QStringLiteral("toolbarSelection"));
     auto* modes = new QActionGroup(this);
@@ -668,7 +672,9 @@ void MainWindow::applyPreset(const editor::Preset& preset) {
     // Native pane key delivery uses this same session keymap.
     for (const auto& [id, action] : editorActions_) {
         QList<QKeySequence> sequences;
-        const auto& binding = session_.preset().bindings.at(id);
+        const auto bindingIt = session_.preset().bindings.find(id);
+        if (bindingIt == session_.preset().bindings.end()) { action->setShortcuts({}); continue; }
+        const auto& binding = bindingIt->second;
         const bool transformAction = isPaneKeyAction(id);
         const bool toolScoped = !binding.context.toolId.empty();
         if (!toolScoped) if (const auto* chords = std::get_if<std::vector<editor::KeyChord>>(&binding.value)) {
@@ -894,7 +900,7 @@ void MainWindow::updateEditorActions() {
         // Rules below override this default, and the action is set once at the end: an action turned
         // off and back on makes Qt update every menu, toolbar button and shortcut that shows it, on
         // every pointer move of a drag.
-        bool enabled = session_.document() != nullptr;
+        bool enabled = session_.document() != nullptr || id.starts_with("plugin.");
         if (id == "instance.create") enabled = session_.document() && !editor::selectedNodes(session_.selection()).empty();
         if (id == "instance.collapse_all")
             enabled = session_.document() && (!session_.instances().contents().empty() || !session_.instances().problems().empty());
@@ -917,7 +923,7 @@ void MainWindow::updateEditorActions() {
             }
         }
         if (id == "assets.reload" || id.starts_with("compile.") || id == "view.properties" || id.starts_with("workspace.")) enabled = true;  // Window actions.
-        if (std::ranges::find(kToolActions, std::string_view(id)) != std::end(kToolActions)) {
+        if (std::ranges::find(session_.toolIds(), id) != session_.toolIds().end()) {
             enabled = session_.isToolEnabled(id);
             action->setChecked(session_.activeTool() == id);
             if (toolButton_ && action->isChecked()) toolButton_->setText(action->text());
@@ -1345,8 +1351,9 @@ void MainWindow::buildEntityUi() {
     toolButton_->setMenu(menu);
     bar->addWidget(toolButton_);
     auto* group = new QActionGroup(this);
-    for (const auto id : kToolActions) {
+    for (const auto& id : session_.toolIds()) {
         const auto* entry = editor::actionRegistry().find(id);
+        if (!entry) continue;
         auto* action = new QAction(fromStd(entry->name), this);
         action->setObjectName(fromStd(entry->id));
         action->setToolTip(fromStd(entry->description));

@@ -6,6 +6,11 @@
 #include <filesystem>
 
 #include "plugin_host/plugin_host.hpp"
+#include "editor/actions.hpp"
+#include "editor/tool.hpp"
+#include "editor/pie_menus.hpp"
+#include "editor/map_problems.hpp"
+#include "viewport/layout.hpp"
 #include "ui/plugin_manager.hpp"
 
 #include "core/log.hpp"
@@ -33,6 +38,9 @@ int main(int argc, char** argv) {
     const auto bundled = std::filesystem::path(QApplication::applicationDirPath().toStdString()) / "plugins";
 #endif
     apex::plugin_host::Host plugins(data / "plugin-state.txt", data / "plugin-breadcrumb");
+    plugins.setPanelRegistrar([](std::string id, std::string title) {
+        return apex::viewport::mutableAreaRoleRegistry().add({std::move(id), std::move(title)});
+    });
     plugins.discover({data / "plugins", bundled});
     bool safeMode = app.arguments().contains(QStringLiteral("--no-plugins"));
     if (!plugins.staleBreadcrumb().empty()) {
@@ -42,6 +50,11 @@ int main(int argc, char** argv) {
                                          QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes || safeMode;
     }
     plugins.activate(safeMode);
+    apex::editor::mutableActionRegistry().freeze();
+    apex::editor::mutableToolRegistry().freeze();
+    apex::editor::mutablePieRegistry().freeze();
+    apex::editor::mutableProblemRegistry().freeze();
+    apex::viewport::mutableAreaRoleRegistry().freeze();
     apex::ui::MainWindow window;
     window.setPluginHost(&plugins);
     if (!plugins.staleBreadcrumb().empty()) QTimer::singleShot(0, &window, [&window, &plugins] { apex::ui::PluginManager(plugins, &window).exec(); });

@@ -18,6 +18,7 @@ public:
     Host& operator=(const Host&) = delete;
     void discover(const std::vector<std::filesystem::path>& paths);
     void activate(bool safeMode = false);
+    void setPanelRegistrar(std::function<bool(std::string, std::string)> registrar);
     void setDocument(const document::Document* document);
     void setEnabled(std::string_view id, bool enabled);
     const std::vector<Plugin>& plugins() const;

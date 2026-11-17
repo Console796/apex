@@ -330,3 +330,23 @@ TEST_CASE("tool pie pins every registry tool action to the fixed layout") {
             action.id != "tool.displacement" && action.id != "tool.rope")
             CHECK(actions.contains(action.id));
 }
+
+TEST_CASE("pie registry preserves the built-in tool and object pies") {
+    REQUIRE(pieRegistry().find("pie.tools"));
+    REQUIRE(pieRegistry().find("pie.objects"));
+    CHECK(pieRegistry().find("pie.objects")->items.size() == objectPie().items.size());
+    PieRegistry registry;
+    REQUIRE(registry.add("plugin.example.pie", objectPie()));
+    CHECK_FALSE(registry.add("plugin.example.pie", toolPie()));
+    registry.freeze();
+    CHECK_FALSE(registry.add("plugin.example.other", toolPie()));
+}
+
+TEST_CASE("preset pie layout overrides built-in defaults") {
+    auto preset = hammerPreset();
+    preset.pies["pie.tools"] = PieMenu{"Custom", {{"tool.rope", PieSlot::N, "Rope"}}};
+    REQUIRE(pieFor("pie.tools", preset));
+    CHECK(pieFor("pie.tools", preset)->title == "Custom");
+    REQUIRE(pieFor("pie.objects", preset));
+    CHECK(pieFor("pie.objects", preset)->title == objectPie().title);
+}

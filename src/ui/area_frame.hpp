@@ -33,7 +33,7 @@ void setPanelGameContent(QWidget* panel, GameContent* content);
 
 // The role switcher at the start of every area header (Blender's editor-type menu).
 QToolButton* makeRoleButton(viewport::AreaRole current, std::function<void(viewport::AreaRole)> choose,
-                            QWidget* parent);
+                            QWidget* parent, std::function<void(std::string)> choosePlugin = {});
 QToolButton* makeCollapseButton(std::function<void()> collapse, QWidget* parent);
 // Split, maximize, open in a new window (panels only) and close: the tail of every area menu.
 struct AreaMenuActions {
@@ -56,6 +56,7 @@ public:
 
 signals:
     void roleRequested(viewport::NodeId pane, viewport::AreaRole role);
+    void pluginPanelRequested(viewport::NodeId pane, QString panel);
     void collapseRequested(viewport::NodeId pane);
     void splitRequested(viewport::NodeId pane, viewport::Orientation orientation);
     void closeRequested(viewport::NodeId pane);

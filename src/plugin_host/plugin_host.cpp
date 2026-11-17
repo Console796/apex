@@ -2,6 +2,7 @@
 #include "core/kv3.hpp"
 #include "core/log.hpp"
 #include "document/document.hpp"
+#include "editor/editor_session.hpp"
 #include <apex/apex_plugin.h>
 
 #include <algorithm>
@@ -113,6 +114,26 @@ bool inNamespace(std::string_view plugin, std::string_view id) {
     return id.starts_with(prefix) && id.size() > prefix.size();
 }
 
+namespace {
+class RegisteredTool final : public editor::Tool {
+public:
+    RegisteredTool(std::string id, std::function<void()> activate, std::function<void()> deactivate)
+        : id_(std::move(id)), activate_(std::move(activate)), deactivate_(std::move(deactivate)) {}
+    editor::ToolId id() const override { return id_; }
+    void activate() override { if (activate_) activate_(); }
+    void deactivate() override { if (deactivate_) deactivate_(); }
+    editor::Handled input(const editor::InputEvent&, const editor::ToolView&) override { return false; }
+    const editor::Preview& preview() const override { return preview_; }
+    editor::ToolOverlay overlay(const editor::ToolView&, editor::InputSource) const override { return {}; }
+    editor::ToolReadout readout() const override { return {}; }
+    void cancel() override {}
+private:
+    std::string id_;
+    std::function<void()> activate_, deactivate_;
+    editor::Preview preview_;
+};
+}
+
 struct Host::Impl {
     struct Loaded { std::size_t index; Library library; const apex_plugin* plugin; };
     std::filesystem::path state;
@@ -125,16 +146,83 @@ struct Host::Impl {
     std::string scratch, lastError;
     apex_host host{};
     apex_document_v1 documentApi{};
+    apex_registration_v1 registrationApi{};
+    std::string registering;
+    std::function<bool(std::string, std::string)> panelRegistrar;
+    struct Registration {
+        enum class Kind { Action, Tool, Panel } kind;
+        std::string id, name, description, owner;
+        void* user;
+        apex_callback first, second;
+    };
+    std::vector<Registration> pending;
     Impl(std::filesystem::path s, std::filesystem::path b, std::function<void(std::string_view)> log)
         : state(std::move(s)), breadcrumb(b), logger(std::move(log)) {
         std::ifstream file(state);
         for (std::string line; std::getline(file, line);) if (!line.empty()) disabled.insert(line);
         host = {sizeof(host), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, this, interface, writeLog, error};
         documentApi = {sizeof(documentApi), info, rootAt, node, childAt, keyAt};
+        registrationApi = {sizeof(registrationApi), registerAction, registerTool, registerPanel};
     }
     static Impl& self(void* context) { return *static_cast<Impl*>(context); }
     static const void* interface(void* context, apex_str name) {
-        return view(name) == "apex.document/1" ? &self(context).documentApi : nullptr;
+        if (view(name) == "apex.document/1") return &self(context).documentApi;
+        if (view(name) == "apex.registration/1") return &self(context).registrationApi;
+        return nullptr;
+    }
+    static apex_status registerItem(void* context, Registration::Kind kind, apex_str id, apex_str name,
+                                    apex_str description, void* user, apex_callback first, apex_callback second) {
+        auto& s = self(context);
+        if (s.registering.empty() || editor::actionRegistry().frozen() || editor::toolRegistry().frozen())
+            return APEX_ERR_STATE;
+        const auto idText = view(id);
+        if (!inNamespace(s.registering, idText) || view(name).empty()) {
+            s.lastError = "registration outside plugin namespace or missing name";
+            return APEX_ERR_INVALID;
+        }
+        if (std::ranges::any_of(s.pending, [&](const auto& p) { return p.id == idText; }) ||
+            (kind != Registration::Kind::Panel && editor::actionRegistry().find(idText)) ||
+            (kind == Registration::Kind::Tool && std::ranges::any_of(editor::toolRegistry().entries(),
+                                                     [&](const auto& tool) { return tool.id == idText; }))) {
+            s.lastError = "duplicate registration";
+            return APEX_ERR_INVALID;
+        }
+        if (kind == Registration::Kind::Action && !first) return APEX_ERR_INVALID;
+        if (kind == Registration::Kind::Panel && !s.panelRegistrar) return APEX_ERR_UNSUPPORTED;
+        s.pending.push_back({kind, std::string(idText), std::string(view(name)), std::string(view(description)),
+                             s.registering, user, first, second});
+        return APEX_OK;
+    }
+    static apex_status registerAction(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback fn) {
+        return registerItem(c, Registration::Kind::Action, id, name, desc, user, fn, nullptr);
+    }
+    static apex_status registerTool(void* c, apex_str id, apex_str name, apex_str desc, void* user, apex_callback on, apex_callback off) {
+        return registerItem(c, Registration::Kind::Tool, id, name, desc, user, on, off);
+    }
+    static apex_status registerPanel(void* c, apex_str id, apex_str title) {
+        return registerItem(c, Registration::Kind::Panel, id, title, {}, nullptr, nullptr, nullptr);
+    }
+    void callback(const std::string& owner, const char* name, apex_callback fn, void* user) {
+        if (!fn) return;
+        Mark mark(breadcrumb, owner, name);
+        try { fn(user); } catch (...) { lastError = "exception in plugin callback"; }
+    }
+    void commitRegistrations() {
+        for (const auto& r : pending) {
+            if (r.kind == Registration::Kind::Panel) { panelRegistrar(r.id, r.name); continue; }
+            const auto callbackFn = [this, owner = r.owner, user = r.user, fn = r.first] { callback(owner, "action", fn, user); };
+            editor::mutableActionRegistry().add({r.id, r.name, "Plugin", r.description},
+                                                  r.kind == Registration::Kind::Action ? callbackFn : std::function<void()>{});
+            if (r.kind == Registration::Kind::Tool) {
+                auto* selfPtr = this;
+                editor::mutableToolRegistry().add(r.id, [selfPtr, r](editor::EditorSession&) {
+                    auto on = [selfPtr, r] { selfPtr->callback(r.owner, "tool.activate", r.first, r.user); };
+                    auto off = [selfPtr, r] { selfPtr->callback(r.owner, "tool.deactivate", r.second, r.user); };
+                    return std::make_unique<RegisteredTool>(r.id, std::move(on), std::move(off));
+                });
+            }
+        }
+        pending.clear();
     }
     static void writeLog(void* context, int, apex_str message) {
         auto& s = self(context);
@@ -274,12 +362,19 @@ void Host::activate(bool safeMode) {
             closeLibrary(lib); continue;
         }
         if (plugin->abi_minor > APEX_PLUGIN_ABI_MINOR) { item.error = "plugin requires newer ABI minor"; closeLibrary(lib); continue; }
+        impl_->registering = item.id;
+        impl_->pending.clear();
         try {
             if (plugin->activate) { Mark mark(impl_->breadcrumb, item.id, "activate"); if (plugin->activate(plugin->user) != APEX_OK) item.error = "activation failed"; }
         } catch (...) { item.error = "exception in activate"; }
-        if (!item.error.empty()) { closeLibrary(lib); continue; }
+        impl_->registering.clear();
+        if (!item.error.empty()) { impl_->pending.clear(); closeLibrary(lib); continue; }
+        impl_->commitRegistrations();
         impl_->loaded.push_back({i, lib, plugin}); item.loaded = true;
     }
+}
+void Host::setPanelRegistrar(std::function<bool(std::string, std::string)> registrar) {
+    impl_->panelRegistrar = std::move(registrar);
 }
 void Host::setDocument(const document::Document* document) {
     for (const auto& loaded : impl_->loaded) {

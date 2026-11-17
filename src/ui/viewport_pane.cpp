@@ -901,7 +901,8 @@ PaneFrame::PaneFrame(viewport::NodeId pane, ViewportAccessor accessor, PaneWindo
     auto* row = new QHBoxLayout(header);
     row->setContentsMargins(2, 2, 2, 2);
     row->addWidget(makeRoleButton(viewport::AreaRole::Viewport,
-                                  [this](viewport::AreaRole role) { emit roleRequested(pane_, role); }, header));
+                                  [this](viewport::AreaRole role) { emit roleRequested(pane_, role); }, header,
+                                  [this](std::string id) { emit pluginPanelRequested(pane_, QString::fromStdString(id)); }));
     title_ = new QLabel;
     title_->setObjectName(QStringLiteral("PaneTitle"));
     bakeStatus_ = new QLabel(this);

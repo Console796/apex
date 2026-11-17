@@ -1,6 +1,7 @@
 #include "plugin_host/plugin_host.hpp"
 #include "document/vmf.hpp"
 #include "document/document.hpp"
+#include "editor/editor_session.hpp"
 #include <doctest/doctest.h>
 #include <filesystem>
 #include <fstream>
@@ -144,4 +145,28 @@ TEST_CASE("document interface reads hierarchy and duplicate keyvalues") {
     REQUIRE(host.plugins().size() == 1);
     CAPTURE(host.plugins()[0].error);
     CHECK(host.plugins()[0].loaded);
+}
+
+TEST_CASE("plugin activation registers only its namespace with editor registries") {
+    Temp temp;
+    temp.manifest("example", entryFor(REGISTRATION_PLUGIN_PATH));
+    std::vector<std::string> logs, panels;
+    Host host(temp.path / "state", temp.path / "breadcrumb", [&](std::string_view text) { logs.emplace_back(text); });
+    host.setPanelRegistrar([&](std::string id, std::string) { panels.push_back(std::move(id)); return true; });
+    host.discover({temp.path});
+    host.activate();
+    REQUIRE(host.plugins().size() == 1);
+    CAPTURE(host.plugins()[0].error);
+    REQUIRE(host.plugins()[0].loaded);
+    CHECK_FALSE(editor::actionRegistry().find("plugin.other.action"));
+    REQUIRE(editor::actionRegistry().find("plugin.example.action"));
+    REQUIRE(editor::actionRegistry().find("plugin.example.tool"));
+    CHECK(panels == std::vector<std::string>{"plugin.example.panel"});
+    editor::EditorSession session;
+    REQUIRE(session.perform("plugin.example.action"));
+    REQUIRE_FALSE(logs.empty());
+    CHECK(logs.back() == "action called");
+    REQUIRE(session.perform("plugin.example.tool"));
+    CHECK(session.activeTool() == "plugin.example.tool");
+    CHECK(logs.back() == "tool activated");
 }

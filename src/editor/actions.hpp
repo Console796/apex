@@ -3,6 +3,7 @@
 #include "core/result.hpp"
 
 #include <compare>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -28,11 +29,20 @@ public:
     explicit Actions(std::vector<Action> entries);
     const std::vector<Action>& entries() const { return entries_; }
     const Action* find(std::string_view id) const;
+    // Registrations are appended in order; duplicates and changes after freeze are refused.
+    bool add(Action action, std::function<void()> invoke = {});
+    bool invoke(std::string_view id) const;
+    void freeze() { frozen_ = true; }
+    bool frozen() const { return frozen_; }
 
 private:
     std::vector<Action> entries_;
+    bool frozen_ = false;
+    std::map<ActionId, std::function<void()>, std::less<>> callbacks_;
 };
 
+using ActionRegistry = Actions;
+ActionRegistry& mutableActionRegistry();
 const Actions& actionRegistry();
 
 struct KeyChord {
@@ -67,9 +77,21 @@ struct Binding {
     bool provisional = false;
 };
 
+enum class PieSlot { N, NE, E, SE, S, SW, W, NW };
+struct PieItem {
+    ActionId action;
+    std::optional<PieSlot> slot;
+    std::string label;
+};
+struct PieMenu {
+    std::string title;
+    std::vector<PieItem> items;
+};
+
 struct Preset {
     std::string name;
     std::map<ActionId, Binding, std::less<>> bindings;
+    std::map<ActionId, PieMenu, std::less<>> pies;
 };
 
 const Preset& hammerPreset(); // Default preset.

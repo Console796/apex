@@ -158,3 +158,20 @@ TEST_CASE("layout rejects plugin panes without a panel identity") {
         CHECK_FALSE(ViewportLayout::fromJson(*parsed));
     }
 }
+
+TEST_CASE("plugin panel registry sets and preserves a panel role") {
+    AreaRoleRegistry registry;
+    REQUIRE(registry.add({"plugin.example.stats", "Statistics"}));
+    CHECK_FALSE(registry.add({"plugin.example.stats", "Duplicate"}));
+    CHECK_FALSE(registry.add({"invalid", "Invalid"}));
+    registry.freeze();
+    CHECK_FALSE(registry.add({"plugin.example.other", "Other"}));
+    ViewportLayout layout;
+    const auto pane = layout.paneIds().front();
+    REQUIRE(layout.setPluginPanel(pane, "plugin.example.stats"));
+    CHECK(layout.role(pane) == AreaRole::Plugin);
+    CHECK(layout.panelId(pane) == "plugin.example.stats");
+    const auto restored = ViewportLayout::fromJson(layout.toJson());
+    REQUIRE(restored);
+    CHECK(restored->panelId(pane) == "plugin.example.stats");
+}
