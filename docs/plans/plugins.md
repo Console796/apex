@@ -1,6 +1,6 @@
 # Apex: plugin interface design for 0.9
 
-**Status: draft, 2026-11-16. The owner accepted every recommendation on 2026-11-16, including the four
+**Status: accepted 2026-11-16; as built at 0.9 feature-complete, release checks open (2026-11-17); ABI major 1 minor 0 frozen (§11). Corrections made at 0.9.9 are marked "As built" in §2, D5, D7 and §7. Original status: draft, 2026-11-16. The owner accepted every recommendation on 2026-11-16, including the four
 owner decisions (D1, D8, D10, D12); godot-acoustics is one input among others (§9).** This is the cross-milestone design for the plugin interface, written
 ahead of the 0.9 milestone plan, which adds the sub-milestones' detail and owns the release gates. D11 stays
 gated on probe P2, and the probes in §4 can still reverse a decision.
@@ -57,7 +57,7 @@ Symbols, not line numbers, because the 0.8 branch is still moving.
   `createFragment`, `commit`.
 - **Identity.** `NodeId` (uint64) and `SideId` (int) are stable across edits and undo. `NodeHandle`s and
   `Node*` are invalidated by arena mutations.
-- **Change notification.** `Document::observe(Observer)` where `Observer` is `std::function<void()>`, no
+- **Change notification.** *(As built: `ChangeSet` also carries `NodeId`s, `createdIds`, `modifiedIds` with flags and `destroyedIds`, filled in `document/` where the IDs are already known, plans/0.9.md D3; the host builds the C notice from them with no lookup.)* `Document::observe(Observer)` where `Observer` is `std::function<void()>`, no
   payload; `Transaction::commit()` returns a `ChangeSet` of **handles**. Observers run synchronously on the
   single writer thread and must not mutate the document. `historyState()` is a stable revision identity.
 - **Actions and keymap** (`editor/actions.hpp`): `actionRegistry()` is a static, declaration-ordered list;
@@ -70,7 +70,7 @@ Symbols, not line numbers, because the 0.8 branch is still moving.
 - **VFS** (`assets/vfs.hpp`): main-thread owner, "earlier mounts win"; `walkTask()` returns a closure that
   **runs on workers** while the VFS is immutable.
 - **Layers** (`tools/check_layers.py`): `core` → `document`/`geometry` → `assets` → `render` →
-  `viewport` → `editor` → `ui` → `app`; Qt only in `ui`/`app`.
+  `viewport` → `editor` → `ui` → `app`; Qt only in `ui`/`app`. *(As built: `plugin_host` sits between `editor` and `ui`, may use `editor`, `assets` and `render`, and is Qt-free; `include/apex/` may include nothing from `src/` and no Qt.)*
 - **Already built, so not 0.9 scope:** a theme editor (`ui/theme_editor.hpp`, `ThemeEditorDialog`, since
   0.3.4). The roadmap's "theme editor" item reduces to letting plugins ship themes (D8).
 
@@ -198,7 +198,7 @@ one undo step, captures selection like built-in tools, gets sidelist upkeep (0.8
 free. A plugin can't open a raw `Document::begin()`. An op that throws inside the transaction aborts the
 batch, and the plugin gets `APEX_ERR_INVALID` with the message.
 
-**Notify** (`apex.document/1` `on_changed`): `{revision, created[], modified[] (id + dirty flags),
+**Notify** (`apex.document/1` `on_changed`) *(As built: the host does not build a shadow map. `ChangeSet` now carries `createdIds`, `modifiedIds` and `destroyedIds` itself, filled in `Transaction::commit` and `Document::restore`, plans/0.9.md D3.)*: `{revision, created[], modified[] (id + dirty flags),
 destroyed[], vanished_sides[], undo_or_redo}` as **IDs**. The current `Observer` has no payload and the
 `ChangeSet` holds handles, so the host builds the ID set when the transaction commits (and for undo/redo
 from the history delta) and keeps it for the notification. Observers must not mutate the document, so a
@@ -234,14 +234,14 @@ plugin's namespace. `actionRegistry()` becomes a registry with a static built-in
 
 A plugin may ship **suggested bindings** per preset. They are applied only where the chord is free; a
 conflict leaves the action unbound with `Unbound{"conflicts with <action>"}` instead of throwing, which
-`Keymap`'s constructor does today for any problem. A user's saved binding to an action whose plugin is not
+`Keymap`'s constructor does today for any problem. *(As built, plans/0.9.md D1: `validate()` requires bindings only for built-in actions, so a registered plugin action with no preset entry is unbound; `parsePreset()` keeps `plugin.*` entries with no registered action as dormant bindings, carried through `serializePreset` and skipped when the `Keymap` is built. Suggested bindings are keyed by preset name.)* A user's saved binding to an action whose plugin is not
 loaded stays in the preset file, is skipped when building the `Keymap` (marked `provisional`-like, so it
 is not a validation error), and comes back when the plugin does. The keymap editor shows such bindings
 greyed with the plugin's name.
 
 Pies (0.3 D20): user-editable pie layouts are preset data (`Preset` gains `pies`), and a pie item is an
 action ID, so a plugin tool or action can be placed in any pie with no pie-specific API. A plugin can
-suggest a pie of its own; the 0.4 D13 "More" level is where tools beyond the eighth go.
+suggest a pie of its own; the 0.4 D13 "More" level is where tools beyond the eighth go. *(As built, 0.9.8: pie layouts are in presets and edited on a Pies page. A plugin-suggested pie, the "More" level and `pie.user.<name>` were cut.)*
 
 ### D8: Panels are declarative in 0.9; a native Qt escape hatch is explicitly unstable (owner: accepted, Qt tier not shipped in 0.9)
 
@@ -402,9 +402,11 @@ session test. That is how the exit criterion is tested.
 
 ## 7. Not plugin-interface work, but in the 0.9 milestone
 
-- **Keymap editor** over `Preset` (0.2 D15), with D7's plugin and dormant bindings.
-- **Pie editor** over the preset's pie layouts (D7).
-- **Theme editor**: already built (§2); 0.9 adds plugin-shipped themes (D8).
+*As built (corrected at 0.9.9, plans/0.9.md D7): the keymap and pie work is pie layouts stored in presets plus plugin awareness on the existing Keybindings page, not a new editor; the theme work is plugin-shipped themes only.*
+
+- **Keymap editor** over `Preset` (0.2 D15), with D7's plugin and dormant bindings. *As built: the Keybindings page (0.2.12) gained plugin grouping and dormant and suggested rows; no second editor.*
+- **Pie editor** over the preset's pie layouts (D7). *As built: a Pies page; `pie.user.*` and "More" cut.*
+- **Theme editor**: already built (§2); 0.9 adds plugin-shipped themes (D8). *As built: `themes/*.json` in the plugin folder, read-only, "Duplicate to edit"; no new C interface.*
 - **Plugin manager** UI (D9).
 
 ## 8. Sub-milestones (proposed)

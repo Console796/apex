@@ -23,10 +23,11 @@ which mirrors the CMake link graph:
 | `assets` | [`src/assets/`](../../src/assets/) | `core` | Virtual filesystem, game profiles, addons and addon authoring, VMT, VTF, FGD, indexes, caches, model baking. |
 | `render` | [`src/render/`](../../src/render/) | `document`, `assets`, `lighting` | Vulkan context, renderer and its `Lit` passes, swapchain, texture heap, thumbnails. |
 | `viewport` | [`src/viewport/`](../../src/viewport/) | `render`, `document` | Cameras, display modes, split layouts, workspaces, picking maths. |
-| `ui` | [`src/ui/`](../../src/ui/) | `viewport`, `editor` | Qt widgets, panels, dialogs, the GPU host that puts Vulkan into a Qt widget. |
+| `plugin_host` | [`src/plugin_host/`](../../src/plugin_host/) | `editor`, `assets`, `render` | Host side of the plugin C ABI (0.9): loader, interface tables, tool adapter, AngelScript host. Qt-free. |
+| `ui` | [`src/ui/`](../../src/ui/) | `viewport`, `editor`, `plugin_host` | Qt widgets, panels, dialogs, the GPU host that puts Vulkan into a Qt widget. |
 | `app` | [`src/app/`](../../src/app/) | `ui` | `main()` only. |
 
-Two rules are enforced, and CI runs the check:
+Three rules are enforced, and CI runs the check:
 
 1. **Include direction.** A layer may include only its own dependency closure. Violations are
    reported as `layer 'x' must not include 'y'`.
@@ -34,6 +35,7 @@ Two rules are enforced, and CI runs the check:
    below the UI are plain C++. `core`, `geometry`, `document`, `compile`, `lighting`, `editor` and
    `assets` build and test without a window. The render tests need a Vulkan device, and lavapipe is
    the required one.
+3. **The public plugin headers stand alone.** Files under `include/apex/` may include nothing from `src/` and no Qt, and `plugin.hpp` includes only `apex_plugin.h` and the standard library.
 
 `tools/check_layers.py` also rejects any use of `processModelData`, which is forbidden because Apex
 owns model baking itself. CI runs the check. [../development.md](../development.md) asks you to run

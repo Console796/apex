@@ -33,6 +33,11 @@ cmake --preset linux-clang-release
 cmake --build --preset linux-clang-release -j6
 ```
 
+On the development machine, use the memory-capped wrappers instead of calling CMake directly:
+`scripts/memcheck.sh` before a first build, then `scripts/build.sh linux-clang-release` and
+`scripts/test.sh linux-clang-release`. They size `-j` from available memory and run the build in a
+cgroup. Do not pass your own `-j` to them.
+
 Presets are `linux-gcc-{debug,release}`, `linux-clang-{debug,release}`, `linux-asan` (GCC
 ASan+UBSan), `linux-fuzz` (Clang libFuzzer) and `windows-msvc-{debug,release}`. Build trees go
 under `build/<preset>/`. Iterate on `linux-clang-release`: it builds several times faster than
@@ -93,6 +98,19 @@ python3 tools/check_layers.py
 
 and also `git diff --check`.
 
+### Plugin SDK and docs (0.9)
+
+- `plugin_docs_check` runs `python3 tools/check_docs.py`: every snippet in `docs/plugins/` is verbatim from the
+  examples or headers, links stay inside `docs/plugins/`, every page is listed in the README, and
+  `docs/plugin-sdk.md` stays a short pointer. `python3 tools/check_docs.py --self-test` plants failures.
+  `tools/check_layers.py` also enforces that `include/apex/` includes nothing from `src/` and no Qt.
+- `plugin_sdk_out_of_tree` installs the `sdk` component, then builds three examples from the installed SDK with no Apex
+  include path and loads the result. It skips (exit 77) where it cannot. Build the SDK archive with
+  `python3 tools/package.py --sdk`.
+- ABI struct sizes are golden in `tests/plugin_host/abi_layout.inc`; changing a plugin header struct means updating it
+  in the same change (and the ABI minor). Use `scripts/test.sh` for all of this as usual.
+- The AngelScript script host is built when `APEX_WITH_ANGELSCRIPT` is ON (the default).
+
 ## 4. Environment for the full gate
 
 Put these in your shell profile (for example `~/.zshrc`):
@@ -126,6 +144,7 @@ tools/install-hooks.sh                 # opt-in pre-push hook running --fast
 The full gate runs these stages:
 - the build-number counter;
 - `linux-gcc-release`, `linux-clang-release` and `linux-asan`, each with configure, build and test;
+- `check_layers.py`, its self-test and `check_docs.py`;
 - the KV1 corpus test;
 - the srctools crosscheck;
 - the GPU render tests on lavapipe (required) and RADV (optional);
