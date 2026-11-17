@@ -1813,7 +1813,7 @@ void MainWindow::refreshThemeMenu() {
             themeMenu_->addSeparator();
             separated = true;
         }
-        auto* a = themeMenu_->addAction(t.name, this, [this, id = t.id] { setThemeId(id); });
+        auto* a = themeMenu_->addAction(isPluginTheme(t) ? tr("%1 (plugin %2)").arg(t.name, t.plugin) : t.name, this, [this, id = t.id] { setThemeId(id); });
         a->setCheckable(true);
         a->setChecked(t.id == currentThemeId());
         a->setObjectName(QStringLiteral("theme_%1").arg(t.id));

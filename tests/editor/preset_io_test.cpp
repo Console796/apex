@@ -1,3 +1,4 @@
+#include "editor/pie_menus.hpp"
 #include "editor/preset_io.hpp"
 
 #include <doctest/doctest.h>
@@ -89,6 +90,18 @@ TEST_CASE("assigning a chord takes it from its previous owner") {
     CHECK(blender.bindings.at("gizmo.mode.translate").context == BindingContext::SelectToolActive);
     CHECK(validate(blender).empty());
 
+    // P0 (0.9.8): the Blender preset's tool-scoped bindings keep their scope through clear and rebind,
+    // and a chord is only "owned" within its own context.
+    Preset scoped = blenderPreset();
+    REQUIRE(scoped.bindings.at("apply.click").context == BindingContext::forTool("tool.apply"));
+    assignChords(scoped, "apply.click", {});
+    CHECK(std::holds_alternative<Unbound>(scoped.bindings.at("apply.click").value));
+    assignChords(scoped, "apply.click", {chord("Alt")});
+    CHECK(scoped.bindings.at("apply.click").context == BindingContext::forTool("tool.apply"));
+    CHECK(chordOwner(scoped, chord("1"), "vertex.mode.vertex", BindingContext::Always) == "selection.mode.groups");
+    CHECK(chordOwner(scoped, chord("1"), "selection.mode.groups", BindingContext::forTool("tool.vertex")) == "vertex.mode.vertex");
+    CHECK(validate(scoped).empty());
+
     unbindAction(preset, "edit.redo");
     CHECK(validate(preset).empty());
     CHECK(allowsHeldModifier("snap.suspend"));
@@ -175,4 +188,37 @@ TEST_CASE("P1 preset pies reject incomplete and conflicting layouts") {
         CHECK_FALSE(parsed);
         if (!parsed) CHECK(parsed.error().what() != std::string{});
     }
+}
+
+TEST_CASE("an edited pie round-trips through the preset store, dormant items included") {
+    TempDir dir;
+    PresetStore store(dir.path);
+    Preset mine = hammerPreset();
+    mine.name = "Pies";
+    CHECK(serializePreset(mine).find("pies") == std::string::npos);  // No layouts: nothing stored, defaults apply.
+    mine.pies["pie.tools"] = PieMenu{"My tools", {{"tool.rope", PieSlot::N, "Rope"},
+                                                  {"plugin.absent.action", PieSlot::SE, "Gone"},
+                                                  {"edit.undo", PieSlot::W, "Undo"}}};
+    REQUIRE(store.save(mine));
+    const auto loaded = store.find("Pies");
+    REQUIRE(loaded);
+    REQUIRE(loaded->pies.contains("pie.tools"));
+    const auto& menu = loaded->pies.at("pie.tools");
+    CHECK(menu.title == "My tools");
+    REQUIRE(menu.items.size() == 3);
+    CHECK(pieItemAt(menu, PieSlot::SE)->action == "plugin.absent.action");  // Kept although no plugin provides it.
+    CHECK(pieItemAt(menu, PieSlot::W)->label == "Undo");
+    CHECK_FALSE(loaded->pies.contains("pie.objects"));
+    CHECK(effectivePie("pie.objects", *loaded).items.size() == objectPie().items.size());
+}
+
+TEST_CASE("the preset store refuses a pie the loader would reject") {
+    TempDir dir;
+    PresetStore store(dir.path);
+    Preset bad = hammerPreset();
+    bad.name = "BadPie";
+    bad.pies["pie.tools"] = PieMenu{"Dup", {{"tool.rope", PieSlot::N, "A"}, {"tool.clip", PieSlot::N, "B"}}};
+    const auto saved = store.save(bad);
+    CHECK_FALSE(saved);
+    CHECK(store.list().empty());
 }

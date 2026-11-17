@@ -1,6 +1,7 @@
 #include "editor/preset_io.hpp"
 
 #include "core/json.hpp"
+#include "editor/pie_menus.hpp"
 
 #include <array>
 #include <algorithm>
@@ -235,8 +236,11 @@ std::vector<ActionId> assignChords(Preset& preset, const ActionId& id, std::vect
         unbindAction(preset, id);
         return changed;
     }
-    // A rebind takes the action's usual context so W/E/R and the arrows stay tool-scoped.
-    if (std::holds_alternative<Unbound>(binding.value)) binding.context = defaultBinding(id).context;
+    // A rebind takes the action's usual context so W/E/R and the arrows stay tool-scoped. A context the
+    // preset already gave the binding wins: defaultBinding reads Hammer, so without this a cleared
+    // Blender "apply.click" (Ctrl, tool.apply) would come back as a global Ctrl.
+    if (std::holds_alternative<Unbound>(binding.value) && binding.context == BindingContext::Always)
+        binding.context = defaultBinding(id).context;
     binding.value = std::move(chords);
     binding.provisional = false;
     return changed;
@@ -275,6 +279,10 @@ Result<void> PresetStore::save(const Preset& preset) const {
     if (!name) return std::unexpected(name.error());
     if (const auto problems = validate(preset); !problems.empty())
         return std::unexpected(Error{ErrorCode::InvalidArgument, problems.front()});
+    // A pie `parsePreset` would reject must not reach disk: the preset would then vanish from `list()`.
+    for (const auto& [id, menu] : preset.pies)
+        if (const auto problems = validatePie(menu); !problems.empty())
+            return std::unexpected(Error{ErrorCode::InvalidArgument, "Pie " + id + ": " + problems.front()});
     std::error_code ec;
     std::filesystem::create_directories(directory_, ec);
     if (ec) return std::unexpected(Error{ErrorCode::IoError, "Cannot create " + directory_.string() + ": " + ec.message()});

@@ -79,6 +79,7 @@ public:
     editor::EditorSession& editorSession() { return session_; }
     document::Document* document() const { return document_.get(); }
     void setPluginHost(plugin_host::Host* host);
+    plugin_host::Host* pluginHost() const { return pluginHost_; }
     const QString& documentPath() const { return path_; }
 
     void setTheme(Theme theme);

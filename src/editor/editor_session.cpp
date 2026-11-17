@@ -420,6 +420,7 @@ bool EditorSession::isToolEnabled(const ActionId& action) const {
 }
 bool EditorSession::isPieItemEnabled(const ActionId& action) const {
     if (tools_.contains(action)) return isToolEnabled(action);
+    if (action.starts_with("plugin.")) return document_ != nullptr; // A plugin action decides for itself.
     return document_ && !selectedNodes(selection_).empty();
 }
 bool EditorSession::perform(const ActionId& action) {
@@ -1345,7 +1346,11 @@ bool EditorSession::input(const InputEvent& event, const ToolView& view) {
     }
     if (event.kind == InputKind::KeyDown && !event.autoRepeat && event.chord) {
         const auto action = keymap_.lookup(*event.chord, BindingContext::forTool(activeTool_));
-        if (const auto* menu = action ? pieFor(*action, preset_) : nullptr) {
+        const auto* layout = action ? pieFor(*action, preset_) : nullptr;
+        // Dormant items (a plugin that is absent) are left out of what opens, not out of the preset.
+        const auto shown = layout ? visiblePie(*layout) : PieMenu{};
+        if (layout && !shown.items.empty()) {
+            const auto* menu = &shown;
             if (event.navigating) pieRefusal_ = "Stop navigating first.";
             else if (activeToolObject().owns(event.source) || transformActive())
                 pieRefusal_ = "Finish the current gesture first.";

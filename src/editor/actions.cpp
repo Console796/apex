@@ -499,7 +499,10 @@ Keymap::Keymap(const Preset& preset, const Actions& actions) {
         const auto context = contextIt == action.suggestedContexts.end() ? BindingContext::Always : BindingContext::forTool(contextIt->second);
         const auto [it, inserted] = entries_.emplace(std::pair{context, *chord}, action.id);
         if (!inserted) suggestionConflicts_[action.id] = "conflicts with " + it->second;
-        else if (context.toolId.empty()) suggestedChords_.emplace(action.id, *chord);
+        else {
+            suggestions_.emplace(action.id, Suggestion{*chord, context});
+            if (context.toolId.empty()) suggestedChords_.emplace(action.id, *chord);
+        }
     }
 }
 

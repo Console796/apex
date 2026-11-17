@@ -538,3 +538,17 @@ number (the floor alone was 5.9 ms).
 Limits of the measurement: one machine, one compiler, the in-process test harness (no rendering); MSVC and
 Windows were not measured.
 
+### P0 (0.9.8): Keybindings page and tool-scoped contexts
+
+Finding: the page already lists every registry action with its binding context in the When column. Rebinding
+keeps the binding's context (`assignChords`), and a chord's owner is checked within that context only, so the
+global `selection.mode.groups` = 1 coexists with `vertex.mode.vertex` = 1 in `tool.vertex`. Both Hammer and
+Blender carry tool-scoped bindings (Blender `apply.click` = Ctrl and `apply.lift_aligned` = Shift in `tool.apply`;
+`vertex.mode.*` in `tool.vertex`). Gaps: no UI to change an action's context (not built: editing a scoped
+binding already works through the kept context), the When column showed the raw "Tool active: <id>" (now the
+tool name), and no tests of scoped rows (added). A real defect: a cleared tool-scoped Blender binding that was
+rebound took Hammer's default context (Always); fixed in `assignChords`.
+
+0.9.8 decisions: pie layouts are stored in presets and edited on a Pies page (D7); plugin themes come from
+`themes/*.json` in the plugin folder, with no new C interface; suggested bindings are shown as suggestions,
+not as unbound (I-7). Cut: `pie.user.<name>` pies, the "More" level, plugin-suggested pie items.

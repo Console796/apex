@@ -22,6 +22,7 @@ struct Action {
     std::string description;
     std::map<std::string, std::string, std::less<>> suggestedBindings{}; // preset name -> chord
     std::map<std::string, std::string, std::less<>> suggestedContexts{}; // preset name -> tool ID
+    std::string owner{}; // The plugin ID for a plugin action (the settings page groups by it); empty for built-ins.
 };
 
 // Entries retain declaration order, independently of a preset's map order.
@@ -108,6 +109,9 @@ public:
     explicit Keymap(const Preset& preset, const Actions& actions = actionRegistry());
     const std::map<ActionId, std::string, std::less<>>& suggestionConflicts() const { return suggestionConflicts_; }
     const std::map<ActionId, KeyChord, std::less<>>& suggestedChords() const { return suggestedChords_; }
+    // Every suggestion that took effect (any context). The keybinding page shows these as suggestions.
+    struct Suggestion { KeyChord chord; BindingContext context; };
+    const std::map<ActionId, Suggestion, std::less<>>& suggestions() const { return suggestions_; }
     std::optional<ActionId> lookup(const KeyChord& chord,
                                   BindingContext activeTool = BindingContext::Always) const;
 
@@ -115,6 +119,7 @@ private:
     std::map<std::pair<BindingContext, KeyChord>, ActionId> entries_;
     std::map<ActionId, std::string, std::less<>> suggestionConflicts_;
     std::map<ActionId, KeyChord, std::less<>> suggestedChords_;
+    std::map<ActionId, Suggestion, std::less<>> suggestions_;
 };
 
 } // namespace apex::editor

@@ -282,11 +282,19 @@ TEST_CASE("suggested plugin bindings report conflicts and never override the use
     CHECK(suggested.lookup(chord("F24")) == "plugin.example.available");
     CHECK_FALSE(suggested.lookup(chord("F23")));
     CHECK(suggested.lookup(chord("F23"), BindingContext::forTool("plugin.example.tool")) == "plugin.example.scoped");
+    // The settings page lists these: every suggestion that took effect, with its context.
+    REQUIRE(suggested.suggestions().contains("plugin.example.available"));
+    CHECK(suggested.suggestions().at("plugin.example.available").chord == chord("F24"));
+    CHECK(suggested.suggestions().at("plugin.example.available").context == BindingContext::Always);
+    REQUIRE(suggested.suggestions().contains("plugin.example.scoped"));
+    CHECK(suggested.suggestions().at("plugin.example.scoped").context == BindingContext::forTool("plugin.example.tool"));
+    CHECK_FALSE(suggested.suggestions().contains("plugin.example.conflict"));
     REQUIRE(suggested.suggestionConflicts().contains("plugin.example.conflict"));
     CHECK(suggested.suggestionConflicts().at("plugin.example.conflict").find("edit.undo") != std::string::npos);
     preset.bindings["plugin.example.available"] = Binding{std::vector<KeyChord>{chord("F23")}};
     Keymap user(preset, actions);
     CHECK(user.lookup(chord("F23")) == "plugin.example.available");
     CHECK_FALSE(user.lookup(chord("F24")));
+    CHECK_FALSE(user.suggestions().contains("plugin.example.available"));  // A user binding replaces the suggestion.
     CHECK_FALSE(preset.bindings.contains("plugin.example.conflict"));
 }

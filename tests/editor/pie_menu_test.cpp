@@ -350,3 +350,71 @@ TEST_CASE("preset pie layout overrides built-in defaults") {
     REQUIRE(pieFor("pie.objects", preset));
     CHECK(pieFor("pie.objects", preset)->title == objectPie().title);
 }
+
+// ---- 0.9.8: pies in presets (plan 0.9 D7) ----
+
+TEST_CASE("built-in presets carry no pies and fall back to the built-in layouts") {
+    for (const auto* preset : {&hammerPreset(), &blenderPreset()}) {
+        CAPTURE(preset->name);
+        CHECK(preset->pies.empty());
+        CHECK_FALSE(hasOwnPie(*preset, "pie.tools"));
+        CHECK(pieFor("pie.tools", *preset) == pieFor("pie.tools"));
+        const auto tools = effectivePie("pie.tools", *preset);
+        CHECK(tools.title == toolPie().title);
+        CHECK(tools.items.size() == toolPie().items.size());
+        CHECK(effectivePie("pie.objects", *preset).items.size() == objectPie().items.size());
+    }
+    CHECK(effectivePie("pie.nonexistent", hammerPreset()).items.empty());
+    for (const auto& [id, menu] : pieRegistry().entries()) {
+        CAPTURE(id);
+        CHECK(validatePie(menu).empty());
+    }
+}
+
+TEST_CASE("an edited pie replaces the default for its preset only") {
+    auto preset = hammerPreset();
+    auto menu = effectivePie("pie.tools", preset);
+    setPieSlot(menu, PieSlot::N, {"edit.undo", {}, "Undo"});
+    REQUIRE(pieItemAt(menu, PieSlot::N));
+    CHECK(pieItemAt(menu, PieSlot::N)->action == "edit.undo");
+    CHECK(menu.items.size() == 8);  // The slot's old item was replaced, not appended beside it.
+    CHECK(validatePie(menu).empty());
+    preset.pies["pie.tools"] = menu;
+    CHECK(hasOwnPie(preset, "pie.tools"));
+    CHECK(effectivePie("pie.tools", preset).items.size() == 8);
+    CHECK(pieItemAt(effectivePie("pie.tools", preset), PieSlot::N)->action == "edit.undo");
+    CHECK(pieItemAt(effectivePie("pie.tools", hammerPreset()), PieSlot::N)->action == "tool.vertex");
+    CHECK(clearPieSlot(menu, PieSlot::N));
+    CHECK_FALSE(clearPieSlot(menu, PieSlot::N));
+    CHECK(menu.items.size() == 7);
+}
+
+TEST_CASE("pie validation names the three constraints") {
+    PieMenu menu{"Bad", {}};
+    CHECK(validatePie(menu).empty());
+    menu.items = {{"a", PieSlot::N, "A"}, {"b", PieSlot::N, "B"}};
+    CHECK_FALSE(validatePie(menu).empty());  // Duplicate slot.
+    menu.items = {{"a", std::nullopt, "A"}};
+    CHECK_FALSE(validatePie(menu).empty());  // No slot.
+    menu.items.clear();
+    for (int i = 0; i < 9; ++i) menu.items.push_back({"a", static_cast<PieSlot>(i % 8), "A"});
+    CHECK_FALSE(validatePie(menu).empty());  // More than eight.
+    menu.items.pop_back();
+    menu.items.pop_back();
+    menu.items.push_back({"a", PieSlot::N, "A"});  // Eight again, but slot N twice.
+    CHECK_FALSE(validatePie(menu).empty());
+}
+
+TEST_CASE("a dormant pie item is hidden, not removed") {
+    const Actions present({{"tool.block", "Block", "Tool", ""}, {"plugin.demo.act", "Demo", "Plugin", ""}});
+    const Actions absent({{"tool.block", "Block", "Tool", ""}});
+    const PieMenu menu{"Mixed", {{"tool.block", PieSlot::E, "Block"}, {"plugin.demo.act", PieSlot::N, "Demo"}}};
+    CHECK_FALSE(isDormantPieItem(menu.items[1], present));
+    CHECK(isDormantPieItem(menu.items[1], absent));
+    CHECK(visiblePie(menu, present).items.size() == 2);
+    const auto hidden = visiblePie(menu, absent);
+    REQUIRE(hidden.items.size() == 1);
+    CHECK(hidden.items[0].action == "tool.block");
+    CHECK(menu.items.size() == 2);  // The layout itself is untouched, so the item returns with the plugin.
+    CHECK(visiblePie(menu, present).items.size() == 2);
+}

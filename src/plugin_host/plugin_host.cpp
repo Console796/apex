@@ -1392,6 +1392,7 @@ struct Host::Impl {
             if (!life.expired() && !cell->dead) callback(cell->owner, "action", cell->first, cell->user);
         };
         editor::Action action{r.id, r.name, "Plugin", r.description};
+        action.owner = r.owner;
         action.suggestedBindings = r.suggestions;
         action.suggestedContexts = r.suggestionContexts;
         editor::mutableActionRegistry().add(std::move(action),

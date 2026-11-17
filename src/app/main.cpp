@@ -52,6 +52,22 @@ int main(int argc, char** argv) {
                                          QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes || safeMode;
     }
     plugins.activate(safeMode);
+    {
+        // Plugin themes are data files in <plugin folder>/themes, registered for enabled, loaded plugins only
+        // (never under --no-plugins or after a crash prompt). The saved theme is applied again, since it may be
+        // one of them and was unknown when the first applyThemeId ran.
+        std::vector<apex::ui::PluginThemeSource> sources;
+        for (const auto& plugin : plugins.plugins()) {
+            if (!plugin.enabled || !plugin.loaded) continue;
+            const auto dir = (plugin.folder / "themes").generic_u8string();
+            sources.push_back({QString::fromStdString(plugin.id), QString::fromStdString(plugin.name),
+                               QString::fromUtf8(reinterpret_cast<const char*>(dir.data()), static_cast<qsizetype>(dir.size()))});
+        }
+        QStringList pluginThemeErrors;
+        apex::ui::setPluginThemes(sources, &pluginThemeErrors);
+        for (const QString& e : pluginThemeErrors) apex::log::warn("plugin theme: {}", e.toStdString());
+        apex::ui::applyThemeId(app, QSettings().value(QStringLiteral("ui/theme")).toString());
+    }
     apex::editor::mutableActionRegistry().freeze();
     apex::editor::mutableToolRegistry().freeze();
     apex::editor::mutablePieRegistry().freeze();

@@ -417,7 +417,26 @@ grid, shows one ghost per step plus a footprint outline, exposes a `steps` param
 from the readout), and a left click commits all steps in one `apex::Edit` as a single undo step.
 Measured on linux-gcc-release at 64 steps: about 0.77 ms per input + refresh (plugins.md section 10, P5).
 
-Pies and themes (0.9.8) are later interfaces *(pending)*.
+### Pies, suggested keys and themes (0.9.8)
+
+There is no new C interface and no ABI change: all three use data a plugin already ships.
+
+- **Pies.** A pie layout lives in the user's preset (`pies` in the preset file), keyed by pie id (`pie.tools`,
+  `pie.objects`), and is edited on the Pies page of Settings. A preset with no entry for a pie uses the built-in
+  layout. An item may name any action id, including `plugin.<id>.<name>`. While the plugin is not loaded that
+  item is hidden when the pie opens and shown greyed on the Pies page, but it stays in the preset and reappears
+  when the plugin is back. Constraints: slot 0-7 (N, NE, E, SE, S, SW, W, NW), no two items in one slot, at most
+  8 items. The preset store refuses to save a layout that breaks them. Plugins cannot add pie items themselves.
+- **Suggested keys.** `suggestedBindings` and `suggestedContexts` on an action are keyed by preset name. The
+  Keybindings page lists the action under "Plugin: <name>" with the key in italics as "<key> (suggested)".
+  A suggestion is not written into the preset; a binding in the preset, even "none", replaces it. If the key
+  is already used in the same context the action shows no key and the tooltip names the owner. Suggestions
+  exist only for the presets they name, so a user preset copied from one gets none.
+- **Themes.** A plugin ships themes as `themes/*.json` in its folder, in the same format as the user's custom
+  themes (`name`, `base`, `colors`). Enabled, loaded plugins' themes are registered as `plugin:<plugin id>:<file
+  stem>` and listed in the theme choice as "<name> (plugin <plugin name>)". They are read-only (Edit makes a
+  copy as a custom theme). A file that does not parse is logged and skipped. If the plugin is absent or
+  disabled its themes are not registered and a saved choice falls back to the default theme.
 
 ## 5. The C++ wrapper
 

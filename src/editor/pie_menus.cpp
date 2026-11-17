@@ -1,5 +1,8 @@
 #include "editor/pie_menus.hpp"
 
+#include <algorithm>
+#include <array>
+
 namespace apex::editor {
 const PieMenu& toolPie() {
     static const PieMenu menu{"Tools", {
@@ -53,5 +56,43 @@ const PieMenu* pieFor(std::string_view action) {
 const PieMenu* pieFor(std::string_view action, const Preset& preset) {
     const auto it = preset.pies.find(action);
     return it == preset.pies.end() ? pieFor(action) : &it->second;
+}
+
+PieMenu effectivePie(std::string_view action, const Preset& preset) {
+    const auto* menu = pieFor(action, preset);
+    return menu ? *menu : PieMenu{};
+}
+bool isDormantPieItem(const PieItem& item, const Actions& actions) { return !actions.find(item.action); }
+PieMenu visiblePie(const PieMenu& menu, const Actions& actions) {
+    PieMenu result{menu.title, {}};
+    for (const auto& item : menu.items)
+        if (!isDormantPieItem(item, actions)) result.items.push_back(item);
+    return result;
+}
+std::vector<std::string> validatePie(const PieMenu& menu) {
+    std::vector<std::string> problems;
+    if (menu.items.size() > 8) problems.push_back("Pie has more than eight items");
+    std::array<bool, 8> used{};
+    for (const auto& item : menu.items) {
+        if (item.action.empty()) problems.push_back("Pie item has no action");
+        if (!item.slot) { problems.push_back("Missing pie slot for " + item.action); continue; }
+        const auto index = static_cast<std::size_t>(*item.slot);
+        if (index >= used.size()) { problems.push_back("Invalid pie slot for " + item.action); continue; }
+        if (used[index]) problems.push_back("Duplicate pie slot for " + item.action);
+        used[index] = true;
+    }
+    return problems;
+}
+const PieItem* pieItemAt(const PieMenu& menu, PieSlot slot) {
+    for (const auto& item : menu.items) if (item.slot == slot) return &item;
+    return nullptr;
+}
+void setPieSlot(PieMenu& menu, PieSlot slot, PieItem item) {
+    item.slot = slot;
+    clearPieSlot(menu, slot);
+    menu.items.push_back(std::move(item));
+}
+bool clearPieSlot(PieMenu& menu, PieSlot slot) {
+    return std::erase_if(menu.items, [&](const PieItem& item) { return item.slot == slot; }) > 0;
 }
 } // namespace apex::editor
