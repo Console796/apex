@@ -21,6 +21,35 @@ typedef enum apex_status { APEX_OK = 0, APEX_ERR_INVALID, APEX_ERR_NOT_FOUND,
                            APEX_ERR_STATE, APEX_ERR_UNSUPPORTED, APEX_ERR_INTERNAL } apex_status;
 typedef uint64_t apex_node_id;
 
+/* Declarative UI values and controls are borrowed for the duration of a call. */
+typedef enum apex_ui_kind {
+    APEX_UI_LABEL, APEX_UI_TEXT, APEX_UI_NUMBER, APEX_UI_CHECKBOX,
+    APEX_UI_CHOICE, APEX_UI_COLOUR, APEX_UI_BUTTON, APEX_UI_TABLE,
+    APEX_UI_MATERIAL, APEX_UI_MODEL, APEX_UI_SOUND, APEX_UI_SECTION
+} apex_ui_kind;
+typedef struct apex_ui_value {
+    uint32_t struct_size;
+    apex_str text;
+    double number;
+    uint32_t checked;
+} apex_ui_value;
+typedef struct apex_ui_control {
+    uint32_t struct_size;
+    uint32_t kind;
+    apex_str key, label;
+    apex_ui_value value;
+    double minimum, maximum;
+    const apex_str* options;
+    size_t option_count;
+    const struct apex_ui_control* children;
+    size_t child_count;
+} apex_ui_control;
+typedef struct apex_ui_form {
+    uint32_t struct_size;
+    const apex_ui_control* controls;
+    size_t control_count;
+} apex_ui_form;
+
 /* Returned strings are borrowed until the next call to the same interface or document mutation. */
 typedef struct apex_document_info {
     uint32_t struct_size;

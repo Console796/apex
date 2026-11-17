@@ -213,6 +213,7 @@ if(APEX_BUILD_APP)
                         src/ui/pie_menu_popup.cpp src/ui/command_palette.cpp src/ui/command_providers.cpp src/ui/key_chord.cpp src/ui/settings_dialog.cpp src/ui/transform_input.cpp src/ui/transform_dialog.cpp src/ui/paste_special_dialog.cpp src/ui/tie_dialog.cpp src/ui/prefab_dialog.cpp src/ui/prefab_thumbnail.cpp src/ui/find_panel.cpp src/ui/asset_report_builder.cpp src/ui/addons_panel.cpp src/ui/outliner_panel.cpp src/ui/visgroup_panel.cpp src/ui/history_panel.cpp src/ui/inspector_panel.cpp src/ui/log_panel.cpp src/ui/area_frame.cpp src/ui/workspace_bar.cpp
              DEPS apex_viewport apex_editor apex_plugin_host Qt6::Widgets Qt6::Svg Qt6::Multimedia)
   set_target_properties(apex_ui PROPERTIES AUTOMOC ON AUTORCC ON)
+  target_sources(apex_ui PRIVATE src/ui/plugin_form.cpp)
   target_sources(apex_ui PRIVATE src/ui/icons/icons.qrc third_party/ibm-plex-sans/plex_fonts.qrc)
   # Pointer lock is optional: other platforms and minimal Linux builds retain local input.
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -262,6 +263,7 @@ if(APEX_BUILD_APP)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
     # Headless shell tests (QT_QPA_PLATFORM=offscreen).
     add_executable(apex_ui_tests tests/main.cpp tests/ui/plugin_manager_test.cpp tests/ui/compile_test.cpp tests/ui/shell_test.cpp tests/ui/materials_test.cpp tests/ui/asset_browsers_test.cpp tests/ui/face_properties_test.cpp tests/ui/recovery_test.cpp tests/ui/pointer_lock_test.cpp tests/ui/settings_test.cpp tests/ui/primitive_test.cpp tests/ui/topology_test.cpp tests/ui/tool_controls_test.cpp tests/ui/pie_popup_test.cpp tests/ui/instance_test.cpp tests/ui/sound_preview_test.cpp tests/ui/find_test.cpp tests/ui/addons_test.cpp tests/ui/vrad_view_test.cpp tests/ui/command_palette_test.cpp)
+    target_sources(apex_ui_tests PRIVATE tests/ui/plugin_form_test.cpp)
     target_link_libraries(apex_ui_tests PRIVATE apex_ui sourcepp::vtfpp sourcepp::bsppp sourcepp::vpkpp Qt6::Test Qt6::Multimedia apex_warnings doctest::doctest)
     target_compile_definitions(apex_ui_tests PRIVATE
                                APEX_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures")

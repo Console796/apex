@@ -1,7 +1,6 @@
 # Apex plugin SDK (DRAFT)
 
-> **Status: draft for 0.9.9.** Written against the ABI as committed at 0.9.2. 0.9.3 adds `apex.edit/1`,
-> `apex.selection/1`, change notifications and `defer`, and 0.9.4–0.9.8 add more interfaces. Sections
+> **Status: draft for 0.9.9.** Written against the ABI through 0.9.3. 0.9.4–0.9.8 add more interfaces. Sections
 > marked *(pending)* will be filled in as those land. The ABI is frozen at the 0.9 release; until then
 > anything here may change. See `docs/plans/plugins.md` for the design rationale.
 
@@ -121,11 +120,18 @@ action on its own. `apex_action_suggestion{preset, chord, tool_id}` proposes a d
 `source` is a viewport identity. Keep per-viewport state keyed by it. *(Known issue I-6: until 0.9.3, tool
 callback state is shared between editor sessions.)*
 
-### 4.4 Writing to the document *(pending, 0.9.3)*
+### 4.4 Writing to the document
 
-`apex.edit/1` will apply a batch of changes as a single undoable edit. `apex.selection/1` will read and set
-the selection. Change notifications will report created, modified and destroyed NodeIds. A `defer` helper
-will run work after the document notification pass.
+`apex.edit/1` applies a callback's operations as one session edit and one undo step. The operation context
+and table are valid only during the callback. A failed operation or a non-OK callback return rolls the batch
+back; `last_error` contains the failure detail. The current table exposes key writes, node destruction and
+reparenting, solid creation and rebuilding, side-key writes, and displacement removal. Other `Transaction`
+operations are not yet exposed.
+
+`apex.selection/1` reads the selection mode and ordered IDs, or sets both together. Face mode uses side IDs;
+other modes use node IDs. The plugin's optional `on_changed` callback receives borrowed ID lists, dirty flags,
+vanished side IDs, the revision, and whether the notice is for undo or redo. Observers cannot edit directly:
+use `apex.edit/1`'s `defer` to run a callback after the notification pass.
 
 ### 4.5 Later interfaces *(pending)*
 
@@ -150,8 +156,7 @@ Both are built by the main CMake project and placed under `<build>/plugins/<id>/
   document through `apex.document/1`, registers tool `plugin.hello.tool` and action
   `plugin.hello.read_document` with a suggested Hammer-preset binding on F24.
 - [`examples/polygon-tool/polygon.cpp`](../examples/polygon-tool/polygon.cpp): C++ using `plugin.hpp`. A
-  click-to-place polygon tool that draws overlay segments and a ghost; committing to the document arrives
-  with `apex.edit/1` *(pending, 0.9.3)*.
+  click-to-place polygon tool that draws overlay segments and a ghost and commits through `apex.edit/1`.
 
 To build your own: compile a `MODULE` library with `include/` on the include path, no prefix, export
 `apex_plugin_entry`, and write a `plugin.kv3` beside it.
