@@ -64,6 +64,13 @@ public:
     void setProfiles(std::vector<assets::GameProfile> profiles);
     // Loads user profiles (<config>/profiles/*.json) plus the detected P2CE install.
     void reloadProfiles();
+    // Writes `profile` to <config>/profiles (replacing `replacing`, a file from reloadProfiles, when given),
+    // reloads and selects it. Returns the error text, or empty on success.
+    QString saveGameProfile(const assets::GameProfile& profile, const QString& replacing = {});
+    // Add Game / Edit Game dialogs and Remove Game, offered by the Game toolbar and the Settings menu.
+    void addGame();
+    void editGame();
+    void removeGame();
     const assets::GameProfile* currentProfile() const;
     GameContent& gameContent() const { return *gameContent_; }
     // The inspector's Browse: a non-modal browser panel in pick mode. One at a time; it is
@@ -220,6 +227,9 @@ private:
     bool autoMountPending_ = false;
     std::set<std::string> autoMountTried_;
     std::vector<assets::GameProfile> profiles_;
+    // Profile name -> the JSON file it was loaded from; detected profiles (P2CE) have none.
+    std::map<std::string, QString> profileFiles_;
+    QString selectAfterReload_;
 
     ViewportArea* viewport_ = nullptr;
     CommandPalette* palette_ = nullptr;

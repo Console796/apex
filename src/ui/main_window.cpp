@@ -21,6 +21,8 @@
 #include <QCheckBox>
 #include <QCompleter>
 #include <QDir>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QFile>
 #include <QFileSystemWatcher>
 #include <QFileDialog>
@@ -81,6 +83,7 @@
 #include "ui/paste_special_dialog.hpp"
 #include "ui/tie_dialog.hpp"
 #include "ui/prefab_dialog.hpp"
+#include "ui/game_profile_dialog.hpp"
 #include "editor/prefab.hpp"
 #include "ui/transform_dialog.hpp"
 #include "ui/viewport_area.hpp"
@@ -538,6 +541,7 @@ void MainWindow::buildMenus() {
         if (accepted) setUndoCapMiB(limit);
     });
     undoMemory->setObjectName(QStringLiteral("actionUndoMemoryLimit"));
+    settings->addAction(tr("Add &Game..."), this, &MainWindow::addGame);
     presetMenu_ = settings->addMenu(tr("Binding preset"));
     refreshPresetMenu();
 
@@ -607,6 +611,29 @@ void MainWindow::buildMenus() {
     profileCombo_->addItem(tr("(no game profiles)"));
     profileCombo_->setEnabled(false);
     bar->addWidget(profileCombo_);
+    auto* games = new QToolButton;
+    games->setObjectName(QStringLiteral("manageGames"));
+    games->setText(tr("Games"));
+    games->setToolTip(tr("Add, edit or remove game profiles"));
+    games->setPopupMode(QToolButton::InstantPopup);
+    auto* gamesMenu = new QMenu(games);
+    gamesMenu->addAction(tr("&Add Game..."), this, &MainWindow::addGame)->setObjectName(QStringLiteral("actionAddGame"));
+    auto* editGameAction = gamesMenu->addAction(tr("&Edit Game..."), this, &MainWindow::editGame);
+    editGameAction->setObjectName(QStringLiteral("actionEditGame"));
+    auto* removeGameAction = gamesMenu->addAction(tr("&Remove Game"), this, &MainWindow::removeGame);
+    removeGameAction->setObjectName(QStringLiteral("actionRemoveGame"));
+    gamesMenu->addSeparator();
+    gamesMenu->addAction(tr("Open Profiles &Folder"), this, [] {
+        QDir().mkpath(profileDir());
+        QDesktopServices::openUrl(QUrl::fromLocalFile(profileDir()));
+    });
+    connect(gamesMenu, &QMenu::aboutToShow, this, [this, editGameAction, removeGameAction] {
+        const auto* profile = currentProfile();
+        editGameAction->setEnabled(profile != nullptr);
+        removeGameAction->setEnabled(profile && profileFiles_.contains(profile->name));
+    });
+    games->setMenu(gamesMenu);
+    bar->addWidget(games);
     connect(profileCombo_, &QComboBox::currentIndexChanged, this, [this](int i) {
         if (i < 0 || static_cast<std::size_t>(i) >= profiles_.size()) return;
         QSettings().setValue(QStringLiteral("profile/last"), QString::fromStdString(profiles_[static_cast<std::size_t>(i)].name));
@@ -1822,8 +1849,9 @@ void MainWindow::refreshThemeMenu() {
 }
 
 void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {
-    const QString previous = profileCombo_->isEnabled() ? profileCombo_->currentText()
-                                                        : QSettings().value(QStringLiteral("profile/last")).toString();
+    const QString previous = !selectAfterReload_.isEmpty() ? selectAfterReload_
+                             : profileCombo_->isEnabled() ? profileCombo_->currentText()
+                                                          : QSettings().value(QStringLiteral("profile/last")).toString();
     profiles_ = std::move(profiles);
     const QSignalBlocker block(profileCombo_);
     profileCombo_->clear();
@@ -1847,11 +1875,20 @@ void MainWindow::setProfiles(std::vector<assets::GameProfile> profiles) {
 
 void MainWindow::reloadProfiles() {
     std::vector<assets::GameProfile> list;
+    profileFiles_.clear();
     const QDir dir(profileDir());
     for (const auto& name : dir.entryList({QStringLiteral("*.json")}, QDir::Files, QDir::Name)) {
-        auto loaded = assets::loadGameProfile(std::filesystem::path(dir.filePath(name).toStdString()));
-        if (loaded) list.push_back(std::move(*loaded));
-        else log::warn("profile {}: {}", name.toStdString(), loaded.error().what());
+        auto loaded = assets::loadGameProfile(std::filesystem::path(dir.filePath(name).toStdU16String()));
+        if (!loaded) {
+            log::warn("profile {}: {}", name.toStdString(), loaded.error().what());
+            continue;
+        }
+        if (profileFiles_.contains(loaded->name)) {
+            log::warn("profile {}: name \"{}\" is already used; skipped", name.toStdString(), loaded->name);
+            continue;
+        }
+        profileFiles_[loaded->name] = dir.filePath(name);
+        list.push_back(std::move(*loaded));
     }
     if (auto p2ce = assets::detectP2ce()) {
         const bool known = std::ranges::any_of(list, [&](const auto& p) { return p.name == p2ce->name; });
@@ -1859,6 +1896,67 @@ void MainWindow::reloadProfiles() {
     }
     setProfiles(std::move(list));
     if (profiles_.empty()) log::warn("no game profiles found (looked in {} and for a P2CE install)", profileDir().toStdString());
+}
+
+QString MainWindow::saveGameProfile(const assets::GameProfile& profile, const QString& replacing) {
+    if (!QDir().mkpath(profileDir())) return tr("Cannot create %1").arg(profileDir());
+    QString file = replacing;
+    if (file.isEmpty()) {
+        const auto base = QString::fromStdString(assets::gameProfileFileName(profile.name));
+        file = QDir(profileDir()).filePath(base);
+        for (int n = 2; QFile::exists(file); ++n)
+            file = QDir(profileDir()).filePath(base.chopped(5) + QStringLiteral(" (%1).json").arg(n));
+    }
+    if (auto saved = assets::saveGameProfile(profile, std::filesystem::path(file.toStdU16String())); !saved)
+        return QString::fromStdString(saved.error().what());
+    log::info("saved game profile {} to {}", profile.name, file.toStdString());
+    // setProfiles keeps the picker's selection; point it at the saved profile so it loads once, as the current game.
+    selectAfterReload_ = QString::fromStdString(profile.name);
+    QSettings().setValue(QStringLiteral("profile/last"), selectAfterReload_);
+    reloadProfiles();
+    selectAfterReload_.clear();
+    return {};
+}
+
+void MainWindow::addGame() {
+    QStringList taken;
+    for (const auto& p : profiles_) taken << QString::fromStdString(p.name);
+    GameProfileDialog dialog(nullptr, taken, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    if (const auto error = saveGameProfile(dialog.profile()); !error.isEmpty())
+        QMessageBox::warning(this, tr("Add Game"), error);
+}
+
+void MainWindow::editGame() {
+    const auto* current = currentProfile();
+    if (!current) return;
+    QStringList taken;
+    for (const auto& p : profiles_) taken << QString::fromStdString(p.name);
+    const auto original = *current;
+    GameProfileDialog dialog(&original, taken, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+    // A detected profile (no file) is saved as a new file under its name, which then replaces the detection.
+    const auto it = profileFiles_.find(original.name);
+    const QString file = it == profileFiles_.end() ? QString() : it->second;
+    if (const auto error = saveGameProfile(dialog.profile(), file); !error.isEmpty())
+        QMessageBox::warning(this, tr("Edit Game"), error);
+}
+
+void MainWindow::removeGame() {
+    const auto* current = currentProfile();
+    if (!current) return;
+    const auto it = profileFiles_.find(current->name);
+    if (it == profileFiles_.end()) return;
+    const auto name = QString::fromStdString(current->name);
+    if (QMessageBox::question(this, tr("Remove Game"),
+                              tr("Remove the game profile \"%1\"?\nThe game's own files are not touched.").arg(name))
+        != QMessageBox::Yes)
+        return;
+    if (!QFile::remove(it->second)) {
+        QMessageBox::warning(this, tr("Remove Game"), tr("Cannot delete %1").arg(it->second));
+        return;
+    }
+    reloadProfiles();
 }
 
 const assets::GameProfile* MainWindow::currentProfile() const {

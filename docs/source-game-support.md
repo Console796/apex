@@ -18,7 +18,12 @@ open, edit or compile correctly, but no one has checked that they do.
 The roadmap ([roadmap.md](roadmap.md)) and the design rules in the [README](../README.md#design-rules)
 set one game profile through 0.10: Strata Source, as P2CE ships it. Game specifics such as the BSP
 version, `point_data`, the `light_rt` modes and the mount system live in that profile. Other
-games need their own profile, and Apex does not have one yet. The research notes
+games need their own profile. Apex ships none, but you can make one: **Games > Add Game...** in the
+Game toolbar (or **Settings > Add Game...**) asks for the folder holding the game's `gameinfo.txt`
+and fills in the name, FGDs, compile tools and engine branch from what it finds there. Check those
+fields before you save. Profiles are saved as JSON in `<config>/profiles/` (on Linux,
+`~/.config/Apex/Apex/profiles/`; **Games > Open Profiles Folder** opens it). A profile made this
+way only lets Apex load the game; it does not mean the game is tested. The research notes
 ([research.md](research.md)) name the next targets: other Strata games, then older Source branches
 through the same profile layer.
 

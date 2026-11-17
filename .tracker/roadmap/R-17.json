@@ -1,0 +1,25 @@
+{
+  "id": "R-17",
+  "title": "Add Game: UI to create custom game profiles",
+  "description": "Game toolbar/Settings \"Add Game...\" dialog that writes <config>/profiles/<name>.json for any Source game with a gameinfo.txt; prefill from gameinfo/FGDs/compile tools; optional tool_directory field in the profile JSON.",
+  "status": "testable",
+  "milestone": "0.9",
+  "how_to_test": "Automated: build/linux-clang-release/tests/apex_tests -tc='*suggestGameProfile*,*GameProfile*' and QT_QPA_PLATFORM=offscreen build/linux-clang-release/apex_ui_tests -tc='*Add Game*,*custom game profile*' (all pass). Manual: run apex, Game toolbar > Games > Add Game..., Browse to a Source game folder holding gameinfo.txt (e.g. steamapps/common/Half-Life 2/hl2). Name, FGDs, vbsp/vvis/vrad, game exe and engine branch fill in; Save. Expected: the game appears and is selected in the Game picker, material/model browsers populate from its content, entity classes come from the FGDs, and ~/.config/Apex/Apex/profiles/<name>.json exists. Edit Game reopens it with the same values; Remove Game deletes the JSON and drops it from the picker.",
+  "created": "2026-11-17T03:23:58-07:00",
+  "updated": "2026-11-17T03:35:35-07:00",
+  "updated_by": "agent",
+  "history": [
+    {
+      "ts": "2026-11-17T03:23:58-07:00",
+      "actor": "agent",
+      "status": "in_progress",
+      "note": "created"
+    },
+    {
+      "ts": "2026-11-17T03:35:35-07:00",
+      "actor": "agent",
+      "status": "testable",
+      "note": "Built: assets::suggestGameProfile + gameProfileFileName, optional tool_directory JSON field (tool fallbacks for non-Strata layouts), GameProfileDialog, Game toolbar 'Games' menu (Add/Edit/Remove/Open Profiles Folder) + Settings > Add Game. Tests: 4 new asset cases, 2 UI cases; full apex_ui_tests 218/218 pass (clang-release)."
+    }
+  ]
+}
