@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
+#include "plugin_host/abi_array.hpp"
 #include <algorithm>
 #include <set>
 
@@ -28,11 +29,13 @@ PluginForm::PluginForm(QWidget* parent) : QWidget(parent), layout_(new QVBoxLayo
     layout_->setContentsMargins(0, 0, 0, 0);
 }
 bool PluginForm::describe(const apex_ui_form& form) {
-    if (form.struct_size < sizeof(form) || (form.control_count && !form.controls)) return false;
+    if (!APEX_ABI_COVERS(form.struct_size, apex_ui_form, control_count)) return false;
+    const plugin_host::AbiArray<apex_ui_control> controls(form.controls, form.control_count);
+    if (!controls.valid()) return false;
     std::set<QString> keys;
     for (size_t i = 0; i < form.control_count; ++i) {
-        const auto& c = form.controls[i];
-        if (c.struct_size < sizeof(c) || c.value.struct_size < sizeof(c.value) || text(c.key).isEmpty() ||
+        const auto c = controls[i];
+        if (c.value.struct_size < sizeof(c.value) || text(c.key).isEmpty() ||
             c.kind > APEX_UI_SECTION ||
             (c.kind != APEX_UI_SECTION && c.child_count) || (c.child_count && !c.children) ||
             !keys.insert(text(c.key)).second) return false;
@@ -41,7 +44,7 @@ bool PluginForm::describe(const apex_ui_form& form) {
         if (!keys.contains(widget->objectName())) retire(widget);
     }
     for (size_t i = 0; i < form.control_count; ++i) {
-        const auto& c = form.controls[i];
+        const auto c = controls[i];
         const auto key = text(c.key);
         auto* widget = findChild<QWidget*>(key, Qt::FindDirectChildrenOnly);
         if (widget && widget->property("apexKind").toUInt() != c.kind) {
@@ -74,19 +77,19 @@ bool PluginForm::describe(const apex_ui_form& form) {
             const auto sendText = [this, key](const QString& value) {
                 if (!change_) return;
                 const auto k = key.toUtf8(), v = value.toUtf8();
-                const apex_ui_value result{sizeof(result), {v.constData(), static_cast<size_t>(v.size())}, 0, 0};
+                const apex_ui_value result{sizeof(result), 0, {v.constData(), static_cast<size_t>(v.size())}, 0};
                 change_(std::string_view(k.constData(), static_cast<size_t>(k.size())), result);
             };
             if (auto* edit = qobject_cast<QLineEdit*>(widget)) connect(edit, &QLineEdit::textEdited, this, sendText);
             if (auto* number = qobject_cast<QDoubleSpinBox*>(widget)) connect(number, &QDoubleSpinBox::valueChanged, this, [this, key](double n) {
                 if (!change_) return;
                 const auto k = key.toUtf8();
-                const apex_ui_value v{sizeof(v), {}, n, 0}; change_(std::string_view(k.constData(), static_cast<size_t>(k.size())), v);
+                const apex_ui_value v{sizeof(v), 0, {}, n}; change_(std::string_view(k.constData(), static_cast<size_t>(k.size())), v);
             });
             if (auto* check = qobject_cast<QCheckBox*>(widget)) connect(check, &QCheckBox::toggled, this, [this, key](bool checked) {
                 if (!change_) return;
                 const auto k = key.toUtf8();
-                const apex_ui_value v{sizeof(v), {}, 0, checked ? 1u : 0u}; change_(std::string_view(k.constData(), static_cast<size_t>(k.size())), v);
+                const apex_ui_value v{sizeof(v), checked ? 1u : 0u, {}, 0}; change_(std::string_view(k.constData(), static_cast<size_t>(k.size())), v);
             });
             if (auto* choice = qobject_cast<QComboBox*>(widget)) connect(choice, &QComboBox::currentTextChanged, this, sendText);
             if (auto* list = qobject_cast<QListWidget*>(widget)) connect(list, &QListWidget::currentTextChanged, this, sendText);
@@ -125,7 +128,7 @@ bool PluginForm::describe(const apex_ui_form& form) {
             auto* child = static_cast<PluginForm*>(group->layout()->itemAt(0)->widget());
             child->setChange([this](std::string_view childKey, const apex_ui_value& value) { if (change_) change_(childKey, value); });
             child->setClick([this](std::string_view childKey) { if (click_) click_(childKey); });
-            const apex_ui_form nested{sizeof(nested), c.children, c.child_count};
+            const apex_ui_form nested{sizeof(nested), 0, c.children, c.child_count};
             if (!child->describe(nested)) return false;
         }
         layout_->insertWidget(static_cast<int>(i), widget);

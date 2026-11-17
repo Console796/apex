@@ -18,6 +18,13 @@ static apex_status activate(void* user) {
     registry = reg;
     if (!reg || reg->action(host->context, str("plugin.other.action"), str("Bad"), str("Bad"), 0, invoke) != APEX_ERR_INVALID)
         return APEX_ERR_INTERNAL;
+    /* Malformed ids are refused as invalid, not accepted and left to abort session construction later. */
+    if (reg->action(host->context, str("plugin.example."), str("Dot"), str("Dot"), 0, invoke) != APEX_ERR_INVALID ||
+        reg->tool(host->context, str("plugin.example."), str("Dot"), str("Dot"), 0, tool_on, 0) != APEX_ERR_INVALID ||
+        reg->action(host->context, str("plugin.example.a.b"), str("Deep"), str("Deep"), 0, invoke) != APEX_ERR_INVALID ||
+        reg->action(host->context, str("plugin.example.paint.brush"), str("Paint"), str("Paint"), 0, invoke) != APEX_ERR_INVALID ||
+        reg->panel(host->context, str("plugin.example."), str("Dot")) != APEX_ERR_INVALID)
+        return APEX_ERR_INTERNAL;
     if (reg->action(host->context, str("plugin.example.action"), str("Example action"), str("Example"), 0, invoke) != APEX_OK)
         return APEX_ERR_INTERNAL;
     if (reg->tool(host->context, str("plugin.other.tool"), str("Bad"), str("Bad"), 0, tool_on, 0) != APEX_ERR_INVALID)
@@ -28,5 +35,5 @@ static apex_status activate(void* user) {
         return APEX_ERR_INTERNAL;
     return APEX_OK;
 }
-static const apex_plugin plugin = { sizeof(apex_plugin), 1, 0, 0, activate, 0, 0, 0 };
+static const apex_plugin plugin = { sizeof(apex_plugin), 1, 0, 0, 0, activate, 0, 0, 0 };
 APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

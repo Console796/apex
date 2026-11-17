@@ -6,7 +6,7 @@ static void read_document(void* user) {
     const apex_document_v1* doc = (const apex_document_v1*)host->get_interface(host->context, str("apex.document/1"));
     apex_document_info info = { sizeof(info), 0, 0, 0 };
     apex_node_id id;
-    apex_node_info node = { sizeof(node), 0, 0, {0, 0}, 0, 0 };
+    apex_node_info node = { sizeof(node), 0, 0, 0, {0, 0}, 0, 0 };
     size_t i;
     (void)user;
     if (!doc || doc->info(host->context, &info) != APEX_OK || !info.is_open || !info.root_count ||
@@ -50,6 +50,7 @@ static apex_status tool_visual(void* user, uint64_t source, apex_tool_visual* ou
         segments[1].a = (apex_vec3){marker.x, marker.y - marker_size, marker.z};
         segments[1].b = (apex_vec3){marker.x, marker.y + marker_size, marker.z};
         memcpy(segments[0].rgba, color, sizeof(color)); memcpy(segments[1].rgba, color, sizeof(color));
+        segments[0].struct_size = segments[1].struct_size = sizeof(apex_tool_segment);  /* every array element has its own */
         segments[0].width = segments[1].width = 2;
         out->segments = segments; out->segment_count = 2;
     }
@@ -57,7 +58,7 @@ static apex_status tool_visual(void* user, uint64_t source, apex_tool_visual* ou
 }
 static apex_status tool_readout(void* user, apex_tool_readout* out) {
     (void)user;
-    parameter = (apex_tool_parameter){str("size"), str("Marker size"), 2, marker_size, 1, 128, 0, 0};
+    parameter = (apex_tool_parameter){sizeof(apex_tool_parameter), 2, str("size"), str("Marker size"), marker_size, 1, 128, 0, 0};
     out->status = str("Click to preview a point; writing requires apex.edit/1");
     out->parameters = &parameter; out->parameter_count = 1;
     return APEX_OK;
@@ -69,7 +70,7 @@ static int tool_parameter(void* user, apex_str id, double value) {
 }
 static void tool_cancel(void* user) { (void)user; has_marker = 0; }
 static void tool_forget(void* user, uint64_t source) { (void)user; if (source == marker_source) has_marker = 0; }
-static const apex_tool_callbacks tool = {sizeof(tool), 0, 0, tool_input, tool_visual, tool_readout,
+static const apex_tool_callbacks tool = {sizeof(tool), 0, 0, 0, tool_input, tool_visual, tool_readout,
                                           tool_parameter, 0, tool_cancel, tool_cancel, tool_forget};
 static apex_status activate(void* user) {
     host->log(host->context, 1, str("Hello from hello-tool"));
@@ -84,9 +85,9 @@ static apex_status activate(void* user) {
     status = tools->register_tool(host->context, str("plugin.hello.tool"), str("Hello tool"),
                                   str("Preview a point marker"), 0, &tool);
     if (status != APEX_OK) return status;
-    suggestion = (apex_action_suggestion){str("Hammer"), str("F24"), str("plugin.hello.tool")};
+    suggestion = (apex_action_suggestion){sizeof(apex_action_suggestion), 0, str("Hammer"), str("F24"), str("plugin.hello.tool")};
     return actions->register_action(host->context, str("plugin.hello.read_document"), str("Read document"),
                                     str("Log the root class name"), 0, read_document, &suggestion, 1);
 }
-static const apex_plugin plugin = { sizeof(apex_plugin), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, 0, activate, 0, read_document, 0 };
+static const apex_plugin plugin = { sizeof(apex_plugin), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, 0, 0, activate, 0, read_document, 0 };
 APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

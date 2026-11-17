@@ -78,5 +78,5 @@ static apex_status activate(void* user) {
     if (reg->action(host->context, str("plugin.writes.selection"), str("Selection"), str("Selection"), &modes[2], invoke) != APEX_OK) return APEX_ERR_INTERNAL;
     return reg->action(host->context, str("plugin.writes.rebuild"), str("Rebuild"), str("Rebuild"), &modes[3], invoke);
 }
-static const apex_plugin plugin = {sizeof(plugin), 1, 0, 0, activate, 0, 0, 0, changed};
+static const apex_plugin plugin = {sizeof(plugin), 1, 0, 0, 0, activate, 0, 0, 0, changed};
 APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

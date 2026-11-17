@@ -72,5 +72,5 @@ static apex_status activate(void* user) {
     if (result != APEX_OK) return result;
     return ui->register_section(host->context, str("plugin.ui.faces"), str("Test face section"), str("face_properties"), 0, &sectionCallbacks);
 }
-static const apex_plugin plugin = {sizeof(plugin), 1, 0, 0, activate, 0, 0, 0, 0};
+static const apex_plugin plugin = {sizeof(plugin), 1, 0, 0, 0, activate, 0, 0, 0, 0};
 APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

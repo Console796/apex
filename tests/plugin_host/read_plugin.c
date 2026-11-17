@@ -5,8 +5,8 @@ static apex_str name(const char* text) { apex_str out = { text, strlen(text) }; 
 static apex_status activate(void* user) {
     const apex_document_v1* doc = (const apex_document_v1*)host->get_interface(host->context, name("apex.document/1"));
     apex_document_info info = { sizeof(info), 0, 0, 0 };
-    apex_node_info root = { sizeof(root), 0, 0, {0, 0}, 0, 0 };
-    apex_node_info child = { sizeof(child), 0, 0, {0, 0}, 0, 0 };
+    apex_node_info root = { sizeof(root), 0, 0, 0, {0, 0}, 0, 0 };
+    apex_node_info child = { sizeof(child), 0, 0, 0, {0, 0}, 0, 0 };
     apex_node_id root_id = 0, child_id = 0;
     size_t i, messages = 0;
     (void)user;
@@ -26,5 +26,5 @@ static apex_status activate(void* user) {
     }
     return messages == 2 ? APEX_OK : APEX_ERR_INTERNAL;
 }
-static const apex_plugin plugin = { sizeof(apex_plugin), 1, 0, 0, activate, 0, 0, 0 };
+static const apex_plugin plugin = { sizeof(apex_plugin), 1, 0, 0, 0, activate, 0, 0, 0 };
 APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

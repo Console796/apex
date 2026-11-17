@@ -2,6 +2,8 @@
 #include "editor/tool.hpp"
 #include <apex/apex_plugin.h>
 #include <functional>
+#include <map>
+#include <set>
 
 namespace apex::plugin_host {
 // The guard runs every foreign callback under the host's crash breadcrumb.
@@ -25,12 +27,15 @@ public:
     editor::ToolOverlay overlay(const editor::ToolView&, editor::InputSource source) const override;
     editor::ToolReadout readout() const override;
     void cancel() override;
+    bool owns(editor::InputSource source) const override;
     void forget(editor::InputSource source) override;
     void documentChanged() override;
     bool setParameter(std::string_view id, double value) override;
     bool perform(const editor::ActionId& action) override;
 private:
     void refresh(editor::InputSource source);
+    void refreshAll();
+    void rebuildPreview();
     editor::EditorSession& session_;
     std::string id_;
     void* user_;
@@ -44,5 +49,9 @@ private:
     void createInstance(void* registrationUser);
     editor::Preview preview_;
     editor::InputSource lastSource_ = 0;
+    // Per pane (input source) state: the ghosts its visual callback last returned, and the panes with a
+    // pointer gesture this tool handled the press of. The preview shows every pane's ghosts.
+    std::map<editor::InputSource, std::vector<editor::GhostSolid>> ghosts_;
+    std::set<editor::InputSource> pressed_;
 };
 }

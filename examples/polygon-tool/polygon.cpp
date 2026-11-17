@@ -29,7 +29,7 @@ public:
         for (std::size_t i = 0; i < points.size(); ++i) {
             if (points.size() < 2) break;
             const auto& a = points[i]; const auto& b = points[(i + 1) % points.size()];
-            segments_.push_back({a, b, {1, 0.65f, 0.15f, 1}, 2});
+            segments_.push_back(apex::plugin::segment(a, b, 2, {1, 0.65f, 0.15f, 1}));
         }
         if (points.size() >= 3) {
             double area = 0;
@@ -48,7 +48,7 @@ public:
                 }
                 if (!planes_.empty()) {
                     planes_.push_back({{0, 0, 1}, 16}); planes_.push_back({{0, 0, -1}, 0});
-                    ghosts_.push_back({planes_.data(), planes_.size(), apex::plugin::string("DEV/DEV_MEASUREGENERIC01"), 0.35f});
+                    ghosts_.push_back(apex::plugin::ghost(planes_.data(), planes_.size(), 0.35f, "DEV/DEV_MEASUREGENERIC01"));
                 }
             }
         }
@@ -91,6 +91,6 @@ apex_status activate(void*) {
     return api ? api->register_tool(host->context, apex::plugin::string("plugin.polygon.tool"),
         apex::plugin::string("Polygon tool"), apex::plugin::string("Preview a polygon prism"), &polygon, Polygon::callbacks()) : APEX_ERR_UNSUPPORTED;
 }
-const apex_plugin plugin{sizeof(apex_plugin), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, nullptr, activate, nullptr, nullptr, nullptr};
+const apex_plugin plugin{sizeof(apex_plugin), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, 0, nullptr, activate, nullptr, nullptr, nullptr};
 }
 extern "C" APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

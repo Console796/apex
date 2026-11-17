@@ -52,8 +52,8 @@ TEST_CASE("plugin panel keeps its widgets and focus when the plugin re-describes
     CHECK(field->hasFocus());
     CHECK(field->text() == "value");  // The plugin's description wins.
     // Several requests before the loop turns are coalesced into one re-describe.
-    f.host->panelChanged("plugin.ui.panel", "field", apex_ui_value{sizeof(apex_ui_value), {}, 0, 0});
-    f.host->panelChanged("plugin.ui.panel", "field", apex_ui_value{sizeof(apex_ui_value), {}, 0, 0});
+    f.host->panelChanged("plugin.ui.panel", "field", apex_ui_value{sizeof(apex_ui_value), 0, {}, 0});
+    f.host->panelChanged("plugin.ui.panel", "field", apex_ui_value{sizeof(apex_ui_value), 0, {}, 0});
     f.ui->flush();
     CHECK(refreshed.count() == 2);
 }

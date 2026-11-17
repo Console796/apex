@@ -19,15 +19,15 @@ apex::plugin::Overlay overlay;
 struct Widget : apex::plugin::Helper {
     void draw(const apex_helper_call& call, const apex_helper_sink& sink) override {
         if (apex::plugin::view(call.arguments) == "throw") throw std::runtime_error("helper failure");
-        apex_tool_segment line{call.origin, {call.origin.x + 16, call.origin.y, call.origin.z}, {1, 0, 0, 1}, 2};
+        const auto line = apex::plugin::segment(call.origin, {call.origin.x + 16, call.origin.y, call.origin.z}, 2, {1, 0, 0, 1});
         segment(sink, line);
-        apex_overlay_label text{call.origin, apex::plugin::string("widget"), {1, 1, 1, 1}};
+        const auto text = apex::plugin::label(call.origin, "widget", {1, 1, 1, 1});
         label(sink, text);
     }
 } widget;
 struct Thrower : apex::plugin::Helper {
     void draw(const apex_helper_call&, const apex_helper_sink& sink) override {
-        segment(sink, {{0, 0, 0}, {1, 1, 1}, {0, 1, 0, 1}, 1}); // half-drawn output must be rolled back
+        segment(sink, apex::plugin::segment({0, 0, 0}, {1, 1, 1}, 1, {0, 1, 0, 1})); // half-drawn output must be rolled back
         throw std::runtime_error("always");
     }
 } thrower;
@@ -57,19 +57,19 @@ struct Broken : apex::plugin::ProblemCheck {
 
 void setMain() {
     overlay.clearLists();
-    overlay.segments.push_back({{0, 0, 0}, {64, 0, 0}, {0, 1, 0, 1}, 3});
-    overlay.points.push_back({{0, 0, 0}, {1, 1, 0, 1}, 6});
-    overlay.labels.push_back({{0, 0, 8}, apex::plugin::string("main"), {1, 1, 1, 1}});
-    overlay.tints.push_back({5, {1, 0, 0, 0.5f}});
+    overlay.segments.push_back(apex::plugin::segment({0, 0, 0}, {64, 0, 0}, 3, {0, 1, 0, 1}));
+    overlay.points.push_back(apex::plugin::point({0, 0, 0}, 6, {1, 1, 0, 1}));
+    overlay.labels.push_back(apex::plugin::label({0, 0, 8}, "main", {1, 1, 1, 1}));
+    overlay.tints.push_back(apex::plugin::tint(5, {1, 0, 0, 0.5f}));
     static const apex_plane cube[6] = {{{1, 0, 0}, 8}, {{-1, 0, 0}, 8}, {{0, 1, 0}, 8}, {{0, -1, 0}, 8}, {{0, 0, 1}, 8}, {{0, 0, -1}, 8}};
-    overlay.ghosts.push_back({cube, 6, {0, 0.5f, 1, 0.3f}});
+    overlay.ghosts.push_back(apex::plugin::overlayGhost(cube, 6, {0, 0.5f, 1, 0.3f}));
 }
 void act(void*) {
     // Callback into the plugin: set/clear work, ownership and validation are enforced.
     setMain();
     log(logLine("set", apex::plugin::setOverlay(*host, "plugin." PLUGIN_NS ".main", overlay)));
     apex::plugin::Overlay bad;
-    bad.points.push_back({{std::nan(""), 0, 0}, {1, 1, 1, 1}, 4});
+    bad.points.push_back(apex::plugin::point({std::nan(""), 0, 0}, 4, {1, 1, 1, 1}));
     log(logLine("set_nan", apex::plugin::setOverlay(*host, "plugin." PLUGIN_NS ".main", bad)));
     log(logLine("set_unknown", apex::plugin::setOverlay(*host, "plugin." PLUGIN_NS ".nothing", overlay)));
     log(logLine("steal", apex::plugin::setOverlay(*host, "plugin." OTHER_NS ".main", overlay)));
@@ -103,6 +103,6 @@ apex_status activate(void*) {
     registry->register_action(host->context, string("plugin." PLUGIN_NS ".throw"), string("Wrap throw"), string("Throws"), nullptr, throwing, nullptr, 0);
     return APEX_OK;
 }
-const apex_plugin plugin{sizeof(apex_plugin), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, nullptr, activate, nullptr, nullptr, nullptr, nullptr};
+const apex_plugin plugin{sizeof(apex_plugin), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, 0, nullptr, activate, nullptr, nullptr, nullptr, nullptr};
 }
 extern "C" APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

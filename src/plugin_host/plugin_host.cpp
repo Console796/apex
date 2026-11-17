@@ -11,6 +11,7 @@
 #include "editor/map_problems.hpp"
 #include "geometry/solid_block.hpp"
 #include <apex/apex_plugin.h>
+#include "plugin_host/abi_array.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -127,9 +128,30 @@ apex_plugin_entry_fn entryPoint(Library lib) { return reinterpret_cast<apex_plug
 #endif
 }
 
+namespace {
+bool idChar(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'; }
+}
+bool validPluginId(std::string_view id) {
+    if (id.empty() || id.size() > 64) return false;
+    std::size_t segment = 0;
+    for (const char c : id) {
+        if (c == '.') { if (segment == 0) return false; segment = 0; }
+        else if (idChar(c)) ++segment;
+        else return false;
+    }
+    return segment != 0;
+}
+bool validItemName(std::string_view name) {
+    return !name.empty() && name.size() <= 128 && std::ranges::all_of(name, idChar);
+}
+// "plugin.<id>.<name>": the prefix is matched up to and including the dot after the plugin id, and the name
+// is one dot-free segment. A name never contains a dot, so "plugin.com.example.paint.brush" can only be
+// plugin com.example.paint's: plugin com.example cannot claim it, whether or not that plugin is installed.
 bool inNamespace(std::string_view plugin, std::string_view id) {
-    const auto prefix = "plugin." + std::string(plugin) + ".";
-    return id.starts_with(prefix) && id.size() > prefix.size();
+    if (!validPluginId(plugin) || !id.starts_with("plugin.")) return false;
+    id.remove_prefix(7);
+    if (!id.starts_with(plugin) || id.size() <= plugin.size() || id[plugin.size()] != '.') return false;
+    return validItemName(id.substr(plugin.size() + 1));
 }
 
 namespace {
@@ -257,7 +279,7 @@ public:
         auto core = core_;
         return guardedCall<std::vector<std::string>>(core_, true, "list", [core]() -> Result<std::vector<std::string>> {
             FileSinkState state;
-            const apex_vfs_file_sink sink{sizeof(sink), &state, [](void* p, apex_str path) -> apex_status {
+            const apex_vfs_file_sink sink{sizeof(sink), 0, &state, [](void* p, apex_str path) -> apex_status {
                 try {
                     auto& out = *static_cast<FileSinkState*>(p);
                     const auto text = view(path);
@@ -279,7 +301,7 @@ public:
         return guardedCall<assets::Blob>(core_, false, "open", [core, name = std::string(path), maxBytes]() -> Result<assets::Blob> {
             DataSinkState state;
             state.limit = maxBytes;
-            const apex_vfs_data_sink sink{sizeof(sink), &state, maxBytes,
+            const apex_vfs_data_sink sink{sizeof(sink), 0, &state, maxBytes,
                 [](void* p, const void* data, size_t size) -> apex_status {
                     try {
                         auto& out = *static_cast<DataSinkState*>(p);
@@ -408,22 +430,22 @@ struct Host::Impl {
         lastError.reserve(512);
         std::ifstream file(state);
         for (std::string line; std::getline(file, line);) if (!line.empty()) disabled.insert(line);
-        host = {sizeof(host), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, this, interface, writeLog, error};
-        documentApi = {sizeof(documentApi), info, rootAt, node, childAt, keyAt};
-        registrationApi = {sizeof(registrationApi), registerAction, registerTool, registerPanel};
-        toolsApi = {sizeof(toolsApi), registerToolV1};
-        actionsApi = {sizeof(actionsApi), registerActionV1};
-        editApi = {sizeof(editApi), applyEdit, deferEdit};
-        selectionApi = {sizeof(selectionApi), selectionInfo, selectionAt, selectionSet};
-        uiApi = {sizeof(uiApi), registerUiPanel, refreshUi, registerUiSection, showUiDialog};
-        overlayApi = {sizeof(overlayApi), declareOverlay, setOverlay, clearOverlay};
-        helpersApi = {sizeof(helpersApi), registerHelper};
-        problemsApi = {sizeof(problemsApi), registerProblemCheck};
-        ioApi = {sizeof(ioApi), registerImporter};
-        vfsApi = {sizeof(vfsApi), registerVfsProvider, requestVfsRefresh};
-        assetsApi = {sizeof(assetsApi), listMaterials, findMaterial, writeVmt};
-        jobsApi = {sizeof(jobsApi), submitJob, cancelJob};
-        watchApi = {sizeof(watchApi), watchPath, unwatchPath};
+        host = {sizeof(host), APEX_PLUGIN_ABI_MAJOR, APEX_PLUGIN_ABI_MINOR, 0, this, interface, writeLog, error};
+        documentApi = {sizeof(documentApi), 0, info, rootAt, node, childAt, keyAt};
+        registrationApi = {sizeof(registrationApi), 0, registerAction, registerTool, registerPanel};
+        toolsApi = {sizeof(toolsApi), 0, registerToolV1};
+        actionsApi = {sizeof(actionsApi), 0, registerActionV1};
+        editApi = {sizeof(editApi), 0, applyEdit, deferEdit};
+        selectionApi = {sizeof(selectionApi), 0, selectionInfo, selectionAt, selectionSet};
+        uiApi = {sizeof(uiApi), 0, registerUiPanel, refreshUi, registerUiSection, showUiDialog};
+        overlayApi = {sizeof(overlayApi), 0, declareOverlay, setOverlay, clearOverlay};
+        helpersApi = {sizeof(helpersApi), 0, registerHelper};
+        problemsApi = {sizeof(problemsApi), 0, registerProblemCheck};
+        ioApi = {sizeof(ioApi), 0, registerImporter};
+        vfsApi = {sizeof(vfsApi), 0, registerVfsProvider, requestVfsRefresh};
+        assetsApi = {sizeof(assetsApi), 0, listMaterials, findMaterial, writeVmt};
+        jobsApi = {sizeof(jobsApi), 0, submitJob, cancelJob};
+        watchApi = {sizeof(watchApi), 0, watchPath, unwatchPath};
     }
     void setError(const char* message) noexcept {
         if (std::this_thread::get_id() != mainThread) return;  // lastError is editor-thread state
@@ -576,7 +598,7 @@ struct Host::Impl {
         });
     }
     static const apex_edit_ops_v1& editOps() {
-        static const apex_edit_ops_v1 ops{sizeof(ops), setKey, destroyNode, createSolid,
+        static const apex_edit_ops_v1 ops{sizeof(ops), 0, setKey, destroyNode, createSolid,
                                            reparentNode, setSideKey, removeDisplacement, rebuildSolid};
         return ops;
     }
@@ -615,11 +637,11 @@ struct Host::Impl {
         std::vector<apex_modified_node> modified;
         modified.reserve(changes.modifiedIds.size());
         for (const auto& item : changes.modifiedIds)
-            modified.push_back({item.id, static_cast<uint32_t>(item.flags)});
+            modified.push_back({sizeof(apex_modified_node), static_cast<uint32_t>(item.flags), item.id});
         std::vector<int32_t> sides(changes.vanishedSides.begin(), changes.vanishedSides.end());
-        apex_change_notice notice{sizeof(notice), observedDocument->historyState(), changes.createdIds.data(),
-            changes.createdIds.size(), modified.data(), modified.size(), changes.destroyedIds.data(),
-            changes.destroyedIds.size(), sides.data(), sides.size(), changes.undoOrRedo ? 1u : 0u};
+        apex_change_notice notice{sizeof(notice), changes.undoOrRedo ? 1u : 0u, observedDocument->historyState(),
+            changes.createdIds.data(), changes.createdIds.size(), modified.data(), modified.size(),
+            changes.destroyedIds.data(), changes.destroyedIds.size(), sides.data(), sides.size()};
         for (const auto& entry : scripts) {
             if (!entry->engine) continue;
             const auto& owner = plugins[entry->index].id;
@@ -673,17 +695,20 @@ struct Host::Impl {
                                         const apex_action_suggestion* suggestions, size_t count) {
         const auto before = self(c).pending.size();
         try {
-            if (count > 64 || (count && !suggestions)) return APEX_ERR_INVALID;
+            if (count > 64) return APEX_ERR_INVALID;
+            const AbiArray<apex_action_suggestion> list(suggestions, count);
+            if (!list.valid()) { self(c).lastError = "invalid suggestion array (struct_size)"; return APEX_ERR_INVALID; }
             const auto result = registerItem(c, Registration::Kind::Action, id, name, desc, user, fn, nullptr);
             if (result != APEX_OK) return result;
             auto& item = self(c).pending.back();
             for (size_t i = 0; i < count; ++i) {
-                if (view(suggestions[i].preset).empty() || !editor::KeyChord::parse(view(suggestions[i].chord))) {
+                const auto suggestion = list[i];
+                if (view(suggestion.preset).empty() || !editor::KeyChord::parse(view(suggestion.chord))) {
                     self(c).pending.pop_back(); return APEX_ERR_INVALID;
                 }
-                item.suggestions.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].chord)));
-                if (!view(suggestions[i].tool_id).empty())
-                    item.suggestionContexts.emplace(std::string(view(suggestions[i].preset)), std::string(view(suggestions[i].tool_id)));
+                item.suggestions.emplace(std::string(view(suggestion.preset)), std::string(view(suggestion.chord)));
+                if (!view(suggestion.tool_id).empty())
+                    item.suggestionContexts.emplace(std::string(view(suggestion.preset)), std::string(view(suggestion.tool_id)));
             }
             return APEX_OK;
         } catch (...) { self(c).pending.resize(before); return internal(c); }
@@ -848,16 +873,20 @@ struct Host::Impl {
         next.name = entry->name;
         if (APEX_HAS(segment_count)) {
             if (APEX_BAD(list->segment_count, list->segments, kMaxOverlayItems)) return APEX_ERR_INVALID;
+            const AbiArray<apex_tool_segment> segments(list->segments, list->segment_count);
+            if (!segments.valid()) { s.setError("invalid overlay segment array (struct_size)"); return APEX_ERR_INVALID; }
             for (std::size_t i = 0; i < list->segment_count; ++i) {
                 OverlaySegment out;
-                if (!segmentOf(list->segments[i], out)) { s.setError("invalid overlay segment"); return APEX_ERR_INVALID; }
+                if (!segmentOf(segments[i], out)) { s.setError("invalid overlay segment"); return APEX_ERR_INVALID; }
                 next.segments.push_back(out);
             }
         }
         if (APEX_HAS(point_count)) {
             if (APEX_BAD(list->point_count, list->points, kMaxOverlayItems)) return APEX_ERR_INVALID;
+            const AbiArray<apex_overlay_point> points(list->points, list->point_count);
+            if (!points.valid()) { s.setError("invalid overlay point array (struct_size)"); return APEX_ERR_INVALID; }
             for (std::size_t i = 0; i < list->point_count; ++i) {
-                const auto& in = list->points[i];
+                const auto in = points[i];
                 Vec4 colour;
                 if (!finite(in.position) || !rgba(in.rgba, colour) || !std::isfinite(in.size)) {
                     s.setError("invalid overlay point");
@@ -868,16 +897,20 @@ struct Host::Impl {
         }
         if (APEX_HAS(label_count)) {
             if (APEX_BAD(list->label_count, list->labels, kMaxOverlayItems)) return APEX_ERR_INVALID;
+            const AbiArray<apex_overlay_label> labels(list->labels, list->label_count);
+            if (!labels.valid()) { s.setError("invalid overlay label array (struct_size)"); return APEX_ERR_INVALID; }
             for (std::size_t i = 0; i < list->label_count; ++i) {
                 OverlayLabel out;
-                if (!labelOf(list->labels[i], out)) { s.setError("invalid overlay label"); return APEX_ERR_INVALID; }
+                if (!labelOf(labels[i], out)) { s.setError("invalid overlay label"); return APEX_ERR_INVALID; }
                 next.labels.push_back(std::move(out));
             }
         }
         if (APEX_HAS(ghost_count)) {
             if (APEX_BAD(list->ghost_count, list->ghosts, kMaxOverlayGhosts)) return APEX_ERR_INVALID;
+            const AbiArray<apex_overlay_ghost> ghosts(list->ghosts, list->ghost_count);
+            if (!ghosts.valid()) { s.setError("invalid overlay ghost array (struct_size)"); return APEX_ERR_INVALID; }
             for (std::size_t i = 0; i < list->ghost_count; ++i) {
-                const auto& ghost = list->ghosts[i];
+                const auto ghost = ghosts[i];
                 Vec4 colour;
                 if (!ghost.planes || ghost.plane_count < 4 || ghost.plane_count > 256 || !rgba(ghost.rgba, colour)) {
                     s.setError("invalid overlay ghost");
@@ -910,10 +943,13 @@ struct Host::Impl {
         }
         if (APEX_HAS(tint_count)) {
             if (APEX_BAD(list->tint_count, list->tints, kMaxOverlayTints)) return APEX_ERR_INVALID;
+            const AbiArray<apex_overlay_tint> tints(list->tints, list->tint_count);
+            if (!tints.valid()) { s.setError("invalid overlay tint array (struct_size)"); return APEX_ERR_INVALID; }
             for (std::size_t i = 0; i < list->tint_count; ++i) {
+                const auto tint = tints[i];
                 Vec4 colour;
-                if (!rgba(list->tints[i].rgba, colour)) { s.setError("invalid overlay tint"); return APEX_ERR_INVALID; }
-                next.tints[list->tints[i].side] = colour;
+                if (!rgba(tint.rgba, colour)) { s.setError("invalid overlay tint"); return APEX_ERR_INVALID; }
+                next.tints[tint.side] = colour;
             }
         }
 #undef APEX_HAS
@@ -1060,7 +1096,7 @@ struct Host::Impl {
         return APEX_OK;
     } catch (...) { return internal(c); }
     static apex_material_info materialInfo(const MaterialRecord& m) {
-        return {sizeof(apex_material_info), string(m.name), string(m.shader), string(m.baseTexture), string(m.surfaceProp), string(m.source)};
+        return {sizeof(apex_material_info), 0, string(m.name), string(m.shader), string(m.baseTexture), string(m.surfaceProp), string(m.source)};
     }
     static apex_status listMaterials(void* c, void* user, apex_material_visit visit) try {
         auto& s = self(c);
@@ -1075,11 +1111,11 @@ struct Host::Impl {
     static apex_status findMaterial(void* c, apex_str name, apex_material_info* out) try {
         auto& s = self(c);
         if (std::this_thread::get_id() != s.mainThread || !s.assetsBackend) return APEX_ERR_STATE;
-        if (!out || out->struct_size < sizeof(*out) || view(name).empty()) return APEX_ERR_INVALID;
+        if (!out || out->struct_size < kAbiBaseSize<apex_material_info> || view(name).empty()) return APEX_ERR_INVALID;
         auto found = s.assetsBackend->material(view(name));
         if (!found) return APEX_ERR_NOT_FOUND;
         s.materialScratch = std::move(*found);
-        *out = materialInfo(s.materialScratch);
+        writeOut(out, materialInfo(s.materialScratch));
         return APEX_OK;
     } catch (...) { return internal(c); }
     static apex_status writeVmt(void* c, apex_str material, const apex_vmt_edit* edits, size_t count) try {
@@ -1087,11 +1123,13 @@ struct Host::Impl {
         if (std::this_thread::get_id() != s.mainThread || !s.assetsBackend) return APEX_ERR_STATE;
         if (view(material).empty() || !edits || count == 0 || count > 256) { s.setError("write_vmt needs a material and 1 to 256 edits"); return APEX_ERR_INVALID; }
         std::vector<VmtEditRequest> requests;
+        const AbiArray<apex_vmt_edit> list(edits, count);
+        if (!list.valid()) { s.setError("invalid vmt edit array (struct_size)"); return APEX_ERR_INVALID; }
         for (size_t i = 0; i < count; ++i) {
-            const auto& edit = edits[i];
+            const auto edit = list[i];
             const auto key = view(edit.key);
             const auto value = view(edit.value);
-            if (edit.struct_size < sizeof(apex_vmt_edit) || key.empty() || key.size() > 256 || value.size() > 4096 ||
+            if (key.empty() || key.size() > 256 || value.size() > 4096 ||
                 std::ranges::any_of(key, [](unsigned char ch) { return ch <= ' ' || ch == '"' || ch == '{' || ch == '}'; }) ||
                 std::ranges::any_of(value, [](unsigned char ch) { return ch < ' ' && ch != '\t'; })) {
                 s.setError("invalid vmt edit");
@@ -1139,7 +1177,7 @@ struct Host::Impl {
                 const auto* previous = std::exchange(jobOwner, &owner);
                 apex_status status = APEX_ERR_INTERNAL;
                 try {
-                    const apex_job_context context{sizeof(context), &token,
+                    const apex_job_context context{sizeof(context), 0, &token,
                         [](void* job) -> int { return static_cast<CancelToken*>(job)->cancelled() ? 1 : 0; }};
                     status = work(user, &context);
                 } catch (...) { status = APEX_ERR_INTERNAL; }
@@ -1270,7 +1308,7 @@ struct Host::Impl {
     void runProblemCheck(const Registration& r, const editor::ProblemContext& context, std::vector<editor::Problem>& out) {
         std::vector<editor::Problem> mine;
         ProblemSink sink{*this, context.doc, mine, r.owner};
-        const apex_problem_sink native{sizeof(native), &sink, reportProblem};
+        const apex_problem_sink native{sizeof(native), 0, &sink, reportProblem};
         const auto* previous = std::exchange(document, &context.doc);
         apex_status status = APEX_ERR_INTERNAL;
         const bool ran = guardedUi(r.owner, "problems.check", [&] { status = r.problemCheck(r.user, &native); });
@@ -1311,15 +1349,16 @@ struct Host::Impl {
                         if (found == helperRegistrations.end()) continue;
                         const auto pose = document::entityPose(*node->block);
                         const std::string helperName = toLowerAscii(trim(helper.name));
-                        apex_helper_call call{sizeof(call), id, string(cls->name), string(helperName), string(helper.arguments),
+                        apex_helper_call call{sizeof(call), 0, id, string(cls->name), string(helperName), string(helper.arguments),
                             {pose.origin.x, pose.origin.y, pose.origin.z}, {pose.anglesDeg.x, pose.anglesDeg.y, pose.anglesDeg.z}};
                         struct Out { HelperDrawing& drawing; } out{helperCache};
-                        const apex_helper_sink native{sizeof(native), &out,
+                        const apex_helper_sink native{sizeof(native), 0, &out,
                             [](void* o, const apex_tool_segment* in) noexcept -> apex_status {
                                 try {
                                     auto& drawing = static_cast<Out*>(o)->drawing;
                                     OverlaySegment segment;
-                                    if (!in || !segmentOf(*in, segment)) return APEX_ERR_INVALID;
+                                    const auto in_ = readStruct(in);
+                                    if (!in_ || !segmentOf(*in_, segment)) return APEX_ERR_INVALID;
                                     if (drawing.segments.size() >= 200000) return APEX_ERR_STATE;
                                     drawing.segments.push_back(segment);
                                     return APEX_OK;
@@ -1329,7 +1368,8 @@ struct Host::Impl {
                                 try {
                                     auto& drawing = static_cast<Out*>(o)->drawing;
                                     OverlayLabel label;
-                                    if (!in || !labelOf(*in, label)) return APEX_ERR_INVALID;
+                                    const auto in_ = readStruct(in);
+                                    if (!in_ || !labelOf(*in_, label)) return APEX_ERR_INVALID;
                                     if (drawing.labels.size() >= 200000) return APEX_ERR_STATE;
                                     drawing.labels.push_back(std::move(label));
                                     return APEX_OK;
@@ -1532,11 +1572,10 @@ struct Host::Impl {
         return handle ? s.document->get(*handle) : nullptr;
     }
     static apex_status info(void* context, apex_document_info* out) try {
-        if (!out || out->struct_size < sizeof(*out)) return APEX_ERR_INVALID;
+        if (!out || out->struct_size < kAbiBaseSize<apex_document_info>) return APEX_ERR_INVALID;
         const auto* doc = self(context).document;
-        out->is_open = doc != nullptr;
-        out->revision = doc ? doc->historyState() : 0;
-        out->root_count = doc ? doc->roots().size() : 0;
+        writeOut(out, apex_document_info{sizeof(apex_document_info), doc != nullptr ? 1u : 0u,
+                                         doc ? doc->historyState() : 0, doc ? doc->roots().size() : 0});
         return APEX_OK;
     } catch (...) { return internal(context); }
     static apex_status rootAt(void* context, size_t index, apex_node_id* out) try {
@@ -1547,12 +1586,12 @@ struct Host::Impl {
         *out = doc->roots()[index]; return APEX_OK;
     } catch (...) { return internal(context); }
     static apex_status node(void* context, apex_node_id id, apex_node_info* out) try {
-        if (!out || out->struct_size < sizeof(*out)) return APEX_ERR_INVALID;
+        if (!out || out->struct_size < kAbiBaseSize<apex_node_info>) return APEX_ERR_INVALID;
         auto& s = self(context); const auto* n = find(s, id);
         if (!n) return s.document ? APEX_ERR_NOT_FOUND : APEX_ERR_STATE;
-        out->id = n->id; out->parent = n->parent; out->kind = string(n->block->key());
-        out->child_count = n->children.size(); out->key_count = 0;
-        for (const auto& child : n->block->children()) if (child.kind() == kv1::NodeKind::Value) ++out->key_count;
+        apex_node_info info{sizeof(apex_node_info), 0, n->id, n->parent, string(n->block->key()), n->children.size(), 0};
+        for (const auto& child : n->block->children()) if (child.kind() == kv1::NodeKind::Value) ++info.key_count;
+        writeOut(out, info);
         return APEX_OK;
     } catch (...) { return internal(context); }
     static apex_status childAt(void* context, apex_node_id id, size_t index, apex_node_id* out) try {
@@ -1641,7 +1680,7 @@ void Host::discover(const std::vector<std::filesystem::path>& paths) {
                 auto parsed = kv3::parse(readFile(dir / "plugin.kv3"));
                 if (!parsed) throw std::runtime_error(parsed.error().what());
                 plugin.id = field(parsed->root, "id"); plugin.name = field(parsed->root, "name"); plugin.version = field(parsed->root, "version");
-                if (plugin.id.empty() || plugin.id.find_first_of("\r\n/\\") != std::string::npos) throw std::runtime_error("invalid plugin id");
+                if (!validPluginId(plugin.id)) throw std::runtime_error("invalid plugin id (letters, digits, '_' and '-' in dot-separated parts)");
                 if (!seen.insert(plugin.id).second) continue;
                 if (const auto* abi = parsed->root.find("apex_abi")) {
                     const auto* majorValue = abi->find("major");
@@ -1769,7 +1808,7 @@ ImportResult Host::importFile(std::string_view importerId, const std::filesystem
         const auto entry = *found;
         s.session->edit("Import " + entry.info.name, [&](document::Transaction& tx) {
             Impl::EditContext context{tx, doc, s};
-            const apex_import_context native{sizeof(native), world, &Impl::editOps(), &context, &sink, &Impl::reportImport};
+            const apex_import_context native{sizeof(native), 0, world, &Impl::editOps(), &context, &sink, &Impl::reportImport};
             apex_status status = APEX_ERR_INTERNAL;
             const bool ran = s.guardedUi(entry.info.owner, "import", [&] { status = entry.import(entry.user, string(text), &native); });
             if (!ran) throw std::runtime_error("the importer threw an exception");
@@ -1871,7 +1910,7 @@ bool Host::describePanel(std::string_view id, const UiContext* context, const st
     try {
         std::vector<apex_str> names;
         for (const auto& n : context ? context->names : std::vector<std::string>{}) names.push_back({n.data(), n.size()});
-        apex_ui_context native{sizeof(native), {}, nullptr, 0, nullptr, 0};
+        apex_ui_context native{sizeof(native), 0, {}, nullptr, 0, nullptr, 0};
         if (context) {
             native.kind = {context->kind.data(), context->kind.size()};
             native.names = names.data(); native.name_count = names.size();
@@ -1883,8 +1922,10 @@ bool Host::describePanel(std::string_view id, const UiContext* context, const st
         if (!impl_->guardedUi(entry.owner, "ui.describe", [&] {
                 result = entry.uiCallbacks.describe(entry.user, context ? &native : nullptr, &form);
             })) return false;
-        if (result != APEX_OK || !form || form->struct_size < sizeof(apex_ui_form)) return false;
-        consume(*form);
+        if (result != APEX_OK) return false;
+        const auto described = readStruct(form);
+        if (!described) return false;
+        consume(*described);
         return true;
     } catch (...) { impl_->setError("exception while describing plugin ui"); return false; }
 }

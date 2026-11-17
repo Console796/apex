@@ -119,6 +119,8 @@ TEST_CASE("plugin namespace is enforced") {
     CHECK(inNamespace("example", "plugin.example.action"));
     CHECK_FALSE(inNamespace("example", "plugin.other.action"));
     CHECK_FALSE(inNamespace("example", "plugin.exampleish.action"));
+    CHECK_FALSE(inNamespace("com.example", "plugin.com.example.paint.brush"));  // the longer id's namespace
+    CHECK_FALSE(inNamespace("example", "plugin.example."));
 }
 TEST_CASE("plugin manifest missing platform entry remains listed") {
     Temp temp;
@@ -282,6 +284,7 @@ TEST_CASE("plugin activation registers only its namespace with editor registries
     CAPTURE(host.plugins()[0].error);
     REQUIRE(host.plugins()[0].loaded);
     CHECK_FALSE(editor::actionRegistry().find("plugin.other.action"));
+    CHECK_FALSE(editor::actionRegistry().find("plugin.example."));  // refused with APEX_ERR_INVALID (the plugin checks)
     REQUIRE(editor::actionRegistry().find("plugin.example.action"));
     REQUIRE(editor::actionRegistry().find("plugin.example.tool"));
     CHECK(panels == std::vector<std::string>{"plugin.example.panel"});

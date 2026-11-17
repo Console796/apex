@@ -27,7 +27,7 @@ public:
     virtual void forget(uint64_t) {}
     static const apex_tool_callbacks* callbacks() {
         static const apex_tool_callbacks table{
-            sizeof(table),
+            sizeof(table), 0,
             [](void* p) { try { static_cast<Tool*>(p)->activate(); } catch (...) {} },
             [](void* p) { try { static_cast<Tool*>(p)->deactivate(); } catch (...) {} },
             [](void* p, const apex_tool_event* e, const apex_tool_view* v) -> int {
@@ -65,14 +65,14 @@ public:
     }
     static const apex_ui_callbacks* callbacks() {
         static const apex_ui_callbacks table{
-            sizeof(table),
+            sizeof(table), 0,
             [](void* p, const apex_ui_context* context, const apex_ui_form** out) -> apex_status {
                 try {
                     if (!out) return APEX_ERR_INVALID;
                     auto& self = *static_cast<Form*>(p);
                     self.controls_.clear();
                     self.describe(context, self.controls_);
-                    self.form_ = {sizeof(self.form_), self.controls_.data(), self.controls_.size()};
+                    self.form_ = {sizeof(self.form_), 0, self.controls_.data(), self.controls_.size()};
                     *out = &self.form_;
                     return APEX_OK;
                 } catch (...) { return APEX_ERR_INTERNAL; }
@@ -127,6 +127,39 @@ inline const apex_helpers_v1* helpers(const apex_host& host) {
 }
 inline const apex_problems_v1* problems(const apex_host& host) {
     return static_cast<const apex_problems_v1*>(host.get_interface(host.context, string("apex.problems/1")));
+}
+
+// Element constructors: every element of an ABI array carries its own struct_size (the array's stride), so build
+// elements with these (or set struct_size yourself) rather than with a zero-initialised aggregate.
+inline apex_tool_segment segment(apex_vec3 a, apex_vec3 b, float width, const float (&rgba)[4]) {
+    apex_tool_segment s{}; s.struct_size = sizeof(s); s.width = width; s.a = a; s.b = b;
+    for (int i = 0; i < 4; ++i) s.rgba[i] = rgba[i];
+    return s;
+}
+inline apex_tool_ghost ghost(const apex_plane* planes, size_t count, float opacity, std::string_view material = {}) {
+    apex_tool_ghost g{}; g.struct_size = sizeof(g); g.opacity = opacity; g.planes = planes; g.plane_count = count;
+    g.material = string(material);
+    return g;
+}
+inline apex_overlay_point point(apex_vec3 position, float size, const float (&rgba)[4]) {
+    apex_overlay_point p{}; p.struct_size = sizeof(p); p.size = size; p.position = position;
+    for (int i = 0; i < 4; ++i) p.rgba[i] = rgba[i];
+    return p;
+}
+inline apex_overlay_label label(apex_vec3 position, std::string_view text, const float (&rgba)[4]) {
+    apex_overlay_label l{}; l.struct_size = sizeof(l); l.position = position; l.text = string(text);
+    for (int i = 0; i < 4; ++i) l.rgba[i] = rgba[i];
+    return l;
+}
+inline apex_overlay_ghost overlayGhost(const apex_plane* planes, size_t count, const float (&rgba)[4]) {
+    apex_overlay_ghost g{}; g.struct_size = sizeof(g); g.planes = planes; g.plane_count = count;
+    for (int i = 0; i < 4; ++i) g.rgba[i] = rgba[i];
+    return g;
+}
+inline apex_overlay_tint tint(int32_t side, const float (&rgba)[4]) {
+    apex_overlay_tint t{}; t.struct_size = sizeof(t); t.side = side;
+    for (int i = 0; i < 4; ++i) t.rgba[i] = rgba[i];
+    return t;
 }
 
 // apex.overlay/1. Fill the vectors, then set(); the host copies them before set() returns.
@@ -299,7 +332,7 @@ public:
     // Return the file's bytes (at most maxBytes are kept) through `bytes`, or APEX_ERR_NOT_FOUND.
     virtual apex_status open(std::string_view path, std::vector<char>& bytes) = 0;
     static apex_vfs_provider table(FileProvider& provider) {
-        return {sizeof(apex_vfs_provider), &provider,
+        return {sizeof(apex_vfs_provider), 0, &provider,
             [](void* p) -> apex_status { try { return static_cast<FileProvider*>(p)->refresh(); } catch (...) { return APEX_ERR_INTERNAL; } },
             [](void* p, const apex_vfs_file_sink* sink) -> apex_status {
                 try {
@@ -359,7 +392,7 @@ inline apex_status writeVmt(const apex_host& host, std::string_view material, co
     const auto* api = assets(host);
     if (!api) return APEX_ERR_UNSUPPORTED;
     std::vector<apex_vmt_edit> native;
-    for (const auto& e : edits) native.push_back({sizeof(apex_vmt_edit), string(e.key), string(e.value), e.remove ? 1u : 0u});
+    for (const auto& e : edits) native.push_back({sizeof(apex_vmt_edit), e.remove ? 1u : 0u, string(e.key), string(e.value)});
     return api->write_vmt(host.context, string(material), native.data(), native.size());
 }
 }

@@ -24,6 +24,11 @@ struct Plugin {
     std::filesystem::path script;
     std::string runtime;
 };
+// Ids: a plugin id is dot-separated parts of letters, digits, '_' and '-'; everything it registers is
+// "plugin.<id>.<name>" with one such part as the name. inNamespace is true only for a valid id of that shape
+// under exactly this plugin, so ids cannot overlap between com.example and com.example.paint.
+bool validPluginId(std::string_view id);
+bool validItemName(std::string_view name);
 bool inNamespace(std::string_view plugin, std::string_view id);
 class UiBackend {
 public:

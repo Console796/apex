@@ -93,8 +93,8 @@ public:
             planes_.push_back({{1, 0, 0}, x1}); planes_.push_back({{-1, 0, 0}, -x0});
             planes_.push_back({{0, 1, 0}, 64}); planes_.push_back({{0, -1, 0}, 0});
             planes_.push_back({{0, 0, 1}, z});  planes_.push_back({{0, 0, -1}, 0});
-            segments_.push_back({{x0, 0, z}, {x1, 0, z}, {1, 1, 1, 1}, 2});
-            ghosts_.push_back({planes_.data() + first, 6, plugin::string("DEV/DEV_MEASUREGENERIC01"), 0.35f});
+            segments_.push_back(plugin::segment({x0, 0, z}, {x1, 0, z}, 2, {1, 1, 1, 1}));
+            ghosts_.push_back(plugin::ghost(planes_.data() + first, 6, 0.35f, "DEV/DEV_MEASUREGENERIC01"));
         }
         out.segments = segments_.data(); out.segment_count = segments_.size();
         out.ghosts = ghosts_.data(); out.ghost_count = ghosts_.size();

@@ -170,6 +170,7 @@ struct View {
     void release() { if (--refs == 0) delete this; }
     bool pick(const Vec3& origin, const Vec3& direction, uint64_t& node, int& side, Vec3& point, Vec3& normal) const {
         apex_pick hit{};
+        hit.struct_size = sizeof(hit);
         if (!live || !live->ray_pick || live->ray_pick(live->context, {toC(origin), toC(direction)}, &hit) != APEX_OK) return false;
         node = hit.node; side = hit.side; point = fromC(hit.point); normal = fromC(hit.normal);
         return true;
@@ -203,7 +204,7 @@ struct Visual {
     void release() { if (--refs == 0) delete this; }
     void clear() { segments.clear(); ghosts.clear(); }
     void line(const Vec3& a, const Vec3& b, float r, float g, float bl, float al, float width) {
-        segments.push_back({toC(a), toC(b), {r, g, bl, al}, width});
+        segments.push_back({sizeof(apex_tool_segment), width, toC(a), toC(b), {r, g, bl, al}});
     }
     void ghost(const CScriptArray* planes, const string& material, double opacity) {
         try { ghosts.push_back({planesOf(planes), material, static_cast<float>(opacity)}); }
@@ -373,7 +374,7 @@ apex_status toolVisual(void* p, uint64_t source, apex_tool_visual* out) try {
     if (!ok) return APEX_ERR_INTERNAL;
     i.segments = i.visual->segments;
     i.ghosts.clear();
-    for (const auto& g : i.visual->ghosts) i.ghosts.push_back({g.planes.data(), g.planes.size(), cstr(g.material), g.opacity});
+    for (const auto& g : i.visual->ghosts) i.ghosts.push_back({sizeof(apex_tool_ghost), g.opacity, g.planes.data(), g.planes.size(), cstr(g.material)});
     out->segments = i.segments.data(); out->segment_count = i.segments.size();
     out->ghosts = i.ghosts.data(); out->ghost_count = i.ghosts.size();
     return APEX_OK;
@@ -391,7 +392,7 @@ apex_status toolReadout(void* p, apex_tool_readout* out) try {
     i.parameters.clear();
     std::size_t at = 0;
     for (const auto& param : r.params) {
-        i.parameters.push_back({cstr(param.id), cstr(param.label), param.kind, param.value, param.minimum, param.maximum,
+        i.parameters.push_back({sizeof(apex_tool_parameter), param.kind, cstr(param.id), cstr(param.label), param.value, param.minimum, param.maximum,
                                 param.choices.empty() ? nullptr : i.choiceViews.data() + at, param.choices.size()});
         at += param.choices.size();
     }
@@ -436,7 +437,7 @@ void* toolCreate(void* registration) try {
 } catch (...) { return nullptr; }
 void toolDestroy(void* p) { try { delete static_cast<Instance*>(p); } catch (...) {} }
 const apex_tool_callbacks kToolCallbacks{
-    sizeof(apex_tool_callbacks), toolActivate, toolDeactivate, toolInput, toolVisual, toolReadout, toolSetParameter,
+    sizeof(apex_tool_callbacks), 0, toolActivate, toolDeactivate, toolInput, toolVisual, toolReadout, toolSetParameter,
     toolPerform, toolCancel, toolDocumentChanged, toolForget, toolCreate, toolDestroy};
 
 // ---- the apex:: namespace ---------------------------------------------------------------------------------

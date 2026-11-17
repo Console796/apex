@@ -55,7 +55,7 @@ target_compile_definitions(apex_tests PRIVATE APEX_FIXTURE_DIR="${CMAKE_CURRENT_
                                               APEX_PRIMITIVE_VMF_OUT="${CMAKE_BINARY_DIR}/primitives.vmf"
                                               APEX_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/render/golden")
 
-add_executable(apex_plugin_host_tests main.cpp plugin_host/plugin_host_test.cpp plugin_host/vfs_host_test.cpp plugin_host/script_host_test.cpp)
+add_executable(apex_plugin_host_tests main.cpp plugin_host/plugin_host_test.cpp plugin_host/vfs_host_test.cpp plugin_host/script_host_test.cpp plugin_host/abi_layout_c.c plugin_host/abi_layout_cpp.cpp plugin_host/abi_test.cpp)
 add_library(apex_crash_plugin MODULE plugin_host/crash_plugin.c)
 target_include_directories(apex_crash_plugin PRIVATE ${PROJECT_SOURCE_DIR}/include)
 add_executable(apex_plugin_crash_child plugin_host/crash_child.cpp)

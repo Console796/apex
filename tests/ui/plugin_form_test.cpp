@@ -35,7 +35,7 @@ TEST_CASE("plugin form sends changed values and button clicks") {
     controls[3].kind = APEX_UI_CHOICE; controls[3].key = str("choice"); controls[3].options = options; controls[3].option_count = 2;
     controls[3].value.text = str("one");
     controls[4].kind = APEX_UI_BUTTON; controls[4].key = str("button");
-    apex_ui_form form{sizeof(form), controls, 5};
+    apex_ui_form form{sizeof(form), 0, controls, 5};
     REQUIRE(widget.describe(form));
     std::string key, value; double number = 0; bool checked = false; bool clicked = false;
     widget.setChange([&](std::string_view k, const apex_ui_value& v) {
@@ -55,7 +55,7 @@ TEST_CASE("plugin form retains focus when another value changes") {
     (void)apex::ui_test::app();
     apex::ui::PluginForm widget;
     apex_ui_control controls[] = {field("first", "one"), field("second", "two")};
-    apex_ui_form form{sizeof(form), controls, 2};
+    apex_ui_form form{sizeof(form), 0, controls, 2};
     REQUIRE(widget.describe(form));
     widget.show();
     auto* first = widget.findChild<QLineEdit*>("first");
@@ -77,7 +77,7 @@ TEST_CASE("plugin form describes a collapsible section") {
     apex_ui_control section{}; section.struct_size = sizeof(section); section.value.struct_size = sizeof(section.value);
     section.kind = APEX_UI_SECTION; section.key = str("section"); section.label = str("Section");
     section.children = &child; section.child_count = 1;
-    apex_ui_form form{sizeof(form), &section, 1};
+    apex_ui_form form{sizeof(form), 0, &section, 1};
     REQUIRE(widget.describe(form));
     REQUIRE(widget.findChild<QLineEdit*>("child"));
     CHECK(widget.findChild<QLineEdit*>("child")->text() == "value");
@@ -106,7 +106,7 @@ TEST_CASE("every plugin form control kind round trips its value") {
     auto child = make(APEX_UI_TEXT, "nested"); child.value.text = str("inner");
     auto section = make(APEX_UI_SECTION, "section"); section.children = &child; section.child_count = 1;
     apex_ui_control controls[] = {label, text, number, check, choice, colour, table, material, model, sound, section};
-    apex_ui_form form{sizeof(form), controls, std::size(controls)};
+    apex_ui_form form{sizeof(form), 0, controls, std::size(controls)};
     REQUIRE(widget.describe(form));
     widget.show();
     // Plugin -> widget.

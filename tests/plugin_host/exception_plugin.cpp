@@ -19,7 +19,7 @@ static apex_status activate(void*) {
     // Each failure must be contained here, while the plugin frame is still running.
     if (reg->action(host->context, str("plugin.exceptions.basic"), huge, {}, nullptr, action) != APEX_ERR_INTERNAL) return APEX_ERR_INVALID;
     if (!host->last_error(host->context).size) return APEX_ERR_INVALID;
-    apex_action_suggestion suggestion{huge, str("F24"), {}};
+    apex_action_suggestion suggestion{sizeof(apex_action_suggestion), 0, huge, str("F24"), {}};
     if (actions->register_action(host->context, str("plugin.exceptions.suggest"), str("Suggest"), {}, nullptr, action, &suggestion, 1) != APEX_ERR_INTERNAL) return APEX_ERR_INVALID;
     if (!host->last_error(host->context).size) return APEX_ERR_INVALID;
     auto* edit = static_cast<const apex_edit_v1*>(host->get_interface(host->context, str("apex.edit/1")));
@@ -31,5 +31,5 @@ static apex_status activate(void*) {
     if (reg->action(host->context, str("plugin.exceptions.basic"), str("Basic"), {}, nullptr, action) != APEX_OK) return APEX_ERR_INVALID;
     return reg->action(host->context, str("plugin.exceptions.suggest"), str("Suggest"), {}, nullptr, action);
 }
-static const apex_plugin plugin{sizeof(apex_plugin), 1, 0, nullptr, activate};
+static const apex_plugin plugin{sizeof(apex_plugin), 1, 0, 0, nullptr, activate};
 APEX_PLUGIN_EXPORT const apex_plugin* apex_plugin_entry(const apex_host* h) { host = h; return &plugin; }

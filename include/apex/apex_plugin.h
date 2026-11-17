@@ -16,7 +16,36 @@ extern "C" {
 #define APEX_PLUGIN_EXPORT __attribute__((visibility("default")))
 #endif
 
+/* ABI evolution rules (docs/plugin-sdk.md, "Versioning and ABI evolution"). The ABI is 64-bit only (LP64 on
+   Linux and macOS, LLP64 on Windows: every field below is a fixed-width integer, double, size_t or a pointer,
+   so the layouts are identical).
+   1. Every struct that crosses the boundary except the frozen value types (apex_str, apex_vec3, apex_plane,
+      apex_ray, and the scalar arrays of node IDs, side IDs and apex_str) begins with `uint32_t struct_size`,
+      set by whoever fills it to sizeof() of the struct in the header it was compiled against.
+   2. Structs only grow, by appending fields. A reader uses a field only when struct_size covers it
+      (offsetof(T, field) + sizeof(field) <= struct_size); a missing field means "the old behaviour".
+   3. No implicit padding anywhere: members are ordered and `reserved` fields written so that every field
+      sits at its natural offset with no gaps, and sizeof(T) is the end of the last field. Fields are
+      appended in whole units that keep that true (8 bytes for a 64-bit field, pairs of 32-bit fields).
+      `reserved` fields are zero; a later minor version may give them a meaning whose zero is the old behaviour.
+      tests/plugin_host/abi_layout.inc checks all of this at compile time, in C and in C++.
+   4. An array of structs is a contiguous array whose stride is the element's struct_size (every element of an
+      array has the same one). Read a host-provided array with apex_array_element(), never with T[i], so a
+      plugin built against an older header keeps working when the host's element grows. The host reads a
+      plugin-provided array the same way.
+   5. A struct embedded by value inside another struct (apex_ui_value in apex_ui_control) is frozen at its
+      1.0 layout: new data goes into new fields of the parent.
+   6. Out parameters (apex_pick, apex_document_info, apex_node_info, apex_material_info and the
+      apex_tool_visual and apex_tool_readout the host passes to the plugin) carry the caller's struct_size;
+      the callee writes only the fields it covers.
+   7. A function table grows by appending function pointers; a null or uncovered pointer is "not provided". */
 typedef struct apex_str { const char* data; size_t size; } apex_str;
+typedef char apex_abi_requires_64_bit_pointers[sizeof(void*) == 8 ? 1 : -1];
+/* Element `index` of an array of ABI structs (rule 4): the stride is the first element's struct_size.
+   `array` must not be null and `index` must be below the array's count. */
+static inline const void* apex_array_element(const void* array, size_t index) {
+    return (const char*)array + index * (size_t)*(const uint32_t*)array;
+}
 typedef enum apex_status { APEX_OK = 0, APEX_ERR_INVALID, APEX_ERR_NOT_FOUND,
                            APEX_ERR_STATE, APEX_ERR_UNSUPPORTED, APEX_ERR_INTERNAL } apex_status;
 typedef uint64_t apex_node_id;
@@ -29,9 +58,9 @@ typedef enum apex_ui_kind {
 } apex_ui_kind;
 typedef struct apex_ui_value {
     uint32_t struct_size;
+    uint32_t checked;
     apex_str text;
     double number;
-    uint32_t checked;
 } apex_ui_value;
 typedef struct apex_ui_control {
     uint32_t struct_size;
@@ -46,12 +75,14 @@ typedef struct apex_ui_control {
 } apex_ui_control;
 typedef struct apex_ui_form {
     uint32_t struct_size;
+    uint32_t reserved;
     const apex_ui_control* controls;
     size_t control_count;
 } apex_ui_form;
 /* What a host panel passes to a plugin section: kind is "materials" (names), "entities" or "sides" (ids). */
 typedef struct apex_ui_context {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_str kind;
     const apex_str* names;
     size_t name_count;
@@ -62,12 +93,14 @@ typedef struct apex_ui_context {
    context is null for panels and dialogs. */
 typedef struct apex_ui_callbacks {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*describe)(void* user, const apex_ui_context* context, const apex_ui_form** form);
     void (*on_change)(void* user, apex_str key, const apex_ui_value* value);
     void (*on_click)(void* user, apex_str key);
 } apex_ui_callbacks;
 typedef struct apex_ui_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*register_panel)(void* host, apex_str id, apex_str title, void* user, const apex_ui_callbacks*);
     apex_status (*refresh)(void* host, apex_str id);
     /* target: "materials", "inspector" or "face_properties". */
@@ -85,12 +118,14 @@ typedef struct apex_document_info {
 } apex_document_info;
 typedef struct apex_node_info {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_node_id id, parent;
     apex_str kind;
     size_t child_count, key_count;
 } apex_node_info;
 typedef struct apex_document_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*info)(void* host, apex_document_info* out);
     apex_status (*root_at)(void* host, size_t index, apex_node_id* out);
     apex_status (*node)(void* host, apex_node_id id, apex_node_info* out);
@@ -102,6 +137,7 @@ typedef struct apex_document_v1 {
 typedef void (*apex_callback)(void* user);
 typedef struct apex_registration_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*action)(void* host, apex_str id, apex_str name, apex_str description,
                           void* user, apex_callback invoke);
     apex_status (*tool)(void* host, apex_str id, apex_str name, apex_str description,
@@ -117,6 +153,7 @@ typedef struct apex_plane { apex_vec3 normal; double distance; } apex_plane;
    status to roll the entire batch back. Operation context is callback-scoped. */
 typedef struct apex_edit_ops_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*set_key)(void*, apex_node_id, apex_str key, apex_str value);
     apex_status (*destroy)(void*, apex_node_id);
     apex_status (*create_solid)(void*, apex_node_id parent, const apex_plane*, size_t, apex_str material);
@@ -128,12 +165,14 @@ typedef struct apex_edit_ops_v1 {
 typedef apex_status (*apex_edit_callback)(void*, const apex_edit_ops_v1*, void* operation_context);
 typedef struct apex_edit_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*apply)(void* host, apex_str label, apex_str coalesce_key, void* user, apex_edit_callback);
     apex_status (*defer)(void* host, void* user, void (*callback)(void*));
 } apex_edit_v1;
 /* Selection IDs are node IDs except in face mode, where they are side IDs. */
 typedef struct apex_selection_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*info)(void* host, uint32_t* mode, size_t* count);
     apex_status (*at)(void* host, size_t index, uint64_t* id);
     apex_status (*set)(void* host, uint32_t mode, const uint64_t* ids, size_t count);
@@ -142,47 +181,56 @@ typedef struct apex_ray { apex_vec3 origin, direction; } apex_ray;
 enum apex_input_kind { APEX_INPUT_PRESS, APEX_INPUT_RELEASE, APEX_INPUT_MOVE, APEX_INPUT_KEY_DOWN,
                        APEX_INPUT_KEY_UP, APEX_INPUT_LEAVE, APEX_INPUT_CANCEL, APEX_INPUT_CANCEL_POINTER };
 enum apex_pointer_button { APEX_BUTTON_NONE, APEX_BUTTON_LEFT, APEX_BUTTON_RIGHT, APEX_BUTTON_MIDDLE };
+/* modifiers: bit 0 ctrl, 1 shift, 2 alt. flags: APEX_EVENT_* below. `key` is the canonical key name of a key
+   event ("A", "5", "Space", "Escape", "Enter", "Backspace", "BracketLeft", "F5", ...; the names the keybinding
+   presets use), without modifiers, and is empty for pointer events and for a bare modifier key. reserved0 is
+   zero and keeps the layout free of implicit padding. */
+enum apex_event_flags { APEX_EVENT_LEFT_HELD = 1, APEX_EVENT_RIGHT_HELD = 2, APEX_EVENT_MIDDLE_HELD = 4,
+                        APEX_EVENT_AUTO_REPEAT = 8, APEX_EVENT_NAVIGATING = 16, APEX_EVENT_MODIFIER_KEY = 32 };
 typedef struct apex_tool_event {
-    uint32_t struct_size, kind, button, modifiers;
+    uint32_t struct_size, kind, button, modifiers, flags, reserved0;
     uint64_t source;
     double x, y;
     apex_str key;
-    uint32_t flags;
 } apex_tool_event;
-typedef struct apex_pick { apex_node_id node; int32_t side; apex_vec3 point, normal; } apex_pick;
+/* Out parameter of ray_pick: the caller sets struct_size to sizeof(apex_pick) before the call. */
+typedef struct apex_pick { uint32_t struct_size; int32_t side; apex_node_id node; apex_vec3 point, normal; } apex_pick;
 typedef struct apex_tool_view {
     uint32_t struct_size;
+    uint32_t orthographic;
     apex_ray ray;
     double width, height;
     apex_vec3 camera_position, camera_angles, camera_forward, camera_up;
     double fov_y_degrees, ortho_height;
-    uint32_t orthographic;
     void* context;
     apex_status (*ray_pick)(void*, apex_ray, apex_pick*);
     apex_status (*rect_frustum)(void*, double, double, double, double, apex_plane out[4]);
     apex_status (*world_to_pixel)(void*, apex_vec3, double* x, double* y);
     apex_status (*snap)(void*, apex_ray, apex_vec3*);
 } apex_tool_view;
-typedef struct apex_tool_segment { apex_vec3 a, b; float rgba[4], width; } apex_tool_segment;
-typedef struct apex_tool_ghost { const apex_plane* planes; size_t plane_count; apex_str material; float opacity; } apex_tool_ghost;
+typedef struct apex_tool_segment { uint32_t struct_size; float width; apex_vec3 a, b; float rgba[4]; } apex_tool_segment;
+typedef struct apex_tool_ghost { uint32_t struct_size; float opacity; const apex_plane* planes; size_t plane_count; apex_str material; } apex_tool_ghost;
 typedef struct apex_tool_visual {
     uint32_t struct_size;
+    uint32_t reserved;
     const apex_tool_segment* segments; size_t segment_count;
     const apex_tool_ghost* ghosts; size_t ghost_count;
 } apex_tool_visual;
 typedef struct apex_tool_parameter {
-    apex_str id, label; uint32_t kind;
+    uint32_t struct_size, kind;
+    apex_str id, label;
     double value, minimum, maximum;
     const apex_str* choices; size_t choice_count;
 } apex_tool_parameter;
 typedef struct apex_tool_readout {
     uint32_t struct_size;
-    apex_str detail, status;
     uint32_t warn;
+    apex_str detail, status;
     const apex_tool_parameter* parameters; size_t parameter_count;
 } apex_tool_readout;
 typedef struct apex_tool_callbacks {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_callback activate, deactivate;
     int (*input)(void*, const apex_tool_event*, const apex_tool_view*);
     apex_status (*visual)(void*, uint64_t source, apex_tool_visual*);
@@ -195,15 +243,23 @@ typedef struct apex_tool_callbacks {
     void* (*create_instance)(void* registration_user);
     void (*destroy_instance)(void* instance);
 } apex_tool_callbacks;
+/* Registration ids are "plugin.<plugin id>.<name>": the plugin id is dot-separated parts of letters, digits,
+   '_' and '-' (the manifest's id), and <name> is one such part with no dot. The host matches the prefix up to
+   the dot after the plugin id, so com.example cannot register under com.example.paint. A malformed id (empty
+   name, trailing dot, other characters) or one outside the plugin's namespace fails with APEX_ERR_INVALID.
+   Gesture ownership: the host treats a pointer press that input() returned non-zero for as owned by the tool
+   until the buttons are up or the gesture is cancelled; there is no plugin-declared ownership beyond that. */
 typedef struct apex_tools_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*register_tool)(void*, apex_str id, apex_str name, apex_str description,
                                  void* user, const apex_tool_callbacks* callbacks);
 } apex_tools_v1;
 /* Empty tool_id means the global context. */
-typedef struct apex_action_suggestion { apex_str preset, chord, tool_id; } apex_action_suggestion;
+typedef struct apex_action_suggestion { uint32_t struct_size, reserved; apex_str preset, chord, tool_id; } apex_action_suggestion;
 typedef struct apex_actions_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*register_action)(void*, apex_str id, apex_str name, apex_str description,
                                    void* user, apex_callback invoke,
                                    const apex_action_suggestion* suggestions, size_t suggestion_count);
@@ -214,12 +270,13 @@ typedef struct apex_actions_v1 {
    need the declaring plugin and are available during activate and any callback into that plugin.
    The host copies everything in a list before set() returns. Segment width is in pixels. Ghost
    planes use the apex.tools ghost convention (a convex solid). Tints colour whole faces by side ID. */
-typedef struct apex_overlay_point { apex_vec3 position; float rgba[4]; float size; } apex_overlay_point;
-typedef struct apex_overlay_label { apex_vec3 position; apex_str text; float rgba[4]; } apex_overlay_label;
-typedef struct apex_overlay_ghost { const apex_plane* planes; size_t plane_count; float rgba[4]; } apex_overlay_ghost;
-typedef struct apex_overlay_tint { int32_t side; float rgba[4]; } apex_overlay_tint;
+typedef struct apex_overlay_point { uint32_t struct_size; float size; apex_vec3 position; float rgba[4]; } apex_overlay_point;
+typedef struct apex_overlay_label { uint32_t struct_size, reserved; apex_vec3 position; apex_str text; float rgba[4]; } apex_overlay_label;
+typedef struct apex_overlay_ghost { uint32_t struct_size, reserved; const apex_plane* planes; size_t plane_count; float rgba[4]; } apex_overlay_ghost;
+typedef struct apex_overlay_tint { uint32_t struct_size; int32_t side; float rgba[4]; } apex_overlay_tint;
 typedef struct apex_overlay_list {
     uint32_t struct_size;
+    uint32_t reserved;
     const apex_tool_segment* segments; size_t segment_count;
     const apex_overlay_point* points; size_t point_count;
     const apex_overlay_label* labels; size_t label_count;
@@ -228,6 +285,7 @@ typedef struct apex_overlay_list {
 } apex_overlay_list;
 typedef struct apex_overlay_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*declare)(void* host, apex_str id, apex_str name);
     apex_status (*set)(void* host, apex_str id, const apex_overlay_list* list);
     apex_status (*clear)(void* host, apex_str id);
@@ -241,12 +299,14 @@ typedef struct apex_overlay_v1 {
    drag, and they are shown only while the viewport's entity helpers are on. */
 typedef struct apex_helper_call {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_node_id entity;
     apex_str class_name, helper, arguments;
     apex_vec3 origin, angles;
 } apex_helper_call;
 typedef struct apex_helper_sink {
     uint32_t struct_size;
+    uint32_t reserved;
     void* sink;
     apex_status (*segment)(void* sink, const apex_tool_segment* segment);
     apex_status (*label)(void* sink, const apex_overlay_label* label);
@@ -254,6 +314,7 @@ typedef struct apex_helper_sink {
 typedef apex_status (*apex_helper_draw)(void* user, const apex_helper_call* call, const apex_helper_sink* sink);
 typedef struct apex_helpers_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*register_helper)(void* host, apex_str name, void* user, apex_helper_draw draw);
 } apex_helpers_v1;
 
@@ -269,12 +330,14 @@ typedef struct apex_problem {
 } apex_problem;
 typedef struct apex_problem_sink {
     uint32_t struct_size;
+    uint32_t reserved;
     void* sink;
     apex_status (*report)(void* sink, const apex_problem* problem);
 } apex_problem_sink;
 typedef apex_status (*apex_problem_check)(void* user, const apex_problem_sink* sink);
 typedef struct apex_problems_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*register_check)(void* host, apex_str id, apex_str name, void* user, apex_problem_check check);
 } apex_problems_v1;
 
@@ -288,6 +351,7 @@ typedef struct apex_problems_v1 {
    summary). Everything is borrowed until import() returns. */
 typedef struct apex_import_context {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_node_id world;
     const apex_edit_ops_v1* ops;
     void* operation;
@@ -297,6 +361,7 @@ typedef struct apex_import_context {
 typedef apex_status (*apex_import_callback)(void* user, apex_str path, const apex_import_context* context);
 typedef struct apex_io_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*register_importer)(void* host, apex_str id, apex_str name, apex_str extensions,
                                      void* user, apex_import_callback import);
 } apex_io_v1;
@@ -312,6 +377,7 @@ typedef struct apex_io_v1 {
    running ones joined when the host is destroyed, so work() must honour `cancelled`. */
 typedef struct apex_job_context {
     uint32_t struct_size;
+    uint32_t reserved;
     void* job;
     int (*cancelled)(void* job);
 } apex_job_context;
@@ -319,6 +385,7 @@ typedef apex_status (*apex_job_work)(void* user, const apex_job_context* context
 typedef void (*apex_job_done)(void* user, apex_status status);
 typedef struct apex_jobs_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*submit)(void* host, void* user, apex_job_work work, apex_job_done done, uint64_t* job_id);
     apex_status (*cancel)(void* host, uint64_t job_id); /* APEX_ERR_NOT_FOUND once done() has been delivered */
 } apex_jobs_v1;
@@ -333,6 +400,7 @@ typedef struct apex_jobs_v1 {
 typedef void (*apex_watch_callback)(void* user, apex_str path);
 typedef struct apex_watch_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*watch)(void* host, apex_str path, void* user, apex_watch_callback on_changed, uint64_t* watch_id);
     apex_status (*unwatch)(void* host, uint64_t watch_id);
 } apex_watch_v1;
@@ -362,17 +430,20 @@ typedef struct apex_watch_v1 {
    provider. The reload is asynchronous. */
 typedef struct apex_vfs_file_sink {
     uint32_t struct_size;
+    uint32_t reserved;
     void* sink;
     apex_status (*add)(void* sink, apex_str path);
 } apex_vfs_file_sink;
 typedef struct apex_vfs_data_sink {
     uint32_t struct_size;
+    uint32_t reserved;
     void* sink;
     size_t max_bytes;
     apex_status (*write)(void* sink, const void* data, size_t size);
 } apex_vfs_data_sink;
 typedef struct apex_vfs_provider {
     uint32_t struct_size;
+    uint32_t reserved;
     void* user;
     apex_status (*refresh)(void* user); /* optional: prepare for a new listing */
     apex_status (*list)(void* user, const apex_vfs_file_sink* sink);
@@ -385,6 +456,7 @@ typedef struct apex_vfs_position {
 } apex_vfs_position;
 typedef struct apex_vfs_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*register_provider)(void* host, apex_str id, apex_str name, const apex_vfs_provider* provider,
                                      const apex_vfs_position* position);
     apex_status (*request_refresh)(void* host, apex_str id);
@@ -406,40 +478,42 @@ typedef struct apex_vfs_v1 {
    needed. All calls are on the editor thread. last_error() says why a call failed. */
 typedef struct apex_material_info {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_str name, shader, base_texture, surface_prop, source; /* source: "game", the addon's name, or "provider:<name>" */
 } apex_material_info;
 typedef struct apex_vmt_edit {
     uint32_t struct_size;
-    apex_str key, value;
     uint32_t remove;
+    apex_str key, value;
 } apex_vmt_edit;
 typedef int (*apex_material_visit)(void* user, const apex_material_info* info);
 typedef struct apex_assets_v1 {
     uint32_t struct_size;
+    uint32_t reserved;
     apex_status (*list_materials)(void* host, void* user, apex_material_visit visit);
     apex_status (*find_material)(void* host, apex_str name, apex_material_info* out);
     apex_status (*write_vmt)(void* host, apex_str material, const apex_vmt_edit* edits, size_t edit_count);
 } apex_assets_v1;
 
 typedef struct apex_host {
-    uint32_t struct_size, abi_major, abi_minor;
+    uint32_t struct_size, abi_major, abi_minor, reserved;
     void* context;
     const void* (*get_interface)(void* context, apex_str name);
     void (*log)(void* context, int level, apex_str message);
     apex_str (*last_error)(void* context);
 } apex_host;
-typedef struct apex_modified_node { apex_node_id id; uint32_t flags; } apex_modified_node;
+typedef struct apex_modified_node { uint32_t struct_size; uint32_t flags; apex_node_id id; } apex_modified_node;
 typedef struct apex_change_notice {
     uint32_t struct_size;
+    uint32_t undo_or_redo;
     uint64_t revision;
     const apex_node_id* created; size_t created_count;
     const apex_modified_node* modified; size_t modified_count;
     const apex_node_id* destroyed; size_t destroyed_count;
     const int32_t* vanished_sides; size_t vanished_side_count;
-    uint32_t undo_or_redo;
 } apex_change_notice;
 typedef struct apex_plugin {
-    uint32_t struct_size, abi_major, abi_minor;
+    uint32_t struct_size, abi_major, abi_minor, reserved;
     void* user;
     apex_status (*activate)(void* user);
     void (*deactivate)(void* user);

@@ -118,7 +118,22 @@ action on its own. `apex_action_suggestion{preset, chord, tool_id}` proposes a d
 | `document_changed` | The document changed under the tool. |
 | `forget(source)` | A viewport (input source) went away; drop per-viewport state. |
 
-`source` is a viewport identity. Keep per-viewport state keyed by it. *(Known issue I-6: until 0.9.3, tool
+`source` is a viewport identity. Keep per-viewport state keyed by it. The host keeps each viewport's ghosts apart
+too: the preview shows the ghosts every viewport's `visual` last returned, and `forget(source)` removes that
+viewport's. A pointer press that `input` handled (returned non-zero) owns its viewport until the buttons are up or
+the gesture is cancelled, so the editor does not open a pie or start a navigation over your drag; there is no
+other plugin-declared ownership.
+
+`apex_tool_event.key` is the canonical key name the keybinding presets use (`"A"`, `"5"`, `"Space"`, `"Escape"`,
+`"Enter"`, `"BracketLeft"`, `"F5"`, ...) without modifiers (read those from `modifiers`). It is empty for pointer
+events and for a bare modifier key, which sets `APEX_EVENT_MODIFIER_KEY` in `flags`; `flags` also carries the held
+buttons (`APEX_EVENT_LEFT_HELD` ...), `APEX_EVENT_AUTO_REPEAT` and `APEX_EVENT_NAVIGATING`.
+
+**Ids.** Everything you register is `plugin.<yourid>.<name>`. Your id is the manifest's `id`: dot-separated
+parts of letters, digits, `_` and `-`. `<name>` is a single such part with no dot. Matching is on the
+`plugin.<yourid>.` boundary, so a plugin `com.example` cannot register `plugin.com.example.paint.brush` (that is
+`com.example.paint`'s `brush`). An empty name, a trailing dot, a second dot or any other character fails with
+`APEX_ERR_INVALID` at the registration call. *(Known issue I-6: until 0.9.3, tool
 callback state is shared between editor sessions.)*
 
 ### 4.4 Writing to the document
@@ -515,9 +530,39 @@ previous run died inside a plugin, the next start names it and offers to disable
 starts with every plugin disabled. The plugin manager (Settings → Plugins…) lists discovered plugins, their ABI
 status, and any load errors, and lets you enable or disable them (takes effect on restart).
 
-## 8. Versioning
+## 8. Versioning and ABI evolution
 
 ABI major changes only for breaking changes and is frozen at 1 for the whole 1.x series. New interfaces and
 new fields appended to existing structs bump the minor once the ABI is frozen; during 0.9 the minor stays 0
-(0.9.4 and 0.9.5a added `apex.ui`, `apex.overlay`, `apex.helpers` and `apex.problems` without bumping it). Always set and honour `struct_size`, and treat a
-`NULL` from `get_interface` as "not available on this host".
+(0.9.4 and 0.9.5a added `apex.ui`, `apex.overlay`, `apex.helpers` and `apex.problems` without bumping it), and
+layouts may still change until the freeze at 0.9.9. Treat a `NULL` from `get_interface` as "not available on this host".
+
+The rules (also at the top of `include/apex/apex_plugin.h`), which let an older plugin run on a newer host and
+the reverse:
+
+1. Every struct that crosses the boundary begins with `uint32_t struct_size`, set by whoever fills it to
+   `sizeof` of the struct in the header it was compiled against. The exceptions are the frozen value types
+   `apex_str`, `apex_vec3`, `apex_plane`, `apex_ray` and the scalar arrays (node IDs, side IDs, `apex_str`).
+2. Structs only grow, by appending. A reader uses a field only when `struct_size` covers it
+   (`offsetof(T, field) + sizeof(field) <= struct_size`); a missing field means the old behaviour.
+3. No implicit padding: fields are ordered and `reserved` fields added so every field sits at its natural
+   offset with no gaps (so LP64 and LLP64 agree). `reserved` fields are zero. New fields are appended in whole
+   units that keep that true. `tests/plugin_host/abi_layout.inc` checks this for every struct at compile time,
+   in C and in C++, and pins each struct's size.
+4. **Arrays of structs** have a stride equal to the element's `struct_size`, and every element carries it. The
+   host copies each plugin-provided element into its own current layout (fields the plugin's struct does not
+   cover read as zero, fields the host does not know are ignored) and rejects an array whose first
+   `struct_size` is below the 1.0 size, not a multiple of the alignment, or over 4096, or whose elements
+   differ. Read a host-provided array with `apex_array_element(array, i)`, not `array[i]`, so a plugin built
+   against an older header survives the host's element growing. In C++ build elements with the wrapper's
+   `segment()`, `ghost()`, `point()`, `label()`, `overlayGhost()` and `tint()` helpers, which set `struct_size`.
+   An element with `struct_size` zero (the old, stride-less arrays) is a bad array.
+5. A struct embedded by value in another (`apex_ui_value` in `apex_ui_control`) is frozen at its 1.0 layout; new
+   data goes in new fields of the parent.
+6. Out parameters (`apex_pick`, `apex_document_info`, `apex_node_info`, `apex_material_info`, and the
+   `apex_tool_visual` / `apex_tool_readout` the host hands to a tool) carry the caller's `struct_size`; the
+   callee writes only the part it covers.
+7. A function table grows by appending function pointers; a null or uncovered pointer is "not provided".
+
+Changing a layout in 0.9 means editing the header, the list in `abi_layout.inc` (with the new golden size) and,
+once the ABI is frozen, only appending.

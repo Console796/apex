@@ -1,6 +1,7 @@
 #include "plugin_host/plugin_tool.hpp"
 #include "editor/editor_session.hpp"
 #include "editor/pick_index.hpp"
+#include "plugin_host/abi_array.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -20,11 +21,11 @@ apex_status viewError(void* ptr) noexcept {
 }
 apex_status pick(void* ptr, apex_ray ray, apex_pick* out) try {
     auto& c = *static_cast<ViewContext*>(ptr);
-    if (!out) return APEX_ERR_INVALID;
+    if (!out || out->struct_size < kAbiBaseSize<apex_pick>) return APEX_ERR_INVALID;
     if (!c.session.document()) return APEX_ERR_STATE;
     auto hit = c.session.picks().first({cv(ray.origin), cv(ray.direction)});
     if (!hit) return APEX_ERR_NOT_FOUND;
-    *out = {hit->node, hit->side.value_or(0), cv(hit->point), cv(hit->normal)};
+    writeOut(out, apex_pick{sizeof(apex_pick), hit->side.value_or(0), hit->node, cv(hit->point), cv(hit->normal)});
     return APEX_OK;
 } catch (...) { return viewError(ptr); }
 apex_status frustum(void* ptr, double x1, double y1, double x2, double y2, apex_plane out[4]) try {
@@ -49,9 +50,9 @@ apex_status snap(void* ptr, apex_ray ray, apex_vec3* out) try {
 } catch (...) { return viewError(ptr); }
 apex_tool_view makeView(ViewContext& c) {
     const auto& v = c.view;
-    return {sizeof(apex_tool_view), {cv(v.cursorRay.origin), cv(v.cursorRay.dir)}, v.size.x, v.size.y,
+    return {sizeof(apex_tool_view), v.orthographic ? 1u : 0u, {cv(v.cursorRay.origin), cv(v.cursorRay.dir)}, v.size.x, v.size.y,
             cv(v.cameraPosition), cv(v.cameraAngles), cv(v.cameraForward), cv(v.cameraUp),
-            v.fovYDegrees, v.orthoHeight, v.orthographic ? 1u : 0u, &c, pick, frustum, pixel, snap};
+            v.fovYDegrees, v.orthoHeight, &c, pick, frustum, pixel, snap};
 }
 }
 PluginTool::PluginTool(editor::EditorSession& session, std::string id, void* user,
@@ -78,29 +79,62 @@ void PluginTool::retire() {
     if (ownsUser_) guard_("tool.destroy_instance", [&] { callbacks_.destroy_instance(user_); });
     ownsUser_ = false;
     callbacks_ = {};
+    pressed_.clear(); ghosts_.clear();
     preview_.clear();
 }
-void PluginTool::activate() { active_ = true; if (callbacks_.activate) guard_("tool.activate", [&] { callbacks_.activate(user_); }); refresh(lastSource_); session_.publishToolStatus(); }
+void PluginTool::activate() { active_ = true; if (callbacks_.activate) guard_("tool.activate", [&] { callbacks_.activate(user_); }); refreshAll(); session_.publishToolStatus(); }
 void PluginTool::deactivate() { active_ = false; if (callbacks_.deactivate) guard_("tool.deactivate", [&] { callbacks_.deactivate(user_); }); cancel(); }
 editor::Handled PluginTool::input(const editor::InputEvent& e, const editor::ToolView& v) {
     if (!callbacks_.input) return false;
     ViewContext context{session_, v, error_}; auto view = makeView(context);
-    apex_tool_event event{sizeof(event), static_cast<uint32_t>(e.kind), static_cast<uint32_t>(e.button),
-        (e.ctrl ? 1u : 0u) | (e.shift ? 2u : 0u) | (e.alt ? 4u : 0u), e.source, e.cursor.x, e.cursor.y,
-        str(e.key), (e.left ? 1u : 0u) | (e.right ? 2u : 0u) | (e.middle ? 4u : 0u) |
-                    (e.autoRepeat ? 8u : 0u) | (e.navigating ? 16u : 0u)};
+    // The canonical key name (what the keybinding presets use) comes from the chord the UI built for the key;
+    // the modal-transform name is only a fallback, and a bare modifier key has no name.
+    const std::string keyName = e.modifierKey ? std::string{} : e.chord ? e.chord->key : e.key;
+    apex_tool_event event{};
+    event.struct_size = sizeof(event);
+    event.kind = static_cast<uint32_t>(e.kind);
+    event.button = static_cast<uint32_t>(e.button);
+    event.modifiers = (e.ctrl ? 1u : 0u) | (e.shift ? 2u : 0u) | (e.alt ? 4u : 0u);
+    event.flags = (e.left ? static_cast<uint32_t>(APEX_EVENT_LEFT_HELD) : 0u) | (e.right ? static_cast<uint32_t>(APEX_EVENT_RIGHT_HELD) : 0u) |
+                  (e.middle ? static_cast<uint32_t>(APEX_EVENT_MIDDLE_HELD) : 0u) | (e.autoRepeat ? static_cast<uint32_t>(APEX_EVENT_AUTO_REPEAT) : 0u) |
+                  (e.navigating ? static_cast<uint32_t>(APEX_EVENT_NAVIGATING) : 0u) | (e.modifierKey ? static_cast<uint32_t>(APEX_EVENT_MODIFIER_KEY) : 0u);
+    event.source = e.source;
+    event.x = e.cursor.x; event.y = e.cursor.y;
+    event.key = str(keyName);
     int handled = 0; lastSource_ = e.source;
     guard_("tool.input", [&] { handled = callbacks_.input(user_, &event, &view); });
+    // Gesture ownership: a pointer press the tool handled owns the pane until the buttons are up (or the
+    // gesture is cancelled), so the session does not open a pie or start another gesture over it.
+    if (e.kind == editor::InputKind::Press && handled != 0) pressed_.insert(e.source);
+    else if (e.kind == editor::InputKind::Cancel || e.kind == editor::InputKind::CancelPointer ||
+             ((e.kind == editor::InputKind::Release || e.kind == editor::InputKind::Move) && !e.held()))
+        pressed_.erase(e.source);
     refresh(e.source); session_.publishToolStatus(); return handled != 0;
 }
+bool PluginTool::owns(editor::InputSource source) const { return pressed_.contains(source); }
+void PluginTool::rebuildPreview() {
+    std::vector<editor::GhostSolid> all;
+    for (const auto& [source, ghosts] : ghosts_) all.insert(all.end(), ghosts.begin(), ghosts.end());
+    preview_.setGhosts(all);
+}
+void PluginTool::refreshAll() {
+    if (!callbacks_.visual) { ghosts_.clear(); preview_.clear(); return; }
+    ghosts_.try_emplace(lastSource_);
+    std::vector<editor::InputSource> sources;
+    for (const auto& entry : ghosts_) sources.push_back(entry.first);
+    for (const auto source : sources) refresh(source);
+}
 void PluginTool::refresh(editor::InputSource source) {
-    if (!callbacks_.visual) { preview_.clear(); return; }
+    if (!callbacks_.visual) { ghosts_.clear(); preview_.clear(); return; }
     apex_tool_visual visual{}; visual.struct_size = sizeof(visual);
     std::vector<editor::GhostSolid> ghosts;
     guard_("tool.visual", [&] {
-        if (callbacks_.visual(user_, source, &visual) != APEX_OK || (!visual.ghosts && visual.ghost_count)) return;
-        for (std::size_t i = 0; i < std::min<std::size_t>(visual.ghost_count, 1024); ++i) {
-            const auto& ghost = visual.ghosts[i];
+        if (callbacks_.visual(user_, source, &visual) != APEX_OK) return;
+        if (visual.struct_size < offsetof(apex_tool_visual, ghost_count) + sizeof(visual.ghost_count)) return;
+        const AbiArray<apex_tool_ghost> list(visual.ghosts, std::min<std::size_t>(visual.ghost_count, 1024));
+        if (!list.valid()) { if (error_) error_("invalid ghost array (struct_size)"); return; }
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            const auto ghost = list[i];
             if (!ghost.planes || ghost.plane_count < 4 || ghost.plane_count > 256) continue;
             std::vector<geometry::PlaneSide> planes;
             for (std::size_t j = 0; j < ghost.plane_count; ++j) {
@@ -111,16 +145,21 @@ void PluginTool::refresh(editor::InputSource source) {
             if (poly) ghosts.push_back({std::move(*poly), text(ghost.material), ghost.opacity});
         }
     });
-    preview_.setGhosts(ghosts);
+    // Each pane has its own ghosts: another pane's input replaces only that pane's entry.
+    ghosts_[source] = std::move(ghosts);
+    rebuildPreview();
 }
 editor::ToolOverlay PluginTool::overlay(const editor::ToolView&, editor::InputSource source) const {
     editor::ToolOverlay result;
     if (!callbacks_.visual) return result;
     apex_tool_visual visual{}; visual.struct_size = sizeof(visual);
     guard_("tool.overlay", [&] {
-        if (callbacks_.visual(user_, source, &visual) != APEX_OK || (!visual.segments && visual.segment_count)) return;
-        for (std::size_t i = 0; i < std::min<std::size_t>(visual.segment_count, 65536); ++i) {
-            const auto& s = visual.segments[i];
+        if (callbacks_.visual(user_, source, &visual) != APEX_OK) return;
+        if (visual.struct_size < offsetof(apex_tool_visual, segment_count) + sizeof(visual.segment_count)) return;
+        const AbiArray<apex_tool_segment> list(visual.segments, std::min<std::size_t>(visual.segment_count, 65536));
+        if (!list.valid()) { if (error_) error_("invalid segment array (struct_size)"); return; }
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            const auto s = list[i];
             result.worldSegments.push_back({cv(s.a), cv(s.b), {s.rgba[0], s.rgba[1], s.rgba[2], s.rgba[3]}, s.width});
         }
     });
@@ -133,9 +172,11 @@ editor::ToolReadout PluginTool::readout() const {
     guard_("tool.readout", [&] {
         if (callbacks_.readout(user_, &readout) != APEX_OK) return;
         result.detail = text(readout.detail); result.status = text(readout.status); result.warn = readout.warn != 0;
-        if (!readout.parameters) return;
-        for (std::size_t i = 0; i < std::min<std::size_t>(readout.parameter_count, 1024); ++i) {
-            const auto& p = readout.parameters[i];
+        if (readout.struct_size < offsetof(apex_tool_readout, parameter_count) + sizeof(readout.parameter_count)) return;
+        const AbiArray<apex_tool_parameter> list(readout.parameters, std::min<std::size_t>(readout.parameter_count, 1024));
+        if (!list.valid()) { if (error_) error_("invalid parameter array (struct_size)"); return; }
+        for (std::size_t i = 0; i < list.size(); ++i) {
+            const auto p = list[i];
             if (p.kind > 2) continue;
             editor::ToolParameter param{text(p.id), text(p.label), static_cast<editor::ToolParameter::Kind>(p.kind), p.value, p.minimum, p.maximum, {}};
             if (p.choices) for (std::size_t j = 0; j < std::min<std::size_t>(p.choice_count, 1024); ++j) param.choices.push_back(text(p.choices[j]));
@@ -144,9 +185,17 @@ editor::ToolReadout PluginTool::readout() const {
     });
     return result;
 }
-void PluginTool::cancel() { if (callbacks_.cancel) guard_("tool.cancel", [&] { callbacks_.cancel(user_); }); preview_.clear(); session_.publishToolStatus(); }
-void PluginTool::forget(editor::InputSource source) { if (callbacks_.forget) guard_("tool.forget", [&] { callbacks_.forget(user_, source); }); if (source == lastSource_) refresh(source); }
-void PluginTool::documentChanged() { if (callbacks_.document_changed) guard_("tool.document_changed", [&] { callbacks_.document_changed(user_); }); refresh(lastSource_); session_.publishToolStatus(); }
-bool PluginTool::setParameter(std::string_view id, double value) { int result = 0; if (callbacks_.set_parameter) guard_("tool.set_parameter", [&] { result = callbacks_.set_parameter(user_, str(id), value); }); refresh(lastSource_); session_.publishToolStatus(); return result != 0; }
-bool PluginTool::perform(const editor::ActionId& action) { int result = 0; if (callbacks_.perform) guard_("tool.perform", [&] { result = callbacks_.perform(user_, str(action)); }); refresh(lastSource_); session_.publishToolStatus(); return result != 0; }
+void PluginTool::cancel() {
+    if (callbacks_.cancel) guard_("tool.cancel", [&] { callbacks_.cancel(user_); });
+    pressed_.clear(); ghosts_.clear(); preview_.clear(); session_.publishToolStatus();
+}
+void PluginTool::forget(editor::InputSource source) {
+    if (callbacks_.forget) guard_("tool.forget", [&] { callbacks_.forget(user_, source); });
+    pressed_.erase(source);
+    if (ghosts_.erase(source)) rebuildPreview();
+    if (source == lastSource_) lastSource_ = 0;
+}
+void PluginTool::documentChanged() { if (callbacks_.document_changed) guard_("tool.document_changed", [&] { callbacks_.document_changed(user_); }); refreshAll(); session_.publishToolStatus(); }
+bool PluginTool::setParameter(std::string_view id, double value) { int result = 0; if (callbacks_.set_parameter) guard_("tool.set_parameter", [&] { result = callbacks_.set_parameter(user_, str(id), value); }); refreshAll(); session_.publishToolStatus(); return result != 0; }
+bool PluginTool::perform(const editor::ActionId& action) { int result = 0; if (callbacks_.perform) guard_("tool.perform", [&] { result = callbacks_.perform(user_, str(action)); }); refreshAll(); session_.publishToolStatus(); return result != 0; }
 }
