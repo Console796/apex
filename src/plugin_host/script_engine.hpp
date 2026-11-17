@@ -8,7 +8,7 @@
 namespace apex::plugin_host {
 // plugins.md D10: the seam between the plugin host and a scripting language. A script plugin's manifest
 // names a `script` file and a `runtime`; the host asks the factory for an engine for that runtime and
-// lets it load the file. Nothing here is language specific; the AngelScript engine (not in this tree yet)
+// lets it load the file. Nothing here is language specific; the AngelScript engine (angelscript_engine.hpp)
 // is one implementation, tests use a fake one.
 struct ScriptSource {
     std::string pluginId;               // the manifest id; every registration the script makes lands in plugin.<id>.*

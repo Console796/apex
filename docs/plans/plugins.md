@@ -513,27 +513,28 @@ Consequence taken for D11: with no lossless encoding found, primitives stay "adj
 edit coalescing); nothing is persisted and no P2 round-trip fixtures exist. Re-running the probe needs a
 scriptable primitive made in Strata Hammer, saved, and diffed against the same map saved by Apex.
 
-### P5: script host size and speed (0.9.7, BLOCKED: AngelScript not obtainable offline)
+### P5: script host size and speed (0.9.7, MEASURED on linux-gcc-release; 2 ms budget holds)
 
-AngelScript is not in the repository, in `FETCHCONTENT` caches, or installed on the machine, and
-`FETCHCONTENT_FULLY_DISCONNECTED=ON` forbids fetching it, so **neither binary size nor the 64-step stair
-against the 2 ms budget was measured, and no number here is an AngelScript number.** No substitute engine was
-written. What was built instead is the language-agnostic seam (`plugin_host/script_engine.hpp`) that the
-AngelScript host will implement.
+AngelScript v2.38.0 is embedded (`src/plugin_host/angelscript_engine.cpp`, `APEX_WITH_ANGELSCRIPT`, default ON)
+with the D13 interfaces bound as the `apex::` namespace, and `examples/stair/stair.as` is the 64-step workload.
 
-What was measured is the host's own floor for the same workload: `tests/plugin_host/script_host_test.cpp`,
-case `P5 host-side floor for a 64-step stair` (opt-in: `APEX_MEASURE_SCRIPT=1`). A native tool registered
-through a script manifest returns 64 convex ghosts of six planes each, and the test times one input plus one
-overlay query per iteration (200 iterations): the callback into the tool, `ConvexPolyhedron::fromPlanes` for
-all 64 ghosts, and the segment copy. This excludes script execution entirely.
+**Method.** `tests/plugin_host/script_host_test.cpp`, case `P5 ...` (opt-in: `APEX_MEASURE_SCRIPT=1`, assertion
+`mean < 2.0 ms` only under NDEBUG). It times one input plus one overlay query per iteration (300 iterations, cursor
+varied) through a real session-facing `PluginTool`: the native "floor" tool (same 64 six-plane ghosts, no script)
+against the AngelScript stair at 64 steps, with the call watchdog on. One input+refresh runs the script's `visual`
+twice (input, then the overlay query), so the figure is two full 64-step regenerations plus the host's convex
+build and segment copy.
 
-| Build | Per input + refresh, 64 ghosts |
-|---|---|
-| `linux-gcc-debug` | 5.9 ms (pessimistic) |
-| `linux-gcc-release` | 0.52-0.56 ms (three runs) |
+**Binary size.** The stripped `apex_plugin_host_tests` executable, release, AngelScript OFF vs ON:
+7,414,560 -> 8,934,800 bytes, **+1,520,240 bytes (about 1.45 MiB)** (engine, add-ons, and the binding code).
+Caveat: this is measured on the test executable; the release `apex` application was not built for this, so the
+app's own delta was not measured (it links the same static objects, so it should be close).
 
-Reading: in a release build the host alone spends about 0.53 ms of the 2 ms budget per refresh at 64 ghosts
-(about a quarter), leaving roughly 1.4 ms for script execution; the debug figure is not a budget number. When
-the AngelScript host exists, the stair at 64 steps must be measured with the same test (swap the native
-`stair` for the script) before the budget is called met.
+**Speed (linux-gcc-release).** AngelScript stair at 64 steps: mean about 0.77 ms, p99 about 0.93 ms per input +
+refresh, against the 2 ms budget. The budget holds with roughly 1.2 ms to spare. The native floor for the same
+workload is 0.52-0.56 ms, so the script itself costs about 0.2-0.25 ms. `linux-gcc-debug` is not a budget
+number (the floor alone was 5.9 ms).
+
+Limits of the measurement: one machine, one compiler, the in-process test harness (no rendering); MSVC and
+Windows were not measured.
 

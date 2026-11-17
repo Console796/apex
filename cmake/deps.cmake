@@ -15,8 +15,10 @@ if(APEX_BUILD_TESTS)
   list(APPEND CMAKE_MODULE_PATH ${doctest_SOURCE_DIR}/scripts/cmake)
 endif()
 
-# AngelScript v2.38.0: script host groundwork (0.9.1a); no host or add-ons yet.
-option(APEX_WITH_ANGELSCRIPT "Build the optional AngelScript runtime" OFF)
+# AngelScript v2.38.0: the script host's runtime (0.9.7, plugins.md D10). On by default because the host
+# ships with it; turn it off to build without scripting (script plugins then report "no engine for this
+# runtime" and the script tests skip). Only the core library and three add-ons are built.
+option(APEX_WITH_ANGELSCRIPT "Build the AngelScript runtime and the script plugin engine" ON)
 if(APEX_WITH_ANGELSCRIPT)
   CPMAddPackage(
     NAME angelscript
@@ -25,6 +27,24 @@ if(APEX_WITH_ANGELSCRIPT)
     SOURCE_SUBDIR sdk/angelscript/projects/cmake
     OPTIONS "BUILD_SHARED_LIBS OFF" "AS_DISABLE_INSTALL ON" "MSVC_COMPILE_FLAGS /MP1"
   )
+  # The add-ons are not part of AngelScript's own CMake project. They are third-party code, so they are
+  # compiled here without the project's warning flags and their headers are SYSTEM includes.
+  # angelscript_SOURCE_DIR is the repository root or, depending on CPM's version, the SOURCE_SUBDIR.
+  set(_as_addons "")
+  foreach(_candidate "${angelscript_SOURCE_DIR}/sdk/add_on" "${angelscript_SOURCE_DIR}/../../../add_on")
+    if(NOT _as_addons AND EXISTS "${_candidate}/scriptarray/scriptarray.cpp")
+      get_filename_component(_as_addons "${_candidate}" REALPATH)
+    endif()
+  endforeach()
+  if(NOT _as_addons)
+    message(FATAL_ERROR "AngelScript add-ons not found under ${angelscript_SOURCE_DIR}")
+  endif()
+  add_library(apex_angelscript_addons STATIC
+    ${_as_addons}/scriptarray/scriptarray.cpp
+    ${_as_addons}/scriptstdstring/scriptstdstring.cpp
+    ${_as_addons}/scriptmath/scriptmath.cpp)
+  target_include_directories(apex_angelscript_addons SYSTEM PUBLIC ${_as_addons})
+  target_link_libraries(apex_angelscript_addons PUBLIC angelscript)
 endif()
 
 # glm 1.0.1

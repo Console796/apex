@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <filesystem>
 
+#include "plugin_host/angelscript_engine.hpp"
 #include "plugin_host/plugin_host.hpp"
 #include "editor/actions.hpp"
 #include "editor/tool.hpp"
@@ -41,6 +42,7 @@ int main(int argc, char** argv) {
     plugins.setPanelRegistrar([](std::string id, std::string title) {
         return apex::viewport::mutableAreaRoleRegistry().add({std::move(id), std::move(title)});
     });
+    plugins.setScriptEngineFactory(apex::plugin_host::defaultScriptEngineFactory());
     plugins.discover({data / "plugins", bundled});
     bool safeMode = app.arguments().contains(QStringLiteral("--no-plugins"));
     if (!plugins.staleBreadcrumb().empty()) {

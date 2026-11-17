@@ -111,6 +111,14 @@ add_dependencies(apex_plugin_host_tests apex_bad_plugin hello_tool apex_crash_pl
 add_dependencies(apex_plugin_host_tests apex_write_plugin)
 target_compile_definitions(apex_plugin_host_tests PRIVATE WRITE_PLUGIN_PATH="$<TARGET_FILE:apex_write_plugin>")
 target_compile_definitions(apex_plugin_host_tests PRIVATE BAD_PLUGIN_PATH="$<TARGET_FILE:apex_bad_plugin>" HELLO_PLUGIN_PATH="$<TARGET_FILE:hello_tool>" CRASH_PLUGIN_PATH="$<TARGET_FILE:apex_crash_plugin>" CRASH_CHILD_PATH="$<TARGET_FILE:apex_plugin_crash_child>" READ_PLUGIN_PATH="$<TARGET_FILE:apex_read_plugin>" REGISTRATION_PLUGIN_PATH="$<TARGET_FILE:apex_registration_plugin>" POLYGON_PLUGIN_PATH="$<TARGET_FILE:polygon_tool>" FACE_STATS_PLUGIN_PATH="$<TARGET_FILE:face_stats>" OBJ_IMPORT_PLUGIN_PATH="$<TARGET_FILE:obj_import>")
+if(APEX_WITH_ANGELSCRIPT)
+  add_dependencies(apex_plugin_host_tests stair_plugin)
+  if(CMAKE_CONFIGURATION_TYPES)
+    target_compile_definitions(apex_plugin_host_tests PRIVATE STAIR_PLUGIN_DIR="${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/stair")
+  else()
+    target_compile_definitions(apex_plugin_host_tests PRIVATE STAIR_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins/stair")
+  endif()
+endif()
 doctest_discover_tests(apex_plugin_host_tests TEST_PREFIX "plugin_host::")
 
 # P1: compile each side independently with the other compiler, then load and call both functions.

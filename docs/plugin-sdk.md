@@ -1,6 +1,6 @@
 # Apex plugin SDK (DRAFT)
 
-> **Status: draft for 0.9.9.** Written against the ABI through 0.9.6. 0.9.7 and 0.9.8 add more interfaces. Sections
+> **Status: draft for 0.9.9.** Written against the ABI through 0.9.7 (script plugins). 0.9.8 adds more interfaces. Sections
 > marked *(pending)* will be filled in as those land. The ABI is frozen at the 0.9 release; until then
 > anything here may change. See `docs/plans/plugins.md` for the design rationale.
 
@@ -363,11 +363,10 @@ A script plugin has no native library. Its manifest names a file and a runtime:
 ```
 
 `script` is a path inside the plugin folder (absolute paths and `..` are refused) and the file must exist.
-The host asks the build's script engine factory for `runtime`; if this build has none the plugin stays listed
-with an error that names the runtime, and the other plugins load normally. **This build has no engine for any
-runtime yet**: the AngelScript host (plugins.md D10) was blocked because AngelScript was not obtainable
-offline, so today only the seam exists (`plugin_host/script_engine.hpp`: `ScriptEngine`, `ScriptEngineFactory`,
-`Host::setScriptEngineFactory`) and the tests drive it with fake engines.
+The host asks the build's script engine factory for `runtime`. The build option `APEX_WITH_ANGELSCRIPT`
+(default ON) compiles the AngelScript engine (v2.38.0, `plugin_host/angelscript_engine.hpp`); if it is OFF, or
+the runtime is unknown, the plugin stays listed with an error that names the runtime and the other plugins
+load normally.
 
 A script registers through the same `apex.*` interfaces a native plugin uses, as the script's own plugin id,
 so the namespace and lifetime rules above apply unchanged. The ABI is unchanged: no new interface and no
@@ -386,6 +385,37 @@ restart; a tool that changes kind is also restart-only.
 sets the plugin's error (shown in the plugin manager and the log, with the engine's message), leaves the
 plugin unloaded and its tools inert, and never takes down the editor. A failed reload keeps watching, so the
 next save that fixes it loads normally.
+
+**The `apex::` API (AngelScript).** A script is one file (no `#include`) with a `void main()` that runs at
+load; registration is only allowed there. Tool and action ids are `plugin.<plugin id>.<name>`.
+
+- Registration: `apex::registerTool(name, title, description, "ClassName")` (the class is instantiated per
+  tool instance) and `apex::registerAction(name, title, description, ActionFn@)`.
+- Types: `apex::Vec3`, `apex::Plane`, `apex::Event`, `apex::View` (input and camera ray), `apex::Visual`
+  (ghost solids from planes, outlines), `apex::Readout` (status text and declared parameters), `apex::Edit`
+  (a batch: `createSolid(...)` and friends, then `commit("name")`, one undo step).
+- Document and selection reads: `documentOpen`, `revision`, `rootCount`, `root`, `kind`, `parent`,
+  `childCount`, `child`, `keyCount`, `keys`, `value`, `selectionMode`, `selection`, `setSelection`.
+- Logging: `apex::log`, global `print`; the AngelScript math add-on (`abs`, `floor`, `sqrt`, ...).
+
+A tool class implements any of these optional methods (found by declaration): `bool input(apex::Event@,
+apex::View@)`, `void visual(uint64, apex::Visual@)`, `void readout(apex::Readout@)`, `bool setParameter(const
+string &in, double)`, `bool perform(const string &in)` (receives the full action id), `void cancel()`,
+`void documentChanged()`, `void forget(uint64)`, `void activate()`, `void deactivate()`.
+To the session a script tool is a normal tool (same adapter as a native one); the polygon scenarios of the
+native tool run unchanged against a script version.
+
+**Limits and errors.** Loading has a 5 s budget and each call into the script 250 ms; a watchdog aborts a
+script that exceeds it (the message names the section, line, and the budget) and the tool keeps working on the
+next call. A loop with an empty body has no point where the watchdog can interrupt it and cannot be stopped.
+Compile errors are reported as `file:line:col` and runtime exceptions (such as an out-of-range index) are
+contained: both go to the log and the plugin's `last_error`, never up into the editor.
+
+**Example: `examples/stair/`.** `plugin.kv3` is generated and `stair.as` is installed by CMake next to the other
+examples (`<build>/plugins/stair`). The `plugin.stair.tool` tool aims at the ground plane, snaps to an 8-unit
+grid, shows one ghost per step plus a footprint outline, exposes a `steps` parameter (1 to 64, default 8, set
+from the readout), and a left click commits all steps in one `apex::Edit` as a single undo step.
+Measured on linux-gcc-release at 64 steps: about 0.77 ms per input + refresh (plugins.md section 10, P5).
 
 Pies and themes (0.9.8) are later interfaces *(pending)*.
 

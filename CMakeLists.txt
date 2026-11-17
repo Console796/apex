@@ -160,9 +160,14 @@ apex_layer(viewport SOURCES src/viewport/camera.cpp src/viewport/viewport.cpp
            DEPS apex_render apex_document)
 
 apex_layer(plugin_host SOURCES src/plugin_host/plugin_host.cpp src/plugin_host/plugin_tool.cpp
+                       src/plugin_host/angelscript_engine.cpp
            DEPS apex_editor apex_assets apex_render)
 target_include_directories(apex_plugin_host PUBLIC ${PROJECT_SOURCE_DIR}/include)
 target_link_libraries(apex_plugin_host PRIVATE ${CMAKE_DL_LIBS})
+if(APEX_WITH_ANGELSCRIPT)
+  target_link_libraries(apex_plugin_host PRIVATE apex_angelscript_addons)
+  target_compile_definitions(apex_plugin_host PUBLIC APEX_HAVE_ANGELSCRIPT=1)
+endif()
 
 add_library(hello_tool MODULE examples/hello-tool/hello.c)
 target_include_directories(hello_tool PRIVATE ${PROJECT_SOURCE_DIR}/include)
@@ -220,6 +225,25 @@ file(GENERATE OUTPUT "${_obj_import_dir}/plugin.kv3" CONTENT
 "<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
 { id = \"objimport\" name = \"OBJ import\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } entry = { \"linux-x86_64\" = \"$<TARGET_FILE_NAME:obj_import>\" \"windows-x86_64\" = \"$<TARGET_FILE_NAME:obj_import>\" } }
 ")
+
+# A script plugin has no library: the manifest is generated and the script is copied next to it, like the
+# native examples above. It needs the AngelScript engine, so it is built only when that is.
+if(APEX_WITH_ANGELSCRIPT)
+  if(CMAKE_CONFIGURATION_TYPES)
+    set(_stair_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/stair")
+  else()
+    set(_stair_dir "${CMAKE_BINARY_DIR}/plugins/stair")
+  endif()
+  file(GENERATE OUTPUT "${_stair_dir}/plugin.kv3" CONTENT
+"<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
+{ id = \"stair\" name = \"Stair\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } script = \"stair.as\" runtime = \"angelscript\" }
+")
+  add_custom_target(stair_plugin ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_stair_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PROJECT_SOURCE_DIR}/examples/stair/stair.as" "${_stair_dir}/stair.as"
+    DEPENDS "${PROJECT_SOURCE_DIR}/examples/stair/stair.as"
+    COMMENT "Installing the stair script plugin")
+endif()
 
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 QUIET COMPONENTS Widgets Svg Multimedia)
@@ -279,6 +303,9 @@ if(APEX_BUILD_APP)
   add_executable(apex src/app/main.cpp)
   target_link_libraries(apex PRIVATE apex_ui apex_warnings)
   add_dependencies(apex hello_tool polygon_tool face_stats obj_import)
+  if(APEX_WITH_ANGELSCRIPT)
+    add_dependencies(apex stair_plugin)
+  endif()
   if(WIN32 AND TARGET Qt6::windeployqt)
     # Put the Qt DLLs and plugins next to apex.exe so the build folder runs on its own, the same
     # set tools/package.py ships in the zip.
