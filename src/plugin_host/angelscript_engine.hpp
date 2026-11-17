@@ -5,7 +5,7 @@ namespace apex::plugin_host {
 // plugins.md D10: the AngelScript implementation of the ScriptEngine seam. The engine is a bundled plugin
 // in the sense of D1: it talks to the editor only through the plugin C ABI (apex_host and the interfaces
 // behind it), exactly like a native plugin, and exposes those interfaces to the script as the `apex::`
-// namespace (docs/plugin-sdk.md 4.14).
+// namespace (docs/plugins/script-host.md).
 //
 // It is compiled only when the build option APEX_WITH_ANGELSCRIPT is ON (then APEX_HAVE_ANGELSCRIPT is
 // defined for everything that links apex_plugin_host). When it is OFF the factory below returns null, so

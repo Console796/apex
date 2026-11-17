@@ -90,7 +90,7 @@ QString currentThemeId();
 
 // Replaces the plugin themes in the registry (built-ins and custom themes are untouched). A file that
 // fails to parse is skipped and named in `errors`. Plugin themes follow the custom ones in themes(). There
-// is deliberately no C interface for themes: a plugin ships them as data files (docs/plugin-sdk.md).
+// is deliberately no C interface for themes: a plugin ships them as data files (docs/plugins/ui.md).
 void setPluginThemes(const std::vector<PluginThemeSource>& sources, QStringList* errors = nullptr);
 inline bool isPluginTheme(const ThemeEntry& theme) { return !theme.plugin.isEmpty(); }
 

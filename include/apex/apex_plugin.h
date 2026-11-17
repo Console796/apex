@@ -16,7 +16,7 @@ extern "C" {
 #define APEX_PLUGIN_EXPORT __attribute__((visibility("default")))
 #endif
 
-/* ABI evolution rules (docs/plugin-sdk.md, "Versioning and ABI evolution"). The ABI is 64-bit only (LP64 on
+/* ABI evolution rules (docs/plugins/versioning.md). The ABI is 64-bit only (LP64 on
    Linux and macOS, LLP64 on Windows: every field below is a fixed-width integer, double, size_t or a pointer,
    so the layouts are identical).
    1. Every struct that crosses the boundary except the frozen value types (apex_str, apex_vec3, apex_plane,
@@ -133,7 +133,8 @@ typedef struct apex_document_v1 {
     apex_status (*key_at)(void* host, apex_node_id id, size_t index, apex_str* key, apex_str* value);
 } apex_document_v1;
 
-/* Registration is available only during activate; IDs must belong to the plugin. */
+/* Registration is available only during activate; IDs must belong to the plugin. This is the 0.9.1 skeleton:
+   apex.actions/1, apex.tools/1 and apex.ui/1 carry the full registrations and supersede it. */
 typedef void (*apex_callback)(void* user);
 typedef struct apex_registration_v1 {
     uint32_t struct_size;
@@ -246,9 +247,13 @@ typedef struct apex_edit_v1 {
     uint32_t struct_size;
     uint32_t reserved;
     apex_status (*apply)(void* host, apex_str label, apex_str coalesce_key, void* user, apex_edit_callback);
+    /* Queues callback(user) on the open document's deferred list. APEX_ERR_STATE without an editor session and
+       document; APEX_ERR_INVALID for a null callback. */
     apex_status (*defer)(void* host, void* user, void (*callback)(void*));
 } apex_edit_v1;
-/* Selection IDs are node IDs except in face mode, where they are side IDs. */
+/* Selection modes for apex_selection_v1 (the editor's selection granularity); set() rejects others. */
+enum apex_selection_mode { APEX_SELECT_GROUPS = 0, APEX_SELECT_OBJECTS = 1, APEX_SELECT_SOLIDS = 2, APEX_SELECT_FACES = 3 };
+/* Selection IDs are node IDs except in face mode, where they are side IDs (hence uint64_t, not apex_node_id). */
 typedef struct apex_selection_v1 {
     uint32_t struct_size;
     uint32_t reserved;
@@ -454,9 +459,9 @@ typedef struct apex_io_v1 {
    submit() and cancel() are thread-safe (a job may submit jobs). work() runs on a host worker
    thread: it may not call any host interface except submit/cancel and the host's log(), and must not
    touch the document. It should poll ctx->cancelled(ctx->job) during long loops. done() runs on the
-   editor thread, exactly once, with work's status (APEX_ERR_INTERNAL if work threw, APEX_ERR_STATE if
-   the job was cancelled before it started because the host is shutting down), unless the job was
+   editor thread, exactly once, with work's status (APEX_ERR_INTERNAL if work threw), unless the job was
    cancelled with cancel(): once cancel() returns APEX_OK on the editor thread, done() does not run.
+   Jobs still pending when the host shuts down are discarded without calling done().
    `user` must stay valid until done() runs or cancel() succeeds. Pending jobs are cancelled and
    running ones joined when the host is destroyed, so work() must honour `cancelled`. */
 typedef struct apex_job_context {
@@ -579,6 +584,19 @@ typedef struct apex_assets_v1 {
     apex_status (*write_vmt)(void* host, apex_str material, const apex_vmt_edit* edits, size_t edit_count);
 } apex_assets_v1;
 
+/* Log levels for apex_host.log. The 0.9 host writes every message to its log and ignores the level; a later
+   minor may route by it, so pass the true level. */
+enum apex_log_level { APEX_LOG_DEBUG = 0, APEX_LOG_INFO = 1, APEX_LOG_WARNING = 2, APEX_LOG_ERROR = 3 };
+/* Problem severities (apex_problem.severity) and apex_vfs_position kinds, named for the numbers used above. */
+enum apex_problem_severity { APEX_PROBLEM_ERROR = 0, APEX_PROBLEM_WARNING = 1, APEX_PROBLEM_NOTE = 2 };
+enum apex_vfs_position_kind { APEX_VFS_FIRST = 0, APEX_VFS_LAST = 1, APEX_VFS_BEFORE = 2, APEX_VFS_AFTER = 3 };
+/* Tool parameter kinds (apex_tool_parameter.kind) and apex_modified_node.flags bits (the document's dirty bits). */
+enum apex_parameter_kind { APEX_PARAM_CHOICE = 0, APEX_PARAM_INTEGER = 1, APEX_PARAM_NUMBER = 2 };
+enum apex_modified_flags { APEX_MODIFIED_GEOMETRY = 1, APEX_MODIFIED_MATERIAL = 2, APEX_MODIFIED_KEY_VALUES = 4,
+    APEX_MODIFIED_VISIBILITY = 8, APEX_MODIFIED_HIERARCHY = 16 };
+
+/* The host passed to apex_plugin_entry and the interface tables it returns outlive the plugin (until unload);
+   host->context is valid for every callback until deactivate returns. */
 typedef struct apex_host {
     uint32_t struct_size, abi_major, abi_minor, reserved;
     void* context;
@@ -606,7 +624,8 @@ typedef struct apex_plugin {
     void (*on_changed)(void* user, const apex_change_notice* notice);
 } apex_plugin;
 typedef const apex_plugin* (*apex_plugin_entry_fn)(const apex_host* host);
-/* Plugin implementations export this symbol with APEX_PLUGIN_EXPORT. */
+/* Plugin implementations export this symbol with APEX_PLUGIN_EXPORT. The returned table is owned by the plugin
+   and must stay valid until the host unloads the library, after deactivate. Return NULL to refuse to load. */
 const apex_plugin* apex_plugin_entry(const apex_host* host);
 
 #ifdef __cplusplus

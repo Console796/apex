@@ -169,81 +169,19 @@ if(APEX_WITH_ANGELSCRIPT)
   target_compile_definitions(apex_plugin_host PUBLIC APEX_HAVE_ANGELSCRIPT=1)
 endif()
 
-add_library(hello_tool MODULE examples/hello-tool/hello.c)
-target_include_directories(hello_tool PRIVATE ${PROJECT_SOURCE_DIR}/include)
+# The plugin SDK (0.9.9, D8). In the build tree the examples go through the same apex_add_plugin() helper that the
+# installed SDK ships (cmake/sdk, installed by Packaging.cmake); tests/plugin_sdk/out_of_tree.py builds them again
+# from the packed SDK alone.
+add_library(apex_plugin_sdk INTERFACE)
+target_include_directories(apex_plugin_sdk INTERFACE ${PROJECT_SOURCE_DIR}/include)
+add_library(apex::plugin_sdk ALIAS apex_plugin_sdk)
+include(${PROJECT_SOURCE_DIR}/cmake/sdk/ApexPluginHelpers.cmake)
 if(CMAKE_CONFIGURATION_TYPES)
-  set(_hello_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/hello")
+  set(APEX_PLUGIN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins")
 else()
-  set(_hello_dir "${CMAKE_BINARY_DIR}/plugins/hello")
+  set(APEX_PLUGIN_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins")
 endif()
-set_target_properties(hello_tool PROPERTIES PREFIX ""
-  LIBRARY_OUTPUT_DIRECTORY "${_hello_dir}"
-  RUNTIME_OUTPUT_DIRECTORY "${_hello_dir}")
-file(GENERATE OUTPUT "${_hello_dir}/plugin.kv3" CONTENT
-"<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
-{ id = \"hello\" name = \"Hello tool\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } entry = { \"linux-x86_64\" = \"$<TARGET_FILE_NAME:hello_tool>\" \"windows-x86_64\" = \"$<TARGET_FILE_NAME:hello_tool>\" } }
-")
-
-add_library(polygon_tool MODULE examples/polygon-tool/polygon.cpp)
-target_include_directories(polygon_tool PRIVATE ${PROJECT_SOURCE_DIR}/include)
-if(CMAKE_CONFIGURATION_TYPES)
-  set(_polygon_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/polygon")
-else()
-  set(_polygon_dir "${CMAKE_BINARY_DIR}/plugins/polygon")
-endif()
-set_target_properties(polygon_tool PROPERTIES PREFIX ""
-  LIBRARY_OUTPUT_DIRECTORY "${_polygon_dir}" RUNTIME_OUTPUT_DIRECTORY "${_polygon_dir}")
-file(GENERATE OUTPUT "${_polygon_dir}/plugin.kv3" CONTENT
-"<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
-{ id = \"polygon\" name = \"Polygon tool\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } entry = { \"linux-x86_64\" = \"$<TARGET_FILE_NAME:polygon_tool>\" \"windows-x86_64\" = \"$<TARGET_FILE_NAME:polygon_tool>\" } }
-")
-
-add_library(face_stats MODULE examples/face-stats/face_stats.cpp)
-target_include_directories(face_stats PRIVATE ${PROJECT_SOURCE_DIR}/include)
-if(CMAKE_CONFIGURATION_TYPES)
-  set(_face_stats_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/face-stats")
-else()
-  set(_face_stats_dir "${CMAKE_BINARY_DIR}/plugins/face-stats")
-endif()
-set_target_properties(face_stats PROPERTIES PREFIX ""
-  LIBRARY_OUTPUT_DIRECTORY "${_face_stats_dir}" RUNTIME_OUTPUT_DIRECTORY "${_face_stats_dir}")
-file(GENERATE OUTPUT "${_face_stats_dir}/plugin.kv3" CONTENT
-"<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
-{ id = \"facestats\" name = \"Face stats\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } entry = { \"linux-x86_64\" = \"$<TARGET_FILE_NAME:face_stats>\" \"windows-x86_64\" = \"$<TARGET_FILE_NAME:face_stats>\" } }
-")
-
-add_library(obj_import MODULE examples/obj-import/obj_import.cpp)
-target_include_directories(obj_import PRIVATE ${PROJECT_SOURCE_DIR}/include)
-if(CMAKE_CONFIGURATION_TYPES)
-  set(_obj_import_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/obj-import")
-else()
-  set(_obj_import_dir "${CMAKE_BINARY_DIR}/plugins/obj-import")
-endif()
-set_target_properties(obj_import PROPERTIES PREFIX ""
-  LIBRARY_OUTPUT_DIRECTORY "${_obj_import_dir}" RUNTIME_OUTPUT_DIRECTORY "${_obj_import_dir}")
-file(GENERATE OUTPUT "${_obj_import_dir}/plugin.kv3" CONTENT
-"<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
-{ id = \"objimport\" name = \"OBJ import\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } entry = { \"linux-x86_64\" = \"$<TARGET_FILE_NAME:obj_import>\" \"windows-x86_64\" = \"$<TARGET_FILE_NAME:obj_import>\" } }
-")
-
-# A script plugin has no library: the manifest is generated and the script is copied next to it, like the
-# native examples above. It needs the AngelScript engine, so it is built only when that is.
-if(APEX_WITH_ANGELSCRIPT)
-  if(CMAKE_CONFIGURATION_TYPES)
-    set(_stair_dir "${CMAKE_BINARY_DIR}/$<CONFIG>/plugins/stair")
-  else()
-    set(_stair_dir "${CMAKE_BINARY_DIR}/plugins/stair")
-  endif()
-  file(GENERATE OUTPUT "${_stair_dir}/plugin.kv3" CONTENT
-"<!-- kv3 encoding:text:version{apex} format:generic:version{fixture} -->
-{ id = \"stair\" name = \"Stair\" version = \"1.0.0\" apex_abi = { major = 1 minor = 0 } script = \"stair.as\" runtime = \"angelscript\" }
-")
-  add_custom_target(stair_plugin ALL
-    COMMAND ${CMAKE_COMMAND} -E make_directory "${_stair_dir}"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${PROJECT_SOURCE_DIR}/examples/stair/stair.as" "${_stair_dir}/stair.as"
-    DEPENDS "${PROJECT_SOURCE_DIR}/examples/stair/stair.as"
-    COMMENT "Installing the stair script plugin")
-endif()
+add_subdirectory(examples)
 
 if(APEX_BUILD_APP)
   find_package(Qt6 6.5 QUIET COMPONENTS Widgets Svg Multimedia)

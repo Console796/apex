@@ -1,4 +1,4 @@
-// Stair: an Apex script plugin (docs/plugin-sdk.md 4.14).
+// Stair: an Apex script plugin (docs/plugins/script-host.md).
 //
 // Move the cursor over the ground (z = 0) to place the stair, change "Steps" in the tool strip, click to
 // create it. All steps are created in ONE apex.edit batch, so a single undo removes the whole stair.

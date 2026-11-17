@@ -715,6 +715,9 @@ def main():
                                             rep, "check-licenses"))
     g.add("check-layers", lambda: run([sys.executable, str(ROOT / "tools" / "check_layers.py")],
                                       rep, "check-layers"))
+    g.add("check-layers-selftest", lambda: run([sys.executable, str(ROOT / "tools" / "check_layers.py"), "--self-test"],
+                                               rep, "check-layers-selftest"))
+    g.add("check-docs", lambda: run([sys.executable, str(ROOT / "tools" / "check_docs.py")], rep, "check-docs"))
 
     est = ci_history.estimates()
     finish, _ends, unknown = ci_history.predict(list(rep.stages.values()), est)

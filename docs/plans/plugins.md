@@ -552,3 +552,62 @@ rebound took Hammer's default context (Always); fixed in `assignChords`.
 0.9.8 decisions: pie layouts are stored in presets and edited on a Pies page (D7); plugin themes come from
 `themes/*.json` in the plugin folder, with no new C interface; suggested bindings are shown as suggestions,
 not as unbound (I-7). Cut: `pie.user.<name>` pies, the "More" level, plugin-suggested pie items.
+
+## 11. ABI freeze review (0.9.9, D12)
+
+**State: ABI major 1, minor 0 is frozen.** This records the state of `include/apex/apex_plugin.h` after the review
+below; it is not a version change (`APEX_PLUGIN_ABI_MAJOR` stays 1, `APEX_PLUGIN_ABI_MINOR` stays 0). From here:
+
+1. The major changes only for a break. A break needs a new major and a release-note entry, and the old major keeps
+   loading for one milestone only if the adapters are cheap (D12).
+2. Existing structs never change or reorder: they grow by appending whole units (8 bytes, or pairs of 32-bit
+   fields), with no implicit padding, `struct_size` first and `reserved` fields zero. Array elements keep
+   their stride rule (`struct_size`). Embedded structs (`apex_ui_value`) stay at their 1.0 layout.
+3. Function tables grow by appending pointers; callers test `struct_size` before using an appended member.
+4. New interfaces take a new versioned name; incompatible redesigns are `apex.foo/2` beside `/1`.
+5. Enums only gain values. The minor goes up with every addition, and `tests/plugin_host/abi_layout.inc` (C and
+   C++) is updated in the same change with the new golden sizes.
+6. `include/apex/` includes nothing from `src/` and no Qt; `tools/check_layers.py` enforces it and its self-test
+   plants violations (`check_layers_self_test` in ctest, stage `check-layers-selftest` in `tools/ci.py`).
+
+The user documentation of these rules is `docs/plugins/versioning.md`.
+
+### Review log
+
+Reviewed: every interface table and struct in `apex_plugin.h` (document, registration, tools and their
+callbacks, actions, edit and the ops table, selection, ui and its control/form/context/callback types, overlay,
+helpers, problems, io, jobs, watch, vfs and its sinks, assets, host, plugin, change notice) for naming,
+`struct_size` first, `reserved` and padding (the layout test pins every size in C and C++), ownership and
+lifetime comments, `available()` guards in `plugin.hpp`, and what we would regret at major 1.
+
+Changed (comment and additive enum only; no layout change, so `abi_layout.inc` is untouched):
+
+- The header's pointer to the SDK docs now names `docs/plugins/versioning.md`.
+- New enums naming numbers that were bare: `apex_selection_mode`, `apex_log_level`, `apex_problem_severity`,
+  `apex_vfs_position_kind`, `apex_parameter_kind`, `apex_modified_flags`. The values are those the host already
+  uses (selection modes are the editor's, tool parameter kinds 0 to 2 are the only ones it reads).
+- Comments: `apex_registration_v1` is the 0.9.1 skeleton, superseded by actions, tools and ui; `defer` returns
+  `APEX_ERR_STATE` without a session and document and `APEX_ERR_INVALID` for a null callback; selection ids are
+  node ids except in face mode; the `apex_host` and `apex_plugin` lifetimes (host and tables until unload,
+  `host->context` until `deactivate` returns); `apex_plugin_entry` may return NULL to refuse to load.
+- The jobs comment promised a `done(APEX_ERR_STATE)` for a job cancelled at shutdown; the host discards pending
+  jobs without calling `done`. The comment now says so.
+- `plugin.hpp`: every wrapper that takes an interface already returns `APEX_ERR_UNSUPPORTED` when the interface is
+  missing; the only appended table members at 1.0 are the six 0.9.3 edit ops, which `available(ops,
+  &apex_edit_ops_v1::member)` guards. No missing guard found.
+
+Deferred, with the additive remedy:
+
+| Item | Why it stays | How it is added later |
+|---|---|---|
+| Side ids are `int32_t` in edit ops, `apex_pick`, overlay tints and `vanished_sides`, `uint64_t` in `apex_selection_v1` and `apex_node_id` in `apex_ui_context.ids` | Changing a type is a break | A `typedef` alias for documentation now costs nothing; a wider-id selection is `apex.selection/2` |
+| `host->log` ignores `level` | The level enum exists now; routing is host-internal | The host starts routing by level; plugins that pass true levels are already correct |
+| Tool `input`, `set_parameter` and `perform` return `int`, not `apex_status` | Return type is part of the signature | Append `input2` and others to `apex_tool_callbacks`; the host prefers them when `struct_size` covers them |
+| Naming is mixed (`register_*` in later tables, `action`/`tool`/`panel` in `apex.registration/1`, `declare`/`set`/`clear` in overlay) | Renaming is a break | New interfaces use `register_*`; the 0.9.1 skeleton is documented as superseded |
+| No read interface for displacements or connections; scripts have no bindings for the 0.9.3 edit ops | Nothing in 0.9 needs them | Append read functions to `apex_document_v1`; add script bindings |
+| `apex_edit_ops_v1` has no `setKeyValueOccurrence` or `setEntityKeyValueEntry` (duplicate keys) | No plugin needs them | Append two members |
+| Plugin panels cannot be floated; plugins cannot add pie items; enabling or disabling a plugin needs a restart | UI work, not ABI | New fields on `apex_ui_callbacks` or a new table; a restart-free toggle is host-internal |
+| One `apex_host.last_error` string for the whole host | Simple | Per-interface error detail as an appended function in a later table |
+
+Not run (needs a Windows machine): the MSVC build of `plugin.hpp` through the SDK, and a multi-config
+`plugin_sdk_out_of_tree` run.

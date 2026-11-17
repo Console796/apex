@@ -127,6 +127,30 @@ if(APEX_WITH_ANGELSCRIPT)
 endif()
 doctest_discover_tests(apex_plugin_host_tests TEST_PREFIX "plugin_host::")
 
+# 0.9.9 / D8: the SDK component is enough to build plugins. tests/plugin_sdk/out_of_tree.py packs the SDK with
+# tools/package.py --sdk, builds the SDK's examples as a separate project against the unpacked archive with
+# the ApexPlugin package (no Apex include path; one job; the generator and compilers of this build), then
+# loads the result with apex_plugin_sdk_loader.
+add_executable(apex_plugin_sdk_loader plugin_sdk/sdk_loader.cpp)
+target_link_libraries(apex_plugin_sdk_loader PRIVATE apex_plugin_host apex_warnings)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  add_test(NAME plugin_sdk_out_of_tree
+           COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/plugin_sdk/out_of_tree.py
+                   --package-py ${PROJECT_SOURCE_DIR}/tools/package.py --build-dir ${CMAKE_BINARY_DIR}
+                   --source-dir ${PROJECT_SOURCE_DIR} --loader $<TARGET_FILE:apex_plugin_sdk_loader>
+                   --cmake ${CMAKE_COMMAND} --generator ${CMAKE_GENERATOR}
+                   --make-program "${CMAKE_MAKE_PROGRAM}" --c-compiler "${CMAKE_C_COMPILER}"
+                   --cxx-compiler "${CMAKE_CXX_COMPILER}" --build-type "${CMAKE_BUILD_TYPE}"
+                   --config $<CONFIG>)
+  set_tests_properties(plugin_sdk_out_of_tree PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+  # The include/apex/ rule of tools/check_layers.py (nothing from src/) catches planted violations.
+  add_test(NAME check_layers_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_layers.py --self-test)
+  # docs/plugins quotes the headers and examples verbatim; the checker proves it, and its self-test proves the checker.
+  add_test(NAME plugin_docs_check COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_docs.py ${PROJECT_SOURCE_DIR})
+  add_test(NAME plugin_docs_check_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_docs.py --self-test)
+endif()
+
 # P1: compile each side independently with the other compiler, then load and call both functions.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_program(APEX_PROBE_GCC gcc)
