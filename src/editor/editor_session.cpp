@@ -1,3 +1,4 @@
+#include <cmath>
 #include "editor/editor_session.hpp"
 #include "editor/keyframe_chain.hpp"
 #include "editor/connection_validation.hpp"
@@ -336,6 +337,11 @@ void EditorSession::setNewSolidMaterial(std::string material) {
 void EditorSession::setNewSolidUvAlignment(geometry::UvAlignment alignment) {
     if (newSolidStyle_.alignment == alignment) return;
     newSolidStyle_.alignment = alignment;
+    notify();
+}
+void EditorSession::setNewSolidTextureScale(double scale) {
+    if (!std::isfinite(scale) || scale <= 0 || newSolidStyle_.textureScale == scale) return;
+    newSolidStyle_.textureScale = scale;
     notify();
 }
 void EditorSession::setFaceExtrapolation(FaceExtrapolation mode) {

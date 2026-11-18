@@ -112,25 +112,11 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
     heap->capacity_ = std::max<std::uint32_t>(2, std::min(desc.capacity,
         limit > heap->cubeCapacity_ ? limit - heap->cubeCapacity_ : 0u));
 
-    for (int i = 0; i < 4; ++i) {
-        VkSamplerCreateInfo si = vkStruct<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
-        const bool nearest = i == 1;
-        const bool comparison = i == 2;
-        si.magFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-        si.minFilter = si.magFilter;
-        si.mipmapMode = nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        si.addressModeU = si.addressModeV = si.addressModeW = (comparison || i == 3) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        si.compareEnable = comparison ? VK_TRUE : VK_FALSE;
-        si.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
-        si.anisotropyEnable = i == 0 && context.info().anisotropy ? VK_TRUE : VK_FALSE;
-        si.maxAnisotropy = 16.0f;
-        si.maxLod = VK_LOD_CLAMP_NONE;
-        APEX_VK_TRY(vkCreateSampler(context.device(), &si, nullptr, &heap->samplers_[i]), "vkCreateSampler");
-    }
+    for (int i = 0; i < 4; ++i) APEX_VK_TRY(heap->createSampler(i, WorldFilter::Anisotropic), "vkCreateSampler");
 
     std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, heap->capacity_, VK_SHADER_STAGE_ALL, nullptr};
-    bindings[1] = {1, VK_DESCRIPTOR_TYPE_SAMPLER, 4, VK_SHADER_STAGE_ALL, heap->samplers_};
+    bindings[1] = {1, VK_DESCRIPTOR_TYPE_SAMPLER, 4, VK_SHADER_STAGE_ALL, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, heap->cubeCapacity_, VK_SHADER_STAGE_ALL, nullptr};
     const std::array<VkDescriptorBindingFlags, 3> flags{
         VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT, 0,
@@ -158,6 +144,8 @@ Result<std::unique_ptr<TextureHeap>> TextureHeap::create(Context& context, const
     ai.descriptorSetCount = 1;
     ai.pSetLayouts = &heap->layout_;
     APEX_VK_TRY(vkAllocateDescriptorSets(context.device(), &ai, &heap->set_), "texture heap set");
+
+    for (int i = 0; i < 4; ++i) heap->writeSamplerDescriptor(i);
 
     auto ring = UploadRing::create(context, desc.stagingBytes);
     if (!ring) return std::unexpected(ring.error());
@@ -232,6 +220,51 @@ TextureHeap::~TextureHeap() {
     for (VkSampler s : samplers_) {
         if (s) vkDestroySampler(device, s, nullptr);
     }
+}
+
+VkResult TextureHeap::createSampler(int i, WorldFilter filter) {
+    VkSamplerCreateInfo si = vkStruct<VkSamplerCreateInfo>(VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+    const bool comparison = i == 2;
+    // Sampler 1 is always point-sampled (sprites); sampler 0 follows the game's filter.
+    const bool point = i == 1 || (i == 0 && filter == WorldFilter::Nearest);
+    const bool mipNearest = point || (i == 0 && filter == WorldFilter::Bilinear);
+    si.magFilter = point ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    si.minFilter = si.magFilter;
+    si.mipmapMode = mipNearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    si.addressModeU = si.addressModeV = si.addressModeW = (comparison || i == 3) ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    si.compareEnable = comparison ? VK_TRUE : VK_FALSE;
+    si.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    si.anisotropyEnable = i == 0 && filter == WorldFilter::Anisotropic && context_->info().anisotropy ? VK_TRUE : VK_FALSE;
+    si.maxAnisotropy = 16.0f;
+    si.maxLod = VK_LOD_CLAMP_NONE;
+    return vkCreateSampler(context_->device(), &si, nullptr, &samplers_[i]);
+}
+
+void TextureHeap::writeSamplerDescriptor(int index) {
+    const VkDescriptorImageInfo info{samplers_[index], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkWriteDescriptorSet write = vkStruct<VkWriteDescriptorSet>(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET);
+    write.dstSet = set_;
+    write.dstBinding = 1;
+    write.dstArrayElement = static_cast<std::uint32_t>(index);
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    write.pImageInfo = &info;
+    vkUpdateDescriptorSets(context_->device(), 1, &write, 0, nullptr);
+}
+
+Result<void> TextureHeap::setWorldFilter(WorldFilter filter) {
+    if (filter == worldFilter_) return {};
+    context_->waitIdle();
+    VkSampler old = samplers_[0];
+    samplers_[0] = VK_NULL_HANDLE;
+    if (VkResult r = createSampler(0, filter); r != VK_SUCCESS) {
+        samplers_[0] = old;
+        return std::unexpected(Error{ErrorCode::Internal, "vkCreateSampler failed"});
+    }
+    writeSamplerDescriptor(0);
+    if (old) vkDestroySampler(context_->device(), old, nullptr);
+    worldFilter_ = filter;
+    return {};
 }
 
 void TextureHeap::writeDescriptor(TextureSlot slot, VkImageView view) {

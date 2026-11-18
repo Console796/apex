@@ -2,9 +2,11 @@
 
 #include "assets/path_expand.hpp"
 
+#include <algorithm>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -87,6 +89,23 @@ GameProfileDialog::GameProfileDialog(const assets::GameProfile* existing, QStrin
     pbrShader_->setToolTip(tr("Strata Source's \"pbr\" shader. Leave off if the game does not have it."));
     form->addRow(QString(), pbrShader_);
 
+    textureScale_ = new QDoubleSpinBox(this);
+    textureScale_->setObjectName(QStringLiteral("gameTextureScale"));
+    textureScale_->setDecimals(4);
+    textureScale_->setRange(0.0001, 64.0);
+    textureScale_->setSingleStep(0.25);
+    textureScale_->setToolTip(tr("Texture scale given to the faces of newly drawn solids (Hammer's default is 0.25)."));
+    form->addRow(tr("Default texture scale"), textureScale_);
+    textureFilter_ = new QComboBox(this);
+    textureFilter_->setObjectName(QStringLiteral("gameTextureFilter"));
+    for (auto [filter, label] : {std::pair{assets::TextureFilter::Anisotropic, tr("Anisotropic")},
+                                 std::pair{assets::TextureFilter::Trilinear, tr("Trilinear")},
+                                 std::pair{assets::TextureFilter::Bilinear, tr("Bilinear")},
+                                 std::pair{assets::TextureFilter::Nearest, tr("Nearest (pixelated)")}})
+        textureFilter_->addItem(label, static_cast<int>(filter));
+    textureFilter_->setToolTip(tr("How the 3D preview samples this game's textures."));
+    form->addRow(tr("Texture filtering"), textureFilter_);
+
     toolDirectory_ = pathRow(tr("Tool folder"), QStringLiteral("gameToolDirectory"), true, form);
     toolDirectory_->setPlaceholderText(tr("bin/linux64 or bin/win64 beside the game folder"));
     vbsp_ = pathRow(tr("vbsp"), QStringLiteral("gameVbsp"), false, form);
@@ -158,6 +177,8 @@ void GameProfileDialog::load(const assets::GameProfile& profile) {
     escape_->setCurrentIndex(profile.escapeMode == kv1::EscapeMode::Strata ? 0 : 1);
     rtLightModes_->setChecked(profile.features.rtLightModes);
     pbrShader_->setChecked(profile.features.pbrShader);
+    textureScale_->setValue(profile.textures.scale);
+    textureFilter_->setCurrentIndex(std::max(0, textureFilter_->findData(static_cast<int>(profile.textures.filter))));
     toolDirectory_->setText(fromPath(profile.customToolDirectory));
     auto tool = [&](const char* name) {
         auto it = profile.toolPaths.find(name);
@@ -177,6 +198,7 @@ assets::GameProfile GameProfileDialog::profile() const {
     for (int i = 0; i < fgds_->count(); ++i) result.fgds.push_back(toPath(fgds_->item(i)->text()));
     result.escapeMode = escape_->currentIndex() == 0 ? kv1::EscapeMode::Strata : kv1::EscapeMode::Legacy;
     result.features = {rtLightModes_->isChecked(), pbrShader_->isChecked()};
+    result.textures = {textureScale_->value(), static_cast<assets::TextureFilter>(textureFilter_->currentData().toInt())};
     result.customToolDirectory = toPath(toolDirectory_->text());
     for (auto [key, edit] : {std::pair{"vbsp", vbsp_}, std::pair{"vvis", vvis_}, std::pair{"vrad", vrad_},
                              std::pair{"game", game_}}) {

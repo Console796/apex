@@ -38,6 +38,9 @@ inline constexpr TextureSlot kCheckerboardSlot = 0;
 inline constexpr std::uint32_t kThumbnailTextureSlots = 64;
 inline constexpr TextureSlot kDefaultCubeSlot = 0;
 
+// How world materials (sampler 0) are filtered; the other samplers are fixed.
+enum class WorldFilter { Anisotropic, Trilinear, Bilinear, Nearest };
+
 struct TextureHeapDesc {
     std::uint32_t capacity = 4096;      // Slots, clamped to the device update-after-bind limit.
     VkDeviceSize stagingBytes = 64u << 20;
@@ -56,6 +59,10 @@ class TextureHeap {
     ~TextureHeap();
     TextureHeap(const TextureHeap&) = delete;
     TextureHeap& operator=(const TextureHeap&) = delete;
+
+    // Switches sampler 0 (every world material) to `filter`. Idles the device: call between frames, not mid-draw.
+    Result<void> setWorldFilter(WorldFilter filter);
+    WorldFilter worldFilter() const { return worldFilter_; }
 
     VkDescriptorSetLayout layout() const { return layout_; }
     VkDescriptorSet descriptorSet() const { return set_; }
@@ -135,7 +142,10 @@ class TextureHeap {
     VkDescriptorSetLayout layout_ = VK_NULL_HANDLE;
     VkDescriptorPool pool_ = VK_NULL_HANDLE;
     VkDescriptorSet set_ = VK_NULL_HANDLE;
+    VkResult createSampler(int index, WorldFilter filter);
+    void writeSamplerDescriptor(int index);
     VkSampler samplers_[4]{};
+    WorldFilter worldFilter_ = WorldFilter::Anisotropic;
     std::uint32_t capacity_ = 0;
     std::vector<Image> images_;           // Indexed by slot; empty Image when free.
     std::vector<VkImageView> attachments_; // Borrowed images, owned sampled views, indexed by slot.

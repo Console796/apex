@@ -207,6 +207,19 @@ TEST_CASE("texture heap: checkerboard default, RGBA8, mips and BC formats") {
     CHECK(gpu->validation().errorCount() == 0);
 }
 
+TEST_CASE("texture heap: world filter switches sampler 0 and is idempotent") {
+    REQUIRE_GPU();
+    auto created = TextureHeap::create(*gpu, {256, 4u << 20});
+    REQUIRE(created);
+    auto& heap = **created;
+    CHECK(heap.worldFilter() == WorldFilter::Anisotropic);
+    for (auto f : {WorldFilter::Nearest, WorldFilter::Bilinear, WorldFilter::Trilinear, WorldFilter::Anisotropic}) {
+        CHECK(heap.setWorldFilter(f));
+        CHECK(heap.worldFilter() == f);
+        CHECK(heap.setWorldFilter(f));
+    }
+}
+
 TEST_CASE("texture heap staging ring grows and flushes for large uploads") {
     REQUIRE_GPU();
     auto created = TextureHeap::create(*gpu, {64, 1u << 16}); // 64 KiB ring.

@@ -109,6 +109,8 @@ public:
     const geometry::NewSolidStyle& newSolidStyle() const { return newSolidStyle_; }
     void setNewSolidMaterial(std::string material);
     void setNewSolidUvAlignment(geometry::UvAlignment alignment);
+    // The game's default texture scale for new solids; nonpositive or nonfinite values are ignored.
+    void setNewSolidTextureScale(double scale);
     FaceExtrapolation faceExtrapolation() const { return faceExtrapolation_; }
     void setFaceExtrapolation(FaceExtrapolation mode);
     void cycleFaceExtrapolation();

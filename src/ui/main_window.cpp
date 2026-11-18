@@ -649,6 +649,7 @@ void MainWindow::buildMenus() {
 void MainWindow::reloadGameContent() {
     autoMountPending_ = true;
     gameContent_->reload(currentProfile());
+    session_.setNewSolidTextureScale(currentProfile() ? currentProfile()->textures.scale : geometry::NewSolidStyle{}.textureScale);
     if (viewport_) viewport_->setDocument(document_.get(), currentProfile());
 }
 
@@ -2018,6 +2019,7 @@ void MainWindow::installDocument(std::unique_ptr<document::Document> doc, const 
         profile ? std::optional(profile->instanceSearchRoot()) : std::nullopt);
     unsaved_ = unsaved;
     savedState_ = document_->historyState();
+    session_.setNewSolidTextureScale(profile ? profile->textures.scale : geometry::NewSolidStyle{}.textureScale);
     viewport_->setDocument(document_.get(), currentProfile());
     viewport_->applyMapViews(viewport::readMapViews(parsed));
     autoMountPending_ = true;

@@ -1,3 +1,4 @@
+#include <cmath>
 #include "assets/game_profile.hpp"
 
 #include "assets/path_expand.hpp"
@@ -45,6 +46,22 @@ std::filesystem::path GameProfile::toolPath(std::string_view tool) const {
     if (tool == "game") return gameDirectory.parent_path() / "p2ce.sh";
     return toolDirectory() / std::string(tool);
 #endif
+}
+
+std::string_view textureFilterName(TextureFilter filter) {
+    switch (filter) {
+        case TextureFilter::Anisotropic: return "anisotropic";
+        case TextureFilter::Trilinear: return "trilinear";
+        case TextureFilter::Bilinear: return "bilinear";
+        case TextureFilter::Nearest: return "nearest";
+    }
+    return "anisotropic";
+}
+
+std::optional<TextureFilter> parseTextureFilter(std::string_view name) {
+    for (auto f : {TextureFilter::Anisotropic, TextureFilter::Trilinear, TextureFilter::Bilinear, TextureFilter::Nearest})
+        if (name == textureFilterName(f)) return f;
+    return std::nullopt;
 }
 
 Result<GameProfile> parseGameProfile(std::string_view source) {
@@ -143,6 +160,21 @@ Result<GameProfile> parseGameProfile(std::string_view source) {
             }
         }
     }
+    if (auto v = find("textures")) {
+        auto options = v->get<json::Value::Object>();
+        if (!options) return invalid();
+        if (auto it = options->find("scale"); it != options->end()) {
+            auto n = it->second.get<double>();
+            if (!n || !std::isfinite(*n) || *n <= 0) return invalid();
+            result.textures.scale = *n;
+        }
+        if (auto it = options->find("filter"); it != options->end()) {
+            auto name = it->second.get<std::string>();
+            auto filter = name ? parseTextureFilter(*name) : std::nullopt;
+            if (!filter) return invalid();
+            result.textures.filter = *filter;
+        }
+    }
     if (auto v = find("addons")) {
         auto options = v->get<json::Value::Object>();
         if (!options) return invalid();
@@ -198,6 +230,9 @@ std::string writeGameProfile(const GameProfile& profile) {
     if (!(profile.features == EngineFeatures{}))
         root["features"] = {json::Value::Object{{"rt_light_modes", {profile.features.rtLightModes}},
                                                 {"pbr_shader", {profile.features.pbrShader}}}};
+    if (!(profile.textures == TextureDefaults{}))
+        root["textures"] = {json::Value::Object{{"scale", {profile.textures.scale}},
+                                                {"filter", {std::string(textureFilterName(profile.textures.filter))}}}};
     if (!profile.customToolDirectory.empty()) root["tool_directory"] = {profile.customToolDirectory.generic_string()};
     return json::write({std::move(root)}) + '\n';
 }

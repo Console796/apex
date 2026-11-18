@@ -220,6 +220,13 @@ void GpuHost::setDocument(document::Document* document, std::shared_ptr<const as
     mirror_ = std::make_unique<render::RenderMirror>(*context_, *heap_, *jobs_, *materials_, classes_.get(),
         models_.get(), [this](const std::string& path) { return vfs_->exists(path); });
     mirror_->setEngineFeatures(effective.features);
+    {
+        using F = assets::TextureFilter;
+        const auto filter = effective.textures.filter == F::Trilinear ? render::WorldFilter::Trilinear
+            : effective.textures.filter == F::Bilinear ? render::WorldFilter::Bilinear
+            : effective.textures.filter == F::Nearest ? render::WorldFilter::Nearest : render::WorldFilter::Anisotropic;
+        if (auto set = heap_->setWorldFilter(filter); !set) log::warn("viewports: texture filter: {}", set.error().what());
+    }
     // Detail-prop preview is off in 0.8 (moves to a later milestone): no setDetailSource, so none are placed.
     mirror_->rebuild(*document);
     bake_ = std::make_unique<BakeController>(*document, vfs_, *context_, *heap_, *mirror_, *jobs_);

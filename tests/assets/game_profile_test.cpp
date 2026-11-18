@@ -187,3 +187,18 @@ TEST_CASE("GameProfile engine features default to Strata's and round trip when c
     CHECK(*decoded == profile);
     CHECK_FALSE(parseGameProfile(R"({"name":"x","game_directory":"/g","features":{"pbr_shader":1}})"));
 }
+
+TEST_CASE("GameProfile texture defaults are Hammer's, round trip when changed, and reject bad values") {
+    GameProfile profile;
+    profile.name = "T";
+    profile.gameDirectory = "/g";
+    CHECK(profile.textures.scale == 0.25);
+    CHECK(profile.textures.filter == TextureFilter::Anisotropic);
+    CHECK(writeGameProfile(profile).find("textures") == std::string::npos);
+    profile.textures = {0.5, TextureFilter::Nearest};
+    auto decoded = parseGameProfile(writeGameProfile(profile));
+    REQUIRE(decoded);
+    CHECK(decoded->textures == profile.textures);
+    CHECK_FALSE(parseGameProfile(R"({"name":"T","game_directory":"/g","textures":{"scale":0}})"));
+    CHECK_FALSE(parseGameProfile(R"({"name":"T","game_directory":"/g","textures":{"filter":"blurry"}})"));
+}

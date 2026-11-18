@@ -7,6 +7,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QFormLayout;
 class QLabel;
 class QLineEdit;
@@ -42,6 +43,8 @@ private:
     QComboBox* escape_;
     QCheckBox* rtLightModes_;
     QCheckBox* pbrShader_;
+    QDoubleSpinBox* textureScale_;
+    QComboBox* textureFilter_;
     QLineEdit* toolDirectory_;
     QLineEdit* vbsp_;
     QLineEdit* vvis_;

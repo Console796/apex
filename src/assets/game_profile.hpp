@@ -36,6 +36,19 @@ struct EngineFeatures {
     bool operator==(const EngineFeatures&) const = default;
 };
 
+// How the preview samples world textures. Source games differ: the Strata/P2CE look is anisotropic, older
+// engines are trilinear, and some mods want point sampling.
+enum class TextureFilter { Anisotropic, Trilinear, Bilinear, Nearest };
+std::string_view textureFilterName(TextureFilter filter);
+std::optional<TextureFilter> parseTextureFilter(std::string_view name);
+
+// Per-game texturing defaults. Scale is the u/v scale of a newly drawn solid's faces (Hammer's default is 0.25).
+struct TextureDefaults {
+    double scale = 0.25;
+    TextureFilter filter = TextureFilter::Anisotropic;
+    bool operator==(const TextureDefaults&) const = default;
+};
+
 struct GameProfile {
     std::string name;
     // Directory containing gameinfo.txt, rather than the Steam install root.
@@ -45,6 +58,7 @@ struct GameProfile {
     kv1::EscapeMode escapeMode = kv1::EscapeMode::Strata;
     VmfWriteOptions vmfWrite;
     EngineFeatures features;
+    TextureDefaults textures;
     AddonSettings addons;
     // Where the compile tools and their libraries live; empty means the Strata layout (bin/linux64, bin/win64).
     std::filesystem::path customToolDirectory;

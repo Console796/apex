@@ -4,9 +4,9 @@
   "description": "Game toolbar/Settings \"Add Game...\" dialog that writes <config>/profiles/<name>.json for any Source game with a gameinfo.txt; prefill from gameinfo/FGDs/compile tools; optional tool_directory field in the profile JSON.",
   "status": "testable",
   "milestone": "0.9",
-  "how_to_test": "Automated: build/linux-clang-release/tests/apex_tests -tc='*suggestGameProfile*,*GameProfile*' and QT_QPA_PLATFORM=offscreen build/linux-clang-release/apex_ui_tests -tc='*Add Game*,*custom game profile*' (all pass). Manual: run apex, Game toolbar > Games > Add Game..., Browse to a Source game folder holding gameinfo.txt (e.g. steamapps/common/Half-Life 2/hl2). Name, FGDs, vbsp/vvis/vrad, game exe and engine branch fill in; Save. Expected: the game appears and is selected in the Game picker, material/model browsers populate from its content, entity classes come from the FGDs, and ~/.config/Apex/Apex/profiles/<name>.json exists. Edit Game reopens it with the same values; Remove Game deletes the JSON and drops it from the picker.",
+  "how_to_test": "Automated: build/linux-clang-release/tests/apex_tests -tc='*GameProfile*,texture heap*' (pass). Manual: Games > Edit Game, set Default texture scale 0.5 and Texture filtering Nearest, save; the 3D view's textures turn pixelated and newly drawn brushes get scale 0.5 in the face editor. Switching back to Anisotropic/0.25 restores the default.",
   "created": "2026-11-17T03:23:58-07:00",
-  "updated": "2026-11-17T15:03:27-07:00",
+  "updated": "2026-11-18T10:52:18-07:00",
   "updated_by": "agent",
   "history": [
     {
@@ -25,6 +25,11 @@
       "ts": "2026-11-17T15:03:27-07:00",
       "actor": "agent",
       "note": "Added GameProfile.features (rtLightModes, pbrShader; JSON \"features\", written only when non-default). Strata/P2CE detection keeps both on; other games suggest both off. RenderMirror::setEngineFeatures normalises light _specular/_direct/_indirect modes and disables the pbr shader path when off. Add Game dialog has two checkboxes. Tests added (profile round trip, suggest, mirror light gating)."
+    },
+    {
+      "ts": "2026-11-18T10:52:18-07:00",
+      "actor": "agent",
+      "note": "Added GameProfile.textures (default new-solid texture scale + world texture filter: anisotropic/trilinear/bilinear/nearest). JSON \"textures\" written only when non-default. Add/Edit Game dialog exposes both. Scale applies to EditorSession new-solid style on profile/map change; filter switches TextureHeap sampler 0 in GpuHost::setDocument."
     }
   ]
 }
